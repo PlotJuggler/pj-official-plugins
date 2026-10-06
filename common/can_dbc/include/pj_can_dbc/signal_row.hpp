@@ -5,14 +5,16 @@
 // signal (name unchanged), plus a "<signal>_label" text field for any
 // signal whose DBC carries a VAL_ value table (so PJ4's State Transitions
 // view can show the decoded label instead of a bare number). A raw value
-// with no matching table entry still gets a "<signal>_label" field, holding
-// the number as text -- callers see something for every value, not a
-// silently-missing field.
+// with no matching table entry still gets a text field, holding the number
+// as text -- callers see something for every value, not a silently-missing
+// field.
 //
-// Shared by data_load_blf, data_load_mf4 and data_load_candump so the
-// "<x>_label" convention -- and its collision risk with a signal that is
-// itself genuinely named "<x>_label" in the DBC -- is defined exactly once.
-// See each plugin's README for that collision note.
+// The text field is "<signal>_label", or "<signal>_label_2", "_3", ... when
+// the message already uses that name for a real signal (a DBC may pair "Foo"
+// with a genuine "Foo_label") or for another signal's label, so a row never
+// holds two fields with the same name. CanDecoder fixes the names when the
+// DBC is loaded; this builder (shared by data_load_blf, data_load_mf4 and
+// data_load_candump) just writes DecodedSignal::label_name.
 
 #include <array>
 #include <cstdint>

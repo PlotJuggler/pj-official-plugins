@@ -6,6 +6,7 @@
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
 #include <pj_can_dbc/signal_row.hpp>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -675,6 +676,110 @@ TEST(CanDecoderValueTable, BuilderFieldOrderAndTypes) {
   EXPECT_EQ(fields[1].name, "AS_status_label");
   ASSERT_TRUE(std::holds_alternative<std::string_view>(fields[1].value));
   EXPECT_EQ(std::get<std::string_view>(fields[1].value), "DRIVING");
+}
+
+// --- A value-table label must never share a name with a real signal (see
+// assignLabelNames in can_decoder.cpp).
+
+namespace {
+
+// Decodes one frame of message 700 and builds its row; owns the decoder and
+// builder because the returned fields view their storage.
+struct LabelRow {
+  explicit LabelRow(const std::string& dbc, std::vector<std::uint8_t> payload) {
+    loaded = dec.loadDbcString(dbc).has_value();
+    DecodeResult result = DecodeResult::kNoMatch;
+    sigs = dec.decode(700, false, payload, result);
+    decoded = result == DecodeResult::kDecoded;
+    fields = builder.build(sigs);
+  }
+
+  bool namesUnique() const {
+    std::set<std::string> names;
+    for (const auto& field : fields) {
+      names.insert(field.name);
+    }
+    return names.size() == fields.size();
+  }
+
+  void expectText(const char* name, const char* text) const {
+    const auto* field = findField(fields, name);
+    ASSERT_NE(field, nullptr) << name;
+    ASSERT_TRUE(std::holds_alternative<std::string_view>(field->value)) << name;
+    EXPECT_EQ(std::get<std::string_view>(field->value), text) << name;
+  }
+
+  void expectNumber(const char* name, double value) const {
+    const auto* field = findField(fields, name);
+    ASSERT_NE(field, nullptr) << name;
+    ASSERT_TRUE(std::holds_alternative<double>(field->value)) << name;
+    EXPECT_DOUBLE_EQ(std::get<double>(field->value), value) << name;
+  }
+
+  CanDecoder dec;
+  SignalRowBuilder builder;
+  std::vector<pj_can_dbc::DecodedSignal> sigs;
+  PJ::Span<const PJ::sdk::NamedFieldValue> fields;
+  bool loaded = false;
+  bool decoded = false;
+};
+
+constexpr const char* kFooSignal = R"(SG_ Foo : 0|8@1+ (1,0) [0|1] "" ECU)";
+constexpr const char* kFooLabelSignal = R"(SG_ Foo_label : 8|8@1+ (1,0) [0|255] "" ECU)";
+constexpr const char* kFooValTable = R"(VAL_ 700 Foo 0 "OFF" 1 "ON" ;)";
+
+}  // namespace
+
+TEST(CanDecoderValueTable, RealLabelSignalGetsSuffixedTextFieldInEitherOrder) {
+  for (const bool label_first : {false, true}) {
+    SCOPED_TRACE(label_first ? "Foo_label declared first" : "Foo declared first");
+    const std::string signals = label_first ? std::string(kFooLabelSignal) + "\n " + kFooSignal
+                                            : std::string(kFooSignal) + "\n " + kFooLabelSignal;
+    const LabelRow row(valDbc("BO_ 700 LabelMsg: 8 ECU", signals, kFooValTable), {1, 7, 0, 0, 0, 0, 0, 0});
+    ASSERT_TRUE(row.loaded && row.decoded);
+    ASSERT_EQ(row.fields.size(), 3u);
+    EXPECT_TRUE(row.namesUnique());
+    row.expectNumber("Foo", 1.0);
+    row.expectText("Foo_label_2", "ON");
+    row.expectNumber("Foo_label", 7.0);
+  }
+}
+
+TEST(CanDecoderValueTable, ChainedLabelSignals) {
+  const std::string signals = std::string(kFooSignal) + "\n " + R"(SG_ Foo_label : 8|8@1+ (1,0) [0|1] "" ECU)";
+  const std::string vals = std::string(kFooValTable) + "\n" + R"(VAL_ 700 Foo_label 0 "LOW" 1 "HIGH" ;)";
+  const LabelRow row(valDbc("BO_ 700 LabelMsg: 8 ECU", signals, vals), {1, 0, 0, 0, 0, 0, 0, 0});
+  ASSERT_TRUE(row.loaded && row.decoded);
+  ASSERT_EQ(row.fields.size(), 4u);
+  EXPECT_TRUE(row.namesUnique());
+  row.expectNumber("Foo", 1.0);
+  row.expectText("Foo_label_2", "ON");
+  row.expectNumber("Foo_label", 0.0);
+  row.expectText("Foo_label_label", "LOW");
+}
+
+TEST(CanDecoderValueTable, SuffixSkipsTakenNames) {
+  const std::string signals =
+      std::string(kFooSignal) + "\n " + kFooLabelSignal + "\n " + R"(SG_ Foo_label_2 : 16|8@1+ (1,0) [0|255] "" ECU)";
+  const LabelRow row(valDbc("BO_ 700 LabelMsg: 8 ECU", signals, kFooValTable), {1, 7, 9, 0, 0, 0, 0, 0});
+  ASSERT_TRUE(row.loaded && row.decoded);
+  ASSERT_EQ(row.fields.size(), 4u);
+  EXPECT_TRUE(row.namesUnique());
+  row.expectText("Foo_label_3", "ON");
+  row.expectNumber("Foo_label", 7.0);
+  row.expectNumber("Foo_label_2", 9.0);
+}
+
+TEST(CanDecoderValueTable, LabelInAnotherMessageDoesNotForceSuffix) {
+  const std::string dbc = valDbc(
+      "BO_ 700 LabelMsg: 8 ECU", kFooSignal,
+      std::string("BO_ 701 OtherMsg: 8 ECU\n ") + R"(SG_ Foo_label : 0|8@1+ (1,0) [0|255] "" ECU)" + "\n\n" +
+          kFooValTable);
+  const LabelRow row(dbc, {1, 0, 0, 0, 0, 0, 0, 0});
+  ASSERT_TRUE(row.loaded && row.decoded);
+  ASSERT_EQ(row.fields.size(), 2u);
+  row.expectNumber("Foo", 1.0);
+  row.expectText("Foo_label", "ON");
 }
 
 TEST(CanTopic, RendersHexIds) {

@@ -24,9 +24,9 @@ namespace pj_can_dbc {
 /// `VAL_` entries; `label` is set iff `raw` matched one of the table's
 /// keys, in which case it views that entry's text — an empty `VAL_` text
 /// ("") is still "found" and stays distinct from "not found" (`nullopt`).
-/// `label_name` (the signal's `"<name>_label"` field name, precomputed at
-/// load) is set under the same condition as `raw`. `label`/`label_name` are
-/// views into storage owned by the `CanDecoder` that produced them: valid
+/// `label_name` (the signal's text-field name, allocated at load -- see
+/// signal_row.hpp) is set under the same condition as `raw`.
+/// `label`/`label_name` are views into storage owned by the `CanDecoder` that produced them: valid
 /// until that decoder's next `loadDbcFile`/`loadDbcString` call or its
 /// destruction, whichever comes first — do not retain them past that.
 struct DecodedSignal {

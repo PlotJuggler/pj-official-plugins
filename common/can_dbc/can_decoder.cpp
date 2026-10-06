@@ -4,8 +4,10 @@
 #include <libdbc/dbc.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
 #include <sstream>
+#include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace pj_can_dbc {
@@ -72,9 +74,10 @@ bool messageLayoutInRange(const Libdbc::Message& msg) {
 /// then), sorted by key and deduped keeping the FIRST entry for a
 /// duplicate key (a malformed DBC repeating a key is not our problem to
 /// referee). The label strings are owned here so `DecodedSignal::label`
-/// (a view) stays valid for the decoder's lifetime. `label_name` is
-/// `"<name>_label"`, computed once here (iff `labels` is non-empty) instead
-/// of per decoded frame; `DecodedSignal::label_name` views it the same way.
+/// (a view) stays valid for the decoder's lifetime. `label_name` is the
+/// name of the text field carrying the label, allocated once per message at
+/// load (iff `labels` is non-empty; see assignLabelNames) instead of per
+/// decoded frame; `DecodedSignal::label_name` views it the same way.
 struct SignalMeta {
   std::string name;
   std::string unit;
@@ -103,6 +106,37 @@ std::vector<std::pair<std::int64_t, std::string>> buildLabels(const Libdbc::Sign
   return labels;
 }
 
+/// Gives every signal with a `VAL_` table its text-field name: `"<name>_label"`,
+/// or `"<name>_label_2"`, `"_3"`, ... when that name is already taken within
+/// the message by a real signal (a DBC may pair `Foo` with a genuine
+/// `Foo_label`) or by an earlier signal's label, so one row never carries two
+/// fields with the same name. Allocation walks signals in declaration order
+/// against the set of ALL the message's real signal names, so the result is
+/// fixed at load and independent of frame data. Collisions are per message
+/// (each message is its own topic).
+void assignLabelNames(std::vector<SignalMeta>& meta) {
+  if (std::none_of(meta.begin(), meta.end(), [](const SignalMeta& m) { return !m.labels.empty(); })) {
+    return;  // the common case: nothing to name, so skip building the set
+  }
+  std::unordered_set<std::string> taken;
+  taken.reserve(meta.size() * 2);
+  for (const auto& signal_meta : meta) {
+    taken.insert(signal_meta.name);
+  }
+  for (auto& signal_meta : meta) {
+    if (signal_meta.labels.empty()) {
+      continue;
+    }
+    const std::string base = signal_meta.name + "_label";
+    std::string candidate = base;
+    for (std::size_t n = 2; taken.count(candidate) != 0; ++n) {
+      candidate = base + "_" + std::to_string(n);
+    }
+    taken.insert(candidate);
+    signal_meta.label_name = std::move(candidate);
+  }
+}
+
 struct MessageEntry {
   Libdbc::Message message;
   std::vector<SignalMeta> signals;  // parallel to message.parse_signals() output
@@ -123,12 +157,9 @@ struct CanDecoder::Impl {
       }
       std::vector<SignalMeta> meta;
       for (const auto& sig : msg.get_signals()) {
-        SignalMeta signal_meta{sig.name, sig.unit, sig.factor, sig.offset, buildLabels(sig), {}};
-        if (!signal_meta.labels.empty()) {
-          signal_meta.label_name = signal_meta.name + "_label";
-        }
-        meta.push_back(std::move(signal_meta));
+        meta.push_back(SignalMeta{sig.name, sig.unit, sig.factor, sig.offset, buildLabels(sig), {}});
       }
+      assignLabelNames(meta);
       id_to_index[msg.id()] = messages.size();
       messages.push_back(MessageEntry{msg, std::move(meta)});
     }
