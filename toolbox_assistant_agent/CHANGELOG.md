@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## [0.2.1] - 2026-10-05
+
+### Fixed
+- With Codex 0.158 or later, every past conversation was titled
+  "# AGENTS.md instructions" and its transcript opened with that block: Codex
+  sends the user's global `AGENTS.md` as the first message. The drawer and the
+  transcript now skip it, like the other messages Codex injects.
+
 ## [0.2.0] - 2026-09-21
 
 ### Added

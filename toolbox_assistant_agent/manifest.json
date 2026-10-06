@@ -1,7 +1,7 @@
 {
   "id": "toolbox-assistant-agent",
   "name": "Assistant Agent",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A chat assistant that drives PlotJuggler through the plugin SDK: lists and describes topics, reads series statistics, and creates derived timeseries, markers and plot tabs it owns. Uses the Claude Code or Codex CLI already installed and signed in on your machine; the plugin stores no API keys. Linux, macOS and Windows.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
