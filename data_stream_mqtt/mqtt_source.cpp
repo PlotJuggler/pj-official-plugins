@@ -25,6 +25,12 @@ struct MqttMessage {
 
 class MqttSource : public PJ::StreamSourceBase {
  public:
+  ~MqttSource() override {
+    // The client's callbacks use message_queue_ and the atomics declared after
+    // client_, so it must die first even if the host never called onStop.
+    client_.reset();
+  }
+
   PJ_borrowed_dialog_t getDialog() override {
     return PJ::borrowDialog(dialog_);
   }
@@ -64,10 +70,6 @@ class MqttSource : public PJ::StreamSourceBase {
     const auto connection = pj::mqtt_support::connectionSettingsFromJson(cfg);
     topic_filter_ = cfg.value("topics", std::string("#"));
     qos_ = cfg.value("qos", 0);
-    client_id_ = cfg.value("client_id", std::string{});
-    if (client_id_.empty()) {
-      client_id_ = pj::mqtt_support::randomClientId("plotjuggler_mqtt_");
-    }
     default_encoding_ = cfg.value("default_encoding", std::string("json"));
 
     // Read selected topics (from dialog discovery)
@@ -85,7 +87,8 @@ class MqttSource : public PJ::StreamSourceBase {
     reconnected_.store(false, std::memory_order_relaxed);
 
     try {
-      client_ = std::make_unique<mqtt::async_client>(pj::mqtt_support::brokerUri(connection), client_id_);
+      client_ = std::make_unique<mqtt::async_client>(
+          pj::mqtt_support::brokerUri(connection), pj::mqtt_support::randomClientId("plotjuggler_mqtt_"));
 
       // Set up callback for incoming messages
       client_->set_message_callback([this](mqtt::const_message_ptr msg) {
@@ -174,16 +177,11 @@ class MqttSource : public PJ::StreamSourceBase {
   }
 
   void onStop() override {
-    if (client_) {
-      try {
-        // clean_session=true drops subscriptions on disconnect, so no need to
-        // unsubscribe first. disconnect() unconditionally (not gated on
-        // is_connected()) because it's also what stops paho's automatic-reconnect
-        // loop; wait_for() bounds the call so an unresponsive broker can't hang Stop.
-        client_->disconnect()->wait_for(std::chrono::seconds(2));
-      } catch (...) {}
-      client_.reset();
-    }
+    // ~async_client closes the session (DISCONNECT when connected) and is the
+    // only thing that stops the automatic-reconnect loop while the link is down
+    // (disconnect() throws "Disconnected" then and leaves the loop running).
+    // paho serializes it with its callbacks, and it waits on no broker reply.
+    client_.reset();
     ingest_.clear();
   }
 
@@ -198,7 +196,6 @@ class MqttSource : public PJ::StreamSourceBase {
 
   std::string topic_filter_ = "#";
   int qos_ = 0;
-  std::string client_id_ = "plotjuggler_mqtt";
   std::string default_encoding_ = "json";
   std::vector<std::string> selected_topics_;
   std::string parser_config_override_;

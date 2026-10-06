@@ -19,9 +19,16 @@ and SSL toggle. Parser encoding is auto-detected from message content.
 
 The source reconnects automatically (1s-5s backoff) if the connection to the
 broker drops, and re-subscribes to the same topics once reconnected. Each
-instance uses a random client id (`plotjuggler_mqtt_xxxxxxxx`) unless the
-config sets `client_id`, so multiple instances can connect to the same broker
-without disconnecting each other.
+connection uses a random client id (`plotjuggler_mqtt_xxxxxxxx`), so multiple
+instances can connect to the same broker without disconnecting each other.
+
+## Known Limitations
+
+- Cancel and Disconnect in the dialog, and Stop, return immediately, except
+  while the MQTT library is still resolving the broker's hostname: that lookup
+  holds the library's internal lock, so they wait for it to finish. With an IP
+  address, `localhost` or a responsive DNS this takes milliseconds; with an
+  unresponsive DNS server it lasts until the resolver gives up.
 
 ## Testing
 

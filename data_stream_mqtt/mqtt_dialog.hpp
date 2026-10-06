@@ -42,10 +42,9 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
   ~MqttDialog() override {
+    // Must run first: destroys the client before topics_mutex_ and
+    // discovered_topics_, which its message callback uses.
     disconnectBroker();
-    // No more ticks after this: a cancelled connect still in flight gets a
-    // bounded wait here instead of being released from onTick.
-    releaseParkedClient(/*wait=*/true);
   }
 
   std::string widget_data() override {
@@ -131,8 +130,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
         changed = true;
       }
     }
-
-    releaseParkedClient(/*wait=*/false);
 
     // try_wait() never blocks: false while pending, true on success, throws on
     // failure (the same error the old blocking connect()->wait() reported).
@@ -376,21 +373,16 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
   void disconnectBroker() {
-    if (connecting()) {
-      // Cancel: paho keeps using the client from its own thread until the
-      // connect completes, so park it and let onTick release it then.
-      releaseParkedClient(/*wait=*/true);
-      parked_client_ = std::move(discovery_client_);
-      parked_token_ = std::move(connect_token_);
-    } else if (discovery_client_) {
-      try {
-        if (discovery_client_->is_connected()) {
-          // Bounded: runs on the UI thread, and an unresponsive broker never acks.
-          discovery_client_->disconnect()->wait_for(std::chrono::seconds(2));
-        }
-      } catch (...) {}
-      discovery_client_.reset();
-    }
+    // Cancel (connect in flight) and Disconnect are the same: destroy the
+    // client. That is what ends a connect in flight; paho serializes the
+    // destroy with the delivery of its callbacks under its own mutex, so once
+    // ~async_client returns none of them runs again. It also closes the
+    // session itself (DISCONNECT when connected), so nothing waits on an
+    // unresponsive broker. It blocks ~100 ms when this is the last paho
+    // client (paho stops its threads), and for as long as paho is still
+    // resolving the broker's hostname, which it does holding that mutex.
+    connect_token_.reset();
+    discovery_client_.reset();
     connected_ = false;
     // Drop the discovered catalog: it belongs to the broker we just left, and
     // stale entries would show phantom topics (and count as "visible" for the
@@ -417,23 +409,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
     return connected_ ? "Connected — select topics below" : "";
   }
 
-  /// Frees a client parked by a cancelled connect once that connect is over.
-  /// `wait` bounds the wait instead of polling (only safe to use where a short
-  /// block is acceptable: a repeated Cancel, or the destructor).
-  void releaseParkedClient(bool wait) {
-    if (!parked_token_) {
-      return;
-    }
-    try {
-      const bool done = wait ? parked_token_->wait_for(std::chrono::seconds(2)) : parked_token_->try_wait();
-      if (!done) {
-        return;
-      }
-    } catch (...) {}  // a failed connect is over too
-    parked_token_.reset();
-    parked_client_.reset();
-  }
-
   std::vector<std::string> available_encodings_;
 
   std::string broker_address_ = "localhost";
@@ -455,9 +430,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
   mqtt::token_ptr connect_token_;  // set while a connect is in flight; polled from onTick
   std::string last_connect_error_;
   std::unique_ptr<mqtt::async_client> discovery_client_;
-  // A cancelled connect's client, kept alive until its connect finishes.
-  std::unique_ptr<mqtt::async_client> parked_client_;
-  mqtt::token_ptr parked_token_;
   std::mutex topics_mutex_;
   std::set<std::string> discovered_topics_;
   std::vector<std::string> selected_topics_;
