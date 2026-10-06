@@ -9,9 +9,10 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <pj_base/sdk/platform.hpp>
 #include <pj_base/time_format.hpp>
 #include <string_view>
+
+#include "platform_util.hpp"  // getEnvUtf8, userHomeDir, utf8ToPath
 
 namespace assistant_agent {
 
@@ -42,25 +43,42 @@ std::optional<std::string> firstTextBlock(const json& content) {
 }  // namespace
 
 std::string claudeCwdSlug(const std::string& cwd) {
-  std::string slug = cwd;
-  for (char& c : slug) {
-    if (c == '/' || c == '.') {
-      c = '-';
+  // Claude Code maps every non-alphanumeric character to '-' -- observed
+  // against a real store: "/home/u/Work/plotjuggler_sdk" ->
+  // "-home-u-Work-plotjuggler-sdk". The old '/'+'.' rule missed '_', spaces,
+  // and (once this plugin runs on Windows) ':' and '\'. `cwd` is UTF-8, so a
+  // multi-byte code point -- one lead byte plus its continuation bytes,
+  // each 0x80-0xBF -- has to collapse to exactly ONE '-', not one per byte.
+  std::string slug;
+  slug.reserve(cwd.size());
+  std::size_t i = 0;
+  while (i < cwd.size()) {
+    const unsigned char c = static_cast<unsigned char>(cwd[i]);
+    if (c < 0x80) {
+      const bool alnum = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+      slug += alnum ? static_cast<char>(c) : '-';
+      ++i;
+      continue;
+    }
+    slug += '-';
+    ++i;
+    while (i < cwd.size() && (static_cast<unsigned char>(cwd[i]) & 0xC0) == 0x80) {
+      ++i;
     }
   }
   return slug;
 }
 
 std::filesystem::path claudeSessionsDir(const std::string& work_dir) {
-  std::string base;
-  if (const std::optional<std::string> cfg = PJ::sdk::getEnv("CLAUDE_CONFIG_DIR")) {
-    base = *cfg;
-  } else if (const std::optional<std::string> home = PJ::sdk::getEnv("HOME")) {
-    base = *home + "/.claude";
+  std::filesystem::path base;
+  if (const std::optional<std::string> cfg = getEnvUtf8("CLAUDE_CONFIG_DIR")) {
+    base = utf8ToPath(*cfg);
+  } else if (const std::optional<std::string> home = userHomeDir()) {
+    base = utf8ToPath(*home) / ".claude";
   } else {
     return {};
   }
-  return std::filesystem::path(base) / "projects" / claudeCwdSlug(work_dir);
+  return base / "projects" / claudeCwdSlug(work_dir);
 }
 
 std::optional<std::time_t> parseIso8601Utc(const std::string& iso8601) {

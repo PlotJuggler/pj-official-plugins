@@ -26,6 +26,8 @@
 
 namespace {
 
+using PJ::McapMetadata::FileFacts;
+using PJ::McapMetadata::mergeFileFacts;
 using PJ::McapMetadata::parseIdentityFraming;
 
 // RAII temp MCAP path; the writer needs a real file for the reader's
@@ -91,7 +93,7 @@ nlohmann::json extractFrom(const std::string& path, std::vector<std::string>* di
   mcap::McapReader reader;
   EXPECT_TRUE(reader.open(path).ok());
   EXPECT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan).ok());
-  return PJ::McapMetadata::extractDatasetMetadata(reader, diagnostics);
+  return PJ::McapMetadata::extractDatasetMetadata({&reader}, diagnostics);
 }
 
 TEST(ParseIdentityFraming, RoundTripsAndRejects) {
@@ -245,6 +247,33 @@ TEST(McapDatasetMetadata, MetadataPublishDegradesCleanlyOnFloorLevelHost) {
   const nlohmann::json document = {{"file", {{"message_count", 1}}}};
   PJ::McapMetadata::publishDatasetMetadata(view, document);  // must not throw
   EXPECT_FALSE(poison_invoked) << "a slot past the floor-level struct_size was invoked";
+}
+
+TEST(McapDatasetMetadata, SplitBagFactsSumCountsAndWidenTheEnvelope) {
+  FileFacts a;
+  a.message_count = 10;
+  a.channel_count = 3;
+  a.schema_count = 2;
+  a.chunk_count = 4;
+  a.message_start_time_ns = 100;
+  a.message_end_time_ns = 200;
+  a.compression = "zstd";
+  FileFacts b = a;
+  b.message_count = 5;
+  b.channel_count = 4;
+  b.message_start_time_ns = 201;
+  b.message_end_time_ns = 300;
+
+  const FileFacts merged = mergeFileFacts(a, b);
+  EXPECT_EQ(merged.message_count, 15u);
+  EXPECT_EQ(merged.channel_count, 4u);  // splits repeat channels: max, not sum
+  EXPECT_EQ(merged.chunk_count, 8u);
+  EXPECT_EQ(merged.message_start_time_ns, 100u);
+  EXPECT_EQ(merged.message_end_time_ns, 300u);
+  EXPECT_EQ(merged.compression, "zstd");
+
+  b.compression = "lz4";
+  EXPECT_FALSE(mergeFileFacts(a, b).compression.has_value());
 }
 
 }  // namespace

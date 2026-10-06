@@ -19,6 +19,8 @@
 #include <utility>
 #include <vector>
 
+#include "bound_field_cache.hpp"
+
 namespace ros_parser_detail {
 
 // ---------------------------------------------------------------------------
@@ -263,6 +265,8 @@ class RosParser : public PJ::MessageParserPluginBase {
   std::vector<FlattenedField> owned_fields_;
   std::vector<PJ::sdk::NamedFieldValue> named_fields_;
   std::deque<std::string> string_storage_;
+  // Direct ingest (parse / emitRecord) appends by handle through this cache.
+  BoundFieldCache bound_field_cache_;
 
   // Setup helpers
   PJ::Status compileBoundSchema(bool register_specialized_handler);

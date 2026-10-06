@@ -125,14 +125,14 @@ void flattenJson(
       sink.fields.push_back({prefix, value.get<bool>()});
       break;
 
+    // Every number is a double, whatever the source spelled: JSON (and
+    // JavaScript-produced CBOR/MessagePack) writes 1.0 as "1", so a field's
+    // integer/float/signedness split is not stable across messages, and the
+    // host fixes a column's type from its first value. The host stores
+    // whole-number float chunks as compactly as integers and still offers
+    // whole-number fields as state series. Integers above 2^53 lose precision.
     case nlohmann::detail::value_t::number_integer:
-      sink.fields.push_back({prefix, value.get<int64_t>()});
-      break;
-
     case nlohmann::detail::value_t::number_unsigned:
-      sink.fields.push_back({prefix, value.get<uint64_t>()});
-      break;
-
     case nlohmann::detail::value_t::number_float:
       sink.fields.push_back({prefix, value.get<double>()});
       break;
@@ -170,7 +170,7 @@ class JsonParser : public PJ::MessageParserPluginBase {
       // as ScalarRecord::ts so the host keys the row by it instead of the
       // transport receive time.
       use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
-      timestamp_field_name_ = cfg.value("timestamp_field_name", std::string("timestamp"));
+      timestamp_field_name_ = timestampFieldNameOrDefault(cfg.value("timestamp_field_name", std::string{}));
     }
     return PJ::okStatus();
   }

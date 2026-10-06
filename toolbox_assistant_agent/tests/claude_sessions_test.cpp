@@ -72,11 +72,25 @@ class ClaudeSessionsTest : public ::testing::Test {
 
 // --- (f) the cwd slug and the directory it resolves to --------------------
 
-TEST(ClaudeCwdSlug, ReplacesSlashesAndDots) {
-  // Verified against a real store this session: the plugin's fixed cwd
+TEST(ClaudeCwdSlug, ReplacesEveryNonAlphanumeric) {
+  // Verified against a real store: the plugin's fixed cwd
   // "/home/user/.local/state/pj-assistant-cli" maps to exactly this
-  // directory name under ~/.claude/projects/.
+  // directory name under ~/.claude/projects/ (still holds under the new
+  // rule: only '/', '.' and '-' appear, and '-' maps to itself).
   EXPECT_EQ(claudeCwdSlug("/home/user/.local/state/pj-assistant-cli"), "-home-user--local-state-pj-assistant-cli");
+
+  // '_' -- missed by the old '/'+'.' -only rule -- now turns into '-' too.
+  EXPECT_EQ(claudeCwdSlug("/home/alvvm/Work/plotjuggler_sdk"), "-home-alvvm-Work-plotjuggler-sdk");
+
+  // A Windows path: ':' and '\' both turn into '-'.
+  EXPECT_EQ(
+      claudeCwdSlug(R"(C:\Users\Ana\AppData\Local\plotjuggler\pj-assistant-cli)"),
+      "C--Users-Ana-AppData-Local-plotjuggler-pj-assistant-cli");
+
+  // A multi-byte UTF-8 code point collapses to exactly ONE '-', not one per
+  // byte: 'é' (2 bytes) and '😀' (4 bytes) both yield a single '-'.
+  EXPECT_EQ(claudeCwdSlug("caf\xC3\xA9"), "caf-");
+  EXPECT_EQ(claudeCwdSlug("\xF0\x9F\x98\x80robot"), "-robot");
 }
 
 TEST(ClaudeSessionsDir, HonorsClaudeConfigDirOverride) {
@@ -94,9 +108,23 @@ TEST(ClaudeSessionsDir, FallsBackToHomeDotClaude) {
       std::filesystem::path("/home/testuser/.claude/projects/-home-testuser--local-state-pj-assistant-cli"));
 }
 
+// Windows only: HOME is not always set there, so the drawer's own store
+// resolution falls back to USERPROFILE the same way userHomeDir() does.
+#if defined(_WIN32)
+TEST(ClaudeSessionsDir, FallsBackToUserProfileDotClaudeWhenHomeIsUnset) {
+  ScopedEnv cfg("CLAUDE_CONFIG_DIR", nullptr);
+  ScopedEnv home("HOME", nullptr);
+  ScopedEnv userprofile("USERPROFILE", R"(C:\Users\testuser)");
+  EXPECT_EQ(
+      claudeSessionsDir(R"(C:\Users\testuser\.local\state\pj-assistant-cli)"),
+      std::filesystem::path(R"(C:\Users\testuser\.claude\projects\C--Users-testuser--local-state-pj-assistant-cli)"));
+}
+#endif
+
 TEST(ClaudeSessionsDir, EmptyWhenNeitherVariableResolves) {
   ScopedEnv cfg("CLAUDE_CONFIG_DIR", nullptr);
   ScopedEnv home("HOME", nullptr);
+  ScopedEnv userprofile("USERPROFILE", nullptr);
   EXPECT_TRUE(claudeSessionsDir("/whatever").empty());
 }
 

@@ -311,59 +311,80 @@ class McapDialog : public PJ::DialogPluginTyped {
       selected_topics_.clear();
     };
 
-    mcap::McapReader reader;
-    auto status = reader.open(filepath_);
-    if (!status.ok()) {
-      fail("Cannot open this MCAP file.\n" + describe(status));
+    const auto recording = PJ::McapHelpers::resolveRecordingFiles(filepath_);
+    if (!recording.error.empty()) {
+      fail(recording.error);
       return;
     }
+    const bool multi_file = recording.paths.size() > 1;
 
-    // AllowFallbackScan reconstructs channels, schemas and statistics by
-    // scanning when the summary section is unusable, so a failure here means
-    // the data section itself could not be read.
-    status = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan);
-    if (!status.ok()) {
-      fail("Cannot read the contents of this MCAP file.\n" + describe(status));
-      reader.close();
-      return;
-    }
-
-    // Build message count map from statistics
-    std::unordered_map<mcap::ChannelId, uint64_t> msg_counts;
-    if (auto stats = reader.statistics()) {
-      msg_counts = stats->channelMessageCounts;
-    }
-
-    const auto& schemas = reader.schemas();
+    // A split rosbag2 bag repeats its channels in every file: merge them by
+    // topic and sum the per-file message counts.
+    std::unordered_map<std::string, size_t> channel_index_by_topic;
     size_t channels_with_dangling_schema = 0;
-    for (const auto& [id, channel_ptr] : reader.channels()) {
-      // schema_id 0 is the MCAP spec's "no schema" sentinel, not an error:
-      // the channel is self-describing (schemaless JSON is the common case)
-      // and binds on its message encoding alone. Schema ids are 1-based, so a
-      // NON-zero id that resolves to nothing is a dangling reference in a
-      // damaged file — no parser can ever be bound to that, and offering it in
-      // the picker would promise data that never arrives.
-      const bool schemaless = PJ::McapHelpers::isSchemaless(channel_ptr->schemaId);
-      auto schema_it = schemas.find(channel_ptr->schemaId);
-      if (!schemaless && schema_it == schemas.end()) {
-        ++channels_with_dangling_schema;
-        continue;
+    for (const std::string& path : recording.paths) {
+      const std::string where = multi_file ? "\n" + path : std::string{};
+      mcap::McapReader reader;
+      auto status = reader.open(path);
+      if (!status.ok()) {
+        fail("Cannot open this MCAP file." + where + "\n" + describe(status));
+        return;
       }
 
-      ChannelInfo info;
-      info.topic = channel_ptr->topic;
-      if (schemaless) {
-        info.encoding = channel_ptr->messageEncoding;
-      } else {
-        info.schema = schema_it->second->name;
-        info.encoding =
-            channel_ptr->messageEncoding.empty() ? schema_it->second->encoding : channel_ptr->messageEncoding;
+      // AllowFallbackScan reconstructs channels, schemas and statistics by
+      // scanning when the summary section is unusable, so a failure here means
+      // the data section itself could not be read.
+      status = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan);
+      if (!status.ok()) {
+        fail("Cannot read the contents of this MCAP file." + where + "\n" + describe(status));
+        reader.close();
+        return;
       }
 
-      auto count_it = msg_counts.find(id);
-      info.msg_count = (count_it != msg_counts.end()) ? count_it->second : 0;
+      // Build message count map from statistics
+      std::unordered_map<mcap::ChannelId, uint64_t> msg_counts;
+      if (auto stats = reader.statistics()) {
+        msg_counts = stats->channelMessageCounts;
+      }
 
-      all_channels_.push_back(std::move(info));
+      const auto& schemas = reader.schemas();
+      for (const auto& [id, channel_ptr] : reader.channels()) {
+        // schema_id 0 is the MCAP spec's "no schema" sentinel, not an error:
+        // the channel is self-describing (schemaless JSON is the common case)
+        // and binds on its message encoding alone. Schema ids are 1-based, so a
+        // NON-zero id that resolves to nothing is a dangling reference in a
+        // damaged file — no parser can ever be bound to that, and offering it in
+        // the picker would promise data that never arrives.
+        const bool schemaless = PJ::McapHelpers::isSchemaless(channel_ptr->schemaId);
+        auto schema_it = schemas.find(channel_ptr->schemaId);
+        if (!schemaless && schema_it == schemas.end()) {
+          ++channels_with_dangling_schema;
+          continue;
+        }
+
+        auto count_it = msg_counts.find(id);
+        const uint64_t msg_count = (count_it != msg_counts.end()) ? count_it->second : 0;
+
+        if (auto known = channel_index_by_topic.find(channel_ptr->topic); known != channel_index_by_topic.end()) {
+          all_channels_[known->second].msg_count += msg_count;
+          continue;
+        }
+
+        ChannelInfo info;
+        info.topic = channel_ptr->topic;
+        if (schemaless) {
+          info.encoding = channel_ptr->messageEncoding;
+        } else {
+          info.schema = schema_it->second->name;
+          info.encoding =
+              channel_ptr->messageEncoding.empty() ? schema_it->second->encoding : channel_ptr->messageEncoding;
+        }
+        info.msg_count = msg_count;
+
+        channel_index_by_topic.emplace(info.topic, all_channels_.size());
+        all_channels_.push_back(std::move(info));
+      }
+      reader.close();
     }
 
     if (all_channels_.empty()) {
@@ -377,8 +398,6 @@ class McapDialog : public PJ::DialogPluginTyped {
     std::sort(all_channels_.begin(), all_channels_.end(), [](const ChannelInfo& a, const ChannelInfo& b) {
       return a.topic < b.topic;
     });
-
-    reader.close();
 
     // Saved selections belong to the previously opened recording. Drop names
     // that do not exist (or have no messages) in this one; otherwise a stale,

@@ -77,12 +77,20 @@ comes back with the exact candidates rather than a guess.
 1. **Toolbox → Assistant Agent.** It opens as a tab (the banner's button moves it to a floating
    window and back) and resumes whichever conversation was active when you last closed it.
 2. **Settings…** — pick a backend. For Claude, `claude` must be installed and logged in; for
-   Codex, `codex` (installed and logged in). Neither has to be on the app's own PATH: a bare name
-   is also looked for in `~/.local/bin`, an nvm-installed Node's `bin/` (the default alias, or
-   else the newest version installed), `~/.npm-global/bin`, `~/.volta/bin`, `/usr/local/bin`,
-   `/opt/homebrew/bin` and `/home/linuxbrew/.linuxbrew/bin`. The "CLI path" field in Settings
-   overrides this search with an exact path.
+   Codex, `codex` (installed and logged in). Neither has to be on the app's own PATH: on Linux and
+   macOS a bare name is also looked for in `~/.local/bin`, an nvm-installed Node's `bin/` (the
+   default alias, or else the newest version installed), `~/.npm-global/bin`, `~/.volta/bin`,
+   `/usr/local/bin`, `/opt/homebrew/bin` and `/home/linuxbrew/.linuxbrew/bin`. On Windows a bare
+   name is looked for on PATH, then `<home>\.local\bin` (the native Claude installer's default),
+   then `%LOCALAPPDATA%\Microsoft\WinGet\Links`. The "CLI path" field in Settings overrides this
+   search with an exact path.
 3. Type and press Enter.
+
+Windows runs only a native `claude.exe`/`codex.exe` — never the `.cmd`/`.ps1` launcher npm
+installs when a CLI is installed with `npm install -g`. When nothing native is found but such a
+launcher is, Settings names it and points at the native build instead:
+`irm https://claude.ai/install.ps1 | iex` for Claude, `irm https://chatgpt.com/codex/install.ps1 |
+iex` for Codex. Restart PlotJuggler after installing so its PATH is refreshed.
 
 The catalog digest handed to the model at the top of every turn is sized by the settings key
 `assistant.catalog_budget_chars` (characters, default 10000, clamped to 1000–200000) — not exposed
@@ -135,9 +143,9 @@ protected. Everything else works on any host that meets the floor.
 
 ### Platforms
 
-Linux and macOS. The Windows build compiles and is published, but the backends spawn the CLI
-through POSIX-only code, so the plugin is not functional on Windows and is not part of the
-Windows installer.
+Linux, macOS and Windows 10+, each with a native CLI build of the chosen backend: `claude`/`codex`
+on Linux and macOS, `claude.exe`/`codex.exe` on Windows (see "Settings…" above for the search
+order).
 
 ## Documentation
 

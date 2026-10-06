@@ -45,7 +45,7 @@ std::string McpLoopback::configFilePath() {
   // The config carries the per-session bearer token; hand it to the CLI as a
   // private file rather than a command-line argument (argv is world-readable
   // via /proc/<pid>/cmdline). mkstemp creates it 0600.
-  if (!writePrivateTempFile("/tmp/pj_assistant_mcp_", server_->mcpConfigJson(), config_path_)) {
+  if (!writePrivateTempFile("pj_assistant_mcp_", server_->mcpConfigJson(), config_path_)) {
     return {};
   }
   return config_path_;

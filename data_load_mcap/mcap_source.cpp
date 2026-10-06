@@ -142,18 +142,39 @@ class McapSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("no filepath configured"));
     }
 
-    // open(path) gives the reader an internally-owned ConcurrentFileReader
-    // (positioned pread/ReadFile, concurrent-safe). Declared before `messages`
-    // below so it outlives the message view.
-    mcap::ParallelReader parallel_reader;
-    if (auto st = parallel_reader.open(dialog_.filepath()); !st.ok()) {
-      const std::string msg = std::string("cannot open MCAP file: ") + st.message;
-      runtimeHost().showError("MCAP import failed", msg);
-      return PJ::unexpected(msg);
+    // One file for a plain .mcap; every split, in recording order, for a
+    // rosbag2 metadata.yaml. The splits import as ONE dataset: topics bind
+    // once and the files are read back to back.
+    const auto recording = PJ::McapHelpers::resolveRecordingFiles(dialog_.filepath());
+    if (!recording.error.empty()) {
+      runtimeHost().showError("MCAP import failed", recording.error);
+      return PJ::unexpected(recording.error);
     }
-    // parallel_reader.open() runs an AllowFallbackScan summary, so channels,
-    // schemas, statistics and chunk indexes are all available now — no separate
-    // reader or summary parse is needed for binding setup or the cold path.
+    const bool multi_file = recording.paths.size() > 1;
+
+    // open(path) gives each reader an internally-owned ConcurrentFileReader
+    // (positioned pread/ReadFile, concurrent-safe). Declared before `messages`
+    // below so they outlive the message views. open() runs an
+    // AllowFallbackScan summary, so channels, schemas, statistics and chunk
+    // indexes are all available now — no separate reader or summary parse is
+    // needed for binding setup or the cold path.
+    std::vector<std::unique_ptr<mcap::ParallelReader>> readers;
+    for (const std::string& path : recording.paths) {
+      auto reader = std::make_unique<mcap::ParallelReader>();
+      if (auto st = reader->open(path); !st.ok()) {
+        const std::string msg =
+            std::string("cannot open MCAP file") + (multi_file ? " " + path : std::string{}) + ": " + st.message;
+        runtimeHost().showError("MCAP import failed", msg);
+        return PJ::unexpected(msg);
+      }
+      readers.push_back(std::move(reader));
+    }
+    // channels() returns the table BY VALUE: take one copy per file up front and
+    // share it between the progress total and the binding loop below.
+    std::vector<std::unordered_map<mcap::ChannelId, mcap::ChannelPtr>> channels_per_file;
+    for (const auto& reader : readers) {
+      channels_per_file.push_back(reader->channels());
+    }
 
     // Dataset-metadata document: file facts + every file-level Metadata record
     // (PJ's pj.capture / pj.recording parsed in). Extracted up front from the
@@ -161,33 +182,35 @@ class McapSource : public PJ::FileSourceBase {
     // are warnings; they must not affect the import.
     {
       std::vector<std::string> metadata_diagnostics;
+      std::vector<mcap::McapReader*> summary_readers;
+      for (const auto& reader : readers) {
+        summary_readers.push_back(&reader->reader());
+      }
       const nlohmann::json metadata_document =
-          PJ::McapMetadata::extractDatasetMetadata(parallel_reader.reader(), &metadata_diagnostics);
+          PJ::McapMetadata::extractDatasetMetadata(summary_readers, &metadata_diagnostics);
       for (const std::string& diagnostic : metadata_diagnostics) {
         runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, diagnostic);
       }
       PJ::McapMetadata::publishDatasetMetadata(runtimeHost(), metadata_document);
     }
 
-    // channels() returns the table BY VALUE, so take one copy up front and
-    // share it with the binding loop below rather than paying for a second.
     const auto& selected = dialog_.selectedTopics();
-    const auto channels = parallel_reader.channels();
 
     // Progress is measured against the messages this import will actually push,
     // i.e. only the channels the user selected. The file-wide messageCount
     // would leave the bar stranded well short of its maximum whenever the
     // selection is a subset (the common case).
     uint64_t total_messages = 0;
-    if (const auto stats = parallel_reader.statistics()) {
-      std::vector<mcap::ChannelId> selected_channel_ids;
-      selected_channel_ids.reserve(channels.size());
-      for (const auto& [channel_id, channel_ptr] : channels) {
-        if (selected.find(channel_ptr->topic) != selected.end()) {
-          selected_channel_ids.push_back(channel_id);
+    for (size_t file_index = 0; file_index < readers.size(); ++file_index) {
+      if (const auto stats = readers[file_index]->statistics()) {
+        std::vector<mcap::ChannelId> selected_channel_ids;
+        for (const auto& [channel_id, channel_ptr] : channels_per_file[file_index]) {
+          if (selected.find(channel_ptr->topic) != selected.end()) {
+            selected_channel_ids.push_back(channel_id);
+          }
         }
+        total_messages += PJ::McapHelpers::progressTotal(*stats, selected_channel_ids);
       }
-      total_messages = PJ::McapHelpers::progressTotal(*stats, selected_channel_ids);
     }
     (void)runtimeHost().progressStart("Importing MCAP", total_messages, true);
 
@@ -205,83 +228,102 @@ class McapSource : public PJ::FileSourceBase {
     parser_config["use_embedded_timestamp"] = dialog_.useHeaderTimestamp();
 
     // --- Ensure parser bindings for selected channels ---
-    // `selected` and `channels` were taken above, before the progress total.
-    const auto schemas = parallel_reader.schemas();
-    std::unordered_map<mcap::ChannelId, PJ::ParserBindingHandle> bindings;
+    // Channel ids are per file, topics are not: each split of a bag gets its
+    // own channel-id -> binding map, but a topic binds ONCE (first file that
+    // carries it) so every file feeds the same series.
+    using BindingMap = std::unordered_map<mcap::ChannelId, PJ::ParserBindingHandle>;
+    std::vector<BindingMap> bindings_per_file(readers.size());
+    std::unordered_map<std::string, std::optional<PJ::ParserBindingHandle>> binding_by_topic;
     std::vector<std::string> binding_errors;
+    bool any_binding = false;
 
-    for (const auto& [channel_id, channel_ptr] : channels) {
-      // Filter by dialog selection.
-      if (selected.find(channel_ptr->topic) == selected.end()) {
-        continue;
+    for (size_t file_index = 0; file_index < readers.size(); ++file_index) {
+      const auto& channels = channels_per_file[file_index];
+      const auto schemas = readers[file_index]->schemas();
+      BindingMap& bindings = bindings_per_file[file_index];
+      for (const auto& [channel_id, channel_ptr] : channels) {
+        // Filter by dialog selection.
+        if (selected.find(channel_ptr->topic) == selected.end()) {
+          continue;
+        }
+        if (auto known = binding_by_topic.find(channel_ptr->topic); known != binding_by_topic.end()) {
+          if (known->second) {
+            bindings.emplace(channel_id, *known->second);
+          }
+          continue;
+        }
+
+        // schema_id 0 is the MCAP spec's "no schema" sentinel, not a broken
+        // reference: the payload is self-describing (schemaless JSON is the
+        // common case) and the parser is selected from the message encoding
+        // alone. Schema ids are 1-based, so a NON-zero id that resolves to
+        // nothing is a dangling reference in a damaged file and stays skipped.
+        // Mirrors the channel filter in McapDialog::analyzeFile.
+        const bool schemaless = PJ::McapHelpers::isSchemaless(channel_ptr->schemaId);
+        auto schema_it = schemas.find(channel_ptr->schemaId);
+        if (!schemaless && schema_it == schemas.end()) {
+          continue;
+        }
+        const mcap::Schema* schema = schemaless ? nullptr : schema_it->second.get();
+
+        PJ::Span<const uint8_t> schema_bytes{};
+        if (schema != nullptr) {
+          schema_bytes =
+              PJ::Span<const uint8_t>{reinterpret_cast<const uint8_t*>(schema->data.data()), schema->data.size()};
+        }
+
+        std::string parser_encoding = channel_ptr->messageEncoding;
+        if (schema != nullptr && (parser_encoding.empty() || (parser_encoding == "cdr" && !schema->encoding.empty()))) {
+          parser_encoding = schema->encoding;
+        }
+        if (parser_encoding.empty()) {
+          // Neither a schema nor a message encoding: nothing identifies the
+          // payload format. Report it rather than dropping the topic silently.
+          binding_errors.push_back(channel_ptr->topic + ": channel declares neither a schema nor a message encoding");
+          binding_by_topic.emplace(channel_ptr->topic, std::nullopt);
+          continue;
+        }
+
+        auto channel_parser_config = parser_config;
+        const bool use_ros1_serialization = channel_ptr->messageEncoding == "ros1" || parser_encoding == "ros1" ||
+                                            parser_encoding == "ros1msg" ||
+                                            (schema != nullptr && schema->encoding == "ros1msg");
+        channel_parser_config["serialization"] = use_ros1_serialization ? "ros1" : "cdr";
+        channel_parser_config["schema_encoding"] = parser_encoding;
+        // Topic-conditional parser classifications (notably std_msgs/String on
+        // */robot_description) need the same topic identity already carried by
+        // ParserBindingRequest. Keep it in each parser instance's config too so
+        // classifySchema() and the retained object parser agree.
+        channel_parser_config["topic_name"] = channel_ptr->topic;
+        const std::string parser_config_str = channel_parser_config.dump();
+
+        PJ::ParserBindingRequest request{
+            .topic_name = channel_ptr->topic,
+            .parser_encoding = parser_encoding,
+            .type_name = schema != nullptr ? schema->name : channel_ptr->topic,
+            .schema = schema_bytes,
+            .parser_config_json = parser_config_str,
+        };
+
+        // Bind the parser. The host runtime, internally, also asks the parser
+        // about its schema classification (classifySchema) and — when the
+        // parser declares a builtin object type != kNone — registers the
+        // matching ObjectTopic in the ObjectStore on the source's behalf,
+        // associated with this binding. The DataSource never inspects
+        // schema->name nor mentions object_type anywhere.
+        auto handle = runtimeHost().ensureParserBinding(request);
+        if (!handle) {
+          binding_errors.push_back(channel_ptr->topic + " (encoding: " + parser_encoding + "): " + handle.error());
+          binding_by_topic.emplace(channel_ptr->topic, std::nullopt);
+          continue;
+        }
+        binding_by_topic.emplace(channel_ptr->topic, *handle);
+        bindings.emplace(channel_id, *handle);
+        any_binding = true;
       }
-
-      // schema_id 0 is the MCAP spec's "no schema" sentinel, not a broken
-      // reference: the payload is self-describing (schemaless JSON is the
-      // common case) and the parser is selected from the message encoding
-      // alone. Schema ids are 1-based, so a NON-zero id that resolves to
-      // nothing is a dangling reference in a damaged file and stays skipped.
-      // Mirrors the channel filter in McapDialog::analyzeFile.
-      const bool schemaless = PJ::McapHelpers::isSchemaless(channel_ptr->schemaId);
-      auto schema_it = schemas.find(channel_ptr->schemaId);
-      if (!schemaless && schema_it == schemas.end()) {
-        continue;
-      }
-      const mcap::Schema* schema = schemaless ? nullptr : schema_it->second.get();
-
-      PJ::Span<const uint8_t> schema_bytes{};
-      if (schema != nullptr) {
-        schema_bytes =
-            PJ::Span<const uint8_t>{reinterpret_cast<const uint8_t*>(schema->data.data()), schema->data.size()};
-      }
-
-      std::string parser_encoding = channel_ptr->messageEncoding;
-      if (schema != nullptr && (parser_encoding.empty() || (parser_encoding == "cdr" && !schema->encoding.empty()))) {
-        parser_encoding = schema->encoding;
-      }
-      if (parser_encoding.empty()) {
-        // Neither a schema nor a message encoding: nothing identifies the
-        // payload format. Report it rather than dropping the topic silently.
-        binding_errors.push_back(channel_ptr->topic + ": channel declares neither a schema nor a message encoding");
-        continue;
-      }
-
-      auto channel_parser_config = parser_config;
-      const bool use_ros1_serialization = channel_ptr->messageEncoding == "ros1" || parser_encoding == "ros1" ||
-                                          parser_encoding == "ros1msg" ||
-                                          (schema != nullptr && schema->encoding == "ros1msg");
-      channel_parser_config["serialization"] = use_ros1_serialization ? "ros1" : "cdr";
-      channel_parser_config["schema_encoding"] = parser_encoding;
-      // Topic-conditional parser classifications (notably std_msgs/String on
-      // */robot_description) need the same topic identity already carried by
-      // ParserBindingRequest. Keep it in each parser instance's config too so
-      // classifySchema() and the retained object parser agree.
-      channel_parser_config["topic_name"] = channel_ptr->topic;
-      const std::string parser_config_str = channel_parser_config.dump();
-
-      PJ::ParserBindingRequest request{
-          .topic_name = channel_ptr->topic,
-          .parser_encoding = parser_encoding,
-          .type_name = schema != nullptr ? schema->name : channel_ptr->topic,
-          .schema = schema_bytes,
-          .parser_config_json = parser_config_str,
-      };
-
-      // Bind the parser. The host runtime, internally, also asks the parser
-      // about its schema classification (classifySchema) and — when the
-      // parser declares a builtin object type != kNone — registers the
-      // matching ObjectTopic in the ObjectStore on the source's behalf,
-      // associated with this binding. The DataSource never inspects
-      // schema->name nor mentions object_type anywhere.
-      auto handle = runtimeHost().ensureParserBinding(request);
-      if (!handle) {
-        binding_errors.push_back(channel_ptr->topic + " (encoding: " + parser_encoding + "): " + handle.error());
-        continue;
-      }
-      bindings.emplace(channel_id, *handle);
     }
 
-    if (bindings.empty()) {
+    if (!any_binding) {
       std::string msg = "No channels could be bound to parsers:\n";
       for (const auto& e : binding_errors) {
         msg += "  - " + e + "\n";
@@ -298,16 +340,22 @@ class McapSource : public PJ::FileSourceBase {
       runtimeHost().showWarning("Parser Error", msg);
     }
 
-    // Cold-path byte store, seeded from the parallel reader's chunk index (no
-    // extra summary parse). Member, so it — and the fetchers that share its
-    // cold state — outlive importData(): post-import lazy pulls re-decompress on
-    // demand through it. The FileReader it needs is opened lazily on the first
-    // cold miss, so fully-eager imports never reopen the file.
-    byte_store_.init(
-        dialog_.filepath(), parallel_reader.chunkIndexes(), {.cacheCapacityBytes = kChunkCacheCapacityBytes},
-        [this](const mcap::Status& problem) {
-          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, problem.message);
-        });
+    // Cold-path byte stores, ONE PER FILE, each seeded from that file's
+    // parallel-reader chunk index (no extra summary parse). Members, so they —
+    // and the fetchers that share their cold state — outlive importData():
+    // post-import lazy pulls re-decompress on demand through the store of the
+    // file the message came from, which keeps its own FileReader open for the
+    // rest of the session. That reader is opened lazily on the first cold
+    // miss, so fully-eager imports never reopen a file.
+    byte_stores_.clear();
+    byte_stores_.resize(readers.size());
+    for (size_t file_index = 0; file_index < readers.size(); ++file_index) {
+      byte_stores_[file_index].init(
+          recording.paths[file_index], readers[file_index]->chunkIndexes(),
+          {.cacheCapacityBytes = kChunkCacheCapacityBytes}, [this](const mcap::Status& problem) {
+            runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, problem.message);
+          });
+    }
 
     // --- Iterate messages via the parallel reader ---
     // The fork decompresses chunks on a worker pool ahead of the merge frontier
@@ -342,24 +390,31 @@ class McapSource : public PJ::FileSourceBase {
     // the playback range off the actual recording. For those we fall back to the
     // message's own logTime (see the per-message timestamp below). If the summary
     // has no statistics the window stays fully open and behaviour is unchanged.
+    // For a split bag the window spans the WHOLE recording, not each file: a
+    // header stamp in file 1 that lands in file 2's time range is still valid.
     uint64_t log_window_min = 0;
     uint64_t log_window_max = UINT64_MAX;
-    if (parallel_reader.statistics()) {
-      log_window_min = parallel_reader.statistics()->messageStartTime;
-      log_window_max = parallel_reader.statistics()->messageEndTime;
+    const bool all_have_statistics = std::all_of(
+        readers.begin(), readers.end(), [](const auto& reader) { return reader->statistics().has_value(); });
+    if (all_have_statistics) {
+      // An empty split (recorder stopped right after a rollover) reports
+      // start/end time 0; folding it in would open the window down to 0.
+      uint64_t lo = UINT64_MAX;
+      uint64_t hi = 0;
+      for (const auto& reader : readers) {
+        const auto& stats = *reader->statistics();
+        if (stats.messageCount > 0) {
+          lo = std::min(lo, stats.messageStartTime);
+          hi = std::max(hi, stats.messageEndTime);
+        }
+      }
+      if (lo <= hi) {
+        log_window_min = lo;
+        log_window_max = hi;
+      }
     }
 
-    // Recordings without Message Index records cannot be replayed in
-    // LogTimeOrder: the reader rejects that order and otherwise yields a
-    // misleading empty import. Their physical file order is the only available
-    // deterministic order. Note this is NOT the same as "has no chunk indexes"
-    // — see PJ::McapHelpers::lacksMessageIndexes for the two cases that carry
-    // chunk indexes with no message indexes behind them.
-    const bool lacks_message_indexes = PJ::McapHelpers::lacksMessageIndexes(parallel_reader.chunkIndexes());
-
     mcap::ParallelReadOptions parallel_opts;
-    parallel_opts.read.readOrder = lacks_message_indexes ? mcap::ReadMessageOptions::ReadOrder::FileOrder
-                                                         : mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
     parallel_opts.maxBytesInFlight = kParallelImportBudgetBytes;
     parallel_opts.threadCount = parallelImportThreadCount();
 #ifdef PJ_TARGET_WASM
@@ -378,19 +433,25 @@ class McapSource : public PJ::FileSourceBase {
     // downgraded to okStatus() with a warning toast.
     std::optional<std::string> import_failure;
 
-    // Final status of whichever message view ran: the serial branch has no
-    // status() and reports through on_problem, the parallel one exposes
-    // status() directly. Classified ONCE after the read finishes rather than
-    // inline, so the "did this import actually succeed" rule lives in one
-    // testable place — PJ::McapHelpers::classifyImportOutcome.
+    // Final status of the recording: the first failing file's status. The
+    // serial branch has no status() and reports through on_problem, the
+    // parallel one exposes status() directly. Classified ONCE after the read
+    // finishes rather than inline, so the "did this import actually succeed"
+    // rule lives in one testable place — PJ::McapHelpers::classifyImportOutcome.
     mcap::Status view_status;
+
+    // Bindings of the file currently being read (channel ids are per file).
+    const BindingMap* bindings = nullptr;
+    // Set when a push returns false (cancel or push-failure abort): stops the
+    // whole recording, not just the current file.
+    bool stopped = false;
 
     auto push_message = [&](const mcap::MessageView& mv, auto fetch_payload) {
       if (mv.channel == nullptr || mv.message.data == nullptr) {
         return true;
       }
-      auto binding_it = bindings.find(mv.channel->id);
-      if (binding_it == bindings.end()) {
+      auto binding_it = bindings->find(mv.channel->id);
+      if (binding_it == bindings->end()) {
         return true;
       }
 
@@ -435,7 +496,7 @@ class McapSource : public PJ::FileSourceBase {
     // Serial file-order scan. Two callers: the primary path for recordings
     // that have no message indexes at all, and the recovery path when an
     // indexed read fails outright (see shouldRetryInFileOrder below).
-    auto read_file_order = [&]() {
+    auto read_file_order = [&](mcap::ParallelReader& parallel_reader, const std::string& path) {
       // Indexless serial fallback. A chunk-free recording keeps every
       // Message record uncompressed at a stable file offset, so each fetcher
       // retains only a small locator and re-reads its payload on demand —
@@ -444,7 +505,7 @@ class McapSource : public PJ::FileSourceBase {
       // session). Only a chunked recording whose summary lacks message
       // indexes still pays a message-sized eager copy: its in-chunk messages
       // have no stable file offset to re-read from.
-      auto payload_store = std::make_shared<mcap::UnchunkedPayloadStore>(dialog_.filepath());
+      auto payload_store = std::make_shared<mcap::UnchunkedPayloadStore>(path);
       auto messages = parallel_reader.reader().readMessages(on_problem, parallel_opts.read);
       for (const auto& mv : messages) {
         if (mv.channel == nullptr || mv.message.data == nullptr) {
@@ -467,48 +528,91 @@ class McapSource : public PJ::FileSourceBase {
               });
         }
         if (!keep_going) {
+          stopped = true;
           break;
         }
       }
-      if (first_problem) {
-        view_status = *first_problem;
-      }
     };
 
+    // Final status of the file being read (same two sources as view_status).
+    mcap::Status file_status;
+
     try {
-      if (lacks_message_indexes) {
-        read_file_order();
-      } else {
-        auto messages = parallel_reader.readMessages(on_problem, parallel_opts);
-        for (auto it = messages.begin(); it != messages.end(); ++it) {
-          const auto& mv = *it;
-          if (!push_message(mv, [fetcher = byte_store_.makeFetcher(it, mv)]() {
-                mcap::ByteView v = fetcher();
-                return PJ::sdk::PayloadView{
-                    PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(v.data), v.size),
-                    v.anchor,
-                };
-              })) {
-            break;
+      for (size_t file_index = 0; file_index < readers.size() && !stopped; ++file_index) {
+        mcap::ParallelReader& parallel_reader = *readers[file_index];
+        const std::string& path = recording.paths[file_index];
+        bindings = &bindings_per_file[file_index];
+        if (bindings->empty()) {
+          continue;  // none of the selected topics in this split
+        }
+        const uint64_t pushed_before = msg_count;
+        const uint64_t accepted_before = accepted_count;
+        first_problem.reset();
+        file_status = mcap::Status{};
+
+        // Recordings without Message Index records cannot be replayed in
+        // LogTimeOrder: the reader rejects that order and otherwise yields a
+        // misleading empty import. Their physical file order is the only
+        // available deterministic order. Note this is NOT the same as "has no
+        // chunk indexes" — see PJ::McapHelpers::lacksMessageIndexes for the
+        // two cases that carry chunk indexes with no message indexes behind them.
+        const bool lacks_message_indexes = PJ::McapHelpers::lacksMessageIndexes(parallel_reader.chunkIndexes());
+        parallel_opts.read.readOrder = lacks_message_indexes ? mcap::ReadMessageOptions::ReadOrder::FileOrder
+                                                             : mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
+
+        if (lacks_message_indexes) {
+          read_file_order(parallel_reader, path);
+          if (first_problem) {
+            file_status = *first_problem;
+          }
+        } else {
+          const mcap::MessageByteStore& byte_store = byte_stores_[file_index];
+          auto messages = parallel_reader.readMessages(on_problem, parallel_opts);
+          for (auto it = messages.begin(); it != messages.end(); ++it) {
+            const auto& mv = *it;
+            if (!push_message(mv, [fetcher = byte_store.makeFetcher(it, mv)]() {
+                  mcap::ByteView v = fetcher();
+                  return PJ::sdk::PayloadView{
+                      PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(v.data), v.size),
+                      v.anchor,
+                  };
+                })) {
+              stopped = true;
+              break;
+            }
+          }
+          file_status = messages.status();
+
+          // The summary advertised message indexes, so we came down the indexed
+          // path — but the index records themselves can be truncated or corrupt,
+          // and then the reader dies having produced nothing. A file-order scan
+          // never consults them, so it can still recover the whole file. Only
+          // reachable when the first pass delivered nothing from THIS file, so
+          // there is no risk of ingesting anything twice.
+          if (PJ::McapHelpers::shouldRetryInFileOrder(
+                  file_status.ok(), msg_count - pushed_before, accepted_count - accepted_before,
+                  runtimeHost().isStopRequested())) {
+            runtimeHost().reportMessage(
+                PJ::DataSourceMessageLevel::kWarning,
+                "MCAP indexed read failed (" + file_status.message + "); retrying as a serial file-order scan");
+            parallel_opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::FileOrder;
+            first_problem.reset();
+            file_status = mcap::Status{};
+            read_file_order(parallel_reader, path);
+            if (first_problem) {
+              file_status = *first_problem;
+            }
           }
         }
-        view_status = messages.status();
 
-        // The summary advertised message indexes, so we came down the indexed
-        // path — but the index records themselves can be truncated or corrupt,
-        // and then the reader dies having produced nothing. A file-order scan
-        // never consults them, so it can still recover the whole recording.
-        // Only reachable when the first pass delivered nothing at all, so
-        // there is no risk of ingesting anything twice.
-        if (PJ::McapHelpers::shouldRetryInFileOrder(
-                view_status.ok(), msg_count, accepted_count, runtimeHost().isStopRequested())) {
-          runtimeHost().reportMessage(
-              PJ::DataSourceMessageLevel::kWarning,
-              "MCAP indexed read failed (" + view_status.message + "); retrying as a serial file-order scan");
-          parallel_opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::FileOrder;
-          first_problem.reset();
-          view_status = mcap::Status{};
-          read_file_order();
+        // A damaged split (typically the last one, cut by a killed recorder)
+        // does not stop the rest of the bag; the first failure is what the
+        // outcome below reports.
+        if (!file_status.ok() && view_status.ok()) {
+          view_status = file_status;
+          if (multi_file) {
+            view_status.message = path + ": " + view_status.message;
+          }
         }
       }
     } catch (const std::exception& e) {
@@ -567,10 +671,11 @@ class McapSource : public PJ::FileSourceBase {
   // loadConfig() when FileLoader embeds it under "_parser_config". When
   // non-empty, takes precedence over per-field accessors in McapDialog.
   std::string parser_config_override_;
-  // Owns the cold (post-import lazy) byte path while fetchers are created.
-  // Each fetcher retains the shared cold state, so deferred ObjectStore pulls
-  // still work after PJ4 destroys the DataSourceHandle at the end of loadFile().
-  mcap::MessageByteStore byte_store_;
+  // Own the cold (post-import lazy) byte path while fetchers are created, one
+  // store per recording file (a split rosbag2 bag has several). Each fetcher
+  // retains its file's shared cold state, so deferred ObjectStore pulls still
+  // work after PJ4 destroys the DataSourceHandle at the end of loadFile().
+  std::vector<mcap::MessageByteStore> byte_stores_;
 };
 
 }  // namespace

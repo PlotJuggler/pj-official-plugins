@@ -47,14 +47,17 @@ jobs:
           - distro: humble
             ubuntu: 22.04
             image: osrf/ros:humble-desktop
-          - distro: iron
-            ubuntu: 22.04
-            image: osrf/ros:iron-desktop
           - distro: jazzy
             ubuntu: 24.04
             image: osrf/ros:jazzy-desktop
-          - distro: rolling
+          - distro: kilted
             ubuntu: 24.04
+            image: osrf/ros:kilted-desktop
+          - distro: lyrical
+            ubuntu: 26.04
+            image: osrf/ros:lyrical-desktop
+          - distro: rolling
+            ubuntu: 26.04
             image: osrf/ros:rolling-desktop
 
     container:
@@ -179,9 +182,48 @@ jobs:
           path: build/Release/bin/libros2_stream_plugin.so
           if-no-files-found: error
 
+  # RoboStack payloads: the same subscriber built against RoboStack's
+  # conda-built rclcpp, for PlotJuggler installed from conda (see
+  # data_stream_ros2/robostack/build.sh). Shipped as dist/<distro>-robostack/.
+  # The release build packages each Linux arch natively, so both are built here;
+  # only the x86_64 payloads feed the (x86_64) test zip below.
+  build-robostack:
+    name: robostack / ${{ matrix.distro }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [jazzy, kilted]
+        arch: [x86_64, aarch64]
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.14
+        with:
+          run-install: false
+          cache: false
+
+      - name: Build payload
+        run: data_stream_ros2/robostack/build.sh ${{ matrix.distro }} robostack-out
+
+      - name: Upload payload
+        if: matrix.arch == 'x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ros2-robostack-${{ matrix.distro }}
+          path: robostack-out/libros2_stream_plugin-${{ matrix.distro }}.pjros2
+          if-no-files-found: error
+
   package-extension:
     name: package marketplace zip
-    needs: [build-distro, build-proxy]
+    needs: [build-distro, build-robostack, build-proxy]
     runs-on: ubuntu-22.04
     timeout-minutes: 60
 
@@ -195,37 +237,39 @@ jobs:
           name: ros2-proxy
           path: stage/
 
-      - name: Download distro humble
+      - name: Download distro artifacts
         uses: actions/download-artifact@v4
         with:
-          name: ros2-distro-humble
-          path: stage/dist/humble/
-
-      - name: Download distro iron
-        uses: actions/download-artifact@v4
-        with:
-          name: ros2-distro-iron
-          path: stage/dist/iron/
-
-      - name: Download distro jazzy
-        uses: actions/download-artifact@v4
-        with:
-          name: ros2-distro-jazzy
-          path: stage/dist/jazzy/
-
-      - name: Download distro rolling
-        uses: actions/download-artifact@v4
-        with:
-          name: ros2-distro-rolling
-          path: stage/dist/rolling/
+          pattern: ros2-distro-*
+          path: stage/dist/
 
       - name: Mark distro libraries as private payloads
         shell: bash
         run: |
-          for distro in humble iron jazzy rolling; do
+          shopt -s nullglob
+          downloaded=(stage/dist/ros2-distro-*)
+          [[ ${#downloaded[@]} -gt 0 ]] || { echo "no distro artifacts downloaded" >&2; exit 1; }
+          for dir in "${downloaded[@]}"; do
+            distro="${dir##*/ros2-distro-}"
+            mv "${dir}" "stage/dist/${distro}"
             mv "stage/dist/${distro}/libros2_stream_plugin-${distro}.so" \
               "stage/dist/${distro}/libros2_stream_plugin-${distro}.pjros2"
           done
+
+      - name: Download RoboStack payloads
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ros2-robostack-*
+          path: stage/robostack/
+
+      - name: Place RoboStack payloads
+        shell: bash
+        run: |
+          for dir in stage/robostack/ros2-robostack-*; do
+            distro="${dir##*/ros2-robostack-}"
+            mv "${dir}" "stage/dist/${distro}-robostack"
+          done
+          rmdir stage/robostack
 
       - name: Copy manifest alongside proxy
         shell: bash
@@ -252,12 +296,13 @@ jobs:
 
   # Publish the data_stream_ros2 status badge to the shared `badges` branch.
   # This plugin is built only by this workflow (not the CI Linux per-plugin
-  # matrix), so its badge is owned here. Color aggregates the distro matrix and
-  # the proxy build. Shares the `badges-branch` concurrency group with CI Linux
-  # so the two workflows serialize their pushes to the badges branch.
+  # matrix), so its badge is owned here. Color aggregates the distro matrix, the
+  # RoboStack payloads and the proxy build. Shares the `badges-branch`
+  # concurrency group with CI Linux so the two workflows serialize their pushes
+  # to the badges branch.
   update-badge:
     name: update status badge
-    needs: [build-distro, build-proxy]
+    needs: [build-distro, build-robostack, build-proxy]
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-22.04
     permissions:
@@ -274,8 +319,9 @@ jobs:
         shell: bash
         run: |
           distro='${{ needs.build-distro.result }}'
+          robostack='${{ needs.build-robostack.result }}'
           proxy='${{ needs.build-proxy.result }}'
-          if [[ "$distro" == "success" && "$proxy" == "success" ]]; then
+          if [[ "$distro" == "success" && "$robostack" == "success" && "$proxy" == "success" ]]; then
             echo "result=success" >> "$GITHUB_OUTPUT"
           else
             echo "result=failure" >> "$GITHUB_OUTPUT"

@@ -27,9 +27,9 @@ using assistant_agent::ClaudeBackend;
 using assistant_agent::ToolRegistry;
 using assistant_agent::testing::runListTopicsSmoke;
 
-// POSIX-guarded like the fake-CLI cases further down: it spawns the real
-// `claude`, and runProcess() refuses to spawn anything off POSIX.
-#if defined(__unix__) || defined(__APPLE__)
+// Guarded like the fake-CLI cases further down: it spawns the real
+// `claude`, and runProcess() spawns only on POSIX and Windows.
+#if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 TEST(ClaudeSmoke, ListTopicsThroughMcp) {
   const std::optional<std::string> enabled = PJ::sdk::getEnv("ASSISTANT_CLAUDE_SMOKE");
   if (!enabled) {
@@ -194,14 +194,13 @@ TEST(ClaudeBackend, ConversationMemorySurvivesARebuild) {
   EXPECT_EQ(assistant_agent::composePayload("again", "CATALOG v1", *memory), "again");
 }
 
-#if defined(__unix__) || defined(__APPLE__)
-#include <unistd.h>
-
+#if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 #include <memory>
 
 namespace {
 
 using assistant_agent::testing::firstError;
+using assistant_agent::testing::removeFakeCli;
 using assistant_agent::testing::writeFakeCliScript;
 
 // A stand-in for the CLI that drains its stdin and prints a canned
@@ -231,7 +230,7 @@ std::vector<assistant_agent::BackendEvent> runOneTurnAgainst(
   assistant_agent::ClaudeBackend backend(cli, model, memory);
   std::vector<assistant_agent::BackendEvent> events;
   backend.sendUserMessage("hi", tools, [&](assistant_agent::BackendEvent e) { events.push_back(std::move(e)); });
-  unlink(cli.c_str());
+  removeFakeCli(cli);
   return events;
 }
 

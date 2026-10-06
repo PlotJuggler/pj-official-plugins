@@ -3,4 +3,21 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_json/`.
 
+## [1.3.0] - 2026-09-25
+
+### Changed
+- Every number is now stored as float64, whatever the message spelled (`5`, `-5`, `1.5`), for JSON, CBOR, MessagePack and BSON alike. A field keeps one type across messages, so a value that switches between integer and fractional (or between signed and unsigned) is no longer rejected. Integers above 2^53 lose precision.
+- Requires PlotJuggler 4.0.1 or newer, which stores whole-number float fields as compactly as integers and still shows them in the State Transitions view.
+
+## [1.2.1] - 2026-09-23
+
+First release of the changes below; 1.2.0 was never published (the number collides with a stale GitHub release).
+
+### Added
+- The options dialog now lets you set the name of the embedded timestamp field (it was fixed to `timestamp`).
+
+### Fixed
+- Non-negative JSON integers are now emitted as int64 (like negative ones), so a field whose sign changes across messages keeps a single column type; before, the datastore rejected every message whose sign differed from the first one it saw for that field. Integers above `INT64_MAX` are emitted as double instead of wrapping negative.
+- An empty or blank `timestamp_field_name` in a saved config now means the default `timestamp` instead of silently disabling the embedded timestamp.
+
 ## [1.1.0] - 2026-08-04

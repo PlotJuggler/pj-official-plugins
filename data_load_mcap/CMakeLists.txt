@@ -86,3 +86,17 @@ add_test(NAME message_byte_store_test COMMAND message_byte_store_test)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(mcap_source_plugin
   REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)
+
+# --- Integration test: the built plugin importing a split rosbag2 bag ---
+add_executable(mcap_source_split_bag_test tests/mcap_source_split_bag_test.cpp)
+target_compile_features(mcap_source_split_bag_test PRIVATE cxx_std_20)
+target_compile_options(mcap_source_split_bag_test PRIVATE ${PJ_WARNING_FLAGS})
+target_compile_definitions(mcap_source_split_bag_test PRIVATE
+  MCAP_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mcap_source_plugin>"
+)
+target_include_directories(mcap_source_split_bag_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
+target_link_libraries(mcap_source_split_bag_test PRIVATE
+  plotjuggler_sdk::plugin_host LZ4::lz4_static zstd::libzstd_static GTest::gtest_main
+)
+add_dependencies(mcap_source_split_bag_test mcap_source_plugin)
+add_test(NAME mcap_source_split_bag_test COMMAND mcap_source_split_bag_test)

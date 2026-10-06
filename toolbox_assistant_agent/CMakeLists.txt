@@ -7,9 +7,10 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 if(MSVC)
   # Conformant preprocessor for the SDK's variadic plugin macros; keep windows.h
   # (pulled in by ixwebsocket) from defining min/max. Directory scope = this
-  # plugin and its tests only (add_subdirectory). The backends are POSIX-only
-  # (subprocess, private_file, cli_locator carry `#else` stubs), so the Windows
-  # build is a compile target, not a functional one.
+  # plugin and its tests only (add_subdirectory). subprocess.hpp, private_file.hpp
+  # and cli_locator.hpp each carry a real Windows implementation (kernel32 only,
+  # no bcrypt/shell32), so this is a functional Windows build, not a
+  # compile-only one.
   add_compile_options(/Zc:preprocessor)
   add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
@@ -255,8 +256,28 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_assistant_dialog_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentAssistantDialogTest COMMAND toolbox_assistant_agent_assistant_dialog_test)
 
+  # A tiny standalone helper process (cat/exit/argv/cwd/env/sleep, plus a
+  # couple of Windows-only modes, plus a "fake CLI" mode of its own) spawned
+  # by subprocess_test.cpp AND by writeFakeCliScript
+  # (tests/support/backend_test_helpers.hpp) on Windows, where there is no
+  # shell-script stand-in for a CLI — see child_helper.cpp's own header
+  # comment. Not linked into any of this plugin's own targets, so it takes
+  # neither gtest nor plotjuggler_sdk as a dependency. Declared here, ahead
+  # of every target below that references it via ASSISTANT_CHILD_HELPER.
+  add_executable(toolbox_assistant_agent_child_helper
+    tests/support/child_helper.cpp
+  )
+  # Windows only: reuses platform_util.hpp's utf8ToWide/wideToUtf8 instead of
+  # duplicating them (see child_helper.cpp's own include comment); harmless to
+  # add on every platform since platform_util.hpp is header-only.
+  target_include_directories(toolbox_assistant_agent_child_helper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_features(toolbox_assistant_agent_child_helper PRIVATE cxx_std_20)
+
   # Live Claude Code smoke — spawns the real `claude` CLI + MCP server. Opt-in
-  # (ASSISTANT_CLAUDE_SMOKE=1); skips otherwise so CI stays offline.
+  # (ASSISTANT_CLAUDE_SMOKE=1); skips otherwise so CI stays offline. Also
+  # carries the offline fake-CLI resume/translation tests, whose Windows half
+  # needs ASSISTANT_CHILD_HELPER (see backend_test_helpers.hpp's
+  # writeFakeCliScript).
   add_executable(toolbox_assistant_agent_claude_smoke_test
     tests/claude_smoke_test.cpp
     src/claude_backend.cpp
@@ -268,6 +289,10 @@ if(TARGET GTest::gtest_main)
   target_include_directories(toolbox_assistant_agent_claude_smoke_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
+  target_compile_definitions(toolbox_assistant_agent_claude_smoke_test PRIVATE
+    ASSISTANT_CHILD_HELPER="$<TARGET_FILE:toolbox_assistant_agent_child_helper>"
+  )
+  add_dependencies(toolbox_assistant_agent_claude_smoke_test toolbox_assistant_agent_child_helper)
   target_compile_features(toolbox_assistant_agent_claude_smoke_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentClaudeSmokeTest COMMAND toolbox_assistant_agent_claude_smoke_test)
 
@@ -275,7 +300,8 @@ if(TARGET GTest::gtest_main)
   # resume/translation tests, and the parser (codex_stream.hpp) — mirrors
   # claude_smoke_test.cpp's offline half plus stream_json_test.cpp, folded into
   # one target per the brief. The live opt-in half (ASSISTANT_CODEX_SMOKE=1)
-  # lives in the same file, guarded the same way ClaudeSmoke.* is.
+  # lives in the same file, guarded the same way ClaudeSmoke.* is. Also needs
+  # ASSISTANT_CHILD_HELPER, for the same reason claude_smoke_test does above.
   add_executable(toolbox_assistant_agent_codex_backend_test
     tests/codex_backend_test.cpp
     src/codex_backend.cpp
@@ -287,6 +313,10 @@ if(TARGET GTest::gtest_main)
   target_include_directories(toolbox_assistant_agent_codex_backend_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
+  target_compile_definitions(toolbox_assistant_agent_codex_backend_test PRIVATE
+    ASSISTANT_CHILD_HELPER="$<TARGET_FILE:toolbox_assistant_agent_child_helper>"
+  )
+  add_dependencies(toolbox_assistant_agent_codex_backend_test toolbox_assistant_agent_child_helper)
   target_compile_features(toolbox_assistant_agent_codex_backend_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentCodexBackendTest COMMAND toolbox_assistant_agent_codex_backend_test)
 
@@ -314,15 +344,18 @@ if(TARGET GTest::gtest_main)
   add_test(NAME ToolboxAssistantAgentCodexSessionsTest COMMAND toolbox_assistant_agent_codex_sessions_test)
 
   # CliLocator: resolving a configured CLI name/path off this process's own
-  # PATH (nvm, ~/.local/bin, the other fallbacks) and the child-PATH prepend
-  # an `#!/usr/bin/env node` shebang needs to find its own interpreter.
-  # plotjuggler_sdk::base is for PJ::sdk::getEnv; cli_locator.hpp itself is
-  # header-only, so there is no extra source to list here.
+  # PATH (nvm, ~/.local/bin, the other fallbacks), the child-PATH prepend an
+  # `#!/usr/bin/env node` shebang needs to find its own interpreter, and
+  # cannotFindCliMessage's npm_shim wording (cli_probe.hpp). cli_locator.hpp
+  # itself is header-only, so there is no extra source to list here.
+  # plotjuggler_sdk::plugin_sdk (not just ::base) and nlohmann_json are
+  # needed transitively through cli_probe.hpp -> llm_backend.hpp ->
+  # tool_registry.hpp/tool_context.hpp, same as tool_registry_test below.
   add_executable(toolbox_assistant_agent_cli_locator_test
     tests/cli_locator_test.cpp
   )
   target_link_libraries(toolbox_assistant_agent_cli_locator_test PRIVATE
-    plotjuggler_sdk::base GTest::gtest_main
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_cli_locator_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -352,6 +385,26 @@ if(TARGET GTest::gtest_main)
   )
   target_compile_features(toolbox_assistant_agent_codex_models_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentCodexModelsTest COMMAND toolbox_assistant_agent_codex_models_test)
+
+  # Platform layer: subprocess.hpp (runProcess) and private_file.hpp
+  # (writePrivateTempFile/removePrivateTempFile) against the real OS, on
+  # every platform this plugin now supports.
+  add_executable(toolbox_assistant_agent_platform_test
+    tests/subprocess_test.cpp
+    tests/private_file_test.cpp
+  )
+  target_link_libraries(toolbox_assistant_agent_platform_test PRIVATE
+    plotjuggler_sdk::base GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_platform_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(toolbox_assistant_agent_platform_test PRIVATE
+    ASSISTANT_CHILD_HELPER="$<TARGET_FILE:toolbox_assistant_agent_child_helper>"
+  )
+  add_dependencies(toolbox_assistant_agent_platform_test toolbox_assistant_agent_child_helper)
+  target_compile_features(toolbox_assistant_agent_platform_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentPlatformTest COMMAND toolbox_assistant_agent_platform_test)
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)

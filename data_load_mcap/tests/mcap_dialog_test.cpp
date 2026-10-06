@@ -341,4 +341,85 @@ TEST(McapDialogTest, SchemalessChannelsAreOfferedInThePicker) {
   std::filesystem::remove(path);
 }
 
+// Writes one split of a ROS 2 bag: `count` messages on each of `topics`.
+void writeBagSplit(const std::filesystem::path& path, const std::vector<std::string>& topics, int count) {
+  mcap::McapWriter writer;
+  ASSERT_TRUE(writer.open(path.string(), mcap::McapWriterOptions("ros2")).ok());
+  mcap::Schema schema("std_msgs/msg/Int32", "ros2msg", "int32 data");
+  writer.addSchema(schema);
+  const std::string payload(8, '\0');
+  for (const std::string& topic : topics) {
+    mcap::Channel channel(topic, "cdr", schema.id);
+    writer.addChannel(channel);
+    for (int i = 0; i < count; ++i) {
+      mcap::Message msg;
+      msg.channelId = channel.id;
+      msg.logTime = msg.publishTime = static_cast<mcap::Timestamp>(1000 + i);
+      msg.data = reinterpret_cast<const std::byte*>(payload.data());
+      msg.dataSize = payload.size();
+      ASSERT_TRUE(writer.write(msg).ok());
+    }
+  }
+  writer.close();
+}
+
+void writeText(const std::filesystem::path& path, const std::string& text) {
+  std::ofstream(path, std::ios::binary) << text;
+}
+
+// A split rosbag2 bag opened through its metadata.yaml shows ONE channel list:
+// topics merged across splits, message counts summed.
+TEST(McapDialogTest, Rosbag2MetadataMergesChannelsAcrossSplits) {
+  const auto dir = std::filesystem::temp_directory_path() / "pj_mcap_split_bag_dialog";
+  std::filesystem::create_directories(dir);
+  writeBagSplit(dir / "bag_0.mcap", {"/a"}, 2);
+  writeBagSplit(dir / "bag_1.mcap", {"/a", "/b"}, 3);
+  writeText(
+      dir / "metadata.yaml",
+      "rosbag2_bagfile_information:\n"
+      "  version: 9\n"
+      "  storage_identifier: mcap\n"
+      "  relative_file_paths:\n"
+      "    - bag_0.mcap\n"
+      "    - bag_1.mcap\n"
+      "  files:\n"
+      "    - path: bag_0.mcap\n");
+
+  McapDialog dialog;
+  nlohmann::json cfg;
+  cfg["filepath"] = (dir / "metadata.yaml").string();
+  ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+  EXPECT_TRUE(dialog.analyzeError().empty()) << dialog.analyzeError();
+  EXPECT_EQ(dialog.selectedTopics(), (std::unordered_set<std::string>{"/a", "/b"}));
+
+  const auto rows = nlohmann::json::parse(dialog.widget_data())["tableWidget"]["rows"];
+  ASSERT_EQ(rows.size(), 2u) << rows.dump();
+  EXPECT_EQ(rows[0][0], "/a");
+  EXPECT_EQ(rows[0][3], "5");
+  EXPECT_EQ(rows[1][3], "3");
+
+  std::filesystem::remove_all(dir);
+}
+
+TEST(McapDialogTest, Rosbag2SqliteBagIsRejected) {
+  const auto dir = std::filesystem::temp_directory_path() / "pj_mcap_sqlite_bag_dialog";
+  std::filesystem::create_directories(dir);
+  writeText(
+      dir / "metadata.yaml",
+      "rosbag2_bagfile_information:\n"
+      "  storage_identifier: sqlite3\n"
+      "  relative_file_paths:\n"
+      "    - bag_0.db3\n");
+
+  McapDialog dialog;
+  nlohmann::json cfg;
+  cfg["filepath"] = (dir / "metadata.yaml").string();
+  cfg["selected_topics"] = std::vector<std::string>{"/stale"};
+  ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+  EXPECT_NE(dialog.analyzeError().find("sqlite3"), std::string::npos) << dialog.analyzeError();
+  EXPECT_TRUE(dialog.selectedTopics().empty());
+
+  std::filesystem::remove_all(dir);
+}
+
 }  // namespace

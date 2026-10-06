@@ -88,9 +88,21 @@ TEST(CodexSessionsDir, FallsBackToHomeDotCodex) {
   EXPECT_EQ(codexSessionsDir(), std::filesystem::path("/home/testuser/.codex/sessions"));
 }
 
+// Windows only: HOME is not always set there, so codexHomeDir() falls back to
+// USERPROFILE the same way userHomeDir() does.
+#if defined(_WIN32)
+TEST(CodexSessionsDir, FallsBackToUserProfileDotCodexWhenHomeIsUnset) {
+  ScopedEnv cfg("CODEX_HOME", nullptr);
+  ScopedEnv home("HOME", nullptr);
+  ScopedEnv userprofile("USERPROFILE", R"(C:\Users\testuser)");
+  EXPECT_EQ(codexSessionsDir(), std::filesystem::path(R"(C:\Users\testuser\.codex\sessions)"));
+}
+#endif
+
 TEST(CodexSessionsDir, EmptyWhenNeitherVariableResolves) {
   ScopedEnv cfg("CODEX_HOME", nullptr);
   ScopedEnv home("HOME", nullptr);
+  ScopedEnv userprofile("USERPROFILE", nullptr);
   EXPECT_TRUE(codexSessionsDir().empty());
 }
 

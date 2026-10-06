@@ -116,6 +116,14 @@ target_link_libraries(ros_parser_test PRIVATE
 )
 add_test(NAME ros_parser_test COMMAND ros_parser_test)
 
+# --- BoundFieldCache unit test (header-only; SDK types + a simulated write host) ---
+add_executable(bound_field_cache_test tests/bound_field_cache_test.cpp)
+target_compile_features(bound_field_cache_test PRIVATE cxx_std_20)
+target_compile_options(bound_field_cache_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(bound_field_cache_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bound_field_cache_test PRIVATE plotjuggler_sdk::plugin_sdk GTest::gtest_main)
+add_test(NAME bound_field_cache_test COMMAND bound_field_cache_test)
+
 # --- Benchmark (optional, only if benchmark library is available) ---
 find_package(benchmark QUIET)
 if(benchmark_FOUND)

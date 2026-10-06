@@ -21,7 +21,7 @@ namespace detail {
 
 // Resolve the non-deprecated `rclcpp` typesupport handle accessor for the ROS
 // distro this translation unit is being compiled against.
-//   • humble / iron   → `get_typesupport_handle` (the only one available)
+//   • humble          → `get_typesupport_handle` (the only one available)
 //   • jazzy onward    → `get_message_typesupport_handle` (the previous name
 //                       is deprecated with `[[deprecated]]` and breaks the
 //                       build under `-Werror=deprecated-declarations`)
@@ -32,7 +32,7 @@ namespace detail {
 // follow the `get_message_typesupport_handle` naming.
 inline const rosidl_message_type_support_t* getMessageTypesupportHandle(
     const std::string& type_name, const std::string& typesupport_identifier, rcpputils::SharedLibrary& library) {
-#if defined(ROS_DISTRO_HUMBLE) || defined(ROS_DISTRO_IRON)
+#if defined(ROS_DISTRO_HUMBLE)
   return rclcpp::get_typesupport_handle(type_name, typesupport_identifier, library);
 #else
   return rclcpp::get_message_typesupport_handle(type_name, typesupport_identifier, library);

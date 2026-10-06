@@ -28,9 +28,11 @@ namespace assistant_agent {
 // ClaudeBackend calls the rest of the plugin treats as exception barriers.
 
 // `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>`, where `slug` is
-// `work_dir` with every '/' and '.' turned into '-' (the CLI's own scheme —
-// verified against a real store: "/home/user/.local/state/pj-assistant-cli"
-// -> "-home-user--local-state-pj-assistant-cli"). Returns an empty path when
+// `work_dir` with every non-alphanumeric ASCII character turned into '-' and
+// every multi-byte UTF-8 code point collapsed to one '-' (the CLI's own
+// scheme — verified against a real store:
+// "/home/user/.local/state/pj-assistant-cli" ->
+// "-home-user--local-state-pj-assistant-cli"). Returns an empty path when
 // neither variable resolves a base directory; callers treat that as "list
 // nothing" rather than guessing.
 [[nodiscard]] std::filesystem::path claudeSessionsDir(const std::string& work_dir);

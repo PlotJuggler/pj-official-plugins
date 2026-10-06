@@ -165,7 +165,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseImage(PJ::Timestamp ts, PJ::
 //
 // Wire layout:
 //   header                  std_msgs/Header
-//   format                  string (e.g. "jpeg", "png", "16UC1; compressedDepth png")
+//   format                  string (e.g. "jpeg", "bgr8; png compressed bgr8",
+//                                   "16UC1; compressedDepth png", or just "16UC1")
 //   data                    uint8[]   ← compressed bytes, plus an optional
 //                                       12-byte compressedDepth mini-header
 // ---------------------------------------------------------------------------
@@ -189,6 +190,12 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
     size_t blob_offset = 0;
     uint32_t blob_size = data_len;
 
+    static constexpr uint8_t kPngSignature[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    static constexpr uint8_t kJpegSoi[3] = {0xFF, 0xD8, 0xFF};
+    auto data_starts_with = [&](const auto& magic) {
+      return data_len >= sizeof(magic) && std::memcmp(src, magic, sizeof(magic)) == 0;
+    };
+
     if (format.find("compressedDepth") != std::string::npos) {
       out_encoding = "compressedDepth";  // PNG/RVL payload (+ optional quantization range).
       // compressedDepth normally prefixes the PNG/RVL blob with a 12-byte
@@ -197,10 +204,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
       // bags); stripping 12 bytes there chops the PNG's 8-byte signature + part
       // of the IHDR length and corrupts it. A leading PNG signature therefore
       // means "headerless" — pass the blob through untouched.
-      static constexpr uint8_t kPngSignature[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
-      const bool headerless_png =
-          data_len >= sizeof(kPngSignature) && std::memcmp(src, kPngSignature, sizeof(kPngSignature)) == 0;
-      if (headerless_png) {
+      if (data_starts_with(kPngSignature)) {
         // No ConfigHeader -> no quantization range. 16UC1 PNG depth is raw
         // millimetres, which the consumer reads directly; depth_min/max stay unset.
         blob_offset = 0;
@@ -220,10 +224,14 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
         blob_offset = 12;
         blob_size = data_len - 12;
       }
-    } else if (format.find("jpeg") != std::string::npos) {
+    } else if (format.find("jpeg") != std::string::npos || data_starts_with(kJpegSoi)) {
+      // The magic-byte checks cover recorders whose format names only the raw
+      // encoding (e.g. "16UC1"), not the codec.
       out_encoding = "jpeg";
-    } else if (format == "png") {
-      out_encoding = "png";
+    } else if (format.find("png") != std::string::npos || data_starts_with(kPngSignature)) {
+      // A 16UC1 PNG is raw millimetres: route it down the depth path as
+      // headerless compressedDepth (no quantization range).
+      out_encoding = format.rfind("16UC1", 0) == 0 ? "compressedDepth" : "png";
     } else {
       return PJ::unexpected(std::string("unsupported CompressedImage format: ") + format);
     }

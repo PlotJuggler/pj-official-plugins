@@ -5,11 +5,23 @@
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
+#include <string_view>
 
 #include "json_manifest.hpp"
 #include "json_parser_options_ui.hpp"
 
 namespace {
+
+/// Name of the embedded timestamp field; an empty or blank name means the
+/// default, since the parser needs a concrete key to look up.
+std::string timestampFieldNameOrDefault(std::string_view name) {
+  const auto first = name.find_first_not_of(" \t\r\n");
+  if (first == std::string_view::npos) {
+    return "timestamp";
+  }
+  const auto last = name.find_last_not_of(" \t\r\n");
+  return std::string(name.substr(first, last - first + 1));
+}
 
 /// Dialog plugin for the JSON Parser options.
 /// Allows users to configure embedded timestamp extraction.
@@ -35,8 +47,11 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
     wd.setChecked("radioMaxClamp", array_limit_.clamp());
     wd.setChecked("radioMaxDiscard", !array_limit_.clamp());
 
-    // Embedded timestamp checkbox
+    // Embedded timestamp controls
     wd.setChecked("checkBoxUseEmbeddedTimestamp", use_embedded_timestamp_);
+    wd.setText("lineEditTimestampField", timestamp_field_name_);
+    wd.setEnabled("lineEditTimestampField", use_embedded_timestamp_);
+    wd.setEnabled("labelTimestampField", use_embedded_timestamp_);
 
     // Label-keyed arrays checkbox
     wd.setChecked("checkBoxLabelKeyedArrays", label_keyed_arrays_);
@@ -53,7 +68,7 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
   bool onToggled(std::string_view widget_name, bool checked) override {
     if (widget_name == "checkBoxUseEmbeddedTimestamp") {
       use_embedded_timestamp_ = checked;
-      return false;
+      return true;  // refresh to enable/disable lineEditTimestampField
     }
     if (widget_name == "checkBoxLabelKeyedArrays") {
       label_keyed_arrays_ = checked;
@@ -66,6 +81,13 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
     if (checked && widget_name == "radioMaxDiscard") {
       array_limit_.policy = PJ::sdk::ArrayPolicy::kSkip;
       return false;
+    }
+    return false;
+  }
+
+  bool onTextChanged(std::string_view widget_name, std::string_view text) override {
+    if (widget_name == "lineEditTimestampField") {
+      timestamp_field_name_ = timestampFieldNameOrDefault(text);
     }
     return false;
   }
@@ -85,7 +107,7 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
       return false;
     }
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
-    timestamp_field_name_ = cfg.value("timestamp_field_name", std::string("timestamp"));
+    timestamp_field_name_ = timestampFieldNameOrDefault(cfg.value("timestamp_field_name", std::string{}));
     label_keyed_arrays_ = cfg.value("label_keyed_arrays", false);
     array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     return true;

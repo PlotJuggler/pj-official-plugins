@@ -3,16 +3,58 @@
 #include "codex_sessions.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <pj_base/sdk/platform.hpp>
+#include <pj_base/sdk/text_utils.hpp>  // PJ::sdk::lowerAscii
+
+#include "platform_util.hpp"  // getEnvUtf8, userHomeDir
 
 namespace assistant_agent {
 
 namespace {
 
 using nlohmann::json;
+
+// Compares a rollout's recorded `cwd` against this run's `work_dir`. POSIX:
+// an exact match, like before -- the two are already in the same form.
+// Windows: normalizes both sides first, because the same directory can
+// legitimately be spelled several ways there and a rollout written by one
+// spelling must still be found by another:
+//   - a `\\?\`-prefixed path (the "long path" form some Windows APIs return)
+//     is not what `ensureWorkDir` hands out, so that prefix is stripped;
+//   - '/' and '\\' are both valid separators on Windows; normalized to '\\';
+//   - a single trailing separator is dropped (at most one -- this plugin
+//     never produces a doubled one, so trimming more would silently accept
+//     a path that is not actually the same directory);
+//   - the comparison itself is ASCII case-insensitive, matching the NTFS
+//     default of a case-insensitive (though case-preserving) filesystem.
+bool sameCwd(const std::string& a, const std::string& b) {
+#if defined(_WIN32)
+  const auto normalize = [](const std::string& raw) {
+    std::string s = raw;
+    constexpr const char* kLongPathPrefix = R"(\\?\)";
+    if (s.rfind(kLongPathPrefix, 0) == 0) {
+      s = s.substr(std::strlen(kLongPathPrefix));
+    }
+    for (char& c : s) {
+      if (c == '/') {
+        c = '\\';
+      }
+    }
+    if (s.size() > 1 && s.back() == '\\') {
+      s.pop_back();
+    }
+    return s;
+  };
+  const std::string na = normalize(a);
+  const std::string nb = normalize(b);
+  return PJ::sdk::lowerAscii(na) == PJ::sdk::lowerAscii(nb);
+#else
+  return a == b;
+#endif
+}
 
 // See codex_sessions.hpp's file comment: codex exec prepends these two
 // harness-injected "user"-role messages before the real prompt, and nothing
@@ -70,7 +112,7 @@ std::optional<std::string> sessionIdIfOurs(const std::string& first_line, const 
     return std::nullopt;
   }
   const auto& payload = rec.value("payload", json::object());
-  if (!payload.is_object() || payload.value("cwd", std::string{}) != work_dir) {
+  if (!payload.is_object() || !sameCwd(payload.value("cwd", std::string{}), work_dir)) {
     return std::nullopt;
   }
   const std::string id = payload.value("id", std::string{});
@@ -105,11 +147,11 @@ std::filesystem::path findRolloutFileById(const std::filesystem::path& sessions_
 }  // namespace
 
 std::filesystem::path codexHomeDir() {
-  if (const std::optional<std::string> codex_home = PJ::sdk::getEnv("CODEX_HOME")) {
-    return *codex_home;
+  if (const std::optional<std::string> codex_home = getEnvUtf8("CODEX_HOME")) {
+    return utf8ToPath(*codex_home);
   }
-  if (const std::optional<std::string> home = PJ::sdk::getEnv("HOME")) {
-    return std::filesystem::path(*home) / ".codex";
+  if (const std::optional<std::string> home = userHomeDir()) {
+    return utf8ToPath(*home) / ".codex";
   }
   return {};
 }

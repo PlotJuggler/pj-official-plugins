@@ -6,8 +6,8 @@ The extension has a proxy + per-distro split:
 - A distro-agnostic **proxy** `.so` that detects the ROS 2 distribution
   installed on the user's machine at load time and `dlopen`s the matching
   per-distro binary.
-- A **per-distro** `.so` per supported ROS 2 distribution (`humble`, `iron`,
-  `jazzy`, `rolling`), linked against that distro's `rclcpp`.
+- A **per-distro** `.so` per supported ROS 2 distribution (`humble`, `jazzy`,
+  `kilted`, `lyrical`, `rolling`), linked against that distro's `rclcpp`.
 
 These images cover two roles:
 
@@ -49,7 +49,7 @@ have installed (including 24.04+).
 | `--distro <distro>` | One per-distro build against `/opt/ros/<distro>` | `build_ros2_<distro>/Release/bin/libros2_stream_plugin-<distro>.so` |
 | `--distro all` | Iterates every entry in `distros.env` | one `build_ros2_<distro>/…` per distro |
 | `--proxy` | Builds the proxy in plain Ubuntu 22.04 | `build_ros2_proxy/Release/bin/libros2_stream_plugin.so` |
-| `--bundle` | Every per-distro build + proxy + assembled tree + marketplace zip | see "Bundle layout" below |
+| `--bundle` | Every per-distro build + the RoboStack payloads (needs pixi, no Docker) + proxy + assembled tree + marketplace zip | see "Bundle layout" below |
 | `--with-pj-app` | (modifier) After the distro build, also build `pj_app` from `pj4` and assemble a single-distro test extension layout | `<pj4>/build/Release/pj_app/pj_app` and `build_ros2_<distro>/Release/test_extensions/ros2-topic-subscriber/` |
 
 ## Examples
@@ -70,9 +70,12 @@ After `--bundle`, under the `pj-official-plugins` root:
       manifest.json                                  ← copied from data_stream_ros2/
       dist/
         humble/libros2_stream_plugin-humble.pjros2
-        iron/libros2_stream_plugin-iron.pjros2
         jazzy/libros2_stream_plugin-jazzy.pjros2
+        kilted/libros2_stream_plugin-kilted.pjros2
+        lyrical/libros2_stream_plugin-lyrical.pjros2
         rolling/libros2_stream_plugin-rolling.pjros2
+        jazzy-robostack/libros2_stream_plugin-jazzy.pjros2    ← ../robostack/build.sh
+        kilted-robostack/libros2_stream_plugin-kilted.pjros2
 
     ros2-topic-subscriber-linux-x86_64.zip           ← marketplace artifact
 
@@ -105,8 +108,8 @@ heavier image never replaces the lean one used by CI. The plain-build path
 (without the flag) is unchanged in every respect.
 
 The single `build/` directory under `<pj4>` is intentional — `pj4` is
-ROS-agnostic. If you switch between toolchains (humble/iron use GCC 11,
-jazzy/rolling use GCC 13) the script aborts with a hint to
+ROS-agnostic. If you switch between toolchains (each distro's Ubuntu base
+ships a different GCC) the script aborts with a hint to
 `rm -rf <pj4>/build/`. It does not auto-delete.
 
 ### Test extension layout

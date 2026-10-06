@@ -20,6 +20,8 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mcap/writer.hpp>
 #include <sstream>
 #include <vector>
@@ -586,6 +588,85 @@ TEST(IsSchemaless, ZeroIsTheNoSchemaSentinel) {
   EXPECT_TRUE(isSchemaless(0));
   EXPECT_FALSE(isSchemaless(1));
   EXPECT_FALSE(isSchemaless(42));
+}
+
+// ---------------------------------------------------------------------------
+// rosbag2 metadata.yaml resolution
+// ---------------------------------------------------------------------------
+
+TEST(Rosbag2Metadata, ParsesStorageAndFileListFromRealLayout) {
+  // Trimmed from a real `ros2 bag record --max-bag-size` output; the QoS
+  // block-list and the `files:` section must not leak into the file list.
+  const auto meta = parseRosbag2Metadata(
+      "rosbag2_bagfile_information:\r\n"
+      "  version: 9\n"
+      "  storage_identifier: mcap\n"
+      "  topics_with_message_count:\n"
+      "    - topic_metadata:\n"
+      "        name: /chatter\n"
+      "        offered_qos_profiles:\n"
+      "          - history: keep_last\n"
+      "  relative_file_paths:\n"
+      "    - bag_0.mcap\n"
+      "    - \"bag 1.mcap\"\n"
+      "  files:\n"
+      "    - path: bag_0.mcap\n");
+  EXPECT_TRUE(meta.is_rosbag2);
+  EXPECT_EQ(meta.storage_identifier, "mcap");
+  EXPECT_EQ(meta.relative_file_paths, (std::vector<std::string>{"bag_0.mcap", "bag 1.mcap"}));
+}
+
+TEST(Rosbag2Metadata, PlainMcapResolvesToItself) {
+  const auto files = resolveRecordingFiles("/some/where/rec.mcap");
+  EXPECT_TRUE(files.error.empty());
+  EXPECT_EQ(files.paths, (std::vector<std::string>{"/some/where/rec.mcap"}));
+}
+
+TEST(Rosbag2Metadata, RejectsNonMcapBags) {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "pj_mcap_resolve_test";
+  fs::create_directories(dir);
+  const auto resolve = [&](const std::string& yaml) {
+    std::ofstream(dir / "metadata.yaml", std::ios::binary) << yaml;
+    return resolveRecordingFiles((dir / "metadata.yaml").string());
+  };
+
+  // sqlite3 storage, by identifier.
+  EXPECT_NE(
+      resolve(
+          "rosbag2_bagfile_information:\n  storage_identifier: sqlite3\n  relative_file_paths:\n"
+          "    - b_0.db3\n")
+          .error.find("sqlite3"),
+      std::string::npos);
+  // Old bags without a storage identifier: the .db3 file itself is refused.
+  EXPECT_NE(
+      resolve("rosbag2_bagfile_information:\n  relative_file_paths:\n    - b_0.db3\n").error.find("b_0.db3"),
+      std::string::npos);
+  // Per-file compressed MCAP splits.
+  EXPECT_FALSE(resolve(
+                   "rosbag2_bagfile_information:\n  storage_identifier: mcap\n  relative_file_paths:\n"
+                   "    - b_0.mcap.zstd\n")
+                   .error.empty());
+  // Some other YAML entirely.
+  EXPECT_FALSE(resolve("foo: bar\n").error.empty());
+  // Listed split missing on disk.
+  EXPECT_NE(
+      resolve(
+          "rosbag2_bagfile_information:\n  storage_identifier: mcap\n  relative_file_paths:\n"
+          "    - gone.mcap\n")
+          .error.find("missing"),
+      std::string::npos);
+
+  // Happy path: resolved against the yaml's folder, in listed order.
+  std::ofstream(dir / "b_1.mcap") << "x";
+  std::ofstream(dir / "b_0.mcap") << "x";
+  const auto ok = resolve(
+      "rosbag2_bagfile_information:\n  storage_identifier: mcap\n  relative_file_paths:\n"
+      "    - b_1.mcap\n    - b_0.mcap\n");
+  EXPECT_TRUE(ok.error.empty()) << ok.error;
+  EXPECT_EQ(ok.paths, (std::vector<std::string>{(dir / "b_1.mcap").string(), (dir / "b_0.mcap").string()}));
+
+  fs::remove_all(dir);
 }
 
 }  // namespace

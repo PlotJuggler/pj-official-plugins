@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/testing/parser_write_recorder.hpp"
@@ -245,6 +248,17 @@ TEST(JsonParserTest, EmbeddedTimestampCustomFieldName) {
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 5678123000000LL);
 }
 
+TEST(JsonParserTest, EmbeddedTimestampEmptyFieldNameMeansDefault) {
+  // A config saved with an empty/blank name must behave like the default
+  // "timestamp" key, not silently disable the embedded timestamp.
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true,"timestamp_field_name":"  "})"));
+  ASSERT_TRUE(f.parse(R"({"timestamp":12.5,"value":1.0})", 9999));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 12500000000LL);
+}
+
 TEST(JsonParserTest, EmbeddedTimestampMissingFieldFallsBackToHost) {
   JsonParserFixture f;
   f.setUp();
@@ -350,6 +364,68 @@ TEST(JsonParserTest, EmbeddedTimestampIntegerValue) {
   ASSERT_TRUE(f.parse(R"({"timestamp":1000,"value":42.0})", 9999));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 1000000000000LL);  // 1000s * 1e9
+}
+
+// Regression: a field must keep ONE column type across messages whatever the
+// producer spelled (5, -5, 1.5), otherwise the host rejects the mismatching
+// value. Every number is float64.
+TEST(JsonParserTest, NumbersAreFloat64WhateverTheirSpelling) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.parse(R"({"a":5})"));
+  ASSERT_TRUE(f.parse(R"({"a":-5})"));
+  ASSERT_TRUE(f.parse(R"({"a":1.5})"));
+  ASSERT_EQ(f.recorder.rows().size(), 3u);
+  const double expected[] = {5.0, -5.0, 1.5};
+  for (std::size_t i = 0; i < 3; ++i) {
+    ASSERT_EQ(f.recorder.rows()[i].fields.size(), 1u);
+    EXPECT_EQ(f.recorder.rows()[i].fields[0].type, PJ::PrimitiveType::kFloat64) << "row " << i;
+    EXPECT_DOUBLE_EQ(f.recorder.rows()[i].fields[0].numeric, expected[i]) << "row " << i;
+  }
+}
+
+// Binary formats carry explicit integer types, but JavaScript encoders write
+// 1.0 as an integer too: CBOR and MessagePack integers are float64 as well.
+TEST(JsonParserTest, BinaryFormatIntegersAreFloat64) {
+  const nlohmann::json doc = {{"count", 7}, {"offset", -3}, {"ratio", 0.25}};
+  const std::vector<std::pair<const char*, std::vector<uint8_t>>> payloads = {
+      {"cbor", nlohmann::json::to_cbor(doc)}, {"msgpack", nlohmann::json::to_msgpack(doc)}};
+  for (const auto& [encoding, bytes] : payloads) {
+    JsonParserFixture f;
+    f.setUp();
+    // Built outside the macro: MSVC's traditional preprocessor mis-tokenizes a
+    // raw string with an odd number of quotes inside ASSERT_TRUE (C2017).
+    const std::string config = nlohmann::json{{"encoding_hint", encoding}}.dump();
+    ASSERT_TRUE(f.handle.loadConfig(config));
+    ASSERT_TRUE(f.handle.parse(1000, PJ::Span<const uint8_t>(bytes.data(), bytes.size())).has_value()) << encoding;
+    ASSERT_EQ(f.recorder.rows().size(), 1u) << encoding;
+    for (const auto& field : f.recorder.rows()[0].fields) {
+      EXPECT_EQ(field.type, PJ::PrimitiveType::kFloat64) << encoding << " " << field.name;
+    }
+    EXPECT_EQ(f.recorder.rows()[0].fields.size(), 3u) << encoding;
+  }
+}
+
+// A JSON integer too large for int64 falls back to double rather than
+// wrapping negative when cast to int64_t.
+TEST(JsonParserTest, UnsignedIntegerAboveInt64MaxBecomesFloat64) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.parse(R"({"a":18446744073709551615})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].type, PJ::PrimitiveType::kFloat64);
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 1.8446744073709552e19);
+}
+
+TEST(JsonParserTest, FloatFieldUsesFloat64Type) {
+  JsonParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.parse(R"({"a":1.5})"));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  ASSERT_EQ(f.recorder.rows()[0].fields.size(), 1u);
+  EXPECT_EQ(f.recorder.rows()[0].fields[0].type, PJ::PrimitiveType::kFloat64);
+  EXPECT_DOUBLE_EQ(f.recorder.rows()[0].fields[0].numeric, 1.5);
 }
 
 }  // namespace
