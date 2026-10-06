@@ -119,7 +119,7 @@ std::optional<std::int64_t> readTailLastTimestampNs(const std::string& path, std
       continue;
     }
     const ParsedLine parsed = parseLine(*it);
-    if (parsed.has_timestamp && parsed.kind != LineKind::kWallClockTs && parsed.kind != LineKind::kMalformed) {
+    if (hasNumericTimestamp(parsed) && parsed.kind != LineKind::kMalformed) {
       return rawTimestampNs(parsed);
     }
   }

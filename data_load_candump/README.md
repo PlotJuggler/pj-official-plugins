@@ -99,7 +99,9 @@ The leading `"(seconds.fraction)"` token is parsed by structure (integer
 seconds + a fractional part scaled to nanoseconds by digit count), not by
 locale-dependent floating-point parsing — this also means both microsecond
 (6-digit, candump's default) and nanosecond (9-digit, `-tN`) fractions are
-handled without special-casing.
+handled without special-casing. `-t d` deltas are accumulated over every line
+that carries a timestamp (RTR, error, CAN FD/XL and unparsable lines
+included), as candump prints them.
 
 ## Configuration
 

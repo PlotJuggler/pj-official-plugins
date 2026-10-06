@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
@@ -178,7 +179,7 @@ class CandumpSource : public PJ::FileSourceBase {
     std::vector<std::uint64_t> first_malformed_lines;
     const bool raw_unassigned = dialog_.rawUnassigned();
 
-    std::int64_t cumulative_ns = 0;
+    candump_detail::TimelineClock clock(mode);
 
     std::string line;
     constexpr std::uint64_t kCancelPollMask = 4095;
@@ -203,6 +204,8 @@ class CandumpSource : public PJ::FileSourceBase {
       }
 
       const candump_detail::ParsedLine parsed = candump_detail::parseLine(line);
+      // Fed every line, before the kind switch (see TimelineClock).
+      const std::optional<std::int64_t> timeline_ns = clock.advance(parsed);
       switch (parsed.kind) {
         case candump_detail::LineKind::kMalformed:
           ++malformed_count;
@@ -236,16 +239,9 @@ class CandumpSource : public PJ::FileSourceBase {
           break;
       }
 
-      std::int64_t ts_ns;
-      if (mode == candump_detail::TimeMode::kRelativeDelta) {
-        // "-t d" prints the delta since the PREVIOUS frame (including the
-        // first, conventionally the delta since candump started) -- the
-        // relative timeline is the running sum of every delta seen so far.
-        cumulative_ns += candump_detail::rawTimestampNs(parsed);
-        ts_ns = cumulative_ns;
-      } else {
-        ts_ns = candump_detail::rawTimestampNs(parsed);
-      }
+      // A kData line always has a numeric timestamp (parseCommonPrefix only
+      // continues into the body when it does).
+      const std::int64_t ts_ns = *timeline_ns;
 
       // Resolve the interface's decoder/topic-map bucket once per bus-name
       // CHANGE, not once per frame -- a capture typically stays on the same

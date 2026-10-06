@@ -297,4 +297,62 @@ TEST(CandumpDecode, RelativeTdFixtureIsNonMonotonic) {
   EXPECT_EQ(detection.mode, candump_detail::TimeMode::kRelativeDelta);
 }
 
+// See TimelineClock. Both fixtures carry the same timeline; the decoded Speed
+// values pin each timestamp to the right frame.
+TEST(CandumpDecode, RelativeTdMixedFixturesAccumulateEveryLineDelta) {
+  using candump_detail::TimelineClock;
+  using candump_detail::TimeMode;
+
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcFile(testDataPath("sample.dbc")).has_value());
+
+  struct Fixture {
+    const char* name;
+    std::vector<LineKind> kinds;
+  };
+  const std::vector<Fixture> fixtures = {
+      {"relative_td_mixed.log",
+       {LineKind::kData, LineKind::kRtr, LineKind::kData, LineKind::kError, LineKind::kFd, LineKind::kData,
+        LineKind::kDropCount, LineKind::kXl, LineKind::kData}},
+      {"relative_td_mixed_screen.txt",
+       {LineKind::kData, LineKind::kRtr, LineKind::kData, LineKind::kError, LineKind::kErrorDetail, LineKind::kFd,
+        LineKind::kData, LineKind::kXl, LineKind::kData}},
+  };
+  const std::int64_t expected_ns[] = {0, 300'000'000, 600'000'000, 950'000'000};
+  const double expected_speed[] = {100.0, 200.0, 1000.0, 300.0};  // E803, D007, 1027, B80B x 0.1
+
+  for (const auto& fixture : fixtures) {
+    SCOPED_TRACE(fixture.name);
+    const auto lines = readLines(fixture.name);
+    ASSERT_EQ(lines.size(), fixture.kinds.size());
+
+    std::ifstream stream(testDataPath(fixture.name));
+    EXPECT_EQ(candump_detail::detectTimeMode(stream, 1000).mode, TimeMode::kRelativeDelta);
+
+    TimelineClock clock(TimeMode::kRelativeDelta);
+    std::size_t data_index = 0;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+      const ParsedLine parsed = parseLine(lines[i]);
+      ASSERT_EQ(parsed.kind, fixture.kinds[i]) << lines[i];
+      const auto timeline_ns = clock.advance(parsed);
+      // Only DROPCOUNT and `-e` detail lines carry no timestamp.
+      const bool timestamped = parsed.kind != LineKind::kDropCount && parsed.kind != LineKind::kErrorDetail;
+      EXPECT_EQ(timeline_ns.has_value(), timestamped) << lines[i];
+      if (parsed.kind != LineKind::kData) {
+        continue;
+      }
+      ASSERT_LT(data_index, 4u);
+      EXPECT_EQ(*timeline_ns, expected_ns[data_index]) << lines[i];
+      DecodeResult result = DecodeResult::kNoMatch;
+      const auto sigs = dec.decode(parsed.can_id, parsed.extended, parsed.data, result);
+      ASSERT_EQ(result, DecodeResult::kDecoded) << lines[i];
+      const auto* speed = find(sigs, "Speed");
+      ASSERT_NE(speed, nullptr) << lines[i];
+      EXPECT_NEAR(speed->value, expected_speed[data_index], 1e-9) << lines[i];
+      ++data_index;
+    }
+    EXPECT_EQ(data_index, 4u);
+  }
+}
+
 }  // namespace
