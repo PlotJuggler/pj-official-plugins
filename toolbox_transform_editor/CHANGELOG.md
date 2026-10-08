@@ -32,16 +32,18 @@ One editor for series and objects.
   previous curve stays until the new one has data.
   Object outputs show in a 3D or 2D scene view, embedded in the editor, that follows the cursor
   (a mix of 2D and 3D shows as 3D); a host that cannot embed a scene view shows only the status
-  line. When the cursor is before the first instant at which every object input has a sample, the
+  line. A result that is only an image overlay is drawn over its image input. When the cursor is before the first instant at which every object input has a sample, the
   preview runs at that instant and says so in the timeline's seconds ("No sample of /lidar_top at
-  the cursor (0.000 s): move the timeline to preview"); Create stays enabled. A script that returns nothing is reported with the names it can
+  the cursor (0.000 s): move the timeline to preview"); Create stays enabled. A host that has not
+  run the preview yet because it is busy with other evaluations is not a missing sample: the editor
+  keeps the last result and asks again. A script that returns nothing is reported with the names it can
   read (`The script returned no values · inputs are: lidar_top`). The preview recipes belong to the
   editor's panel and the host removes them when it closes.
 - Create is enabled with at least one input, a function body and a run that succeeded; otherwise
   the status line, and the button's tooltip, say why.
 - Advanced (collapsed): the params JSON object handed to the script as `params`, and "Pin at current
   time".
-- The Function Library has a Kind column (Series, 3D, 2D), shows each function's description and
+- The Function Library has a Reads column (what each function takes: series, point cloud, image...), shows each function's description and
   required inputs, and Use on an object function rewrites its text to read the Var of the first
   matching unbound input and leaves the Vars as they are ("needs: cloud (point cloud)" when there
   is none). New built-in object functions:
@@ -54,7 +56,7 @@ One editor for series and objects.
   not the Var of another input; an empty name gives back the default. The script is never edited.
   The names are saved with the recipe.
 - Errors name your own code: a host message at `script:8:` is shown as `line 1` (`globals line 2`
-  for the globals pane), and a script that reads a name that is not bound ("attempt to index nil",
+  for the globals pane; a Python syntax error at `(<string>, line N)` too), and a script that reads a name that is not bound ("attempt to index nil",
   "NameError") lists the Vars it can read. An error shown over the preview stays until the next
   result replaces it.
 - When the host refuses the live preview recipe, or reports it in error or missing an input, the
