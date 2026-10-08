@@ -61,13 +61,13 @@ tt { white-space: nowrap; }
 &lt;ul&gt;
 &lt;li&gt;&lt;b&gt;Create...&lt;/b&gt; asks for a name and says what will be created. The rows appear in &lt;b&gt;Custom Topics&lt;/b&gt;: &lt;tt&gt;name/output&lt;/tt&gt; for numbers; &lt;tt&gt;name&lt;/tt&gt; for a single object, &lt;tt&gt;name/output&lt;/tt&gt; when there are several.&lt;/li&gt;
 &lt;li&gt;A name cannot be empty, be an input, or contain &lt;tt&gt;__&lt;/tt&gt;. Reusing a name asks before replacing.&lt;/li&gt;
-&lt;li&gt;&lt;b&gt;Show in 3D&lt;/b&gt; / &lt;b&gt;Show in 2D&lt;/b&gt; opens a tab with the new objects. The tab is behind the editor: close the editor to see it.&lt;/li&gt;
+&lt;li&gt;To see an object output, open a 3D or 2D tab (&lt;b&gt;+&lt;/b&gt;, then the cube or image icon) and drag its row from Custom Topics into it. A 3D view starts in the frame of the first layer you drop.&lt;/li&gt;
 &lt;li&gt;To change a script later, select its row in Custom Topics and press the pencil. The button then reads &lt;b&gt;Modify&lt;/b&gt;.&lt;/li&gt;
 &lt;li&gt;Delete is in the &lt;b&gt;...&lt;/b&gt; menu of Custom Topics. &lt;b&gt;Ctrl+Z&lt;/b&gt; undoes it.&lt;/li&gt;
 &lt;/ul&gt;
 
 &lt;h2&gt;&lt;a name=&quot;library&quot;&gt;&lt;/a&gt;5. Function Library&lt;/h2&gt;
-&lt;p&gt;The grid icon above the code opens the library. &lt;b&gt;Kind&lt;/b&gt; says what a function reads (Series, 3D, 2D). Select one and press &lt;b&gt;Use&lt;/b&gt;: an object function is rewritten to read the Vars of your inputs. Built-in object functions:&lt;/p&gt;
+&lt;p&gt;The grid icon above the code opens the library. &lt;b&gt;Reads&lt;/b&gt; says what a function reads (series, point cloud, image...). Select one and press &lt;b&gt;Use&lt;/b&gt;: an object function is rewritten to read the Vars of your inputs. Built-in object functions:&lt;/p&gt;
 &lt;table border=&quot;1&quot; cellspacing=&quot;0&quot;&gt;
 &lt;tr&gt;&lt;th&gt;Function&lt;/th&gt;&lt;th&gt;Reads&lt;/th&gt;&lt;th&gt;Returns&lt;/th&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;&lt;tt&gt;points_per_frame&lt;/tt&gt;&lt;/td&gt;&lt;td&gt;point cloud&lt;/td&gt;&lt;td&gt;its number of points&lt;/td&gt;&lt;/tr&gt;
@@ -105,7 +105,7 @@ return diff&lt;/pre&gt;
 &lt;p&gt;An object input (a point cloud, an image...) gives you three kinds of things. Full list: &lt;a href=&quot;https://plotjuggler.io/docs/reference/scripting-api/&quot;&gt;plotjuggler.io/docs/reference/scripting-api&lt;/a&gt;&lt;/p&gt;
 
 &lt;h3&gt;Fields: data the object carries&lt;/h3&gt;
-&lt;p&gt;Read them by name, with a dot, in Luau and in Python: &lt;tt&gt;cloud.frame_id&lt;/tt&gt;, &lt;tt&gt;image.width&lt;/tt&gt;, &lt;tt&gt;image.timestamp_ns&lt;/tt&gt;. They are read-only: &lt;tt&gt;cloud.frame_id = &quot;map&quot;&lt;/tt&gt; is an error. The raw bytes (points, pixels) are not a field: use the methods below.&lt;/p&gt;
+&lt;p&gt;Read them by name, with a dot, in Luau and in Python: &lt;tt&gt;cloud.frame_id&lt;/tt&gt;, &lt;tt&gt;image.width&lt;/tt&gt;, &lt;tt&gt;image.timestamp_ns&lt;/tt&gt;. They are read-only: &lt;tt&gt;cloud.frame_id = &quot;map&quot;&lt;/tt&gt; is an error. The raw bytes (points, pixels) are not a field: use the methods below. Reading a field that is a list (&lt;tt&gt;overlay.points&lt;/tt&gt;) copies the whole list into the script: on a large overlay that can exceed the script memory limit (64 MB). Use &lt;tt&gt;overlay:count()&lt;/tt&gt; to count its points.&lt;/p&gt;
 
 &lt;h3&gt;Methods: computations on the object&lt;/h3&gt;
 &lt;p&gt;They return a new value or a new object; the input is never changed. Luau calls methods with a colon, &lt;b&gt;&quot;:&quot;&lt;/b&gt; (&lt;tt&gt;cloud:count()&lt;/tt&gt;); Python with a dot, &lt;b&gt;&quot;.&quot;&lt;/b&gt; (&lt;tt&gt;cloud.count()&lt;/tt&gt;). In Luau, &lt;tt&gt;cloud:count()&lt;/tt&gt; is short for &lt;tt&gt;cloud.count(cloud)&lt;/tt&gt;: the colon passes the object itself, so &lt;tt&gt;cloud.count()&lt;/tt&gt; fails.&lt;/p&gt;
@@ -115,6 +115,7 @@ return diff&lt;/pre&gt;
 &lt;tr&gt;&lt;td&gt;image&lt;/td&gt;&lt;td&gt;&lt;tt&gt;decode()&lt;/tt&gt; gives the decoded pixels, which have &lt;tt&gt;pixel(x, y)&lt;/tt&gt;, &lt;tt&gt;to_gray()&lt;/tt&gt;, &lt;tt&gt;crop(x, y, w, h)&lt;/tt&gt;, &lt;tt&gt;threshold(op, value)&lt;/tt&gt;, &lt;tt&gt;stats()&lt;/tt&gt;&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;depth image&lt;/td&gt;&lt;td&gt;&lt;tt&gt;to_point_cloud(camera_info)&lt;/tt&gt;, optional &lt;tt&gt;{step=, max_depth=}&lt;/tt&gt;&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;video frame&lt;/td&gt;&lt;td&gt;&lt;tt&gt;frame_at(t_ns)&lt;/tt&gt;&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;image overlay&lt;/td&gt;&lt;td&gt;&lt;tt&gt;count()&lt;/tt&gt;: its number of points, without copying them&lt;/td&gt;&lt;/tr&gt;
 &lt;/table&gt;
 &lt;p&gt;Methods chain: &lt;tt&gt;image:decode():to_gray():threshold(&quot;&amp;gt;&quot;, 128)&lt;/tt&gt;.&lt;/p&gt;
 
@@ -140,14 +141,14 @@ return {&quot;cropped&quot;: cropped, &quot;count&quot;: cropped.count()}&lt;/pr
 &lt;h2&gt;&lt;a name=&quot;problems&quot;&gt;&lt;/a&gt;10. When something is wrong&lt;/h2&gt;
 &lt;table border=&quot;1&quot; cellspacing=&quot;0&quot;&gt;
 &lt;tr&gt;&lt;th&gt;You see&lt;/th&gt;&lt;th&gt;Do this&lt;/th&gt;&lt;/tr&gt;
-&lt;tr&gt;&lt;td&gt;No sample of /topic at the cursor&lt;/td&gt;&lt;td&gt;The cursor is before that input&#x27;s first frame, or the editor has not re-run since your last change. Move the timeline cursor.&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;No sample of /topic at the cursor&lt;/td&gt;&lt;td&gt;The cursor is before that input&#x27;s first frame. Move the timeline cursor.&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;The script returned no values&lt;/td&gt;&lt;td&gt;Add a &lt;tt&gt;return&lt;/tt&gt;. The message lists the Vars you can read.&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;`value` is not defined here&lt;/td&gt;&lt;td&gt;&lt;tt&gt;value&lt;/tt&gt; exists only with series inputs. Use the Var of the object.&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;line N: ...&lt;/td&gt;&lt;td&gt;An error at line N of your function (&lt;tt&gt;globals line N&lt;/tt&gt;: Global Variables).&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;Preview: ...&lt;/td&gt;&lt;td&gt;PlotJuggler refused or could not run the preview; the text says why.&lt;/td&gt;&lt;/tr&gt;
-&lt;tr&gt;&lt;td&gt;The preview view shows only a grid&lt;/td&gt;&lt;td&gt;Change its fixed frame to the frame of your input.&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;Create is disabled&lt;/td&gt;&lt;td&gt;It needs an input, a body and a run without error. Its tooltip says which is missing.&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;A dot after a row in Custom Topics&lt;/td&gt;&lt;td&gt;Blue: computing. Orange: an input is missing. Red: error. Grey: empty result. Hover the row for the detail.&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;script memory limit (64 MB) exceeded&lt;/td&gt;&lt;td&gt;The script holds too much at once, often from reading a long list such as &lt;tt&gt;overlay.points&lt;/tt&gt;. Use methods (&lt;tt&gt;count()&lt;/tt&gt;, &lt;tt&gt;crop_box&lt;/tt&gt;...) instead.&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;object bundle exceeds byte ceiling&lt;/td&gt;&lt;td&gt;The result is too large to keep. Crop, filter or sample it first.&lt;/td&gt;&lt;/tr&gt;
 &lt;/table&gt;
 &lt;/body&gt;&lt;/html&gt;
