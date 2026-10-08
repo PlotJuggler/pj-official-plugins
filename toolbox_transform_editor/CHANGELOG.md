@@ -62,8 +62,6 @@ One editor for series and objects.
   healthy again. A Create the host refuses is shown over the preview too, until you edit the form.
 - While the host computes the preview's series, the status line reads "Computing series: 3 / 10"
   on a host that reports its progress.
-- After creating a recipe with object outputs, a "Show in 3D" / "Show in 2D" button opens a scene
-  tab with them (hosts with scene tabs only).
 
 ### Fixed
 - Renaming a Var also renames it after a Luau concatenation (`"n=" .. cloud`); a field of the same

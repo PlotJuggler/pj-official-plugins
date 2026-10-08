@@ -742,10 +742,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     const std::string& params_error = derived().params_error;
     wd.setFieldValid("paramsLineEdit", params_error.empty(), params_error);
     wd.setChecked("pinCurrentTimeCheck", pin_current_);
-    wd.setVisible("buttonShowScene", !scene_button_.empty());
-    if (!scene_button_.empty()) {
-      wd.setButtonText("buttonShowScene", scene_button_);
-    }
 
     // Function Library sub-panel (cloned from PJ3's buttonLibraryBox dialog).
     // One-shot open/close commands, then live population while it is open.
@@ -1087,10 +1083,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       help_requested_ = true;
       return true;
     }
-    if (name == "buttonShowScene") {
-      show_scene_requested_ = true;
-      return true;
-    }
     return false;
   }
 
@@ -1137,12 +1129,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     } else if (action == PendingCreate::Batch) {
       if (on_save_batch_) {
         on_save_batch_();
-      }
-    }
-    if (show_scene_requested_) {
-      show_scene_requested_ = false;
-      if (on_show_scene_) {
-        on_show_scene_();
       }
     }
     // Rebuild immediately after an editor change. Browser builds sample an
@@ -1472,9 +1458,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
   void setInputTypeResolver(std::function<std::string(const std::string&)> cb) {
     input_type_of_ = std::move(cb);
-  }
-  void setOnShowScene(std::function<void()> cb) {
-    on_show_scene_ = std::move(cb);
   }
   void setOnSaveBatch(std::function<void()> cb) {
     on_save_batch_ = std::move(cb);
@@ -1940,10 +1923,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool pinCurrentTime() const {
     return pin_current_;
   }
-  /// Label of the "Show in 3D/2D" button offered for the recipe that was just created (empty hides it).
-  void setSceneButton(std::string label) {
-    scene_button_ = std::move(label);
-  }
   /// How many series a transform returns: the names listed in a saved comma-separated name, else the values its
   /// return statements give.
   std::size_t transformOutputCount() const {
@@ -2210,7 +2189,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void loadKindState(const nlohmann::json& cfg, const std::string& user_params_text) {
     params_text_.clear();
     pin_current_ = false;
-    scene_button_.clear();
     kind_hint_on_demand_ = false;
     clearTrial();
     status_text_.clear();
@@ -2308,9 +2286,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string scene_embed_kind_;  // the embedded scene view of the preview; empty = none
   std::vector<PJ::SceneTopic> scene_embed_topics_;
   bool preview_has_numbers_ = true;
-  std::string scene_button_;  // label of the "Show in 3D/2D" button; empty hides it
-  bool show_scene_requested_ = false;
-  std::function<void()> on_show_scene_;
   std::function<std::string(const std::string&)> input_type_of_;
   std::function<bool(const std::string&)> own_recipe_exists_;
   bool edit_mode_ = false;              // opened to modify an existing series (locks the name, button = Modify)
@@ -2406,7 +2381,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   PJ_borrowed_dialog_t getDialog() override {
     if (!callbacks_wired_) {
       dialog_.setOnSave([this]() { onSave(); });
-      dialog_.setOnShowScene([this]() { showInScene(); });
       dialog_.setOnSaveBatch([this]() { onSaveBatch(); });
       dialog_.setOnRefreshPreview([this]() { refreshPreview(); });
       dialog_.setOnValidateBatch([this]() { validateBatch(); });
@@ -2430,10 +2404,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // Optional: anchors an on-demand preview's instant to the playhead.
     if (auto pb = services.get<PJ::sdk::PlaybackHostService>()) {
       playback_view_ = *pb;
-    }
-    // Optional: "Show in 3D/2D" after creating an on-demand recipe.
-    if (auto tabs = services.get<PJ::sdk::PlotTabHostService>()) {
-      plot_tabs_view_ = *tabs;
     }
     return PJ::okStatus();
   }
@@ -2808,23 +2778,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       runtimeHost().notifyDataChanged();
     }
 
-    // Offer to open the object outputs in a scene tab; otherwise the editor closes like Create does.
-    scene_topics_.clear();
-    scene_kind_.clear();
-    if (plot_tabs_view_.hasSceneTabs() && created->size() == request.outputs.size()) {
-      SceneTargets targets = collectSceneTargets(request.outputs, *created, build.anchor);
-      scene_topics_ = std::move(targets.topics);
-      scene_kind_ = std::move(targets.kind);
-    }
-    if (!scene_topics_.empty()) {
-      scene_id_ = std::string(kSceneIdPrefix) + id;
-      dialog_.setSceneButton(scene_kind_ == "2d" ? "Show in 2D" : "Show in 3D");
-    } else {
-      dialog_.requestClose();
-    }
+    dialog_.requestClose();
   }
 
-  // The object outputs of a created recipe with the dataset each one lives in, and the one scene kind that
+  // The object outputs of the preview recipe with the dataset each one lives in, and the one scene kind that
   // shows them: 3D unless every object output is a 2D one. The dataset comes from the catalog like the assistant's
   // scene_view attach does; a topic the catalog does not list yet takes the dataset its inputs were anchored to.
   struct SceneTargets {
@@ -2859,31 +2816,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       targets.kind = all_2d ? "2d" : "3d";
     }
     return targets;
-  }
-
-  // "Show in 3D/2D": a scene tab of the right kind with the created object topics attached.
-  void showInScene() {
-    if (!plot_tabs_view_.hasSceneTabs() || scene_topics_.empty()) {
-      return;
-    }
-    const std::string title = scene_id_.substr(kSceneIdPrefix.size());
-    if (auto status = plot_tabs_view_.createTabV2(scene_id_, scene_kind_, title); !status) {
-      report(PJ::ToolboxMessageLevel::kError, "Transform Editor: " + std::string(status.error()));
-      return;
-    }
-    attachTopics(scene_id_, scene_topics_);
-    (void)plot_tabs_view_.focusTab(scene_id_);
-  }
-
-  // Attach each topic to the scene tab; a failure is reported as an error.
-  void attachTopics(std::string_view tab_id, const std::vector<PJ::SceneTopic>& topics) {
-    for (const auto& [topic, dataset] : topics) {
-      if (auto status = plot_tabs_view_.attachTopic(tab_id, topic, dataset); !status) {
-        report(
-            PJ::ToolboxMessageLevel::kError,
-            "Transform Editor: could not attach '" + topic + "': " + std::string(status.error()));
-      }
-    }
   }
 
   // Batch create: apply the batch function to EVERY input series, naming each
@@ -3691,7 +3623,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   bool callbacks_wired_ = false;
   PJ::sdk::DataProcessorsHostView dp_view_;
   PJ::sdk::PlaybackHostView playback_view_;
-  PJ::sdk::PlotTabHostView plot_tabs_view_;
   PJ::sdk::ToolboxHostView test_catalog_host_{PJ_toolbox_host_t{}};  // set by tests only; see catalogHost()
   static constexpr int kCatalogRefreshTicks = 20;
   int catalog_refresh_ticks_ = 0;                         // 0 = never read yet
@@ -3708,11 +3639,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   std::optional<OnDemandBuild> on_demand_build_;  // see buildOnDemandRequest()
   std::uint64_t on_demand_build_revision_ = 0;    // the form revision it was built at
   int on_demand_build_count_ = 0;                 // rebuilds so far (tests assert the cache holds)
-  // "Show in 3D/2D" for the recipe just created: the tab id, its kind, and (topic, dataset) to attach.
-  static constexpr std::string_view kSceneIdPrefix = "te_";
-  std::string scene_id_;
-  std::string scene_kind_;
-  std::vector<PJ::SceneTopic> scene_topics_;
   std::optional<std::uint64_t> pending_preview_;
   std::chrono::steady_clock::time_point preview_deadline_;
   std::chrono::steady_clock::time_point next_preview_refresh_;

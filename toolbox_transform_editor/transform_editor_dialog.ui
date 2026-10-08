@@ -584,14 +584,6 @@
                    </property>
                   </widget>
                  </item>
-                 <item>
-                  <widget class="QPushButton" name="buttonShowScene">
-                   <property name="visible"><bool>false</bool></property>
-                   <property name="text">
-                    <string>Show in 3D</string>
-                   </property>
-                  </widget>
-                 </item>
                 </layout>
                </item>
               </layout>

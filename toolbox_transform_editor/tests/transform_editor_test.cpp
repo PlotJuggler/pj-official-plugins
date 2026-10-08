@@ -12,14 +12,12 @@
 #include "../transform_editor_plugin.cpp"
 #include "test_support/fake_catalog_host.hpp"
 #include "test_support/fake_playback_viewport_hosts.hpp"
-#include "test_support/fake_plot_tabs_host.hpp"
 #include "test_support/recording_dp_host.hpp"
 
 namespace {
 
 using toolbox_testing::FakeCatalogHost;
 using toolbox_testing::FakePlaybackHost;
-using toolbox_testing::FakePlotTabsHost;
 using toolbox_testing::RecordingDpHost;
 
 class TransformEditorPreviewTestPeer {
@@ -37,12 +35,11 @@ class TransformEditorPreviewTestPeer {
   }
   static void bind(
       TransformEditorToolbox& editor, RecordingDpHost& dp, FakeCatalogHost& catalog, FakePlaybackHost& playback,
-      FakePlotTabsHost& tabs, bool embeds_scene_views = true) {
+      bool embeds_scene_views = true) {
     announceHost(editor, embeds_scene_views ? PJ_DIALOG_HOST_EMBEDS_SCENE_VIEWS : 0);
     editor.dp_view_ = dp.view();
     editor.test_catalog_host_ = PJ::sdk::ToolboxHostView(catalog.makeHost());
     editor.playback_view_ = playback.view();
-    editor.plot_tabs_view_ = tabs.view();
     editor.edit_debounce_ = std::chrono::milliseconds(0);  // no waiting for quiet in a test
     editor.dialog_.setOnSave([&editor]() { editor.onSave(); });
   }
@@ -72,9 +69,6 @@ class TransformEditorPreviewTestPeer {
   static void save(TransformEditorToolbox& editor) {
     refresh(editor);
     editor.onSave();
-  }
-  static void showInScene(TransformEditorToolbox& editor) {
-    editor.showInScene();
   }
   static int builds(const TransformEditorToolbox& editor) {
     return editor.on_demand_build_count_;
@@ -260,7 +254,6 @@ struct Rig {
   RecordingDpHost dp;
   FakeCatalogHost catalog;
   FakePlaybackHost playback;
-  FakePlotTabsHost tabs;
   TransformEditorToolbox editor;
   bool embeds_scene_views = true;  // what the dialog host announces; rebind() after changing it
 
@@ -268,7 +261,7 @@ struct Rig {
     catalog.addObjectTopic("/cloud", "kPointCloud", 5, 0, 5000000000);
     playback.state.current_time_s = 3.0;
     dp.canned_report_json = kTrialReport;
-    TransformEditorPreviewTestPeer::bind(editor, dp, catalog, playback, tabs);
+    TransformEditorPreviewTestPeer::bind(editor, dp, catalog, playback);
   }
   TransformEditorDialog& dialog() {
     return TransformEditorPreviewTestPeer::dialog(editor);
@@ -276,7 +269,7 @@ struct Rig {
   // The fakes pick their vtable when view() is called, so a test that changes a capability
   // flag rebinds afterwards.
   void rebind() {
-    TransformEditorPreviewTestPeer::bind(editor, dp, catalog, playback, tabs, embeds_scene_views);
+    TransformEditorPreviewTestPeer::bind(editor, dp, catalog, playback, embeds_scene_views);
   }
   void load(const std::string& config) {
     ASSERT_TRUE(dialog().loadConfig(config));
@@ -754,61 +747,6 @@ TEST(TransformEditorCreate, ACreateWithNoSuccessfulTrialIsRefusedEvenWhenAskedDi
   EXPECT_EQ(rig.dp.persistent_creates, 0);
 }
 
-TEST(TransformEditorCreate, ShowInSceneOpensA3dTabForPointCloudsAnd2dForAnnotations) {
-  for (const auto& [type, scene_kind] :
-       {std::pair<std::string, std::string>{"kPointCloud", "3d"},
-        std::pair<std::string, std::string>{"kImageAnnotations", "2d"}}) {
-    Rig rig;
-    rig.dp.canned_report_json = R"({"bundles":[{"outputs":{"out":{"status":"ok","summary":{"type":")" + type +
-                                R"("}}}}],"outputs":[{"name":"out","type":")" + type + R"("}]})";
-    rig.load(onDemandConfig("my_filter"));
-    TransformEditorPreviewTestPeer::save(rig.editor);
-    ASSERT_EQ(rig.dp.persistent_creates, 1);
-    const auto widgets = rig.widgets();
-    EXPECT_EQ(widgets["buttonShowScene"]["visible"], true);
-    EXPECT_EQ(widgets["buttonShowScene"]["button_text"], scene_kind == "2d" ? "Show in 2D" : "Show in 3D");
-    TransformEditorPreviewTestPeer::showInScene(rig.editor);
-    ASSERT_EQ(rig.tabs.tabs.size(), 1u);
-    EXPECT_EQ(rig.tabs.tabs[0].kind, scene_kind);
-    ASSERT_EQ(rig.tabs.tabs[0].topics.size(), 1u);
-    EXPECT_EQ(rig.tabs.tabs[0].topics[0].topic, "out");
-  }
-}
-
-TEST(TransformEditorCreate, NoSceneButtonWithoutSceneTabsOrObjectOutputs) {
-  {
-    Rig rig;
-    rig.tabs.null_tail = true;  // a host with no scene workspace
-    rig.rebind();
-    rig.load(onDemandConfig("my_filter"));
-    TransformEditorPreviewTestPeer::save(rig.editor);
-    EXPECT_EQ(rig.widgets()["buttonShowScene"]["visible"], false);
-  }
-  {
-    Rig rig;  // numbers only: nothing to show in a scene
-    rig.dp.canned_report_json = kNumberReport;
-    rig.load(onDemandConfig("my_filter"));
-    TransformEditorPreviewTestPeer::save(rig.editor);
-    EXPECT_EQ(rig.dp.persistent_creates, 1);
-    EXPECT_EQ(rig.widgets()["buttonShowScene"]["visible"], false);
-  }
-}
-
-TEST(TransformEditorCreate, ShowInSceneAttachesWithTheInputsDataset) {
-  Rig rig;
-  rig.catalog.addObjectTopic("/a", "kPointCloud", 1, 0, 1000000000, "{}", "runA");
-  rig.catalog.addObjectTopic("/b", "kPointCloud", 1, 0, 1000000000, "{}", "runB");
-  rig.dp.canned_report_json = R"({"bundles":[{"outputs":{"out":{"status":"ok","summary":{"type":"kPointCloud"}}}}],)"
-                              R"("outputs":[{"name":"out","type":"kPointCloud"}]})";
-  rig.load(onDemandConfig("my_filter", "{}", false, "runA:/a"));
-  TransformEditorPreviewTestPeer::save(rig.editor);
-  TransformEditorPreviewTestPeer::showInScene(rig.editor);
-  ASSERT_EQ(rig.tabs.tabs.size(), 1u);
-  ASSERT_EQ(rig.tabs.tabs[0].topics.size(), 1u);
-  EXPECT_EQ(rig.tabs.tabs[0].topics[0].topic, "out");
-  EXPECT_EQ(rig.tabs.tabs[0].topics[0].dataset, "runA");
-}
-
 TEST(TransformEditorCreate, PreviewTicksReuseTheResolvedBuild) {
   Rig rig;
   rig.load(onDemandConfig("my_filter"));
@@ -1146,7 +1084,6 @@ TEST(TransformEditorPreview, ObjectOutputsPreviewInAnEphemeralRecipeShownInTheEm
   EXPECT_EQ(rig.dp.last_id, "__te_obj_preview__");
   EXPECT_EQ(rig.dp.last_outputs, (std::vector<std::string>{"cropped", "count"})) << "the inferred outputs";
   EXPECT_EQ(rig.dp.last_create_v2_time_flags, 0u) << "no instant: the preview follows the cursor";
-  EXPECT_TRUE(rig.tabs.tabs.empty()) << "no scene tab: the objects show in the embedded view";
   EXPECT_EQ(rig.dp.liveCount(), 0) << "an ephemeral recipe is never one of the user's";
   const auto widgets = rig.widgets();
   EXPECT_EQ(widgets["frameScenePreview"]["scene_view"], "3d");
@@ -1166,7 +1103,6 @@ TEST(TransformEditorPreview, ObjectOutputsPreviewInAnEphemeralRecipeShownInTheEm
   rig.refresh();
   EXPECT_EQ(rig.dp.create_v2_calls, 2);
   EXPECT_TRUE(rig.dp.last_removed.empty());
-  EXPECT_TRUE(rig.tabs.tabs.empty());
   const auto again = rig.widgets();
   ASSERT_EQ(again["frameScenePreview"]["scene_topics"].size(), 1u);
   EXPECT_NE(rig.dp.last_create_v2_params_json.find("\"k\":3"), std::string::npos);
@@ -1180,7 +1116,6 @@ TEST(TransformEditorPreview, ObjectsOnlyHideThePlotAndNumbersOnlyHideTheSceneAnd
   EXPECT_EQ(widgets["frameScenePreview"]["scene_view"], "3d");
   EXPECT_EQ(widgets["frameScenePreview"]["visible"], true);
   EXPECT_EQ(widgets["framePlotPreview"]["visible"], false) << "objects only: the scene takes the area";
-  EXPECT_TRUE(rig.tabs.tabs.empty());
 
   // The script now returns a number: the view goes away and the plot returns.
   rig.dp.canned_report_json = kNumberReport;
@@ -1201,7 +1136,7 @@ TEST(TransformEditorPreview, ObjectsOnlyHideThePlotAndNumbersOnlyHideTheSceneAnd
 
 TEST(TransformEditorPreview, WithoutTheHostsSceneViewBitTheSceneFrameStaysHiddenAndTheReadoutShows) {
   Rig rig;
-  rig.embeds_scene_views = false;  // scene workspaces exist (tabs), but the dialog host binds no scene_view frame
+  rig.embeds_scene_views = false;  // the dialog host binds no scene_view frame
   rig.rebind();
   rig.dp.canned_report_json = kTrialReport;
   rig.newObjectRecipe();
@@ -1280,7 +1215,6 @@ TEST(TransformEditorPreview, NumberOutputsShowTheReadoutWhileTheSeriesIsComputin
   EXPECT_NE(placeholder.find("computing the series"), std::string::npos) << placeholder;
   EXPECT_EQ(placeholder.find("newer host"), std::string::npos) << "that note is gone: " << placeholder;
   EXPECT_EQ(widgets["frameScenePreview"]["visible"], false);
-  EXPECT_TRUE(rig.tabs.tabs.empty()) << "no object output: no scene tab";
   EXPECT_EQ(
       TransformEditorPreviewTestPeer::status(rig.editor),
       std::string("value: 1.83 ") + kMiddleDot + " computing the series…");
@@ -1371,12 +1305,11 @@ TEST(TransformEditorPreview, CreateRemovesThePreviewRecipeAndCloseLeavesItToTheH
   RecordingDpHost dp;
   FakeCatalogHost catalog;
   FakePlaybackHost playback;
-  FakePlotTabsHost tabs;
   catalog.addObjectTopic("/cloud", "kPointCloud", 5, 0, 5000000000);
   dp.canned_report_json = kTrialReport;
   {
     TransformEditorToolbox editor;
-    TransformEditorPreviewTestPeer::bind(editor, dp, catalog, playback, tabs);
+    TransformEditorPreviewTestPeer::bind(editor, dp, catalog, playback);
     ASSERT_TRUE(TransformEditorPreviewTestPeer::dialog(editor).loadConfig(onDemandConfig("f")));
     TransformEditorPreviewTestPeer::refresh(editor);
     ASSERT_EQ(dp.create_v2_calls, 1);
@@ -1402,18 +1335,6 @@ TEST(TransformEditorPreview, SeriesOnlyRecipesInstallNoScenePreview) {
   rig.load(R"({"output_name":"dbl","global_code":"","function_body":"return value*2","sources":["a/x"]})");
   rig.refresh();
   EXPECT_EQ(rig.dp.create_v2_calls, 0);
-  EXPECT_TRUE(rig.tabs.tabs.empty());
-}
-
-TEST(TransformEditorPreview, WithoutSceneTabsTheEmbeddedViewStillFollowsTheDialogHostBit) {
-  Rig rig;
-  rig.tabs.null_tail = true;
-  rig.rebind();
-  rig.load(onDemandConfig("my_filter"));
-  rig.refresh();
-  EXPECT_TRUE(rig.tabs.tabs.empty());
-  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d") << "the bit alone gates the embedded view";
-  EXPECT_NE(TransformEditorPreviewTestPeer::status(rig.editor).find("count: 42"), std::string::npos);
 }
 
 TEST(TransformEditorPreview, SummaryReadsAPointCloudReport) {
