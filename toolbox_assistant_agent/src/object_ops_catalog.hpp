@@ -73,7 +73,8 @@ struct ObjectOperation {
     case BuiltinObjectType::kVideoFrame:
       return {
           {"frame_at(t_ns)",
-           "decoded {image,presentation_ns}, or nil plus a reason; use pj.int64 for exact large timestamps"}};
+           "decoded {image,presentation_ns}, or nil plus a reason; pass an exact integer or a pj.int64 timestamp "
+           "(timestamp_ns fields and pj.tf.now are pj.int64; scripts cannot construct one)"}};
     case BuiltinObjectType::kImageAnnotations:
       return {
           {"pj.annotations.new{image_topic=}:points{points={{x,y},...},type=,thickness=,outline_color=,fill_color=}:"
