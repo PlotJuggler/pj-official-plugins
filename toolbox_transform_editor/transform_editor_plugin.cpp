@@ -595,16 +595,17 @@ TrialReport parseTrialReport(const std::string& report) {
 
 using transform_editor::text::returnArity;
 
-// "Series" for a per-sample function, "2D" when every input of an object function is an image-like type, else "3D".
-std::string snippetKindLabel(const Snippet& snippet) {
+// What a function reads: "series" for a per-sample function, else its input types in words ("depth image, camera
+// info").
+std::string snippetReadsLabel(const Snippet& snippet) {
   if (snippet.kind != "object") {
-    return "Series";
+    return "series";
   }
-  const bool all_2d =
-      !snippet.inputs.empty() && std::all_of(snippet.inputs.begin(), snippet.inputs.end(), [](const auto& in) {
-        return transform_editor::text::sceneKindForOutputType(in.type) == "2d";
-      });
-  return all_2d ? "2D" : "3D";
+  std::string text;
+  for (const auto& input : snippet.inputs) {
+    text += (text.empty() ? "" : ", ") + objectTypeLabel(input.type);
+  }
+  return text.empty() ? "objects" : text;
 }
 
 // "cloud (point cloud), camera_info (camera info)"
@@ -799,13 +800,13 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     if (library_open_) {
       const std::vector<std::string> names = filteredSnippetNames();
-      wd.setTableHeaders("tableFunctions", {"Function", "Kind", "Language"});
+      wd.setTableHeaders("tableFunctions", {"Function", "Reads", "Language"});
       std::vector<std::vector<std::string>> lib_rows;
       lib_rows.reserve(names.size());
       for (const auto& n : names) {
         auto it = std::find_if(snippets_.begin(), snippets_.end(), [&](const Snippet& s) { return s.name == n; });
         const std::string lang = (it != snippets_.end() && it->language == "python") ? "Python" : "Lua";
-        lib_rows.push_back({n, it != snippets_.end() ? snippetKindLabel(*it) : "Series", lang});
+        lib_rows.push_back({n, it != snippets_.end() ? snippetReadsLabel(*it) : "series", lang});
       }
       wd.setTableRows("tableFunctions", lib_rows);
       wd.setLabel("previewInfoLabel", snippetInfoText(library_selected_));

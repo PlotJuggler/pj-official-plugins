@@ -1525,12 +1525,12 @@ TEST(TransformEditorLibrary, UseOnASeriesFunctionJustLoadsTheCode) {
   EXPECT_EQ(TransformEditorPreviewTestPeer::status(rig.editor).find("needs:"), std::string::npos);
 }
 
-TEST(TransformEditorLibrary, TheTableShowsAKindColumnAndThePreviewTheDescriptionAndInputs) {
+TEST(TransformEditorLibrary, TheTableShowsAReadsColumnAndThePreviewTheDescriptionAndInputs) {
   Rig rig;
   rig.dialog().setSnippets(defaultSnippets());
   rig.dialog().onClicked("buttonLibraryBox");
   auto widgets = rig.widgets();
-  EXPECT_EQ(widgets["tableFunctions"]["headers"], nlohmann::json::array({"Function", "Kind", "Language"}));
+  EXPECT_EQ(widgets["tableFunctions"]["headers"], nlohmann::json::array({"Function", "Reads", "Language"}));
   const auto rows = widgets["tableFunctions"]["rows"];
   const auto row = [&](const std::string& name) {
     for (const auto& r : rows) {
@@ -1540,10 +1540,10 @@ TEST(TransformEditorLibrary, TheTableShowsAKindColumnAndThePreviewTheDescription
     }
     return nlohmann::json();
   };
-  EXPECT_EQ(row("rad_to_deg")[1], "Series");
-  EXPECT_EQ(row("lidar_crop")[1], "3D");
-  EXPECT_EQ(row("cam_threshold")[1], "2D");
-  EXPECT_EQ(row("depth_cloud")[1], "3D");
+  EXPECT_EQ(row("rad_to_deg")[1], "series");
+  EXPECT_EQ(row("lidar_crop")[1], "point cloud");
+  EXPECT_EQ(row("cam_threshold")[1], "image");
+  EXPECT_EQ(row("depth_cloud")[1], "depth image, camera info");
   rig.dialog().onSelectionChanged("tableFunctions", {"depth_cloud"});
   widgets = rig.widgets();
   const std::string info = widgets["previewInfoLabel"]["label"];
