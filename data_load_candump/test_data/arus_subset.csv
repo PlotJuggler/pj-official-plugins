@@ -1,0 +1,7 @@
+ID,bitIn,bitFin,Signed,Power,Scale,Offset,Name
+0x1a31,0,1,True,1,0.02,0,IMU_ax
+0x1a32,2,3,True,1,0.02,0,IMU_ay
+0x135,0,1,True,1,0.0298062593145,-70.7302533532,brake_hydr_front
+0x134,0,1,True,1,-0.000031688042484,0.476959989071,extensometer
+0x1021,0,3,True,1,0.00001047197551196,0,fl_inv_speed
+0x1022,4,5,True,1,0.0098,0,fl_inv_torque

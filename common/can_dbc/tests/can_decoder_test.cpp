@@ -1,9 +1,15 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <field_test_helpers.hpp>
+#include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
+#include <pj_can_dbc/signal_row.hpp>
+#include <set>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -11,6 +17,8 @@ namespace {
 using pj_can_dbc::CanDecoder;
 using pj_can_dbc::DecodedSignal;
 using pj_can_dbc::DecodeResult;
+using pj_can_dbc::SignalRowBuilder;
+using pj_can_dbc::testing::findField;
 
 // A minimal but complete DBC with:
 //  - a standard 8-byte message id 256 (0x100): Speed (LE unsigned, x0.1 km/h),
@@ -256,6 +264,539 @@ TEST(CanDecoder, GarbageDbcYieldsNoMessages) {
   EXPECT_EQ(dec.messageCount(), 0u);
 }
 
+// --- Vendored dbc.cpp regex fix (common/can_dbc, not dbc_parser_cpp upstream):
+// factor/offset/min/max share one signed, optional-exponent number pattern,
+// and BO_/SG_ token separators tolerate tabs and repeated spaces. Before the
+// fix, any of these signals failed signal_re and were dropped SILENTLY (the
+// message would still load, just with fewer signals) -- so every test below
+// also pins messageCount()/signal presence, not just the decoded value.
+
+TEST(CanDecoderDbcFix, DecodesNegativeFactorAndOffset) {
+  // Upstream scalePattern was "Non negative float" -- a negative factor could
+  // not match SG_ at all, so this whole signal used to be dropped.
+  const char* const kFixDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 300 NegMsg: 8 ECU
+ SG_ Neg : 0|8@1- (-2,-1) [0|0] "" ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kFixDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+
+  // raw -3 (0xFD, signed 8-bit) -> -3 * -2 + -1 = 5.
+  const std::vector<std::uint8_t> data{0xFD, 0, 0, 0, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(300, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* neg = find(sigs, "Neg");
+  ASSERT_NE(neg, nullptr);
+  EXPECT_DOUBLE_EQ(neg->value, 5.0);
+}
+
+TEST(CanDecoderDbcFix, DecodesExponentialFactorOffsetMinMax) {
+  // Upstream floatPattern had no exponent support at all -- Vector DBCs
+  // routinely emit float signals as "[-3.4E+38|3.4E+38]"; every one of these
+  // used to be dropped.
+  const char* const kFixDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 301 ExpMsg: 8 ECU
+ SG_ Exp : 0|16@1+ (1E-2,1E+1) [-3.4E+38|3.4E+38] "" ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kFixDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+
+  // raw 500 (0x01F4) -> 500 * 0.01 + 10 = 15.
+  const std::vector<std::uint8_t> data{0xF4, 0x01, 0, 0, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(301, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* exp_sig = find(sigs, "Exp");
+  ASSERT_NE(exp_sig, nullptr);
+  EXPECT_DOUBLE_EQ(exp_sig->value, 15.0);
+}
+
+TEST(CanDecoderDbcFix, DecodesLeadingPlusSignAndLeadingDotNumbers) {
+  // "+2" (explicit plus) and ".5" (no leading digit) are both valid DBC
+  // numbers that neither upstream pattern accepted.
+  const char* const kFixDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 302 PlusDotMsg: 8 ECU
+ SG_ PlusDot : 0|8@1+ (+2,.5) [0|0] "" ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kFixDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+
+  // raw 3 -> 3 * 2 + 0.5 = 6.5.
+  const std::vector<std::uint8_t> data{3, 0, 0, 0, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(302, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* pd = find(sigs, "PlusDot");
+  ASSERT_NE(pd, nullptr);
+  EXPECT_DOUBLE_EQ(pd->value, 6.5);
+}
+
+TEST(CanDecoderDbcFix, TabsAndDoubleSpacesDoNotDropTheSignal) {
+  // Upstream whiteSpace was exactly one "\\s" -- a tab or a doubled space
+  // between BO_/SG_ tokens (both legal DBC whitespace) failed signal_re, so
+  // the signal was silently dropped even though the message line itself is
+  // untouched by this fix (message_re's own whitespace is separately fixed
+  // and covered below).
+  const char* const kFixDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 303 SpacedMsg: 8 ECU
+	SG_	Spaced  :	0|8@1+	(2,0)  [0|0]  "" 	ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kFixDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+
+  const std::vector<std::uint8_t> data{5, 0, 0, 0, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(303, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* spaced = find(sigs, "Spaced");
+  ASSERT_NE(spaced, nullptr);
+  EXPECT_DOUBLE_EQ(spaced->value, 10.0);
+}
+
+TEST(CanDecoderDbcFix, MessageLineToleratesTabsAndDoubleSpaces) {
+  // Same robustness check, but on the BO_ line's own whitespace (message_re).
+  const char* const kFixDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_	304  SpacedMsg2:	8  ECU
+ SG_ S : 0|8@1+ (1,0) [0|0] "" ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kFixDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+
+  const std::vector<std::uint8_t> data{7, 0, 0, 0, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(304, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  EXPECT_NE(find(sigs, "S"), nullptr);
+}
+
+// --- VAL_ value tables: a DBC "VAL_" line maps a signal's raw integer value
+// to a text label (an enum-like status). CanDecoder resolves the label at
+// decode time (DecodedSignal::raw/label) and SignalRowBuilder turns that
+// into a "<signal>_label" text field alongside the signal's own unchanged
+// numeric field, for PJ4's State Transitions view.
+
+// Assembles "VERSION ... NS_ ... BS_: ... BU_: ECU" boilerplate plus one
+// BO_/SG_ pair and (if non-empty) a trailing VAL_ line -- shared by the VAL_
+// tests below instead of each repeating the same DBC header text.
+std::string valDbc(const std::string& bo_line, const std::string& sg_line, const std::string& val_line) {
+  std::string dbc = "VERSION \"1.0.0\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n" + bo_line + "\n " + sg_line + "\n";
+  if (!val_line.empty()) {
+    dbc += val_line + "\n";
+  }
+  return dbc;
+}
+
+// BO_ 600 StatusMsg / AS_status [0|2], reused verbatim by two tests below.
+const std::string kStatusValDbc = valDbc(
+    "BO_ 600 StatusMsg: 8 ECU", R"(SG_ AS_status : 0|8@1+ (1,0) [0|2] "" ECU)",
+    R"(VAL_ 600 AS_status 0 "OFF" 1 "READY" 2 "DRIVING" ;)");
+
+TEST(CanDecoderValueTable, BasicTableResolvesLabel) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kStatusValDbc).has_value());
+  EXPECT_EQ(dec.valueTableCount(), 1u);
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(600, false, std::vector<std::uint8_t>{1, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* status = find(sigs, "AS_status");
+  ASSERT_NE(status, nullptr);
+  ASSERT_TRUE(status->raw.has_value());
+  ASSERT_TRUE(status->label.has_value());
+  EXPECT_EQ(*status->label, "READY");
+  EXPECT_EQ(*status->raw, 1);
+}
+
+TEST(CanDecoderValueTable, NegativeInt8KeyResolvesLabel) {
+  // Signed 8-bit signal, VAL_ key written as a literal negative number.
+  const std::string dbc = valDbc(
+      "BO_ 601 ErrMsgA: 8 ECU", R"(SG_ ErrSig : 0|8@1- (1,0) [-128|127] "" ECU)", R"(VAL_ 601 ErrSig -1 "ERROR" ;)");
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(dbc).has_value());
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(601, false, std::vector<std::uint8_t>{0xFF, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* err = find(sigs, "ErrSig");
+  ASSERT_NE(err, nullptr);
+  EXPECT_DOUBLE_EQ(err->value, -1.0);
+  ASSERT_TRUE(err->label.has_value());
+  EXPECT_EQ(*err->label, "ERROR");
+  EXPECT_EQ(*err->raw, -1);
+}
+
+TEST(CanDecoderValueTable, AllUnsignedInt8KeyConventionResolvesSameLabel) {
+  // Same signal/payload as above, but the VAL_ key is spelled the OTHER
+  // convention some DBC exporters use for a signed signal's negative value:
+  // the all-unsigned 8-bit bit pattern (255, not -1). Both must resolve the
+  // SAME raw key (-1) to the SAME label.
+  const std::string dbc = valDbc(
+      "BO_ 602 ErrMsgB: 8 ECU", R"(SG_ ErrSig : 0|8@1- (1,0) [-128|127] "" ECU)", R"(VAL_ 602 ErrSig 255 "ERROR" ;)");
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(dbc).has_value());
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(602, false, std::vector<std::uint8_t>{0xFF, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* err = find(sigs, "ErrSig");
+  ASSERT_NE(err, nullptr);
+  ASSERT_TRUE(err->label.has_value());
+  EXPECT_EQ(*err->label, "ERROR");
+  EXPECT_EQ(*err->raw, -1);
+}
+
+TEST(CanDecoderValueTable, OutOfTableValueFallsBackToNumber) {
+  const std::string dbc = valDbc(
+      "BO_ 600 StatusMsg: 8 ECU", R"(SG_ AS_status : 0|8@1+ (1,0) [0|7] "" ECU)",
+      R"(VAL_ 600 AS_status 0 "OFF" 1 "READY" 2 "DRIVING" ;)");
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(dbc).has_value());
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(600, false, std::vector<std::uint8_t>{7, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* status = find(sigs, "AS_status");
+  ASSERT_NE(status, nullptr);
+  ASSERT_TRUE(status->raw.has_value());
+  EXPECT_FALSE(status->label.has_value());
+  EXPECT_EQ(*status->raw, 7);
+
+  SignalRowBuilder builder;
+  const auto fields = builder.build(sigs);
+  const auto* label_field = findField(fields, "AS_status_label");
+  ASSERT_NE(label_field, nullptr);
+  ASSERT_TRUE(std::holds_alternative<std::string_view>(label_field->value));
+  EXPECT_EQ(std::get<std::string_view>(label_field->value), "7");
+}
+
+TEST(CanDecoderValueTable, ScaledSignalResolvesLabelFromRawKey) {
+  // factor 0.5, offset 10: raw 4 -> physical 12.0; the VAL_ key (4) is the
+  // RAW value, not the physical one.
+  const std::string dbc = valDbc(
+      "BO_ 603 ScaledMsg: 8 ECU", R"(SG_ Scaled : 0|8@1+ (0.5,10) [0|137.5] "" ECU)", R"(VAL_ 603 Scaled 4 "FOUR" ;)");
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(dbc).has_value());
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(603, false, std::vector<std::uint8_t>{4, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* scaled = find(sigs, "Scaled");
+  ASSERT_NE(scaled, nullptr);
+  EXPECT_DOUBLE_EQ(scaled->value, 12.0);
+  ASSERT_TRUE(scaled->label.has_value());
+  EXPECT_EQ(*scaled->label, "FOUR");
+  EXPECT_EQ(*scaled->raw, 4);
+}
+
+namespace {
+// One DBC body per whitespace/punctuation variant of the SAME two-entry
+// VAL_ line -- all must parse to the SAME two labels ("A" for key 0, "B" for
+// key 1), pinning the vendored value_re/description_re whitespace fix.
+void expectTwoEntryTableResolves(const std::string& val_line) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(valDbc("BO_ 604 VMsg: 8 ECU", R"(SG_ VField : 0|8@1+ (1,0) [0|1] "" ECU)", val_line))
+                  .has_value());
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  auto sigs = dec.decode(604, false, std::vector<std::uint8_t>{0, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* v0 = find(sigs, "VField");
+  ASSERT_NE(v0, nullptr);
+  ASSERT_TRUE(v0->label.has_value());
+  EXPECT_EQ(*v0->label, "A");
+
+  sigs = dec.decode(604, false, std::vector<std::uint8_t>{1, 0, 0, 0, 0, 0, 0, 0}, result);
+  const auto* v1 = find(sigs, "VField");
+  ASSERT_NE(v1, nullptr);
+  ASSERT_TRUE(v1->label.has_value());
+  EXPECT_EQ(*v1->label, "B");
+}
+}  // namespace
+
+TEST(CanDecoderValueTable, TabSeparatedEntriesParse) {
+  expectTwoEntryTableResolves("VAL_\t604\tVField\t0\t\"A\"\t1\t\"B\"\t;");
+}
+
+TEST(CanDecoderValueTable, DoubleSpaceSeparatedEntriesParse) {
+  expectTwoEntryTableResolves("VAL_  604  VField  0  \"A\"  1  \"B\"  ;");
+}
+
+TEST(CanDecoderValueTable, NoSpaceBeforeSemicolonParses) {
+  expectTwoEntryTableResolves("VAL_ 604 VField 0 \"A\" 1 \"B\";");
+}
+
+TEST(CanDecoderValueTable, TrailingSpaceAfterSemicolonParses) {
+  expectTwoEntryTableResolves("VAL_ 604 VField 0 \"A\" 1 \"B\" ; ");
+}
+
+TEST(CanDecoderValueTable, AppliesToExtendedMessageId) {
+  // BO_ 2147484253 = 0x80000000 (Vector extended flag) | 605.
+  const std::string dbc = valDbc(
+      "BO_ 2147484253 ExtStatusMsg: 8 ECU", R"(SG_ ExtStatus : 0|8@1+ (1,0) [0|255] "" ECU)",
+      R"(VAL_ 2147484253 ExtStatus 1 "ON" ;)");
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(dbc).has_value());
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(605u, /*extended=*/true, std::vector<std::uint8_t>{1, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* status = find(sigs, "ExtStatus");
+  ASSERT_NE(status, nullptr);
+  ASSERT_TRUE(status->label.has_value());
+  EXPECT_EQ(*status->label, "ON");
+}
+
+TEST(CanDecoderValueTable, LoneValTableLineLoadsWithoutEffect) {
+  // VAL_TABLE_ (a global enum table, not tied to any signal) is out of
+  // scope for this fix -- it must not match value_re (its own line starts
+  // with "VAL_" too) and must not throw or otherwise disturb the rest of
+  // the DBC. Structurally different from valDbc()'s shape (VAL_TABLE_ sits
+  // BEFORE the message, and there is no signal VAL_ line at all), so this
+  // DBC is its own literal rather than a valDbc() call.
+  const char* const kValDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+VAL_TABLE_ T 0 "A" ;
+
+BO_ 606 PlainMsg: 8 ECU
+ SG_ Plain : 0|8@1+ (1,0) [0|255] "" ECU
+)DBC";
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kValDbc).has_value());
+  EXPECT_EQ(dec.messageCount(), 1u);
+  EXPECT_EQ(dec.valueTableCount(), 0u);
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(606, false, std::vector<std::uint8_t>{9, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* plain = find(sigs, "Plain");
+  ASSERT_NE(plain, nullptr);
+  EXPECT_FALSE(plain->raw.has_value());
+}
+
+TEST(CanDecoderValueTable, SignalWithoutValLineHasNoLabelField) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kDbc).has_value());
+  const std::vector<std::uint8_t> data{0xE8, 0x03, 0xB8, 0x0B, 0, 0, 0, 0};
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(256, false, data, result);
+  const auto* speed = find(sigs, "Speed");
+  ASSERT_NE(speed, nullptr);
+  EXPECT_FALSE(speed->raw.has_value());
+
+  SignalRowBuilder builder;
+  const auto fields = builder.build(sigs);
+  EXPECT_NE(findField(fields, "Speed"), nullptr);
+  EXPECT_EQ(findField(fields, "Speed_label"), nullptr);
+}
+
+TEST(CanDecoderValueTable, WideTableParsesWithoutCrashing) {
+  std::ostringstream val;
+  val << "VAL_ 607 Wide";
+  for (int i = 0; i < 256; ++i) {
+    val << " " << i << " \"L" << i << "\"";
+  }
+  val << " ;";
+
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(
+                     valDbc("BO_ 607 WideMsg: 8 ECU", R"(SG_ Wide : 0|32@1+ (1,0) [0|4294967295] "" ECU)", val.str()))
+                  .has_value());
+  EXPECT_EQ(dec.valueTableCount(), 1u);
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(607, false, std::vector<std::uint8_t>{42, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* wide = find(sigs, "Wide");
+  ASSERT_NE(wide, nullptr);
+  ASSERT_TRUE(wide->label.has_value());
+  EXPECT_EQ(*wide->label, "L42");
+}
+
+TEST(CanDecoderValueTable, SemicolonInsideLabelKeepsEveryEntry) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(valDbc(
+                                    "BO_ 608 SemiMsg: 8 ECU", R"(SG_ Semi : 0|8@1+ (1,0) [0|1] "" ECU)",
+                                    R"(VAL_ 608 Semi 0 "a;b" 1 "c" ;)"))
+                  .has_value());
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(608, false, std::vector<std::uint8_t>{0, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* semi = find(sigs, "Semi");
+  ASSERT_NE(semi, nullptr);
+  ASSERT_TRUE(semi->label.has_value());
+  EXPECT_EQ(*semi->label, "a;b");
+}
+
+TEST(CanDecoderValueTable, BuilderFieldOrderAndTypes) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kStatusValDbc).has_value());
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(600, false, std::vector<std::uint8_t>{2, 0, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+
+  SignalRowBuilder builder;
+  const auto fields = builder.build(sigs);
+  ASSERT_EQ(fields.size(), 2u);
+  EXPECT_EQ(fields[0].name, "AS_status");
+  ASSERT_TRUE(std::holds_alternative<double>(fields[0].value));
+  EXPECT_DOUBLE_EQ(std::get<double>(fields[0].value), 2.0);
+  EXPECT_EQ(fields[1].name, "AS_status_label");
+  ASSERT_TRUE(std::holds_alternative<std::string_view>(fields[1].value));
+  EXPECT_EQ(std::get<std::string_view>(fields[1].value), "DRIVING");
+}
+
+// --- A value-table label must never share a name with a real signal (see
+// assignLabelNames in can_decoder.cpp).
+
+namespace {
+
+// Decodes one frame of message 700 and builds its row; owns the decoder and
+// builder because the returned fields view their storage.
+struct LabelRow {
+  explicit LabelRow(const std::string& dbc, std::vector<std::uint8_t> payload) {
+    loaded = dec.loadDbcString(dbc).has_value();
+    DecodeResult result = DecodeResult::kNoMatch;
+    sigs = dec.decode(700, false, payload, result);
+    decoded = result == DecodeResult::kDecoded;
+    fields = builder.build(sigs);
+  }
+
+  bool namesUnique() const {
+    std::set<std::string> names;
+    for (const auto& field : fields) {
+      names.insert(field.name);
+    }
+    return names.size() == fields.size();
+  }
+
+  void expectText(const char* name, const char* text) const {
+    const auto* field = findField(fields, name);
+    ASSERT_NE(field, nullptr) << name;
+    ASSERT_TRUE(std::holds_alternative<std::string_view>(field->value)) << name;
+    EXPECT_EQ(std::get<std::string_view>(field->value), text) << name;
+  }
+
+  void expectNumber(const char* name, double value) const {
+    const auto* field = findField(fields, name);
+    ASSERT_NE(field, nullptr) << name;
+    ASSERT_TRUE(std::holds_alternative<double>(field->value)) << name;
+    EXPECT_DOUBLE_EQ(std::get<double>(field->value), value) << name;
+  }
+
+  CanDecoder dec;
+  SignalRowBuilder builder;
+  std::vector<pj_can_dbc::DecodedSignal> sigs;
+  PJ::Span<const PJ::sdk::NamedFieldValue> fields;
+  bool loaded = false;
+  bool decoded = false;
+};
+
+constexpr const char* kFooSignal = R"(SG_ Foo : 0|8@1+ (1,0) [0|1] "" ECU)";
+constexpr const char* kFooLabelSignal = R"(SG_ Foo_label : 8|8@1+ (1,0) [0|255] "" ECU)";
+constexpr const char* kFooValTable = R"(VAL_ 700 Foo 0 "OFF" 1 "ON" ;)";
+
+}  // namespace
+
+TEST(CanDecoderValueTable, RealLabelSignalGetsSuffixedTextFieldInEitherOrder) {
+  for (const bool label_first : {false, true}) {
+    SCOPED_TRACE(label_first ? "Foo_label declared first" : "Foo declared first");
+    const std::string signals = label_first ? std::string(kFooLabelSignal) + "\n " + kFooSignal
+                                            : std::string(kFooSignal) + "\n " + kFooLabelSignal;
+    const LabelRow row(valDbc("BO_ 700 LabelMsg: 8 ECU", signals, kFooValTable), {1, 7, 0, 0, 0, 0, 0, 0});
+    ASSERT_TRUE(row.loaded && row.decoded);
+    ASSERT_EQ(row.fields.size(), 3u);
+    EXPECT_TRUE(row.namesUnique());
+    row.expectNumber("Foo", 1.0);
+    row.expectText("Foo_label_2", "ON");
+    row.expectNumber("Foo_label", 7.0);
+  }
+}
+
+TEST(CanDecoderValueTable, ChainedLabelSignals) {
+  const std::string signals = std::string(kFooSignal) + "\n " + R"(SG_ Foo_label : 8|8@1+ (1,0) [0|1] "" ECU)";
+  const std::string vals = std::string(kFooValTable) + "\n" + R"(VAL_ 700 Foo_label 0 "LOW" 1 "HIGH" ;)";
+  const LabelRow row(valDbc("BO_ 700 LabelMsg: 8 ECU", signals, vals), {1, 0, 0, 0, 0, 0, 0, 0});
+  ASSERT_TRUE(row.loaded && row.decoded);
+  ASSERT_EQ(row.fields.size(), 4u);
+  EXPECT_TRUE(row.namesUnique());
+  row.expectNumber("Foo", 1.0);
+  row.expectText("Foo_label_2", "ON");
+  row.expectNumber("Foo_label", 0.0);
+  row.expectText("Foo_label_label", "LOW");
+}
+
+TEST(CanDecoderValueTable, SuffixSkipsTakenNames) {
+  const std::string signals =
+      std::string(kFooSignal) + "\n " + kFooLabelSignal + "\n " + R"(SG_ Foo_label_2 : 16|8@1+ (1,0) [0|255] "" ECU)";
+  const LabelRow row(valDbc("BO_ 700 LabelMsg: 8 ECU", signals, kFooValTable), {1, 7, 9, 0, 0, 0, 0, 0});
+  ASSERT_TRUE(row.loaded && row.decoded);
+  ASSERT_EQ(row.fields.size(), 4u);
+  EXPECT_TRUE(row.namesUnique());
+  row.expectText("Foo_label_3", "ON");
+  row.expectNumber("Foo_label", 7.0);
+  row.expectNumber("Foo_label_2", 9.0);
+}
+
+TEST(CanDecoderValueTable, LabelInAnotherMessageDoesNotForceSuffix) {
+  const std::string dbc = valDbc(
+      "BO_ 700 LabelMsg: 8 ECU", kFooSignal,
+      std::string("BO_ 701 OtherMsg: 8 ECU\n ") + R"(SG_ Foo_label : 0|8@1+ (1,0) [0|255] "" ECU)" + "\n\n" +
+          kFooValTable);
+  const LabelRow row(dbc, {1, 0, 0, 0, 0, 0, 0, 0});
+  ASSERT_TRUE(row.loaded && row.decoded);
+  ASSERT_EQ(row.fields.size(), 2u);
+  row.expectNumber("Foo", 1.0);
+  row.expectText("Foo_label", "ON");
+}
+
 TEST(CanTopic, RendersHexIds) {
   EXPECT_EQ(pj_can_dbc::hexId(0x0u), "0x0");
   EXPECT_EQ(pj_can_dbc::hexId(0x100u), "0x100");
@@ -271,6 +812,16 @@ TEST(CanTopic, NamesTopicsByChannelAndMessage) {
   EXPECT_EQ(pj_can_dbc::canTopicName(2, "", 0x1ABu), "CAN/ch2/0x1AB");
   EXPECT_EQ(pj_can_dbc::canTopicName(0, "EngineData", 0x100u), "CAN/EngineData");
   EXPECT_EQ(pj_can_dbc::canTopicName(0, "", 0x7FFu), "CAN/0x7FF");
+}
+
+// data_load_candump's bus is a name (candump interface, e.g. "can0"), not a
+// number -- this overload is additive, keeping data_load_mf4/data_load_blf's
+// numeric-channel overload above untouched.
+TEST(CanTopic, NamesTopicsByInterfaceNameAndMessage) {
+  EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view("can0"), "EngineData", 0x100u), "CAN/can0/EngineData");
+  EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view("vcan0.1"), "", 0x1ABu), "CAN/vcan0.1/0x1AB");
+  EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view(""), "EngineData", 0x100u), "CAN/EngineData");
+  EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view(""), "", 0x7FFu), "CAN/0x7FF");
 }
 
 }  // namespace
