@@ -70,6 +70,9 @@ One editor for series and objects.
   name (`x.cloud`) is still left alone.
 
 ### Changed
+- The Help is rewritten: inputs, return values, preview, Create and Modify, the Function Library,
+  params and pin, series functions, what objects offer (fields, methods, `pj`), Python and the
+  messages. Each part links to the online guide.
 - A series function that returns several values (`return a, b`) creates `name/a`, `name/b`; the
   count is read from the return statements.
 - The Custom Topics "+" button and the pencil on a recipe made here open this editor.
