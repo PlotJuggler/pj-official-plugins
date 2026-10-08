@@ -82,7 +82,7 @@ tt { white-space: nowrap; }
 &lt;h2&gt;&lt;a name=&quot;advanced&quot;&gt;&lt;/a&gt;6. Params and Pin (Advanced &amp;gt;)&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;b&gt;Params (JSON)&lt;/b&gt;: an object handed to the script as &lt;tt&gt;params&lt;/tt&gt;. With &lt;tt&gt;{&quot;half&quot;: 6}&lt;/tt&gt; the script reads &lt;tt&gt;params.half&lt;/tt&gt;.&lt;/li&gt;
-&lt;li&gt;&lt;b&gt;Pin at current time&lt;/b&gt;: run once at the cursor time and keep that result while the cursor moves.&lt;/li&gt;
+&lt;li&gt;&lt;b&gt;Pin at current time&lt;/b&gt;: run once at the cursor time and keep that result while the cursor moves. Only object outputs are kept: one instant gives no curve, so number outputs get no row.&lt;/li&gt;
 &lt;/ul&gt;
 
 &lt;h2&gt;&lt;a name=&quot;series&quot;&gt;&lt;/a&gt;7. Series from series&lt;/h2&gt;
