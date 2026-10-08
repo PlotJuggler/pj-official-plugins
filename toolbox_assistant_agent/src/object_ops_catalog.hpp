@@ -84,7 +84,8 @@ struct ObjectOperation {
            "finish()",
            "build a circle overlay"},
           {"pj.annotations.new{image_topic=}:text{position={x,y},text=,font_size=,text_color=}:finish()",
-           "build a text overlay; nontransparent background_color is unsupported"}};
+           "build a text overlay; nontransparent background_color is unsupported"},
+          {"count()", "total number of points over all point annotations (no copy)"}};
     case BuiltinObjectType::kFrameTransforms:
     case BuiltinObjectType::kNone:
     case BuiltinObjectType::kOccupancyGrid:
