@@ -53,7 +53,7 @@ tt { white-space: nowrap; }
 &lt;p&gt;The function runs 300 ms after you stop typing, then at most twice a second while you move the timeline cursor.&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;b&gt;Numbers&lt;/b&gt; are drawn as a curve over the whole recording. Wheel or rectangle to zoom, Ctrl+drag or middle button to pan, right-click to undo a zoom.&lt;/li&gt;
-&lt;li&gt;&lt;b&gt;Objects&lt;/b&gt; are shown in a small 3D or 2D view at the cursor time. If it shows only a grid, change its fixed frame (top left) to the frame of your input, for example &lt;tt&gt;base_link&lt;/tt&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;b&gt;Objects&lt;/b&gt; are shown in a small 3D or 2D view at the cursor time. The 3D view starts in the frame of your input; an image overlay is drawn over its image input.&lt;/li&gt;
 &lt;li&gt;&lt;b&gt;The status line&lt;/b&gt; says what the function returned at the cursor, or why it could not run.&lt;/li&gt;
 &lt;/ul&gt;
 
@@ -61,7 +61,7 @@ tt { white-space: nowrap; }
 &lt;ul&gt;
 &lt;li&gt;&lt;b&gt;Create...&lt;/b&gt; asks for a name and says what will be created. The rows appear in &lt;b&gt;Custom Topics&lt;/b&gt;: &lt;tt&gt;name/output&lt;/tt&gt; for numbers; &lt;tt&gt;name&lt;/tt&gt; for a single object, &lt;tt&gt;name/output&lt;/tt&gt; when there are several.&lt;/li&gt;
 &lt;li&gt;A name cannot be empty, be an input, or contain &lt;tt&gt;__&lt;/tt&gt;. Reusing a name asks before replacing.&lt;/li&gt;
-&lt;li&gt;To see an object output, open a 3D or 2D tab (&lt;b&gt;+&lt;/b&gt;, then the cube or image icon) and drag its row from Custom Topics into it. A 3D view starts in the frame of the first layer you drop.&lt;/li&gt;
+&lt;li&gt;To see an object output, open a 3D or 2D tab (&lt;b&gt;+&lt;/b&gt;, then the cube or image icon) and drag its row from Custom Topics into it. A 3D view starts in the frame of the first layer you drop. An overlay is drawn only over its own image: drag that image into the 2D view too.&lt;/li&gt;
 &lt;li&gt;To change a script later, select its row in Custom Topics and press the pencil. The button then reads &lt;b&gt;Modify&lt;/b&gt;.&lt;/li&gt;
 &lt;li&gt;Delete is in the &lt;b&gt;...&lt;/b&gt; menu of Custom Topics. &lt;b&gt;Ctrl+Z&lt;/b&gt; undoes it.&lt;/li&gt;
 &lt;/ul&gt;
