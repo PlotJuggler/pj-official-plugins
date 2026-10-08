@@ -9,7 +9,7 @@ work by calling the same plugin SDK a human-written plugin would.
           │
           ▼
    ┌──────────────┐   tool calls    ┌──────────────────┐   SDK services   ┌────────────┐
-   │  chat panel  │ ──────────────▶ │ tool layer (12)  │ ───────────────▶ │ PlotJuggler│
+   │  chat panel  │ ──────────────▶ │ tool layer (14)  │ ───────────────▶ │ PlotJuggler│
    │  (floating)  │ ◀────────────── │   over MCP       │ ◀─────────────── │    host    │
    └──────────────┘   results       └──────────────────┘                  └────────────┘
 ```
@@ -29,34 +29,37 @@ this plugin itself created. There is no reachable operation that edits or delete
 | **Codex** | Drives your existing `codex` CLI subscription headlessly, over the same loopback MCP server. Usage is reported in tokens; Codex does not report a price. | Your subscription |
 | **Echo / Fake** | No model. Used for wiring tests. | — |
 
-Either way the model reaches *only* the twelve tools below — it cannot touch your machine
+Either way the model reaches *only* the fourteen tools below — it cannot touch your machine
 outside PlotJuggler. On Claude Code every built-in tool is disabled with `--tools ""`. Codex has no
 equivalent single switch, so the same property comes from the `-c` config values plus seven
 `--disable`s in `buildCodexArgv` — shell tool, unified exec, web search, view_image, a read-only
 sandbox, and the rest. Code Mode is not what withholds them: it is the JavaScript host our own MCP
 tools run inside, which is why it stays on.
 
-## The twelve tools
+## The fourteen tools
 
 | Tool | Does |
 |---|---|
-| `list_topics` | Search loaded topics by substring |
-| `describe_topic` | Fields of one topic, with types and full paths |
+| `list_topics` | Search loaded topics by substring — scalar and object topics (point clouds, scene entities…) alike, on a host with catalog snapshot v2 |
+| `describe_topic` | Fields of one topic, with types and full paths; on an object topic, its field table and the operations a script may call on it |
 | `read_series` | Statistics, a min/max-preserving downsample (columns t0/dt/n/min/max/mean), or up to 200 raw samples inside a window you set; a path naming a topic with no field reads every numeric field of that topic |
-| `evaluate` | Run a bounded Luau computation and return statistics without leaving a series behind |
+| `evaluate` | Run a bounded Luau computation and return the answer without leaving anything behind — statistics over series, or (with an object input, `at_s` or `window`) a bounded on-demand read over objects, at one instant or across a span |
 | `create_derived_series` | Install a live Luau transform over one or more series |
+| `create_derived_object` | Install a live on-demand computation over object topics, or pin one instant of it as a kept finding (`pin_at_s`) |
 | `create_markers` | Install a marker generator (threshold or a raw Luau rule) |
 | `remove_markers` | Remove the assistant's own marker set — and only that one |
 | `list_created` | What this assistant has installed so far |
-| `remove_derived_series` | Withdraw one of its own derived series — and only its own |
-| `report_status` | Counts of loaded sources, topics and fields |
+| `remove_derived_series` | Withdraw one of its own derived series or objects — and only its own |
+| `report_status` | Counts of loaded sources, topics, fields and object topics; own pinned findings/bytes and processor readiness (with explicit incomplete accounting on older hosts) |
 | `playback` | The transport, by `action`: state / play / pause / seek / rate. One time cursor is shared by every plot, so this is the one control that is not scoped |
 | `plot_tab` | Tabs of the assistant's OWN, by `action`: create / add / remove / zoom / close / list |
+| `scene_view` | 3D/2D scene views of the assistant's OWN, by `action`: create / attach / detach / focus / close / list |
 
-`plot_tab` is where the boundary lives. A tab the assistant creates is watermarked "AI" and is the
-only place it may draw, zoom or close; your tabs are unreachable from every tool it has. Supporting
-hosts save those owned tabs in the layout while excluding them from undo/redo. Older hosts may keep
-them only for the session, so `plot_tab` with `action: "list"` is the authority after a reload.
+`plot_tab` and `scene_view` are where the boundary lives. A tab or view the assistant creates is
+marked with the assistant ownership badge and is the only place it may draw, attach, zoom or close; your own tabs and scene
+docks are unreachable from every tool it has. Supporting hosts save those owned tabs/views in the
+layout while excluding them from undo/redo. Older hosts may keep them only for the session, so
+`plot_tab`/`scene_view` with `action: "list"` is the authority after a reload.
 
 Derived series and markers are saved with the layout too. Builds with the history-exempt SDK flag
 ask the host to keep them outside undo/redo, then read the stored recipe back. Whenever that
@@ -66,8 +69,9 @@ against an SDK that has no such flag. The model sees the disclosure in every one
 can pass the consequence on instead of promising persistence it does not have.
 
 `playback` and `plot_tab` need a host exposing `pj.playback.v1`, `pj.plot_tabs.v1` and `pj.viewport.v1`
-(a host with SDK >= 0.34.0, the plugin's `min_sdk_required`); on an older host they answer with a
-clean "not exposed" the model relays instead of guessing.
+(a host with SDK >= 0.34.0, the plugin's `min_sdk_required`); `scene_view` needs the scene tabs of `pj.plot_tabs.v1`,
+a newer surface (SDK >= 0.36.0). On an older host each answers with a clean "not exposed" the model
+relays instead of guessing.
 
 Paths may be abbreviated: a unique suffix or prefix resolves on its own, and an ambiguous one
 comes back with the exact candidates rather than a guess.
@@ -170,3 +174,13 @@ real CLI and spend your subscription:
 ASSISTANT_CLAUDE_SMOKE=1 ctest --test-dir build/toolbox_assistant_agent/Release -R ClaudeSmoke
 ASSISTANT_CODEX_SMOKE=1  ctest --test-dir build/toolbox_assistant_agent/Release -R CodexBackend
 ```
+
+Object evaluations yield between GUI ticks while the host reports `PENDING`.
+Completion, failure, cancellation, deadline expiry and panel teardown release
+that evaluation handle exactly once. The assistant receives summaries, never
+image pixels or point-cloud bytes. `describe_topic` also advertises image/depth
+decode, pixel operations, depth projection, video frame lookup and annotation
+builders; CameraInfo and FrameTransforms expose fields only.
+
+See [native object acceptance](docs/OBJECT_ACCEPTANCE.md) for the real-host
+scripted workflow and recorded results.

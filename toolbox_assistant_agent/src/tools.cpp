@@ -8,21 +8,28 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <functional>
 #include <iomanip>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/builtin/builtin_object.hpp>
+#include <pj_base/builtin/field_table.hpp>
+#include <pj_base/builtin/field_table_registry.hpp>
 #include <pj_base/builtin/plot_markers.hpp>
+#include <pj_base/sdk/object_topic_metadata.hpp>
 #include <span>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "luau_transform.hpp"
+#include "object_ops_catalog.hpp"
 #include "series_stats.hpp"
 #include "tool_registry.hpp"
 
@@ -30,6 +37,39 @@ namespace assistant_agent {
 namespace {
 
 using nlohmann::json;
+
+// Catalog resolution, typed-output parsing and the recipe chunk builders are shared with the
+// Transform Editor (common/derived_recipes).
+using derived_recipes::buildResolvedOnDemandChunk;
+using derived_recipes::canonicalSeriesPath;
+using derived_recipes::datasetByTopicIndex;
+using derived_recipes::dataSourceHandleFor;
+using derived_recipes::isMarkerObjectTopic;
+using derived_recipes::joinSeriesPath;
+using derived_recipes::kMaxCandidates;
+using derived_recipes::matchDatasetQualifier;
+using derived_recipes::ObjectLookup;
+using derived_recipes::objectLookupError;
+using derived_recipes::objectTopicDatasetName;
+using derived_recipes::ParsedOutputs;
+using derived_recipes::parseTypedOutputs;
+using derived_recipes::QualifierMatch;
+using derived_recipes::qualifyWithDataset;
+using derived_recipes::ResolvedEvalInput;
+using derived_recipes::ResolvedEvalInputs;
+using derived_recipes::resolveObjectTopic;
+using derived_recipes::seriesLookupError;
+using derived_recipes::TopicDatasetMap;
+
+// The shared helpers take explicit host views; these keep the executors' ToolContext call sites.
+ResolvedEvalInputs resolveEvalInputs(
+    ToolContext& ctx, const PJ::sdk::CatalogSnapshotV2& v2, const std::vector<std::string>& raw_inputs) {
+  return derived_recipes::resolveEvalInputs(ctx.host, v2, raw_inputs);
+}
+
+std::optional<std::int64_t> toRawNs(ToolContext& ctx, PJ::sdk::DataSourceHandle source, double display_s) {
+  return derived_recipes::toRawNs(ctx.playback, source, display_s);
+}
 
 const char* markerKindName(PJ::sdk::MarkerKind k) {
   switch (k) {
@@ -156,274 +196,118 @@ const char* primitiveTypeName(PJ::PrimitiveType t) {
   }
 }
 
-// Dataset name for each topic INDEX, or empty when the host reports no data
-// sources (the SDK's test store is one such host, so every unit test exercises
-// the degraded path). Topics are laid out contiguously per source, so this is a
-// table build rather than a search.
+// --- object topics (catalog snapshot v2) ------------------------------------
 //
-// It matters because PJ4 can hold several datasets at once — two runs of the
-// same robot is the ordinary case — and a flat topic list makes them
-// indistinguishable. Without it the model can neither offer to compare two runs
-// nor avoid mixing them, for the same reason: it does not know there are two.
-std::map<std::uint32_t, std::string> datasetByTopicIndex(const PJ::sdk::CatalogSnapshot& catalog) {
-  std::map<std::uint32_t, std::string> out;
-  const auto sources = catalog.dataSources();
-  if (sources.size() < 2) {
-    return out;  // one source (or none) adds no information worth the tokens
+// Object topics (point clouds, scene entities, images…) live beside the
+// scalar catalog in PJ_catalog_snapshot_v2_t. Marker sets are object topics
+// too, but they are drawn, not read — kMarkerObjectTopicPrefix filters them
+// out of everything a model sees (list_topics, describe_topic, the digest,
+// report_status), the same way pj_scene overlays already treat them.
+
+// Whether an object topic's metadata document names it as derived (produced
+// by an on-demand script, not ingested from a file/stream). Tolerant of a
+// missing or malformed document -- metadata is host-provided, not modeled
+// data, but it still crosses the plugin ABI as an untrusted string.
+bool metadataHasKey(std::string_view metadata_json, std::string_view key) {
+  const json parsed = json::parse(std::string(metadata_json), nullptr, /*allow_exceptions=*/false);
+  return !parsed.is_discarded() && parsed.is_object() && parsed.contains(std::string(key));
+}
+
+const char* fieldKindName(PJ::sdk::FieldKind kind) {
+  using PJ::sdk::FieldKind;
+  switch (kind) {
+    case FieldKind::kNumber:
+      return "number";
+    case FieldKind::kOptionalNumber:
+      return "number|null";
+    case FieldKind::kBool:
+      return "bool";
+    case FieldKind::kInt64:
+      return "int64";
+    case FieldKind::kString:
+      return "string";
+    case FieldKind::kEnum:
+      return "enum";
+    case FieldKind::kStruct:
+      return "struct";
+    case FieldKind::kList:
+      return "list";
+    case FieldKind::kBuffer:
+      return "buffer";
   }
-  for (const auto& src : sources) {
-    const std::string name(PJ::sdk::toStringView(src.name));
-    for (std::uint32_t i = 0; i < src.topic_count; ++i) {
-      out[src.first_topic + i] = name;
+  return "unspecified";
+}
+
+// A field table's own field list is depth 1; a nested struct or a list's
+// struct element goes one level deeper. Capped at kMaxFieldDepth so a
+// describe_topic call on a deeply nested type stays bounded -- a list shows
+// its element shape once at the next depth rather than per element (there is
+// only one shape, the field table is per-TYPE not per-instance), and a buffer
+// field (raw record bytes, e.g. PointCloud::data) carries nothing past its
+// name/kind: the bytes never reach the model, only the native operations that
+// summarize them (see object_ops_catalog.hpp).
+constexpr int kMaxFieldDepth = 3;
+
+json fieldTableToJson(const PJ::sdk::FieldTableView& table, int depth) {
+  json arr = json::array();
+  for (const auto& f : table.fields) {
+    json entry = {{"name", std::string(f.name)}, {"kind", fieldKindName(f.kind)}};
+    const bool nestable = f.kind == PJ::sdk::FieldKind::kStruct || f.kind == PJ::sdk::FieldKind::kList;
+    if (nestable && f.nested != nullptr && depth < kMaxFieldDepth) {
+      entry["fields"] = fieldTableToJson(*f.nested, depth + 1);
     }
+    arr.push_back(std::move(entry));
   }
-  return out;
+  return arr;
 }
 
-// Result of datasetByTopicIndex, threaded through the lookup helpers below so
-// a single read_series (or evaluate) call builds it once instead of once per
-// lookup — see the overloads of resolveSeriesPath/resolveTopicPath/
-// topicNumericFieldPaths/unreadDisclosure that take one.
-using TopicDatasetMap = std::map<std::uint32_t, std::string>;
-
-// "dataset:name" when `dataset` is non-empty, else `name` unchanged — the
-// host's qualifier convention, applied everywhere a catalog-derived name is
-// handed back to the model.
-std::string qualifyWithDataset(const std::string& dataset, const std::string& name) {
-  return dataset.empty() ? name : dataset + ":" + name;
-}
-
-// A curve or topic path's dataset-qualifier prefix and the topic index range
-// it narrows the search to. Shared by resolveSeriesPath and resolveTopicPath,
-// which differ only in what they do with `bare` afterward (a series path has
-// fields to search; a topic path additionally strips a leading '/').
-//
-// The qualifier ("dataset:" ahead of the path) is matched against the KNOWN
-// source names — longest match wins — rather than parsed at ':', so a name
-// like "[stream] UDP Server" needs no escaping.
-struct QualifierMatch {
-  std::string bare;
-  std::uint32_t topic_lo = 0;
-  std::uint32_t topic_hi = 0;
+// An object topic's time range, in the best axis available: display seconds
+// when a playback view is bound and can convert both ends (matching every
+// other display-time report in this file), else the raw dataset-domain
+// seconds the host reported, flagged so the model never mistakes one axis for
+// the other.
+struct ObjectTimeRange {
+  double a = 0.0;
+  double b = 0.0;
+  bool raw = false;
 };
 
-QualifierMatch matchDatasetQualifier(const PJ::sdk::CatalogSnapshot& catalog, std::string_view series) {
-  const auto topics = catalog.topics();
-  const auto sources = catalog.dataSources();
-  QualifierMatch out{std::string(series), 0, static_cast<std::uint32_t>(topics.size())};
-  std::size_t qualifier_len = 0;
-  for (const auto& src : sources) {
-    const std::string name(PJ::sdk::toStringView(src.name));
-    if (name.empty() || name.size() <= qualifier_len || series.size() <= name.size() || series[name.size()] != ':' ||
-        series.compare(0, name.size(), name) != 0) {
-      continue;
+ObjectTimeRange objectTimeRange(
+    const PJ::sdk::PlaybackHostView& playback, PJ_data_source_handle_t source, std::int64_t t_min_ns,
+    std::int64_t t_max_ns) {
+  if (playback.valid()) {
+    const auto display_a = playback.toDisplayTimeForSource(source, t_min_ns);
+    const auto display_b = playback.toDisplayTimeForSource(source, t_max_ns);
+    if (display_a && display_b) {
+      return {*display_a, *display_b, false};
     }
-    qualifier_len = name.size();
-    out.topic_lo = src.first_topic;
-    out.topic_hi = std::min(src.first_topic + src.topic_count, static_cast<std::uint32_t>(topics.size()));
   }
-  if (qualifier_len != 0) {
-    out.bare = std::string(series.substr(qualifier_len + 1));
-  }
-  return out;
+  return {static_cast<double>(t_min_ns) * 1e-9, static_cast<double>(t_max_ns) * 1e-9, true};
 }
 
-// Join a topic name and a field path into the canonical curve path. Hosts
-// differ on whether leaf field names carry a leading '/' (the plot-markers
-// host does, main does not), so tolerate both — a naive '+ "/" +' join emits
-// "topic//field", which the marker engine's series() lookup rejects.
-std::string joinSeriesPath(std::string_view topic, std::string_view field) {
-  std::string path(topic);
-  if (field.empty()) {
-    return path;
-  }
-  if (field.front() != '/') {
-    path.push_back('/');
-  }
-  path.append(field);
-  return path;
-}
-
-// Collapse '/' runs in a model-supplied series path. The model echoes paths
-// verbatim from earlier tool output (possibly from an older, doubling build),
-// so accept "topic//field" as "topic/field" everywhere a path comes in.
-std::string canonicalSeriesPath(std::string_view s) {
-  std::string out;
-  out.reserve(s.size());
-  for (const char ch : s) {
-    if (ch == '/' && !out.empty() && out.back() == '/') {
-      continue;
-    }
-    out.push_back(ch);
-  }
-  return out;
-}
-
-// ResolvedSeries/SeriesLookup live in tool_registry.hpp: resolution is where
-// the multi-dataset rules live, and the tests drive it directly.
-
-// Split a curve path into its '/'-separated segments, ignoring empty ones so
-// leading or doubled slashes don't produce phantom segments.
-std::vector<std::string_view> pathSegments(std::string_view path) {
-  std::vector<std::string_view> out;
-  std::size_t i = 0;
-  while (i < path.size()) {
-    while (i < path.size() && path[i] == '/') {
-      ++i;
-    }
-    const std::size_t start = i;
-    while (i < path.size() && path[i] != '/') {
-      ++i;
-    }
-    if (i > start) {
-      out.push_back(path.substr(start, i - start));
-    }
-  }
-  return out;
-}
-
-// True when `want`'s segments appear as a contiguous run inside `have`'s. This
-// is what makes an abbreviated path resolvable: "test/sin" and "sin/value" and
-// bare "sin" all match "test/sin/value". Matching whole segments (rather than
-// substrings) is deliberate — "test/si" must not resolve to "test/sin/value".
-bool segmentsContain(const std::vector<std::string_view>& have, const std::vector<std::string_view>& want) {
-  if (want.empty() || want.size() > have.size()) {
-    return false;
-  }
-  for (std::size_t off = 0; off + want.size() <= have.size(); ++off) {
-    bool all = true;
-    for (std::size_t k = 0; k < want.size(); ++k) {
-      if (have[off + k] != want[k]) {
-        all = false;
-        break;
-      }
-    }
-    if (all) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Cap on how many near misses we name. The error text is fed back to the model
-// and then re-sent on every later round-trip of the turn, so an unbounded list
-// would be paid for repeatedly.
-constexpr std::size_t kMaxCandidates = 10;
-
-}  // namespace
-
-// Resolve one "topic/field" curve path (joinSeriesPath convention, the same the
-// rest of PJ4 uses) by scanning the catalog — models call read_series
-// repeatedly per turn, so avoid materializing a full path index.
-//
-// An exact match wins over abbreviations. An abbreviated path resolves only
-// when exactly one series matches: with several the answer is the candidate
-// list, never a guess, because silently picking one would attach a transform to
-// the wrong signal and look like it worked.
-//
-// Datasets: the path may carry the host's qualifier convention,
-// "dataset:topic/field". The qualifier is matched against the KNOWN source
-// names (longest match wins) rather than parsed at ':', so a name like
-// "[stream] UDP Server" needs no escaping. An unqualified path whose exact
-// topic/field exists in SEVERAL datasets is refused as ambiguous — two runs of
-// the same robot share every topic name, and silently taking the first-loaded
-// one reads (or worse, installs onto) whichever file happened to load first.
-// With several sources loaded, every path this returns is in qualified form, so
-// results disclose which dataset they came from and candidates can be copied
-// back verbatim.
-SeriesLookup resolveSeriesPath(
-    const PJ::sdk::CatalogSnapshot& catalog, const std::string& series, const TopicDatasetMap& topic_dataset) {
-  SeriesLookup out;
-  auto topics = catalog.topics();
-  auto fields = catalog.fields();
-
-  const QualifierMatch qm = matchDatasetQualifier(catalog, series);
-  const std::string& bare = qm.bare;
-
-  const auto want = pathSegments(bare);
-  auto dataset_of = [&](std::uint32_t ti) {
-    const auto it = topic_dataset.find(ti);
-    return it == topic_dataset.end() ? std::string() : it->second;
+// One list_topics/describe_topic entry for an object topic, the shape shared
+// by both tools: {"topic","kind":"object","type","entries","t_range_s"
+// [,"time_basis":"raw"][,"dataset"]}. Callers add whatever is specific to
+// their tool (list_topics adds "derived"; describe_topic adds "fields" and
+// "operations").
+json objectTopicCommonJson(
+    ToolContext& ctx, std::span<const PJ_data_source_info_t> sources, const PJ_object_topic_info_t& obj) {
+  const ObjectTimeRange range = objectTimeRange(ctx.playback, obj.source, obj.time_min_ns, obj.time_max_ns);
+  json out = {
+      {"topic", std::string(PJ::sdk::toStringView(obj.name))},
+      {"kind", "object"},
+      {"type", std::string(PJ::sdk::toStringView(obj.builtin_object_type))},
+      {"entries", obj.entry_count},
+      {"t_range_s", json::array({range.a, range.b})},
   };
-  auto qualified = [&](std::uint32_t ti, const std::string& full) { return qualifyWithDataset(dataset_of(ti), full); };
-
-  std::optional<ResolvedSeries> exact;
-  bool exact_ambiguous = false;
-  std::vector<std::string> exact_candidates;
-  std::optional<ResolvedSeries> fuzzy;
-  for (std::uint32_t ti = qm.topic_lo; ti < qm.topic_hi; ++ti) {
-    const auto& topic = topics[ti];
-    const auto topic_name = PJ::sdk::toStringView(topic.name);
-    for (std::uint32_t fi = 0; fi < topic.field_count; ++fi) {
-      const std::size_t idx = topic.first_field + fi;
-      if (idx >= fields.size()) {
-        break;
-      }
-      const std::string full = joinSeriesPath(topic_name, PJ::sdk::toStringView(fields[idx].name));
-      if (full == bare) {
-        if (!exact) {
-          exact =
-              ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full, dataset_of(ti)};
-        } else {
-          exact_ambiguous = true;
-        }
-        if (exact_candidates.size() < kMaxCandidates) {
-          exact_candidates.push_back(qualified(ti, full));
-        }
-        continue;
-      }
-      if (segmentsContain(pathSegments(full), want)) {
-        if (out.candidates.size() < kMaxCandidates) {
-          out.candidates.push_back(qualified(ti, full));
-        }
-        if (!fuzzy) {
-          fuzzy =
-              ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full, dataset_of(ti)};
-        } else {
-          out.ambiguous = true;
-        }
-      }
-    }
+  if (range.raw) {
+    out["time_basis"] = "raw";
   }
-  if (exact) {
-    if (exact_ambiguous) {
-      out.ambiguous = true;
-      out.candidates = std::move(exact_candidates);
-      return out;
-    }
-    out.resolved = std::move(exact);
-    out.candidates.clear();
-    out.ambiguous = false;
-    return out;
-  }
-  if (!out.ambiguous && fuzzy) {
-    out.resolved = std::move(fuzzy);
-    out.candidates.clear();
+  const std::string dataset = objectTopicDatasetName(sources, obj.source);
+  if (!dataset.empty()) {
+    out["dataset"] = dataset;
   }
   return out;
-}
-
-SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series) {
-  return resolveSeriesPath(catalog, series, datasetByTopicIndex(catalog));
-}
-
-namespace {
-
-// The error a failed lookup should produce: self-contained, so the model can
-// fix the path from the message alone.
-std::string seriesLookupError(const std::string& series, const SeriesLookup& lookup) {
-  if (lookup.ambiguous) {
-    std::string msg = "'" + series + "' is ambiguous; it matches ";
-    for (std::size_t i = 0; i < lookup.candidates.size(); ++i) {
-      msg += (i != 0 ? ", " : "");
-      msg += "'" + lookup.candidates[i] + "'";
-    }
-    msg += ". Use the full path.";
-    return msg;
-  }
-  return "unknown series '" + series +
-         "'. If you expected it to exist, call list_topics (with a filter) or describe_topic once to check before "
-         "concluding it is missing.";
 }
 
 // Whether the HOST can address this series by name for a create, and the error
@@ -495,11 +379,38 @@ bool readSeriesDoubles(
 
 // --- executors -------------------------------------------------------------
 
-ToolResult listTopics(const json& args, ToolContext& ctx) {
-  auto catalog = ctx.host.catalogSnapshot();
-  if (!catalog) {
-    return ToolResult::failure("catalog unavailable: " + catalog.error());
+// Scalar topics matching filter/dataset_filter, capped at `limit`, in
+// list_topics' shape -- {"topic","kind":"scalar","fields"[,"dataset"]} --
+// appended to `out_topics`. `matched`/`shown` accumulate so a caller merging
+// this with object topics (listTopics) gets one combined count of both kinds.
+void listScalarTopics(
+    std::span<const PJ_topic_info_t> topics, const std::map<std::uint32_t, std::string>& topic_dataset,
+    const std::string& filter, const std::string& dataset_filter, int limit, json& out_topics, int& matched,
+    int& shown) {
+  for (std::uint32_t ti = 0; ti < topics.size(); ++ti) {
+    const auto& topic = topics[ti];
+    const std::string name(PJ::sdk::toStringView(topic.name));
+    if (!filter.empty() && name.find(filter) == std::string::npos) {
+      continue;
+    }
+    const auto ds = topic_dataset.find(ti);
+    const std::string dataset = ds != topic_dataset.end() ? ds->second : std::string{};
+    if (!dataset_filter.empty() && dataset.find(dataset_filter) == std::string::npos) {
+      continue;
+    }
+    ++matched;
+    if (shown < limit) {
+      json entry = {{"topic", name}, {"kind", "scalar"}, {"fields", topic.field_count}};
+      if (!dataset.empty()) {
+        entry["dataset"] = dataset;
+      }
+      out_topics.push_back(std::move(entry));
+      ++shown;
+    }
   }
+}
+
+ToolResult listTopics(const json& args, ToolContext& ctx) {
   const std::string filter = args.value("filter", std::string{});
   // Clamped, not just defaulted: this response is re-sent on every remaining
   // round-trip of the turn, so an unbounded list would be paid for repeatedly.
@@ -514,49 +425,59 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
   json topics = json::array();
   int matched = 0;
   int shown = 0;
-  auto all = catalog->topics();
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
-  for (std::uint32_t ti = 0; ti < all.size(); ++ti) {
-    const auto& topic = all[ti];
-    const std::string name(PJ::sdk::toStringView(topic.name));
-    if (!filter.empty() && name.find(filter) == std::string::npos) {
-      continue;
-    }
-    const auto ds = topic_dataset.find(ti);
-    const std::string dataset = ds != topic_dataset.end() ? ds->second : std::string{};
-    if (!dataset_filter.empty() && dataset.find(dataset_filter) == std::string::npos) {
-      continue;
-    }
-    ++matched;
-    if (shown < limit) {
-      json entry = {{"topic", name}, {"fields", topic.field_count}};
-      if (!dataset.empty()) {
-        entry["dataset"] = dataset;
+
+  auto v2 = ctx.host.catalogSnapshotV2();
+  bool objects_listed = false;
+  if (v2) {
+    listScalarTopics(
+        v2->topics(), datasetByTopicIndex(v2->dataSources()), filter, dataset_filter, limit, topics, matched, shown);
+    for (const auto& obj : v2->objectTopics()) {
+      const std::string name(PJ::sdk::toStringView(obj.name));
+      if (isMarkerObjectTopic(name)) {
+        continue;  // drawn, not read -- never surfaced to the model
       }
-      topics.push_back(entry);
-      ++shown;
+      if (!filter.empty() && name.find(filter) == std::string::npos) {
+        continue;
+      }
+      const std::string dataset = objectTopicDatasetName(v2->dataSources(), obj.source);
+      if (!dataset_filter.empty() && dataset.find(dataset_filter) == std::string::npos) {
+        continue;
+      }
+      ++matched;
+      if (shown < limit) {
+        json entry = objectTopicCommonJson(ctx, v2->dataSources(), obj);
+        entry["derived"] = metadataHasKey(PJ::sdk::toStringView(obj.metadata_json), PJ::sdk::kDerivedMetadataKey);
+        topics.push_back(std::move(entry));
+        ++shown;
+      }
     }
+    objects_listed = true;
+  } else {
+    auto catalog = ctx.host.catalogSnapshot();
+    if (!catalog) {
+      return ToolResult::failure("catalog unavailable: " + catalog.error());
+    }
+    listScalarTopics(
+        catalog->topics(), datasetByTopicIndex(catalog->dataSources()), filter, dataset_filter, limit, topics, matched,
+        shown);
   }
+
   json out = {{"count", matched}, {"shown", shown}, {"topics", topics}};
   if (matched > shown) {
     out["note"] = "truncated to " + std::to_string(shown) + " of " + std::to_string(matched) +
                   "; refine with a filter or raise limit";
   }
+  if (!objects_listed) {
+    out["objects"] = "not listed (host predates catalog snapshot v2)";
+  }
   return ToolResult::success(out.dump());
 }
 
-ToolResult describeTopic(const json& args, ToolContext& ctx) {
-  if (!args.contains("topic") || !args["topic"].is_string()) {
-    return ToolResult::failure("describe_topic requires a string 'topic'");
-  }
-  const std::string want = args["topic"].get<std::string>();
-  auto catalog = ctx.host.catalogSnapshot();
-  if (!catalog) {
-    return ToolResult::failure("catalog unavailable: " + catalog.error());
-  }
-  auto topics = catalog->topics();
-  auto fields = catalog->fields();
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
+// Scalar-topic half of describe_topic, shared by the catalog-snapshot-v2 and
+// legacy-v1 paths (identical span shapes either way).
+ToolResult describeScalarTopic(
+    std::span<const PJ_topic_info_t> topics, std::span<const PJ_field_info_t> fields,
+    const std::map<std::uint32_t, std::string>& topic_dataset, const std::string& want) {
   for (std::uint32_t ti = 0; ti < topics.size(); ++ti) {
     const auto& topic = topics[ti];
     if (std::string(PJ::sdk::toStringView(topic.name)) != want) {
@@ -575,13 +496,65 @@ ToolResult describeTopic(const json& args, ToolContext& ctx) {
           {"type", primitiveTypeName(PJ::sdk::fromAbiType(fields[idx].type))}};
       field_arr.push_back(entry);
     }
-    json out = {{"topic", want}, {"fields", field_arr}};
+    json out = {{"topic", want}, {"kind", "scalar"}, {"fields", field_arr}};
     if (auto it = topic_dataset.find(ti); it != topic_dataset.end()) {
       out["dataset"] = it->second;
     }
     return ToolResult::success(out.dump());
   }
   return ToolResult::failure("no topic named '" + want + "' (use list_topics)");
+}
+
+// Object-topic half of describe_topic: the field table walked recursively
+// (fieldTableToJson) plus the static operations a script may call on it
+// (object_ops_catalog.hpp). A type with no field table (kNone, buffer-only,
+// or not yet described) or an unrecognized builtin_object_type string
+// answers with empty "fields"/"operations" rather than failing -- the topic
+// itself is real, only its detail is unavailable.
+ToolResult describeObjectTopic(
+    ToolContext& ctx, std::span<const PJ_data_source_info_t> sources, const PJ_object_topic_info_t& obj) {
+  json out = objectTopicCommonJson(ctx, sources, obj);
+  json field_arr = json::array();
+  json op_arr = json::array();
+  const std::string type_name = out["type"].get<std::string>();
+  if (const auto type = PJ::sdk::parseBuiltinObjectType(type_name)) {
+    if (const PJ::sdk::FieldTableView* table = PJ::sdk::describe(*type)) {
+      field_arr = fieldTableToJson(*table, /*depth=*/1);
+    }
+    for (const ObjectOperation& op : objectOperationsFor(*type)) {
+      op_arr.push_back({{"name", std::string(op.name)}, {"doc", std::string(op.doc)}});
+    }
+  }
+  out["fields"] = std::move(field_arr);
+  out["operations"] = std::move(op_arr);
+  return ToolResult::success(out.dump());
+}
+
+ToolResult describeTopic(const json& args, ToolContext& ctx) {
+  if (!args.contains("topic") || !args["topic"].is_string()) {
+    return ToolResult::failure("describe_topic requires a string 'topic'");
+  }
+  const std::string want = args["topic"].get<std::string>();
+
+  auto v2 = ctx.host.catalogSnapshotV2();
+  if (v2) {
+    // The same resolution every other object input gets: a "dataset:" qualifier is honoured and a name on
+    // several datasets is refused with the qualified candidates.
+    const ObjectLookup lookup = resolveObjectTopic(*v2, want);
+    if (lookup.ambiguous) {
+      return ToolResult::failure(objectLookupError(want, lookup));
+    }
+    if (lookup.resolved) {
+      return describeObjectTopic(ctx, v2->dataSources(), lookup.resolved->info);
+    }
+    return describeScalarTopic(v2->topics(), v2->fields(), datasetByTopicIndex(v2->dataSources()), want);
+  }
+
+  auto catalog = ctx.host.catalogSnapshot();
+  if (!catalog) {
+    return ToolResult::failure("catalog unavailable: " + catalog.error());
+  }
+  return describeScalarTopic(catalog->topics(), catalog->fields(), datasetByTopicIndex(catalog->dataSources()), want);
 }
 
 json statsToJson(const SeriesStats& s) {
@@ -824,28 +797,6 @@ SeriesRead readOne(
   r.flat = flatRunSummary(r.ts, r.vals);
   r.ok = true;
   return r;
-}
-
-// The DataSourceHandle a resolved series' dataset qualifies to, for
-// toDisplayTimeForSource — which needs a handle, while ResolvedSeries only
-// carries the dataset's NAME (empty when at most one dataset is loaded, see
-// tool_registry.hpp). Matches the name against the catalog's data sources; an
-// empty name with exactly one loaded source is that source, unambiguously.
-std::optional<PJ::sdk::DataSourceHandle> dataSourceHandleFor(
-    const PJ::sdk::CatalogSnapshot& catalog, const std::string& dataset_name) {
-  const auto sources = catalog.dataSources();
-  if (!dataset_name.empty()) {
-    for (const auto& src : sources) {
-      if (PJ::sdk::toStringView(src.name) == dataset_name) {
-        return src.handle;
-      }
-    }
-    return std::nullopt;
-  }
-  if (sources.size() == 1) {
-    return sources.front().handle;
-  }
-  return std::nullopt;
 }
 
 // Best-effort absolute-ns -> display-seconds conversion for one series,
@@ -1991,11 +1942,12 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   // The host's validator instantiates the class it expects to be named
   // "__validate__" (DataProcessorService::validateScript), so the validation
   // script MUST use that id — while the install script keeps the real name.
-  const std::string validate_script = buildLuauTransform("__validate__", "__validate__", global, body, num_extra);
+  const std::string validate_script =
+      derived_recipes::buildTransformScript("__validate__", "__validate__", global, body, num_extra, "luau").script;
   if (auto v = ctx.dp.validateScript("transform", ctx.language, validate_script); !v) {
     return ToolResult::failure("invalid expression: " + v.error());
   }
-  const std::string script = buildLuauTransform(name, name, global, body, num_extra);
+  const std::string script = derived_recipes::buildTransformScript(name, name, global, body, num_extra, "luau").script;
 
   std::vector<std::string_view> in_views(inputs.begin(), inputs.end());
   std::vector<std::string_view> out_views(outputs.begin(), outputs.end());
@@ -2053,6 +2005,299 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
 // remove is easy to spot rather than silently shadowed by the next call.
 std::atomic<unsigned> g_evaluate_counter{0};
 
+// --- evaluate()'s object / on-demand path -----------------------------------
+//
+// Selected when any input is an object topic, or 'at_s'/'window' was given —
+// see evaluateSeries below. Unlike the scalar path (a per-sample transform
+// read back through the catalog), this submits a kind="on_demand" request
+// through DataProcessorsHostView::submitEvaluation and reads the answer out
+// of the report JSON directly: objects never round-trip through the catalog
+// as bytes, only as the host's own summaries.
+
+// One evaluation bundle's *_ns fields (requested_ns, stamp_ns, each input's
+// resolved_ns), converted to display seconds (*_s) via the same anchor
+// toRawNs used going in. The untouched raw values ride along under "raw_ns"
+// only when `debug` is set — the model reads display seconds by default,
+// same as every other time this file reports.
+json convertBundleTimes(const json& bundle_in, ToolContext& ctx, PJ::sdk::DataSourceHandle source, bool debug) {
+  json bundle = bundle_in;
+  json raw = json::object();
+  auto toDisplay = [&](std::int64_t ns) {
+    if (auto d = ctx.playback.toDisplayTimeForSource(source, ns)) {
+      return *d;
+    }
+    return static_cast<double>(ns) * 1e-9;
+  };
+  auto convertTop = [&](const char* key_ns, const char* key_s) {
+    if (bundle.contains(key_ns) && bundle[key_ns].is_number_integer()) {
+      const std::int64_t ns = bundle[key_ns].get<std::int64_t>();
+      if (debug) {
+        raw[key_ns] = ns;
+      }
+      bundle[key_s] = toDisplay(ns);
+      bundle.erase(key_ns);
+    }
+  };
+  convertTop("requested_ns", "requested_s");
+  convertTop("stamp_ns", "stamp_s");
+  if (bundle.contains("inputs") && bundle["inputs"].is_array()) {
+    for (auto& in : bundle["inputs"]) {
+      if (in.contains("resolved_ns") && in["resolved_ns"].is_number_integer()) {
+        const std::int64_t ns = in["resolved_ns"].get<std::int64_t>();
+        in["resolved_s"] = toDisplay(ns);
+        in.erase("resolved_ns");
+      }
+    }
+  }
+  if (debug && !raw.empty()) {
+    bundle["raw_ns"] = raw;
+  }
+  return bundle;
+}
+
+// A report's "bundles" array, time-converted and capped to the LAST 50 (the
+// most recent instants are what a model asks a WINDOW evaluation for; the
+// earliest ones are the ones worth dropping when the budget produced more
+// than fit in a response).
+struct RenderedBundles {
+  json bundles = json::array();
+  bool truncated = false;
+};
+
+RenderedBundles renderBundles(ToolContext& ctx, PJ::sdk::DataSourceHandle source, const json& report, bool debug) {
+  RenderedBundles out;
+  if (!report.contains("bundles") || !report["bundles"].is_array()) {
+    return out;
+  }
+  const auto& arr = report["bundles"];
+  constexpr std::size_t kMaxBundles = 50;
+  const std::size_t total = arr.size();
+  const std::size_t start = total > kMaxBundles ? total - kMaxBundles : 0;
+  for (std::size_t i = start; i < total; ++i) {
+    out.bundles.push_back(convertBundleTimes(arr[i], ctx, source, debug));
+  }
+  out.truncated = total > kMaxBundles;
+  return out;
+}
+
+// submitEvaluation + poll-to-completion + releaseEvaluation (RAII, every
+// path), shared by evaluate's object path and create_derived_object's
+// post-create finding read. `error` is the host's or a timeout message;
+// `report` is the parsed report JSON on success only.
+struct SubmitAndPollResult {
+  bool ok = false;
+  json report;
+  std::string error;
+};
+
+// The host's completion is drained by the GUI event loop. Polling must therefore
+// yield between ticks, never sleep on that same thread.
+struct PendingEvaluation : std::enable_shared_from_this<PendingEvaluation> {
+  PJ::sdk::DataProcessorsHostView host;
+  std::uint64_t handle = 0;
+  bool released = false;
+  std::chrono::steady_clock::time_point deadline;
+  std::function<ToolResult(ToolContext&, const SubmitAndPollResult&)> finish;
+
+  ~PendingEvaluation() {
+    release();
+  }
+  void release() {
+    if (!released) {
+      released = true;
+      (void)host.releaseEvaluation(handle);
+    }
+  }
+  ToolResult poll(ToolContext& ctx) {
+    SubmitAndPollResult result;
+    auto value = host.pollEvaluation(handle);
+    if (!value) {
+      result.error = value.error();
+    } else if (value->state == PJ::sdk::EvaluationState::kPending) {
+      if (std::chrono::steady_clock::now() < deadline) {
+        return ToolResult::deferred([self = shared_from_this()](ToolContext& current) { return self->poll(current); });
+      }
+      result.error = "timed out waiting for the host";
+    } else if (value->state == PJ::sdk::EvaluationState::kFailed) {
+      const auto error = json::parse(value->json, nullptr, false);
+      result.error = error.is_object() && error.contains("error") && error["error"].is_string()
+                         ? error["error"].get<std::string>()
+                         : value->json;
+    } else if (value->state == PJ::sdk::EvaluationState::kCancelled) {
+      result.error = "cancelled by the host";
+    } else {
+      result.report = json::parse(value->json, nullptr, false);
+      result.ok = result.report.is_object();
+      if (!result.ok) {
+        result.error = "the host returned an unreadable report";
+      }
+    }
+    release();
+    return finish(ctx, result);
+  }
+};
+
+ToolResult submitAndPoll(
+    ToolContext& ctx, const PJ::sdk::DataProcessorRequest& request, std::uint64_t budget_ms,
+    std::uint64_t budget_evaluations, std::function<ToolResult(ToolContext&, const SubmitAndPollResult&)> finish) {
+  PJ::sdk::EvaluationBudget budget;
+  budget.max_millis = budget_ms;
+  budget.max_evaluations = budget_evaluations;
+  auto handle = ctx.dp.submitEvaluation(request, budget);
+  if (!handle) {
+    return finish(ctx, SubmitAndPollResult{false, {}, handle.error()});
+  }
+  auto pending = std::make_shared<PendingEvaluation>();
+  pending->host = ctx.dp;
+  pending->handle = *handle;
+  // The plugin does not cap the budget: the host applies its own limits and may clamp what was asked for.
+  // The poll deadline is the request plus a margin, which also covers a host that grants less; a request
+  // too large to add to the clock saturates instead of overflowing.
+  constexpr std::uint64_t kDeadlineMarginMs = 1000;
+  constexpr std::uint64_t kMaxDeadlineMs = 24ULL * 3600 * 1000 * 365;  // a year: far beyond any real budget
+  pending->deadline = std::chrono::steady_clock::now() +
+                      std::chrono::milliseconds(std::min(budget_ms, kMaxDeadlineMs) + kDeadlineMarginMs);
+  pending->finish = std::move(finish);
+  return pending->poll(ctx);
+}
+
+// The budget asked for: a positive value (at least 1), with a default when the call gives none. No upper
+// bound here: the host owns that policy and clamps what it grants.
+std::uint64_t requestedBudgetMs(const json& args) {
+  return static_cast<std::uint64_t>(std::max<std::int64_t>(args.value("budget_ms", std::int64_t{1000}), 1));
+}
+
+std::uint64_t requestedBudgetEvaluations(const json& args) {
+  return static_cast<std::uint64_t>(std::max<std::int64_t>(args.value("budget_evaluations", std::int64_t{50}), 1));
+}
+
+// evaluate()'s object path proper: validate 'outputs'/'body', resolve every
+// input (object or scalar), turn 'at_s'/'window' (display seconds) or the
+// current playhead into raw ns, submit an EPHEMERAL on_demand evaluation,
+// and hand back the time-converted report. Never installs or notifies —
+// same contract as the scalar path's ephemeral transform.
+ToolResult evaluateObjectPath(const json& args, ToolContext& ctx, const std::vector<std::string>& raw_inputs) {
+  if (!args.contains("outputs") || !args["outputs"].is_array() || args["outputs"].empty()) {
+    return ToolResult::failure(
+        "evaluate over objects (an object input, 'at_s' or 'window') requires 'outputs': an array of "
+        "\"name:type\" (type is 'number', 'string', or a builtin object type like 'kPointCloud')");
+  }
+  const ParsedOutputs parsed_outputs = parseTypedOutputs(args["outputs"]);
+  if (!parsed_outputs.error.empty()) {
+    return ToolResult::failure(parsed_outputs.error);
+  }
+  if (!args.contains("body") || !args["body"].is_string() || args["body"].get<std::string>().empty()) {
+    return ToolResult::failure(
+        "evaluate over objects requires 'body': a Luau chunk body reading inputs[\"<topic>\"] and returning a "
+        "table of the declared outputs ('expression' only applies to the plain scalar path)");
+  }
+  if (args.contains("at_s") && args.contains("window")) {
+    return ToolResult::failure("evaluate takes 'at_s' OR 'window', not both");
+  }
+
+  auto v2 = ctx.host.catalogSnapshotV2();
+  if (!v2) {
+    return ToolResult::failure(
+        "evaluating at a time or over objects requires catalog snapshot v2, which this host does not expose: " +
+        v2.error());
+  }
+  const ResolvedEvalInputs resolved = resolveEvalInputs(ctx, *v2, raw_inputs);
+  if (!resolved.error.empty()) {
+    return ToolResult::failure(resolved.error);
+  }
+  if (!resolved.anchor_source) {
+    return ToolResult::failure("evaluate needs at least one resolvable input to anchor its dataset's time conversion");
+  }
+
+  std::optional<std::int64_t> instant_ns;
+  std::optional<std::pair<std::int64_t, std::int64_t>> window_ns;
+  if (args.contains("window")) {
+    if (!args["window"].is_object() || !args["window"].contains("start_s") || !args["window"].contains("end_s") ||
+        !args["window"]["start_s"].is_number() || !args["window"]["end_s"].is_number()) {
+      return ToolResult::failure("'window' must be {\"start_s\": <number>, \"end_s\": <number>} (display seconds)");
+    }
+    const double start_s = args["window"]["start_s"].get<double>();
+    const double end_s = args["window"]["end_s"].get<double>();
+    if (end_s <= start_s) {
+      return ToolResult::failure("window.end_s must be greater than window.start_s");
+    }
+    const auto raw_start = toRawNs(ctx, *resolved.anchor_source, start_s);
+    const auto raw_end = toRawNs(ctx, *resolved.anchor_source, end_s);
+    if (!raw_start || !raw_end) {
+      return ToolResult::failure(
+          "cannot convert 'window' to raw time: the host did not expose pj.playback.v1 or per-source time "
+          "conversion");
+    }
+    window_ns = std::pair<std::int64_t, std::int64_t>{*raw_start, *raw_end};
+  } else if (args.contains("at_s")) {
+    if (!args["at_s"].is_number()) {
+      return ToolResult::failure("'at_s' must be a number (display seconds)");
+    }
+    instant_ns = toRawNs(ctx, *resolved.anchor_source, args["at_s"].get<double>());
+    if (!instant_ns) {
+      return ToolResult::failure(
+          "cannot convert 'at_s' to raw time: the host did not expose pj.playback.v1 or per-source time "
+          "conversion");
+    }
+  } else {
+    if (!ctx.playback.valid()) {
+      return ToolResult::failure("the host did not expose pj.playback.v1 (cannot evaluate at the current playhead)");
+    }
+    auto state = ctx.playback.state();
+    if (!state) {
+      return ToolResult::failure("playback state unavailable: " + state.error());
+    }
+    instant_ns = toRawNs(ctx, *resolved.anchor_source, state->current_time_s);
+    if (!instant_ns) {
+      return ToolResult::failure("cannot convert the current playhead to raw time for this dataset");
+    }
+  }
+
+  const std::string body = args["body"].get<std::string>();
+  const std::string script = buildResolvedOnDemandChunk(body, resolved).script;
+  if (auto v = ctx.dp.validateScript("on_demand", ctx.language, script); !v) {
+    return ToolResult::failure("invalid script: " + v.error());
+  }
+
+  const unsigned call_id = ++g_evaluate_counter;
+  const std::string id = "__evaluate_" + std::to_string(call_id);
+  std::vector<std::string> input_names;
+  for (const auto& ri : resolved.inputs) {
+    input_names.push_back(ri.request_path);
+  }
+
+  PJ::sdk::DataProcessorRequest request;
+  request.id = id;
+  request.kind = "on_demand";
+  request.language = ctx.language;
+  request.script = script;
+  request.params_json = "{}";
+  request.inputs = input_names;
+  request.outputs = parsed_outputs.outputs;
+  request.flags = PJ_DATA_PROCESSOR_FLAG_EPHEMERAL;
+  request.window = window_ns;
+  request.instant_ns = instant_ns;
+
+  return submitAndPoll(
+      ctx, request, requestedBudgetMs(args), requestedBudgetEvaluations(args),
+      [source = *resolved.anchor_source, debug = args.value("debug", false)](
+          ToolContext& current, const SubmitAndPollResult& polled) {
+        if (!polled.ok) {
+          return ToolResult::failure("evaluate failed: " + polled.error);
+        }
+        json out = json::object();
+        if (polled.report.contains("coverage")) {
+          out["coverage"] = polled.report["coverage"];
+        }
+        const RenderedBundles rendered = renderBundles(current, source, polled.report, debug);
+        out["bundles"] = rendered.bundles;
+        if (rendered.truncated) {
+          out["truncated"] = true;
+        }
+        return ToolResult::success(out.dump());
+      });
+}
+
 // Run a Luau computation over series and hand back numbers, without leaving
 // anything for the user to see: an EPHEMERAL transform is created, read once,
 // and removed before returning — the host hides ephemeral outputs from its
@@ -2080,6 +2325,30 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
   }
   if (inputs.empty()) {
     return ToolResult::failure("'inputs' contained no string paths");
+  }
+
+  // The OBJECT path: selected when any input is an object topic (per the v2
+  // catalog), or when the model asked to evaluate at a specific time
+  // ('at_s'/'window') rather than over the whole series. This is a
+  // different host surface (kind="on_demand" via submitEvaluation, not a
+  // per-sample transform read back through the catalog), so it is routed
+  // out to its own function before anything below — which stays exactly
+  // the scalar-path code that shipped before objects existed.
+  {
+    bool any_object_input = false;
+    if (auto v2 = ctx.host.catalogSnapshotV2()) {
+      for (const auto& in : inputs) {
+        if (resolveObjectTopic(*v2, in).resolved) {
+          any_object_input = true;
+          break;
+        }
+      }
+    }
+    const bool has_time_selector =
+        (args.contains("at_s") && !args["at_s"].is_null()) || (args.contains("window") && !args["window"].is_null());
+    if (any_object_input || has_time_selector) {
+      return evaluateObjectPath(args, ctx, inputs);
+    }
   }
 
   // Same resolution, host-create-blocker and join-forecast rules as
@@ -2127,11 +2396,12 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
   const std::string id = "__evaluate_" + std::to_string(call_id);
   // Same "__validate__" id trick create_derived_series uses: the host's
   // validator instantiates the class under that fixed name.
-  const std::string validate_script = buildLuauTransform("__validate__", "__validate__", global, body, num_extra);
+  const std::string validate_script =
+      derived_recipes::buildTransformScript("__validate__", "__validate__", global, body, num_extra, "luau").script;
   if (auto v = ctx.dp.validateScript("transform", ctx.language, validate_script); !v) {
     return ToolResult::failure("invalid expression: " + v.error());
   }
-  const std::string script = buildLuauTransform(id, id, global, body, num_extra);
+  const std::string script = derived_recipes::buildTransformScript(id, id, global, body, num_extra, "luau").script;
 
   const std::string output_name = id + "/value";
   std::vector<std::string_view> in_views(inputs.begin(), inputs.end());
@@ -2177,6 +2447,176 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
     }
     const std::size_t max_points = static_cast<std::size_t>(std::clamp(args["buckets"].get<int>(), 1, 500));
     result = withCoarsenedBuckets(std::move(result), r.ts, r.vals, max_points);
+  }
+  return ToolResult::success(result.dump());
+}
+
+// Install a persisted kind="on_demand" node (an object-producing computation
+// the host re-evaluates on request, never eagerly) and, on success, evaluate
+// it once so the model sees a finding instead of taking "created" on faith.
+// Shares evaluateObjectPath's input resolution, time conversion and report
+// rendering; the difference is createV2 (persisted, HISTORY_EXEMPT like
+// create_derived_series) in place of an EPHEMERAL submitEvaluation.
+ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
+  if (!ctx.dp.valid()) {
+    return ToolResult::failure("the host did not expose pj.data_processors.v1 (cannot create)");
+  }
+  if (!args.contains("name") || !args["name"].is_string() || args["name"].get<std::string>().empty()) {
+    return ToolResult::failure("create_derived_object requires a non-empty string 'name'");
+  }
+  const std::string name = args["name"].get<std::string>();
+  if (!args.contains("inputs") || !args["inputs"].is_array() || args["inputs"].empty()) {
+    return ToolResult::failure(
+        "create_derived_object requires a non-empty 'inputs' array of topic/field or object-topic paths");
+  }
+  if (!args.contains("body") || !args["body"].is_string() || args["body"].get<std::string>().empty()) {
+    return ToolResult::failure(
+        "create_derived_object requires 'body': a Luau chunk body reading inputs[\"<topic>\"] and returning a "
+        "table of the declared outputs");
+  }
+  if (!args.contains("outputs") || !args["outputs"].is_array() || args["outputs"].empty()) {
+    return ToolResult::failure(
+        "create_derived_object requires 'outputs': an array of \"name:type\" (type is 'number', 'string', or a "
+        "builtin object type like 'kPointCloud')");
+  }
+  const ParsedOutputs parsed_outputs = parseTypedOutputs(args["outputs"]);
+  if (!parsed_outputs.error.empty()) {
+    return ToolResult::failure(parsed_outputs.error);
+  }
+  std::vector<std::string> raw_inputs;
+  for (const auto& in : args["inputs"]) {
+    if (in.is_string()) {
+      raw_inputs.push_back(canonicalSeriesPath(in.get<std::string>()));
+    }
+  }
+  if (raw_inputs.empty()) {
+    return ToolResult::failure("'inputs' contained no string paths");
+  }
+
+  // Same "already taken" guard create_derived_series applies, for the same
+  // reason: installing over a name the user already has is not a judgement
+  // call this code gets to make.
+  if (auto existing = ctx.dp.list()) {
+    for (const auto& id : *existing) {
+      if (id == name) {
+        return ToolResult::failure(
+            "'" + name +
+            "' already exists — this assistant created it earlier in the session. Remove it first with "
+            "remove_derived_series, or choose another name.");
+      }
+    }
+  }
+
+  auto v2 = ctx.host.catalogSnapshotV2();
+  if (!v2) {
+    return ToolResult::failure(
+        "create_derived_object requires catalog snapshot v2, which this host does not expose: " + v2.error());
+  }
+  const ResolvedEvalInputs resolved = resolveEvalInputs(ctx, *v2, raw_inputs);
+  if (!resolved.error.empty()) {
+    return ToolResult::failure(resolved.error);
+  }
+  if (!resolved.anchor_source) {
+    return ToolResult::failure(
+        "create_derived_object needs at least one resolvable input to anchor its dataset's time conversion");
+  }
+
+  // A pin is a FINDING: evaluated once, at a fixed instant, and kept —
+  // unlike a bare on_demand install (no pin), which the host re-evaluates
+  // wherever a later consumer asks. Converted the same way evaluate's at_s
+  // is.
+  std::optional<std::int64_t> pin_ns;
+  if (args.contains("pin_at_s") && !args["pin_at_s"].is_null()) {
+    if (!args["pin_at_s"].is_number()) {
+      return ToolResult::failure("'pin_at_s' must be a number (display seconds)");
+    }
+    pin_ns = toRawNs(ctx, *resolved.anchor_source, args["pin_at_s"].get<double>());
+    if (!pin_ns) {
+      return ToolResult::failure(
+          "cannot convert 'pin_at_s' to raw time: the host did not expose pj.playback.v1 or per-source time "
+          "conversion");
+    }
+  }
+
+  const std::string body = args["body"].get<std::string>();
+  const std::string script = buildResolvedOnDemandChunk(body, resolved).script;
+  if (auto v = ctx.dp.validateScript("on_demand", ctx.language, script); !v) {
+    return ToolResult::failure("invalid script: " + v.error());
+  }
+
+  std::vector<std::string> input_names;
+  for (const auto& ri : resolved.inputs) {
+    input_names.push_back(ri.request_path);
+  }
+  const std::string params_json = args.contains("params") && args["params"].is_object() ? args["params"].dump() : "{}";
+  const std::string label = args.value("label", std::string{});
+
+  bool undo_protection_unavailable = false;
+  auto created = createHistoryExempt(
+      ctx, name,
+      [&](uint32_t flags) {
+        PJ::sdk::DataProcessorRequest request;
+        request.id = name;
+        request.kind = "on_demand";
+        request.language = ctx.language;
+        request.script = script;
+        request.params_json = params_json;
+        request.label = label;
+        request.inputs = input_names;
+        request.outputs = parsed_outputs.outputs;
+        request.flags = flags;
+        request.instant_ns = pin_ns;
+        return ctx.dp.createV2(request);
+      },
+      undo_protection_unavailable);
+  if (!created) {
+    return ToolResult::failure("create failed: " + created.error());
+  }
+  if (ctx.notify_data_changed) {
+    ctx.notify_data_changed();
+  }
+
+  json result = {{"created", name}, {"out_topics", *created}};
+  if (pin_ns) {
+    result["pinned_at_s"] = args["pin_at_s"].get<double>();  // a frozen finding, not a live object
+  } else {
+    result["live"] = true;  // recomputed wherever the playhead is
+  }
+  annotateUndoProtection(result, undo_protection_unavailable);
+
+  // Evaluate the installed node once, at the pin (if given) or the current
+  // playhead, so the model sees what it made instead of taking "created" on
+  // faith — the same principle "Closing the loop on what it creates"
+  // documents for markers and derived series. Best-effort: the node IS
+  // installed either way, so a failed read-back degrades the response
+  // rather than the tool call.
+  std::optional<std::int64_t> eval_ns = pin_ns;
+  if (!eval_ns && ctx.playback.valid()) {
+    if (auto state = ctx.playback.state()) {
+      eval_ns = toRawNs(ctx, *resolved.anchor_source, state->current_time_s);
+    }
+  }
+  if (eval_ns) {
+    PJ::sdk::DataProcessorRequest eval_request;
+    eval_request.id = name;
+    eval_request.kind = "on_demand";
+    eval_request.language = ctx.language;
+    eval_request.instant_ns = eval_ns;
+
+    return submitAndPoll(
+        ctx, eval_request, 1000, 1,
+        [result = std::move(result), source = *resolved.anchor_source](
+            ToolContext& current, const SubmitAndPollResult& polled) mutable {
+          if (polled.ok) {
+            const RenderedBundles rendered = renderBundles(current, source, polled.report, false);
+            if (!rendered.bundles.empty()) {
+              result["bundle"] = rendered.bundles.front();
+            }
+          } else {
+            result["bundle_unavailable"] = polled.error;
+          }
+          return ToolResult::success(result.dump());
+        });
   }
   return ToolResult::success(result.dump());
 }
@@ -2516,35 +2956,82 @@ ToolResult playbackTool(const json& args, ToolContext& ctx) {
 
 constexpr const char* kNoPlotTabs = "the host did not expose pj.plot_tabs.v1 (cannot compose plot tabs)";
 
-// Names of the tabs this assistant currently owns, for the "which are mine?"
-// half of an error. An unreadable list degrades to no names rather than
-// replacing the real failure with a secondary one.
-std::string ownedTabList(ToolContext& ctx) {
+// One tab's config, fetched and parsed once. pj.plot_tabs.v1 lists plot tabs AND
+// scene tabs together; a scene tab's config carries a "kind" key and a plot tab's
+// does not, which is how plot_tab and scene_view each keep to their own.
+struct TabConfig {
+  std::string error;  // the host's refusal; empty when the config was fetched
+  json parsed;        // null when unreadable
+
+  [[nodiscard]] bool isScene() const {
+    return parsed.is_object() && parsed.contains("kind");
+  }
+};
+
+TabConfig fetchTabConfig(ToolContext& ctx, const std::string& id) {
+  TabConfig out;
+  auto config = ctx.plot_tabs.configOf(id);
+  if (!config) {
+    out.error = config.error();
+    return out;
+  }
+  out.parsed = json::parse(*config, nullptr, /*allow_exceptions=*/false);
+  return out;
+}
+
+// Ids this assistant owns of one flavour: scene tabs (3d/2d) or plot tabs. An
+// unreadable list degrades to no ids rather than replacing the real failure with a
+// secondary one.
+std::vector<std::string> ownedIdsOfKind(ToolContext& ctx, bool scene) {
+  std::vector<std::string> out;
   auto ids = ctx.plot_tabs.list();
-  if (!ids || ids->empty()) {
+  if (!ids) {
+    return out;
+  }
+  for (const std::string& id : *ids) {
+    if (fetchTabConfig(ctx, id).isScene() == scene) {
+      out.push_back(id);
+    }
+  }
+  return out;
+}
+
+std::string joinOrNone(const std::vector<std::string>& ids) {
+  if (ids.empty()) {
     return "none yet";
   }
   std::string out;
-  for (const std::string& id : *ids) {
+  for (const std::string& id : ids) {
     out += (out.empty() ? "" : ", ") + id;
   }
   return out;
 }
 
-// The tab as the HOST holds it, parsed back from tab_config. Every action
-// answers with this rather than an echo of the request, so a curve that did not
-// land shows as absent instead of being reported as drawn.
+std::string ownedTabList(ToolContext& ctx) {
+  return joinOrNone(ownedIdsOfKind(ctx, /*scene=*/false));
+}
+
+// The tab (`key` "tab") or scene view (`key` "view") as the HOST holds it, parsed back
+// from tab_config. Every action answers with this rather than an echo of the request,
+// so a curve or topic that did not land shows as absent instead of being reported as
+// drawn or attached.
+json readBackFrom(TabConfig config, const std::string& id, const char* key) {
+  if (!config.error.empty()) {
+    return {{key, id}, {"contents_unavailable", config.error}};
+  }
+  if (!config.parsed.is_object()) {
+    return {{key, id}, {"contents_unavailable", std::string("the host returned no readable ") + key + " contents"}};
+  }
+  config.parsed[key] = id;
+  return std::move(config.parsed);
+}
+
+json readBack(ToolContext& ctx, const std::string& id, const char* key) {
+  return readBackFrom(fetchTabConfig(ctx, id), id, key);
+}
+
 json tabReadBack(ToolContext& ctx, const std::string& tab) {
-  auto config = ctx.plot_tabs.configOf(tab);
-  if (!config) {
-    return {{"tab", tab}, {"contents_unavailable", config.error()}};
-  }
-  json parsed = json::parse(*config, nullptr, /*allow_exceptions=*/false);
-  if (!parsed.is_object()) {
-    return {{"tab", tab}, {"contents_unavailable", "the host returned no readable tab contents"}};
-  }
-  parsed["tab"] = tab;
-  return parsed;
+  return readBack(ctx, tab, "tab");
 }
 
 ToolResult plotTabTool(const json& args, ToolContext& ctx) {
@@ -2562,7 +3049,11 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
     }
     json arr = json::array();
     for (const std::string& id : *ids) {
-      arr.push_back(tabReadBack(ctx, id));
+      TabConfig config = fetchTabConfig(ctx, id);
+      if (config.isScene()) {
+        continue;  // scene tabs belong to scene_view
+      }
+      arr.push_back(readBackFrom(std::move(config), id, "tab"));
     }
     // Owning nothing is an answer, not a failure.
     return ToolResult::success(json({{"count", arr.size()}, {"tabs", arr}}).dump());
@@ -2678,6 +3169,165 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
   return refused.size() == paths.size() ? ToolResult::failure(out.dump()) : ToolResult::success(out.dump());
 }
 
+// --- the assistant's own scene views -----------------------------------------
+
+constexpr const char* kNoSceneViews =
+    "the host predates scene tabs in pj.plot_tabs.v1 (SDK 0.36.0): cannot open scene views";
+
+// Names of the scene tabs this assistant currently owns, mirroring
+// ownedTabList's role in plotTabTool's errors.
+std::string ownedViewList(ToolContext& ctx) {
+  return joinOrNone(ownedIdsOfKind(ctx, /*scene=*/true));
+}
+
+json viewReadBack(ToolContext& ctx, const std::string& view) {
+  return readBack(ctx, view, "view");
+}
+
+// One attach/detach outcome, resolved before the host is asked so a bad path
+// never reaches attachTopic/detachTopic in the first place.
+struct SceneTopicOutcome {
+  std::string display_topic;  // qualified form shown back to the model
+  std::string bare_topic;     // host_path, matched against the read-back below
+  std::string dataset;
+  bool called_ok = false;  // the host call itself succeeded (not yet verified as landed)
+  std::string error;       // set on resolve failure or a host refusal
+};
+
+ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
+  const std::string action = args.value("action", std::string());
+  if (action.empty()) {
+    return ToolResult::failure(
+        "scene_view requires 'action': one of 'create', 'attach', 'detach', 'focus', 'close', 'list'");
+  }
+  if (!ctx.plot_tabs.hasSceneTabs()) {
+    return ToolResult::failure(kNoSceneViews);
+  }
+  if (action == "list") {
+    auto ids = ctx.plot_tabs.list();
+    if (!ids) {
+      return ToolResult::failure(ids.error());
+    }
+    json arr = json::array();
+    for (const std::string& id : *ids) {
+      TabConfig config = fetchTabConfig(ctx, id);
+      if (!config.isScene()) {
+        continue;  // plot tabs belong to plot_tab
+      }
+      arr.push_back(readBackFrom(std::move(config), id, "view"));
+    }
+    // Owning nothing is an answer, not a failure.
+    return ToolResult::success(json({{"count", arr.size()}, {"views", arr}}).dump());
+  }
+
+  const std::string view = args.value("view", std::string());
+  if (action == "create") {
+    // A name of its own, so the model can address the view again next turn
+    // without having to remember a host-chosen handle.
+    const std::string id = view.empty() ? "scene" : view;
+    const std::string kind = args.value("kind", std::string("3d"));
+    if (kind != "3d" && kind != "2d") {
+      return ToolResult::failure("'kind' must be \"3d\" or \"2d\"");
+    }
+    if (auto status = ctx.plot_tabs.createTabV2(id, kind, args.value("title", std::string())); !status) {
+      return ToolResult::failure("could not create the view: " + status.error());
+    }
+    return ToolResult::success(viewReadBack(ctx, id).dump());
+  }
+  if (view.empty()) {
+    return ToolResult::failure(
+        "'" + action + "' needs 'view', the name of one of your own scene views (you have: " + ownedViewList(ctx) +
+        "). Only views you created can be changed; the user's scene docks are not yours to touch.");
+  }
+
+  if (action == "focus") {
+    if (auto status = ctx.plot_tabs.focusTab(view); !status) {
+      return ToolResult::failure(status.error() + " (yours: " + ownedViewList(ctx) + ")");
+    }
+    return ToolResult::success(json({{"focused", view}}).dump());
+  }
+  if (action == "close") {
+    if (auto status = ctx.plot_tabs.close(view); !status) {
+      return ToolResult::failure(status.error() + " (yours: " + ownedViewList(ctx) + ")");
+    }
+    return ToolResult::success(json({{"closed", view}}).dump());
+  }
+
+  if (action != "attach" && action != "detach") {
+    return ToolResult::failure("unknown scene_view action '" + action + "'; use create/attach/detach/focus/close/list");
+  }
+  const std::vector<std::string> paths = requestedPaths(args, {"topics"});
+  if (paths.empty()) {
+    return ToolResult::failure("'" + action + "' needs 'topics': one object-topic path, or an array of them");
+  }
+  auto v2 = ctx.host.catalogSnapshotV2();
+  if (!v2) {
+    return ToolResult::failure(
+        "scene_view requires catalog snapshot v2, which this host does not expose: " + v2.error());
+  }
+  const bool attaching = action == "attach";
+  std::vector<SceneTopicOutcome> outcomes;
+  outcomes.reserve(paths.size());
+  for (const std::string& want : paths) {
+    SceneTopicOutcome o;
+    ObjectLookup lookup = resolveObjectTopic(*v2, want);
+    if (lookup.ambiguous) {
+      o.display_topic = want;
+      o.error = objectLookupError(want, lookup);
+      outcomes.push_back(std::move(o));
+      continue;
+    }
+    if (!lookup.resolved) {
+      o.display_topic = want;
+      o.error = "'" + want + "' is not a loaded object topic";
+      outcomes.push_back(std::move(o));
+      continue;
+    }
+    o.display_topic = lookup.resolved->display_path;
+    o.bare_topic = lookup.resolved->host_path;
+    o.dataset = objectTopicDatasetName(v2->dataSources(), lookup.resolved->source);
+    // The host addresses a view topic by its bare name and resolves the
+    // dataset itself, the same convention plotTabTool's addCurve follows.
+    auto status = attaching ? ctx.plot_tabs.attachTopic(view, o.bare_topic, o.dataset)
+                            : ctx.plot_tabs.detachTopic(view, o.bare_topic, o.dataset);
+    if (!status) {
+      o.error = status.error();
+      outcomes.push_back(std::move(o));
+      continue;
+    }
+    o.called_ok = true;
+    outcomes.push_back(std::move(o));
+  }
+
+  json out = viewReadBack(ctx, view);
+  // A call the host accepted is not yet a topic on screen: it may resolve to
+  // nothing and simply leave the view as it was. So, as in plotTabTool, the
+  // verdict comes from what the view HOLDS, not from what the calls returned.
+  const json& held = out.contains("topics") ? out["topics"] : json::array();
+  json results = json::array();
+  std::size_t landed = 0;
+  for (const auto& o : outcomes) {
+    if (!o.called_ok) {
+      results.push_back({{"topic", o.display_topic}, {"error", o.error}});
+      continue;
+    }
+    const bool present = std::any_of(held.begin(), held.end(), [&](const json& t) {
+      return t.value("topic", std::string()) == o.bare_topic && t.value("dataset", std::string()) == o.dataset;
+    });
+    if (present == attaching) {
+      results.push_back({{"topic", o.display_topic}, {attaching ? "attached" : "detached", true}});
+      ++landed;
+    } else {
+      results.push_back(
+          {{"topic", o.display_topic}, {"error", attaching ? "did not land in the view" : "is still attached"}});
+    }
+  }
+  out["results"] = results;
+  // Nothing landed at all is a failure; a partial landing is a success whose
+  // truth the model still has to see.
+  return landed == 0 ? ToolResult::failure(out.dump()) : ToolResult::success(out.dump());
+}
+
 ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {
@@ -2696,6 +3346,61 @@ ToolResult reportStatus(const json& /*args*/, ToolContext& ctx) {
   if (!names.empty()) {
     out["dataset_names"] = names;
   }
+
+  auto v2 = ctx.host.catalogSnapshotV2();
+  if (v2) {
+    std::size_t object_topics = 0;
+    std::size_t derived_object_topics = 0;
+    for (const auto& obj : v2->objectTopics()) {
+      const std::string name(PJ::sdk::toStringView(obj.name));
+      if (isMarkerObjectTopic(name)) {
+        continue;  // drawn, not read -- not counted as an object topic
+      }
+      ++object_topics;
+      if (metadataHasKey(PJ::sdk::toStringView(obj.metadata_json), PJ::sdk::kDerivedMetadataKey)) {
+        ++derived_object_topics;
+      }
+    }
+    out["object_topics"] = object_topics;
+    out["derived_object_topics"] = derived_object_topics;
+  } else {
+    out["object_topics"] = 0;
+    out["derived_object_topics"] = 0;
+    out["objects"] = "not listed (host predates catalog snapshot v2)";
+  }
+  // The host scopes list()/recipeOf() to this assistant's namespace.
+  json findings = {{"pinned", 0}, {"bytes", 0}, {"complete", true}};
+  json processors = json::array();
+  auto ids = ctx.dp.list();
+  if (!ids) {
+    findings["complete"] = false;
+  } else {
+    for (const auto& id : *ids) {
+      auto recipe = ctx.dp.recipeOf(id);
+      const auto node = recipe ? json::parse(*recipe, nullptr, false) : json();
+      if (!node.is_object()) {
+        findings["complete"] = false;
+        continue;
+      }
+      if (node.contains("pinned_t_ns")) {
+        findings["pinned"] = findings["pinned"].get<std::size_t>() + 1;
+        if (node.contains("memory_bytes") && node["memory_bytes"].is_number_unsigned()) {
+          findings["bytes"] = findings["bytes"].get<std::uint64_t>() + node["memory_bytes"].get<std::uint64_t>();
+        } else {
+          findings["complete"] = false;
+        }
+      }
+      json status = {{"name", id}};
+      for (const auto* key : {"kind", "state", "error", "detail", "requested_ns", "stale"}) {
+        if (node.contains(key)) {
+          status[key] = node[key];
+        }
+      }
+      processors.push_back(std::move(status));
+    }
+  }
+  out["findings"] = std::move(findings);
+  out["processors"] = std::move(processors);
   return ToolResult::success(out.dump());
 }
 
@@ -2714,10 +3419,14 @@ enum class Tier { kCount, kPartial, kFull };
 // catalogDigest, kept verbatim as the fallback for the rare budget so tight
 // that not even a bare field COUNT fits for every topic — see catalogDigest's
 // count-only feasibility check below, the only caller.
-std::string legacyCatalogDigest(const PJ::sdk::CatalogSnapshot& catalog, std::size_t budget_chars) {
+// Templated over the catalog type so it serves both the legacy (v1) host and
+// catalogSnapshotV2()'s scalar half -- both expose the same topics()/fields()/
+// dataSources() shape, and this fallback never touches object topics.
+template <class Catalog>
+std::string legacyCatalogDigest(const Catalog& catalog, std::size_t budget_chars) {
   auto topics = catalog.topics();
   auto fields = catalog.fields();
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog);
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog.dataSources());
 
   auto build = [&](bool with_fields, std::size_t& shown) -> std::string {
     std::string body;
@@ -2796,18 +3505,15 @@ std::string legacyCatalogDigest(const PJ::sdk::CatalogSnapshot& catalog, std::si
   return header + body + footer;
 }
 
-}  // namespace
-
-std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars) {
-  auto catalog = host.catalogSnapshot();
-  if (!catalog) {
-    return "Loaded data: unavailable (" + catalog.error() + "). Use list_topics to look it up.";
-  }
-  auto topics = catalog->topics();
-  auto fields = catalog->fields();
-  if (topics.empty()) {
-    return "Loaded data: nothing is loaded yet.";
-  }
+// The scalar half of the digest -- everything catalogDigest rendered before
+// object topics existed, unchanged in behavior. Templated over the catalog
+// type so catalogSnapshotV2()'s scalar arrays (identical shape to v1's) share
+// this without a second copy; the caller has already handled "nothing is
+// loaded" (that verdict needs to know about object topics too, on a v2 host).
+template <class Catalog>
+std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget_chars) {
+  auto topics = catalog.topics();
+  auto fields = catalog.fields();
   const std::uint32_t n = static_cast<std::uint32_t>(topics.size());
 
   // Which dataset each topic belongs to. PJ4 can hold several loaded at once —
@@ -2817,7 +3523,7 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
   // grouped contiguously per source (first_topic/topic_count), so this is a
   // lookup table rather than a scan. Empty when the host reports no sources, in
   // which case the listing stays exactly as it was.
-  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(*catalog);
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog.dataSources());
 
   // Dataset-header prefix per topic index — empty except where a new dataset
   // starts. Precomputed once so every tier below (full/partial/count) shares
@@ -2920,7 +3626,7 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
     // Teach the qualifier by stating it where the dataset names are, instead
     // of spending schema tokens on it in every session: this line exists
     // only when several datasets are actually loaded.
-    if (catalog->dataSources().size() >= 2) {
+    if (catalog.dataSources().size() >= 2) {
       header +=
           "Several datasets are loaded; when the same topic exists in more than one, address the series as "
           "\"<dataset>:<topic>/<field>\".\n";
@@ -2968,7 +3674,7 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
     count_total += dataset_prefix[ti].size() + count_body[ti].size();
   }
   if (count_total > budget_chars) {
-    return legacyCatalogDigest(*catalog, budget_chars);
+    return legacyCatalogDigest(catalog, budget_chars);
   }
 
   // Every topic starts at "count" (already paid for above) and ascends
@@ -3038,6 +3744,84 @@ std::string catalogDigest(const PJ::sdk::ToolboxHostView& host, std::size_t budg
   return renderHeader() + body + footer;
 }
 
+// One line per non-marker object topic, grouped under the same "dataset
+// \"X\":" headers the scalar half uses. Budgeted like a topic with one field:
+// every line is a fixed-size unit -- there is no field list inside it to
+// shrink -- so unlike a scalar topic it has only one tier, taken whole or
+// left out. Lines are appended greedily in catalog order until the next one
+// would exceed `budget_chars`; `shown < total` is catalogDigest's signal to
+// say the list was cut.
+struct ObjectDigestLines {
+  std::string body;
+  std::size_t shown = 0;
+  std::size_t total = 0;
+};
+
+ObjectDigestLines renderObjectDigestLines(
+    const PJ::sdk::CatalogSnapshotV2& catalog, std::size_t budget_chars, const PJ::sdk::PlaybackHostView& playback) {
+  ObjectDigestLines out;
+  const bool multi_dataset = catalog.dataSources().size() >= 2;
+  std::string current_dataset;
+  for (const auto& entry : derived_recipes::listObjectTopics(catalog)) {
+    const PJ_object_topic_info_t& obj = entry.info;
+    const std::string& name = entry.name;
+    const std::string& dataset = entry.dataset;
+    ++out.total;
+    std::string line;
+    if (multi_dataset && dataset != current_dataset) {
+      current_dataset = dataset;
+      line += "dataset \"" + current_dataset + "\":\n";
+    }
+    const std::string& type_name = entry.type;
+    const ObjectTimeRange range = objectTimeRange(playback, obj.source, obj.time_min_ns, obj.time_max_ns);
+    std::ostringstream oss;
+    oss << "  " << name << "  [object " << (type_name.empty() ? std::string("unknown") : type_name) << ", "
+        << obj.entry_count << " entries, " << std::fixed << std::setprecision(3) << range.a << "-" << range.b
+        << (range.raw ? " raw seconds" : " display seconds") << "]\n";
+    line += oss.str();
+    if (out.body.size() + line.size() > budget_chars) {
+      break;
+    }
+    out.body += line;
+    ++out.shown;
+  }
+  return out;
+}
+
+}  // namespace
+
+std::string catalogDigest(
+    const PJ::sdk::ToolboxHostView& host, std::size_t budget_chars, const PJ::sdk::PlaybackHostView& playback) {
+  auto v2 = host.catalogSnapshotV2();
+  if (v2) {
+    const ObjectDigestLines object_lines = renderObjectDigestLines(*v2, budget_chars, playback);
+    if (v2->topics().empty() && object_lines.total == 0) {
+      return "Loaded data: nothing is loaded yet.";
+    }
+    // Object topics are fixed-size lines with nothing to shrink, so they take
+    // their share of the budget first; the scalar tiering algorithm gets
+    // whatever is left, which is the whole budget on the common catalog with
+    // no object topics -- every existing scalar guarantee is unchanged then.
+    const std::size_t scalar_budget =
+        budget_chars > object_lines.body.size() ? budget_chars - object_lines.body.size() : 0;
+    std::string out = v2->topics().empty() ? std::string() : renderScalarCatalogDigest(*v2, scalar_budget);
+    out += object_lines.body;
+    if (object_lines.shown < object_lines.total) {
+      out += "Some object topics are TRUNCATED above; use list_topics with a filter to find the rest.\n";
+    }
+    return out;
+  }
+
+  auto catalog = host.catalogSnapshot();
+  if (!catalog) {
+    return "Loaded data: unavailable (" + catalog.error() + "). Use list_topics to look it up.";
+  }
+  if (catalog->topics().empty()) {
+    return "Loaded data: nothing is loaded yet.";
+  }
+  return renderScalarCatalogDigest(*catalog, budget_chars);
+}
+
 // --- registry --------------------------------------------------------------
 
 void ToolRegistry::add(ToolSpec spec) {
@@ -3099,17 +3883,32 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"evaluate",
-       "Run a Luau computation over series and get numbers back — nothing is created or shown. Same "
-       "inputs/expression/body/global as create_derived_series. Returns stats (min/max with their "
-       "times, invalid count); add 'buckets' for the shape too. Use to answer how much/when/whether "
-       "before deciding if anything is worth creating.",
+       "Run a Luau computation and get the answer back — nothing is created or shown. Picked "
+       "automatically: SCALAR (default) takes the same inputs/expression/body/global as "
+       "create_derived_series and returns stats, add 'buckets' for the shape. OBJECT form kicks in "
+       "when an input is an object topic or 'at_s'/'window' is given: requires 'body' (reads "
+       "inputs[\"<topic>\"], returns a table of 'outputs') and 'outputs' ([\"name:type\", …], type is "
+       "'number', 'string', or a builtin object type e.g. 'kPointCloud'); 'at_s' evaluates at one "
+       "display-seconds instant, 'window':{start_s,end_s} over a span, neither defaults to the "
+       "playhead. Objects come back only as summaries, never bytes. To keep a result, "
+       "create_derived_object.",
        {{"type", "object"},
         {"properties",
          {{"inputs", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-          {"expression", {{"type", "string"}}},
-          {"body", {{"type", "string"}}},
-          {"global", {{"type", "string"}}},
-          {"buckets", {{"type", "integer"}, {"description", "1-500"}}}}},
+          {"expression", {{"type", "string"}, {"description", "scalar only"}}},
+          {"body",
+           {{"type", "string"}, {"description", "scalar: return ...; object: reads inputs[..], returns table"}}},
+          {"global", {{"type", "string"}, {"description", "scalar only"}}},
+          {"buckets", {{"type", "integer"}, {"description", "scalar only; 1-500"}}},
+          {"outputs", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "object only, required"}}},
+          {"at_s", {{"type", "number"}, {"description", "object: instant, display seconds"}}},
+          {"window",
+           {{"type", "object"},
+            {"properties", {{"start_s", {{"type", "number"}}}, {"end_s", {{"type", "number"}}}}},
+            {"description", "object: span, display seconds"}}},
+          {"budget_ms", {{"type", "integer"}, {"description", "object; default 1000 (the host may clamp)"}}},
+          {"budget_evaluations", {{"type", "integer"}, {"description", "object; default 50 (the host may clamp)"}}},
+          {"debug", {{"type", "boolean"}, {"description", "object: also report raw nanoseconds"}}}}},
         {"required", json::array({"inputs"})}},
        &evaluateSeries});
 
@@ -3139,6 +3938,28 @@ ToolRegistry::ToolRegistry() {
            {{"type", "string"}, {"description", "Luau run once per instance; locals persist across samples"}}}}},
         {"required", json::array({"name", "inputs"})}},
        &createDerivedSeries});
+
+  add(
+      {"create_derived_object",
+       "Install a live on-demand computation over object topics (point clouds, scene entities...) — "
+       "evaluated on request, not eagerly per sample like create_derived_series. 'body' reads "
+       "inputs[\"<topic>\"] and returns a table of the declared 'outputs' ([\"name:type\", …]). Without "
+       "'pin_at_s' it stays live for a later consumer (e.g. scene_view) to query; with 'pin_at_s' it is "
+       "a FINDING, evaluated once at that display-seconds instant and kept (shown under "
+       "<plugin>/<name>/…). Either way this call also evaluates it once itself and returns that first "
+       "bundle. Saved in layouts. Undo protection is verified when supported; failure is reported.",
+       {{"type", "object"},
+        {"properties",
+         {{"name", {{"type", "string"}, {"description", "name of the new node"}}},
+          {"inputs", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "topic/object paths"}}},
+          {"outputs",
+           {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "[\"name:type\", …], required"}}},
+          {"body", {{"type", "string"}, {"description", "reads inputs[..], returns table of 'outputs'"}}},
+          {"params", {{"type", "object"}, {"description", "forwarded to the script (optional)"}}},
+          {"pin_at_s", {{"type", "number"}, {"description", "OPTIONAL — pin as a finding, display seconds"}}},
+          {"label", {{"type", "string"}, {"description", "human-readable name (optional)"}}}}},
+        {"required", json::array({"name", "inputs", "outputs", "body"})}},
+       &createDerivedObject});
 
   add(
       {"create_markers",
@@ -3205,9 +4026,9 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"remove_derived_series",
-       "Delete a derived series this assistant created, by its name. Only its own creations — loaded "
-       "data cannot be touched. Use it to withdraw a series that turned out wrong instead of leaving "
-       "it in the user's panel.",
+       "Delete a derived series or object this assistant created, by its name. Only its own creations — "
+       "loaded data cannot be touched. Use it to withdraw a series or object that turned out wrong "
+       "instead of leaving it in the user's panel.",
        {{"type", "object"},
         {"properties", {{"name", {{"type", "string"}, {"description", "name given at creation"}}}}},
         {"required", json::array({"name"})}},
@@ -3231,7 +4052,8 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"plot_tab",
-       "Compose plot tabs of your own. A tab you create is watermarked \"AI\" and is the only place "
+       "Compose plot tabs of your own. A tab you create is marked with this assistant's ownership badge and is the "
+       "only place "
        "you may draw: the user's tabs are not yours to fill, zoom or close, and they do not go away "
        "when you close yours. Supporting hosts save your tabs with the layout and exclude them from "
        "undo/redo; older hosts may keep them only for the session.\n"
@@ -3250,6 +4072,25 @@ ToolRegistry::ToolRegistry() {
           {"end_s", {{"type", "number"}}}}},
         {"required", json::array({"action"})}},
        &plotTabTool});
+
+  add(
+      {"scene_view",
+       "Open 3D/2D scene views of your own (the scene tabs of pj.plot_tabs.v1), the counterpart of plot_tab: same "
+       "watermark and ownership, the user's scene docks unreachable.\n"
+       "action: 'create' (optional 'view', 'kind' \"3d\"|\"2d\" default \"3d\", 'title') | "
+       "'attach'/'detach' ('topics', object-topic paths) | 'focus' | 'close' | 'list'. Every action "
+       "reads back what the view actually holds, so a topic that did not land shows as missing "
+       "instead of attached.",
+       {{"type", "object"},
+        {"properties",
+         {{"action",
+           {{"type", "string"}, {"enum", json::array({"create", "attach", "detach", "focus", "close", "list"})}}},
+          {"view", {{"type", "string"}, {"description", "your name for the view"}}},
+          {"kind", {{"type", "string"}, {"enum", json::array({"3d", "2d"})}, {"description", "create only"}}},
+          {"title", {{"type", "string"}, {"description", "view title shown to the user (create)"}}},
+          {"topics", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "object-topic paths"}}}}},
+        {"required", json::array({"action"})}},
+       &sceneViewTool});
 
   add(
       {"report_status",

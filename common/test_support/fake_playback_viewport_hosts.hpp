@@ -7,7 +7,7 @@
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <string>
 
-namespace assistant_agent::testing {
+namespace toolbox_testing {
 
 // Fake pj.playback.v1 host: records the last call, serves a settable state,
 // and converts absolute ns -> display seconds with a fixed offset so the
@@ -59,18 +59,34 @@ struct FakePlaybackHost {
     *out_display_s = static_cast<double>(absolute_ns - self->display_offset_ns) * 1e-9;
     return true;
   }
+  // Source-scoped conversion, same fixed offset as tToDisplayTime -- there is
+  // no per-source concept here, just enough to observe the OFFSET a caller
+  // (e.g. evaluate's object path) derives from one forward conversion.
+  static bool tToDisplayTimeForSource(
+      void* ctx, PJ_data_source_handle_t source, std::int64_t absolute_ns, double* out_display_s,
+      PJ_error_t*) noexcept {
+    auto* self = static_cast<FakePlaybackHost*>(ctx);
+    self->last_source_id = source.id;
+    *out_display_s = static_cast<double>(absolute_ns - self->display_offset_ns) * 1e-9;
+    return true;
+  }
+
+  std::uint32_t last_source_id = 0;
 
   PJ::sdk::PlaybackHostView view() {
-    static const PJ_playback_host_vtable_t vtable = {
-        .protocol_version = 1,
-        .struct_size = sizeof(PJ_playback_host_vtable_t),
-        .play = &FakePlaybackHost::tPlay,
-        .pause = &FakePlaybackHost::tPause,
-        .seek = &FakePlaybackHost::tSeek,
-        .set_playback_rate = &FakePlaybackHost::tSetRate,
-        .get_state = &FakePlaybackHost::tGetState,
-        .to_display_time = &FakePlaybackHost::tToDisplayTime,
-    };
+    static const PJ_playback_host_vtable_t vtable = [] {
+      PJ_playback_host_vtable_t v{};
+      v.protocol_version = 1;
+      v.struct_size = sizeof(PJ_playback_host_vtable_t);
+      v.play = &FakePlaybackHost::tPlay;
+      v.pause = &FakePlaybackHost::tPause;
+      v.seek = &FakePlaybackHost::tSeek;
+      v.set_playback_rate = &FakePlaybackHost::tSetRate;
+      v.get_state = &FakePlaybackHost::tGetState;
+      v.to_display_time = &FakePlaybackHost::tToDisplayTime;
+      v.to_display_time_for_source = &FakePlaybackHost::tToDisplayTimeForSource;
+      return v;
+    }();
     return PJ::sdk::PlaybackHostView(PJ_playback_host_t{this, &vtable});
   }
 };
@@ -95,14 +111,16 @@ struct FakeViewportHost {
   }
 
   PJ::sdk::ViewportHostView view() {
-    static const PJ_viewport_host_vtable_t vtable = {
-        .protocol_version = 1,
-        .struct_size = sizeof(PJ_viewport_host_vtable_t),
-        .zoom_to_time_range = &FakeViewportHost::tZoom,
-        .zoom_reset = &FakeViewportHost::tReset,
-    };
+    static const PJ_viewport_host_vtable_t vtable = [] {
+      PJ_viewport_host_vtable_t v{};
+      v.protocol_version = 1;
+      v.struct_size = sizeof(PJ_viewport_host_vtable_t);
+      v.zoom_to_time_range = &FakeViewportHost::tZoom;
+      v.zoom_reset = &FakeViewportHost::tReset;
+      return v;
+    }();
     return PJ::sdk::ViewportHostView(PJ_viewport_host_t{this, &vtable});
   }
 };
 
-}  // namespace assistant_agent::testing
+}  // namespace toolbox_testing
