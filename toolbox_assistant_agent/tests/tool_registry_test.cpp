@@ -1923,6 +1923,8 @@ TEST(ToolRegistry, CreateDerivedObjectPinsAFinding) {
   EXPECT_EQ(j["created"], "cropped_cloud");
   ASSERT_TRUE(j.contains("bundle"));
   EXPECT_FALSE(j.contains("undo_protection"));
+  EXPECT_EQ(j["pinned_at_s"], 2.5);
+  EXPECT_FALSE(j.contains("live"));
 }
 #endif
 
@@ -1945,6 +1947,8 @@ TEST(ToolRegistry, CreateDerivedObjectDisclosesMissingUndoProtection) {
   ASSERT_TRUE(r.ok) << r.content;
   const json j = json::parse(r.content);
   EXPECT_EQ(j["undo_protection"], "unavailable: an undo can remove this");
+  EXPECT_EQ(j["live"], true) << "no pin_at_s: the object recomputes as the playhead moves";
+  EXPECT_FALSE(j.contains("pinned_at_s"));
 }
 
 // --- PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT: set when the SDK has it, with a

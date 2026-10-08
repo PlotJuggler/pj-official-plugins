@@ -2577,6 +2577,11 @@ ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
   }
 
   json result = {{"created", name}, {"out_topics", *created}};
+  if (pin_ns) {
+    result["pinned_at_s"] = args["pin_at_s"].get<double>();  // a frozen finding, not a live object
+  } else {
+    result["live"] = true;  // recomputed wherever the playhead is
+  }
   annotateUndoProtection(result, undo_protection_unavailable);
 
   // Evaluate the installed node once, at the pin (if given) or the current
