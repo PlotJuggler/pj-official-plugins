@@ -18,7 +18,8 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
   object topics (point clouds, scene entities…), or pins one instant of it as
   a kept finding with `pin_at_s`. Either way the call evaluates the installed
   node once itself and returns the first bundle, so the model sees what it
-  made instead of taking "created" on faith. Requires SDK 0.36.0
+  made instead of taking "created" on faith. Live is the default; the result
+  says which it made (`live: true`, or `pinned_at_s`). Requires SDK 0.36.0
   (`create_data_processor_v2`/`submit_evaluation`/`poll_evaluation`/
   `release_evaluation`).
 - `evaluate` gains an OBJECT path, selected when an input is an object topic
@@ -34,7 +35,7 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
   `"kind":"object"` alongside scalar topics tagged `"kind":"scalar"`.
   `describe_topic` on an object topic returns its field table (walked from
   the SDK's builtin field-table registry) and the operations a script may
-  call on it. Marker topics are excluded — they are drawn, not read. On a
+  call on it (`count()` on image annotations among them). Marker topics are excluded — they are drawn, not read. On a
   host that predates catalog snapshot v2, the tools fall back to the scalar
   listing and say so explicitly rather than under-reporting silently.
 - The catalog digest handed to the model at the top of every turn gains one
