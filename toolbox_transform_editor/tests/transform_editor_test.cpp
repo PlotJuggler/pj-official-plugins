@@ -418,6 +418,42 @@ TEST(TransformEditorTrial, NoSampleAnywhereIsAReasonNotACrash) {
   EXPECT_EQ(TransformEditorPreviewTestPeer::widgets(rig.editor)["pushButtonCreate"]["enabled"], false);
 }
 
+TEST(TransformEditorTrial, ABusyHostIsNotNoSampleAndTheNextPeriodAsksAgain) {
+  Rig rig;
+  rig.dp.report_queue = {
+      R"({"coverage":{"candidates":1,"evaluated":0,"complete":false,"stopped":"budget_bytes"},"bundles":[]})"};
+  rig.load(onDemandConfig("my_filter"));
+  rig.refresh();
+  ASSERT_EQ(rig.dp.submit_calls, 1);
+  EXPECT_EQ(TransformEditorPreviewTestPeer::status(rig.editor), "Computing…");
+  EXPECT_EQ(rig.dialog().canCreateReason().find("No sample"), std::string::npos);
+
+  // The cursor has not moved: the normal cadence asks again once the period is over.
+  TransformEditorPreviewTestPeer::tick(rig.editor);
+  EXPECT_EQ(rig.dp.submit_calls, 1) << "not before the period";
+  TransformEditorPreviewTestPeer::releaseTrialTimer(rig.editor);
+  TransformEditorPreviewTestPeer::tick(rig.editor);
+  EXPECT_EQ(rig.dp.submit_calls, 2);
+  const std::string status = TransformEditorPreviewTestPeer::status(rig.editor);
+  EXPECT_EQ(status.find("No sample"), std::string::npos) << status;
+  EXPECT_NE(status.find("count: 42"), std::string::npos) << status;
+  EXPECT_EQ(rig.dialog().canCreateReason(), "");
+}
+
+TEST(TransformEditorTrial, ABusyHostKeepsTheLastVerdictOnScreen) {
+  Rig rig;
+  rig.load(onDemandConfig("my_filter"));
+  rig.refresh();
+  ASSERT_EQ(rig.dp.submit_calls, 1);
+  rig.dp.report_queue = {
+      R"({"coverage":{"candidates":3,"evaluated":0,"complete":false,"stopped":"budget_time"},"bundles":[]})"};
+  TransformEditorPreviewTestPeer::refresh(rig.editor);
+  ASSERT_EQ(rig.dp.submit_calls, 2);
+  const std::string status = TransformEditorPreviewTestPeer::status(rig.editor);
+  EXPECT_NE(status.find("count: 42"), std::string::npos) << status;
+  EXPECT_EQ(rig.dialog().canCreateReason(), "");
+}
+
 TEST(TransformEditorTrial, ARunWaitsForQuietAfterAnEditAndThenRuns) {
   Rig rig;
   TransformEditorPreviewTestPeer::setDebounce(rig.editor, std::chrono::seconds(30));
