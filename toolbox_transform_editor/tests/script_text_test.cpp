@@ -258,6 +258,10 @@ TEST(ScriptText, RemapScriptLinesRewritesLuauAndPythonLines) {
       "invalid script: line 1: boom (line 2: inner)");
   EXPECT_EQ(remapScriptLines("Python error: boom <string>(9)", layout), "Python error: boom line 2");
   EXPECT_EQ(remapScriptLines("File \"<string>\", line 8, in evaluate", layout), "File line 1, in evaluate");
+  EXPECT_EQ(remapScriptLines("'{' was never closed (<string>, line 8)", layout), "'{' was never closed (line 1)");
+  EXPECT_EQ(remapScriptLines("invalid syntax (<string>, line 7)", layout), "invalid syntax (globals line 2)");
+  EXPECT_EQ(remapScriptLines("invalid syntax (<string>, line 2)", layout), "invalid syntax (line ?)");
+  EXPECT_EQ(remapScriptLines("see (<string>, line x)", layout), "see (<string>, line x)");
   EXPECT_EQ(
       remapScriptLines("t=12:30: no script here, javascript:8: nor", layout),
       "t=12:30: no script here, javascript:8: nor");

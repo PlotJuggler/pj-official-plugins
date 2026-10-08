@@ -424,11 +424,28 @@ std::string remapScriptLines(const std::string& error, const ScriptLayout& layou
     number = std::stol(error.substr(first, digits));
     return first + digits + close.size();
   };
+  // Matches `(<string>, line <n>)` at `i` (a Python SyntaxError from ast.parse); returns the index after it, or 0.
+  const auto syntax_error_at = [&](std::size_t i, long& number) -> std::size_t {
+    constexpr std::string_view kOpen = "(<string>, line ";
+    if (error.compare(i, kOpen.size(), kOpen) != 0) {
+      return 0;
+    }
+    const std::size_t first = i + kOpen.size();
+    const std::size_t digits = digitsAt(error, first);
+    if (digits == 0 || digits > 9 || error.compare(first + digits, 1, ")") != 0) {
+      return 0;
+    }
+    number = std::stol(error.substr(first, digits));
+    return first + digits + 1;
+  };
   std::string out;
   std::size_t i = 0;
   while (i < error.size()) {
     long number = 0;
-    if (const std::size_t colon = luau_at(i, number); colon != 0) {
+    if (const std::size_t syntax_end = syntax_error_at(i, number); syntax_end != 0) {
+      out += "(" + userLine(number, layout) + ")";
+      i = syntax_end;
+    } else if (const std::size_t colon = luau_at(i, number); colon != 0) {
       out += userLine(number, layout);
       i = colon;  // the closing colon stays
     } else if (const std::size_t after = python_at(i, number); after != 0) {
