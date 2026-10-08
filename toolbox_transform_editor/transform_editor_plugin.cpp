@@ -491,25 +491,19 @@ std::string formatValue(const nlohmann::json& entry, const std::string& fallback
 // What a trial evaluation (INFER_OUTPUTS, no declared outputs) learned, parsed ONCE from the report the
 // host returns from poll_evaluation: the outputs the script returned, whether one of them was
 // unavailable at this instant (its type is not known yet), whether the instant had a sample at all, and
-// the host's error when the script failed, and how far the host got (coverage: candidates, evaluated, why it stopped).
+// the host's error when the script failed, and whether the host was too busy to look at all.
 // `summary` is one line per output of the first bundle (anything that is not a report is shown as it is) and `readout`
 // the "name: value" lines of its number outputs; both are derived here so nothing re-reads the JSON afterwards.
 struct TrialReport {
   std::vector<OnDemandOutput> outputs;
   bool has_unknown = false;
   bool has_sample = false;
-  // The host's coverage of the run. A host that stopped on a budget before it evaluated any of its candidates has
-  // not said "no sample": it is busy (see busy()).
-  std::uint64_t candidates = 0;
-  std::uint64_t evaluated = 0;
-  std::string stopped;
+  // The host stopped on a budget before it evaluated any of its candidates: no bundle does not mean
+  // "no sample" here, only "ask again".
+  bool busy = false;
   std::string error;
   std::string summary;
   std::string readout;
-
-  bool busy() const {
-    return candidates > 0 && evaluated == 0 && stopped != "complete" && stopped != "error";
-  }
 };
 
 TrialReport parseTrialReport(const std::string& report) {
@@ -534,11 +528,9 @@ TrialReport parseTrialReport(const std::string& report) {
       trial.summary = trial.error;
       return trial;
     }
-  }
-  if (coverage != parsed.end() && coverage->is_object()) {
-    trial.candidates = coverage->value("candidates", std::uint64_t{0});
-    trial.evaluated = coverage->value("evaluated", std::uint64_t{0});
-    trial.stopped = coverage->value("stopped", std::string{});
+    const std::string stopped = coverage->value("stopped", std::string{});
+    trial.busy = coverage->value("candidates", std::uint64_t{0}) > 0 &&
+                 coverage->value("evaluated", std::uint64_t{0}) == 0 && stopped != "complete" && stopped != "error";
   }
   const auto bundles = parsed.find("bundles");
   trial.has_sample = bundles != parsed.end() && bundles->is_array() && !bundles->empty();
@@ -3364,7 +3356,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       dialog_.setStatus("");
       return true;
     }
-    if (!trial.has_sample && trial.busy()) {
+    if (!trial.has_sample && trial.busy) {
       // The host ran out of budget before it looked at anything: that is not "no sample". Keep the last verdict
       // on screen and let the normal cadence (next_preview_refresh_) ask again, cursor moved or not.
       if (!dialog_.hasTrial()) {
