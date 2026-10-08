@@ -32,11 +32,13 @@ local c = inputs["/lidar_top"]:crop_box{min={-15,-15,-1},max={15,15,1}}
 return {cropped=c, count=c:count()}
 ```
 
-The main preview pane must show JSON with completed outputs. Changing the
+The status line under the preview must name the completed outputs, and the
+object must show in the scene view embedded in the editor. Changing the
 script, switching tabs or closing the editor cancels its pending evaluation and
 releases the handle. Give the recipe a name and press Create: the recipe is
 installed as the editor's own (it goes to undo like the user's transforms) and
-the "Show in 3D" button opens a scene tab with the created object. The editor
+the editor closes. Open a 3D tab with "+" and drag the object's row from Custom
+Topics into it. The editor
 reopens only recipes it created itself; recipes of the assistant or of other
 plugins are never loaded into it.
 
