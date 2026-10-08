@@ -5,6 +5,7 @@
 #include <chrono>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/endpoint.hpp>
+#include <random>
 #include <string>
 
 namespace pj::mqtt_support {
@@ -72,6 +73,20 @@ struct ConnectionSettings {
     options.set_ssl(ssl_options);
   }
   return options;
+}
+
+/// `prefix` + 8 random hex digits. Brokers disconnect the older of two clients
+/// sharing an id, so a fixed default would make two PlotJuggler instances on one
+/// broker kick each other (endlessly, once automatic reconnect is on).
+[[nodiscard]] inline std::string randomClientId(std::string prefix) {
+  static constexpr char kHexDigits[] = "0123456789abcdef";
+  std::random_device rd;
+  std::mt19937 rng(rd());
+  std::uniform_int_distribution<int> dist(0, 15);
+  for (int i = 0; i < 8; ++i) {
+    prefix.push_back(kHexDigits[static_cast<size_t>(dist(rng))]);
+  }
+  return prefix;
 }
 
 }  // namespace pj::mqtt_support

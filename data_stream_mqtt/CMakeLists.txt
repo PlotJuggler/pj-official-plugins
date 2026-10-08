@@ -29,6 +29,19 @@ pj_emit_plugin_manifest(mqtt_source_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
+# --- Lifetime tests: the dialog against an in-process fake broker (POSIX only) ---
+add_executable(mqtt_dialog_lifetime_test tests/mqtt_dialog_lifetime_test.cpp)
+target_compile_features(mqtt_dialog_lifetime_test PRIVATE cxx_std_20)
+target_compile_options(mqtt_dialog_lifetime_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(mqtt_dialog_lifetime_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_link_libraries(mqtt_dialog_lifetime_test PRIVATE
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json PahoMqttCpp::paho-mqttpp3-static GTest::gtest_main
+)
+add_test(NAME mqtt_dialog_lifetime_test COMMAND mqtt_dialog_lifetime_test)
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(mqtt_source_plugin
   REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)
