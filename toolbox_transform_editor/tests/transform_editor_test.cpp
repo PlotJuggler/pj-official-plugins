@@ -227,6 +227,11 @@ const char* const kImageReport =
     R"("img":{"status":"ok","summary":{"type":"kImage"}}}}],)"
     R"("outputs":[{"name":"img","type":"kImage"}]})";
 
+const char* const kOverlayReport =
+    R"({"coverage":{"complete":true},"bundles":[{"requested_ns":0,"stamp_ns":0,"inputs":[],"outputs":{)"
+    R"("overlay":{"status":"ok","summary":{"type":"kImageAnnotations"}}}}],)"
+    R"("outputs":[{"name":"overlay","type":"kImageAnnotations"}]})";
+
 const char* const kMiddleDot = "·";
 
 // An on-demand editor state the way the host stores it: the user's params object plus "__editor".
@@ -1225,6 +1230,30 @@ TEST(TransformEditorPreview, TheEmbeddedViewIs2DOnlyWhenEveryObjectOutputIs2D) {
   rig.dialog().onCodeChanged("functionText", "return { cropped = cloud, count = 1 }");
   rig.refresh();
   EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
+}
+
+TEST(TransformEditorPreview, AnOverlayAlonePreviewsOverItsImageInput) {
+  // A 2D view draws an overlay only over the image it names, so the image input goes in first.
+  Rig rig;
+  rig.catalog.addObjectTopic("/cam", "kImage", 5, 0, 5000000000);
+  rig.refresh();
+  rig.dp.canned_report_json = kOverlayReport;
+  rig.dialog().onItemsDropped("tableSources", {"/cam"});
+  rig.dialog().onCodeChanged("functionText", "return { overlay = cam }");
+  rig.refresh();
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"], "2d");
+  ASSERT_EQ(widgets["frameScenePreview"]["scene_topics"].size(), 2u);
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_topics"][0]["topic"], "/cam");
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_topics"][1]["topic"], "overlay");
+
+  // A result that is itself an image needs no other: only the outputs are shown.
+  rig.dp.canned_report_json = kImageReport;
+  rig.dialog().onCodeChanged("functionText", "return { img = cam }");
+  rig.refresh();
+  const auto image = rig.widgets();
+  ASSERT_EQ(image["frameScenePreview"]["scene_topics"].size(), 1u);
+  EXPECT_EQ(image["frameScenePreview"]["scene_topics"][0]["topic"], "img");
 }
 
 TEST(TransformEditorPreview, CreateClearsTheEmbeddedView) {

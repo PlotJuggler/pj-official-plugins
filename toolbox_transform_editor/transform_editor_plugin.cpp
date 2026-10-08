@@ -2798,9 +2798,12 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     std::vector<PJ::SceneTopic> topics;
     std::string kind;  // "3d" unless every object output is 2D; empty without object outputs
   };
+  static bool isOverlayType(const std::string& type) {
+    return PJ::sdk::parseBuiltinObjectType(type) == PJ::sdk::BuiltinObjectType::kImageAnnotations;
+  }
   SceneTargets collectSceneTargets(
       const std::vector<PJ::sdk::DataProcessorOutput>& outputs, const std::vector<std::string>& created,
-      std::optional<PJ::sdk::DataSourceHandle> anchor) {
+      const std::vector<std::string>& inputs, std::optional<PJ::sdk::DataSourceHandle> anchor) {
     SceneTargets targets;
     auto v2 = catalogHost().catalogSnapshotV2();
     if (!v2) {
@@ -2808,6 +2811,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
     const auto listed = derived_recipes::listObjectTopics(*v2);
     bool all_2d = true;
+    bool returns_overlay = false;
+    bool returns_image = false;
     for (std::size_t i = 0; i < outputs.size(); ++i) {
       if (!isObjectOutputType(outputs[i].type)) {
         continue;
@@ -2821,9 +2826,27 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       }
       targets.topics.push_back({created[i], std::move(dataset)});
       all_2d = all_2d && sceneKindForOutputType(outputs[i].type) == "2d";
+      const bool overlay = isOverlayType(outputs[i].type);
+      returns_overlay = returns_overlay || overlay;
+      returns_image = returns_image || (!overlay && sceneKindForOutputType(outputs[i].type) == "2d");
     }
-    if (!targets.topics.empty()) {
-      targets.kind = all_2d ? "2d" : "3d";
+    if (targets.topics.empty()) {
+      return targets;
+    }
+    targets.kind = all_2d ? "2d" : "3d";
+    // A 2D view draws an overlay only over the image it names; a result that is just an overlay has
+    // none, so its image input goes in first as the view's image.
+    if (all_2d && returns_overlay && !returns_image) {
+      for (const std::string& input : inputs) {
+        const auto lookup = derived_recipes::resolveObjectTopic(*v2, input);
+        if (lookup.resolved && !isOverlayType(lookup.resolved->object_type) &&
+            sceneKindForOutputType(lookup.resolved->object_type) == "2d") {
+          targets.topics.insert(
+              targets.topics.begin(), {lookup.resolved->host_path, derived_recipes::objectTopicDatasetName(
+                                                                       v2->dataSources(), lookup.resolved->source)});
+          break;
+        }
+      }
     }
     return targets;
   }
@@ -2954,7 +2977,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       std::optional<PJ::sdk::DataSourceHandle> anchor) {
     SceneTargets targets;
     if (created.size() == request.outputs.size()) {
-      targets = collectSceneTargets(request.outputs, created, anchor);
+      targets = collectSceneTargets(request.outputs, created, request.inputs, anchor);
     }
     dialog_.setEmbeddedScene(std::move(targets.kind), std::move(targets.topics));
   }
