@@ -24,9 +24,21 @@
 #include <thread>
 #include <vector>
 
+#include "../ros2_type_name.hpp"
+
 namespace {
 
 using namespace ros2_streamer;
+
+TEST(Ros2SchemaTypeNameTest, PreservesInterfaceCategory) {
+  EXPECT_EQ(interfaceTypeName("std_msgs::msg", "Header"), "std_msgs/msg/Header");
+  EXPECT_EQ(interfaceTypeName("docking::action", "LocalServoing_Feedback"), "docking/action/LocalServoing_Feedback");
+  EXPECT_EQ(
+      interfaceTypeName("example_interfaces::srv", "AddTwoInts_Request"), "example_interfaces/srv/AddTwoInts_Request");
+  EXPECT_EQ(schemaTypeName("std_msgs/msg/Header"), "std_msgs/Header");
+  EXPECT_EQ(schemaTypeName("docking/action/LocalServoing_Feedback"), "docking/LocalServoing_Feedback");
+  EXPECT_EQ(schemaTypeName("example_interfaces/srv/AddTwoInts_Request"), "example_interfaces/AddTwoInts_Request");
+}
 
 // --- DesiredTopicsSlot ---
 
