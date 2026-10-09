@@ -8,11 +8,12 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 # on the host but we are not building inside a colcon workspace.
 set(CMAKE_DISABLE_FIND_PACKAGE_ament_cmake TRUE)
 
-# Pin rosx_introspection 3.x for IDL-support APIs used by the PJ3 ROS parser lineage.
+# Includes the annotation-literal fix from rosx_introspection PR #48.
+# Replace this commit pin with the released tag after that fix is published.
 CPMAddPackage(
   NAME rosx_introspection
-  URL https://github.com/facontidavide/rosx_introspection/archive/refs/tags/3.1.2.zip
-  URL_HASH SHA256=0ffecc3b21e8cbe01097292e3e5f7bab67777f9fc4f943ae68006c8939dbc23b
+  URL https://github.com/facontidavide/rosx_introspection/archive/53bfd41714582d77b7c54828c2288e700184d970.zip
+  URL_HASH SHA256=5e0060bf49f9e4bd574aa5846f35e7f336624b9bbc64be7006f4c48b4f0a22d5
   OPTIONS "ROSX_HAS_JSON OFF"
 )
 
