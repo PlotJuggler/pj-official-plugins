@@ -1,0 +1,27 @@
+name: Install Qt
+description: Official Qt from the Qt installer, plus the runtime libraries it needs on Linux.
+
+inputs:
+  version:
+    description: Qt version; must match the major.minor of the host
+    required: true
+  arch:
+    description: Qt architecture, e.g. linux_gcc_64 or win64_msvc2022_64
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: ${{ inputs.version }}
+        arch: ${{ inputs.arch }}
+        cache: true
+
+    - name: Install Qt runtime libraries (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1-mesa-dev libxkbcommon0 libfontconfig1 libegl1

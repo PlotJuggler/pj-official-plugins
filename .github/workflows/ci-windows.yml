@@ -201,6 +201,8 @@ jobs:
             plugin=$(dirname "$d")
             [[ -f "$plugin/release.sh" ]] && continue
             [[ -f "$plugin/manifest.json" ]] || continue
+            # Widget libraries link Qt: they build in ci-widgets.yml, not on this Qt-free lane.
+            grep -q '"category": *"widget"' "$plugin/manifest.json" && continue
             grep -q "add_subdirectory($plugin)" CMakeLists.txt && continue
             echo "::group::$plugin"
             ./build.sh "$plugin"
