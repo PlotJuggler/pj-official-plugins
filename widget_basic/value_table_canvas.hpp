@@ -12,10 +12,16 @@ namespace basic_widgets {
 /// value's `label` ("Series N" when the host gives none).
 class ValueTableCanvas : public BasicCanvas {
  public:
+  struct Settings {
+    int decimals = 3;
+  };
+
   explicit ValueTableCanvas(QWidget* parent = nullptr);
 
   void setSamples(PJ::Span<const PJ_widget_value_t> values) override;
-  PJ::Status applySettings(const nlohmann::json& settings) override;
+
+  static PJ::Expected<Settings> parseSettings(const nlohmann::json& settings);
+  void applySettings(const Settings& settings);
 
  protected:
   void paintEvent(QPaintEvent* event) override;
@@ -27,7 +33,7 @@ class ValueTableCanvas : public BasicCanvas {
     std::optional<double> value;
   };
 
-  int decimals_ = 3;
+  Settings settings_;
   std::vector<Row> rows_;
 };
 

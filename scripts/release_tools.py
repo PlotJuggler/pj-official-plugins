@@ -46,6 +46,7 @@ import argparse
 import ctypes
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -134,6 +135,12 @@ def extract_binary_manifest(plugin_path: Path) -> dict | None:
     Returns:
         Manifest dict if found, None if extraction failed
     """
+    # Widget-family DLLs depend on Qt. Since Python 3.8 Windows does not resolve a ctypes-loaded
+    # DLL's dependencies through PATH, so point the loader at Qt's bin dir when the build exported it.
+    if sys.platform == "win32" and os.environ.get("QT_ROOT_DIR"):
+        qt_bin = Path(os.environ["QT_ROOT_DIR"]) / "bin"
+        if qt_bin.is_dir():
+            os.add_dll_directory(str(qt_bin))
     try:
         lib = ctypes.CDLL(str(plugin_path))
     except OSError:

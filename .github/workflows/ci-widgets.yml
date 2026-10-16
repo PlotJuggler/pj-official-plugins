@@ -1,10 +1,10 @@
 name: CI Widgets
 
 # Widget-family libraries (widget_basic) are the only plugins that link Qt. They get their own
-# lane, with the official Qt 6.12.0 installed, so that every other CI lane stays Qt-free; the Qt-free
-# lanes skip them (see "List plugins" in ci-linux.yml). The host loads a widget library only when it
-# was built against the same Qt major.minor, which is why Qt comes from the official installer and
-# not from Conan or the distribution.
+# lane, with the official Qt named in QT_VERSION installed, so that every other CI lane stays
+# Qt-free; the Qt-free lanes skip them (see "List plugins" in ci-linux.yml). The host loads a widget
+# library only when it was built against the same Qt major.minor, which is why Qt comes from the
+# official installer and not from Conan or the distribution.
 #
 # Two legs only: Ubuntu 22.04 (the host needs GLIBCXX_3.4.30 and no newer) and Windows with MSVC
 # 14.44 (windows-2022, as in ci-windows.yml).
@@ -16,16 +16,28 @@ on:
     paths:
       - 'widget_*/**'
       - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'build.sh'
+      - 'conanfile.py'
+      - 'scripts/ensure_core.sh'
       - 'scripts/release_tools.py'
       - 'SDK_VERSION'
+      - 'QT_VERSION'
+      - '.github/actions/install-qt/**'
       - '.github/workflows/ci-widgets.yml'
   push:
     branches: [main]
     paths:
       - 'widget_*/**'
       - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'build.sh'
+      - 'conanfile.py'
+      - 'scripts/ensure_core.sh'
       - 'scripts/release_tools.py'
       - 'SDK_VERSION'
+      - 'QT_VERSION'
+      - '.github/actions/install-qt/**'
       - '.github/workflows/ci-widgets.yml'
 
 concurrency:
@@ -65,11 +77,16 @@ jobs:
         with:
           arch: x64
 
-      - name: Install Qt 6.12.0 (official)
+      - name: Read pinned Qt version
+        id: qt
+        shell: bash
+        run: echo "version=$(tr -d '[:space:]' < QT_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Qt ${{ steps.qt.outputs.version }} (official)
         # Sets QT_ROOT_DIR, which widget_basic/CMakeLists.txt uses as a find_package hint.
         uses: ./.github/actions/install-qt
         with:
-          version: '6.12.0'
+          version: ${{ steps.qt.outputs.version }}
           arch: ${{ matrix.qt_arch }}
 
       - name: Detect Conan profile

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "canvas.hpp"
 
 namespace basic_widgets {
@@ -7,20 +9,21 @@ namespace basic_widgets {
 /// One number in large type, with an optional caption above it and a unit after it.
 class NumericIndicatorCanvas : public NumberCanvas {
  public:
+  struct Settings {
+    int decimals = 2;
+    std::string unit;
+    std::string label;
+  };
+
   explicit NumericIndicatorCanvas(QWidget* parent = nullptr);
 
-  PJ::Status applySettings(const nlohmann::json& settings) override;
+  static PJ::Expected<Settings> parseSettings(const nlohmann::json& settings);
+  void applySettings(const Settings& settings);
 
  protected:
   void paintEvent(QPaintEvent* event) override;
 
  private:
-  struct Settings {
-    int decimals = 2;
-    QString unit;
-    QString label;
-  };
-
   Settings settings_;
 };
 

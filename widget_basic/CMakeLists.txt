@@ -5,8 +5,33 @@
 # Qt comes from the official installer, never from Conan or the distribution: the host refuses a
 # widget library built against another major.minor. CI sets QT_ROOT_DIR (install-qt-action does);
 # locally export QT_ROOT_DIR=<kit>/gcc_64 or put the kit on CMAKE_PREFIX_PATH.
+#
+# The host's Qt is pinned in one place, the QT_VERSION file at the repository root, which the CI
+# workflows also read to install that kit.
+set(_pj_qt_version_file "${CMAKE_CURRENT_LIST_DIR}/../QT_VERSION")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_pj_qt_version_file}")
+file(READ "${_pj_qt_version_file}" _pj_qt_version)
+string(STRIP "${_pj_qt_version}" _pj_qt_version)
+if(NOT _pj_qt_version MATCHES "^([0-9]+)\\.([0-9]+)\\.[0-9]+$")
+  message(FATAL_ERROR "QT_VERSION must hold an exact version such as 6.12.0; found \"${_pj_qt_version}\"")
+endif()
+set(PJ_HOST_QT_MAJOR ${CMAKE_MATCH_1})
+set(PJ_HOST_QT_MINOR ${CMAKE_MATCH_2})
+
 find_package(nlohmann_json REQUIRED)
-find_package(Qt6 6.12 REQUIRED COMPONENTS Widgets HINTS $ENV{QT_ROOT_DIR})
+find_package(Qt6 ${PJ_HOST_QT_MAJOR}.${PJ_HOST_QT_MINOR} REQUIRED COMPONENTS Widgets HINTS $ENV{QT_ROOT_DIR})
+
+# find_package accepts any newer minor of the same major; the host does not.
+if(NOT Qt6_VERSION MATCHES "^${PJ_HOST_QT_MAJOR}\\.${PJ_HOST_QT_MINOR}\\.")
+  message(FATAL_ERROR
+    "Widget plugins must be built with Qt ${PJ_HOST_QT_MAJOR}.${PJ_HOST_QT_MINOR}.x, the host's Qt; "
+    "found ${Qt6_VERSION} (${Qt6_DIR})")
+endif()
+# The host checks the compiler family of a widget library: its Linux build is GCC, its Windows build MSVC.
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  message(FATAL_ERROR
+    "Widget plugins must be built with GCC (Linux) or MSVC (Windows); found ${CMAKE_CXX_COMPILER_ID}")
+endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
@@ -61,6 +86,8 @@ if(TARGET GTest::gtest AND BUILD_TESTING)
   target_compile_options(basic_widgets_test PRIVATE ${PJ_WARNING_FLAGS})
   target_compile_definitions(basic_widgets_test PRIVATE
     PJ_BASIC_WIDGETS_PLUGIN_PATH="$<TARGET_FILE:basic_widgets_plugin>"
+    PJ_EXPECTED_QT_MAJOR=${PJ_HOST_QT_MAJOR}
+    PJ_EXPECTED_QT_MINOR=${PJ_HOST_QT_MINOR}
   )
   add_dependencies(basic_widgets_test basic_widgets_plugin)
   target_link_libraries(basic_widgets_test PRIVATE

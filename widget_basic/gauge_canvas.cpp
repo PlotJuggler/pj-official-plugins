@@ -4,6 +4,7 @@
 #include <QPainterPath>
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace basic_widgets {
 
@@ -18,34 +19,26 @@ GaugeCanvas::GaugeCanvas(QWidget* parent) : NumberCanvas(parent) {
   setMinimumSize(80, 60);
 }
 
-PJ::Status GaugeCanvas::applySettings(const nlohmann::json& settings) {
+PJ::Expected<GaugeCanvas::Settings> GaugeCanvas::parseSettings(const nlohmann::json& settings) {
   Settings next;
-  QString mode;
-  if (auto status = readNumber(settings, "min", 0.0, next.min); !status) {
-    return status;
+  std::string mode = next.arc ? "arc" : "bar";
+  auto status = firstError(
+      {readNumber(settings, "min", next.min), readNumber(settings, "max", next.max),
+       readNumber(settings, "red_from", next.red_from), readText(settings, "unit", next.unit),
+       readDecimals(settings, next.decimals), readText(settings, "mode", mode)});
+  if (!status) {
+    return PJ::unexpected(std::move(status).error());
   }
-  if (auto status = readNumber(settings, "max", 100.0, next.max); !status) {
-    return status;
-  }
-  if (auto status = readNumber(settings, "red_from", 80.0, next.red_from); !status) {
-    return status;
-  }
-  if (auto status = readText(settings, "unit", QString(), next.unit); !status) {
-    return status;
-  }
-  if (auto status = readDecimals(settings, 2, next.decimals); !status) {
-    return status;
-  }
-  if (auto status = readText(settings, "mode", QStringLiteral("arc"), mode); !status) {
-    return status;
-  }
-  if (mode != QLatin1String("arc") && mode != QLatin1String("bar")) {
+  if (mode != "arc" && mode != "bar") {
     return PJ::unexpected("setting \"mode\" must be \"arc\" or \"bar\"");
   }
-  next.arc = mode == QLatin1String("arc");
-  settings_ = next;
+  next.arc = mode == "arc";
+  return next;
+}
+
+void GaugeCanvas::applySettings(const Settings& settings) {
+  settings_ = settings;
   update();
-  return PJ::okStatus();
 }
 
 std::optional<QColor> GaugeCanvas::redZone() const {
@@ -69,7 +62,7 @@ void GaugeCanvas::paintEvent(QPaintEvent* /*event*/) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
   const QString text = formatNumber(value_, settings_.decimals) +
-                       (value_ && !settings_.unit.isEmpty() ? " " + settings_.unit : QString());
+                       (value_ && !settings_.unit.empty() ? " " + QString::fromStdString(settings_.unit) : QString());
   const double fraction = value_ ? fractionOf(*value_) : 0.0;
   if (settings_.arc) {
     paintArc(painter, fraction, text);

@@ -1,26 +1,48 @@
 // The Qt header must precede PJ_WIDGET_PLUGIN: the macro reads QT_VERSION_* to fill build_info.
 #include <QPointer>
 #include <QWidget>
+#include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/sdk/widget_plugin_base.hpp>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "basic_widgets_manifest.hpp"
 #include "canvas.hpp"
+#include "gauge_canvas.hpp"
+#include "numeric_indicator_canvas.hpp"
+#include "traffic_light_canvas.hpp"
 #include "ui_gauge.h"
 #include "ui_numeric_indicator.h"
 #include "ui_traffic_light.h"
 #include "ui_value_table.h"
+#include "value_table_canvas.hpp"
 
 namespace {
 
 using basic_widgets::BasicCanvas;
 
-/// Builds the form of @p Ui under @p root and returns the promoted canvas it declares as "canvas".
+/// Validated settings of one widget type, bound to the canvas class of that type.
+using ApplySettings = std::function<void(BasicCanvas& canvas)>;
+
+/// Validates @p settings for the canvas the form @p Ui promotes as "canvas".
+template <typename Ui>
+PJ::Expected<ApplySettings> parseFor(const nlohmann::json& settings) {
+  using Canvas = std::remove_pointer_t<decltype(Ui::canvas)>;
+  auto parsed = Canvas::parseSettings(settings);
+  if (!parsed) {
+    return PJ::unexpected(std::move(parsed).error());
+  }
+  return ApplySettings(
+      [valid = std::move(parsed).value()](BasicCanvas& canvas) { static_cast<Canvas&>(canvas).applySettings(valid); });
+}
+
+/// Builds the form of @p Ui under @p root and returns its canvas.
 template <typename Ui>
 BasicCanvas* buildForm(QWidget* root) {
   Ui ui;
@@ -28,18 +50,25 @@ BasicCanvas* buildForm(QWidget* root) {
   return ui.canvas;
 }
 
-/// What a widget type needs: its inputs and the function that builds its form.
+/// What a widget type needs: its inputs, and its settings and form functions, both instantiated from
+/// the same form so the settings always apply to the canvas class they were validated for.
 struct TypeEntry {
   std::string_view type;
   bool multi_series;
+  PJ::Expected<ApplySettings> (*parse)(const nlohmann::json& settings);
   BasicCanvas* (*build)(QWidget* root);
 };
 
+template <typename Ui>
+constexpr TypeEntry makeEntry(std::string_view type, bool multi_series) {
+  return {type, multi_series, &parseFor<Ui>, &buildForm<Ui>};
+}
+
 constexpr TypeEntry kTypes[] = {
-    {"gauge", false, &buildForm<Ui::GaugeForm>},
-    {"numeric_indicator", false, &buildForm<Ui::NumericIndicatorForm>},
-    {"traffic_light", false, &buildForm<Ui::TrafficLightForm>},
-    {"value_table", true, &buildForm<Ui::ValueTableForm>},
+    makeEntry<Ui::GaugeForm>("gauge", false),
+    makeEntry<Ui::NumericIndicatorForm>("numeric_indicator", false),
+    makeEntry<Ui::TrafficLightForm>("traffic_light", false),
+    makeEntry<Ui::ValueTableForm>("value_table", true),
 };
 
 const TypeEntry& entryFor(std::string_view type) {
@@ -52,10 +81,11 @@ const TypeEntry& entryFor(std::string_view type) {
 }
 
 /// One class serves the four widget types of the library; `type` picks the form, the inputs and the
-/// canvas. The canvas owns the drawing and the settings; this class only moves data to it.
+/// canvas. The canvas owns the drawing; this class validates the settings and moves data to it.
 class BasicWidgets : public PJ::WidgetPluginBase {
  public:
-  explicit BasicWidgets(std::string_view type) : entry_(entryFor(type)) {}
+  explicit BasicWidgets(std::string_view type)
+      : entry_(entryFor(type)), apply_settings_(entry_.parse(nlohmann::json::object()).value()) {}
 
   ~BasicWidgets() override {
     // The host detaches the widget before destroying the instance; it may also have been deleted
@@ -74,10 +104,8 @@ class BasicWidgets : public PJ::WidgetPluginBase {
     auto* root = new QWidget(static_cast<QWidget*>(parent));
     root_ = root;
     canvas_ = entry_.build(root);
-    if (auto status = canvas_->applySettings(settings_); !status) {
-      delete root;
-      throw std::runtime_error(status.error());
-    }
+    // The defaults or what loadConfig already validated: nothing here can reject them.
+    apply_settings_(*canvas_);
     return root;
   }
 
@@ -88,23 +116,27 @@ class BasicWidgets : public PJ::WidgetPluginBase {
   }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    nlohmann::json parsed =
+    const nlohmann::json parsed =
         config_json.empty() ? nlohmann::json::object() : nlohmann::json::parse(config_json, nullptr, false);
     if (!parsed.is_object()) {
       return PJ::unexpected("configuration is not a JSON object");
     }
-    if (canvas_) {
-      if (auto status = canvas_->applySettings(parsed); !status) {
-        return status;
-      }
+    // Validated whether the widget exists or not: the host restores the saved settings before it
+    // creates the widget, and only a rejection here lets it report them and fall back to the defaults.
+    auto settings = entry_.parse(parsed);
+    if (!settings) {
+      return PJ::unexpected(std::move(settings).error());
     }
-    settings_ = std::move(parsed);
+    apply_settings_ = std::move(settings).value();
+    if (canvas_) {
+      apply_settings_(*canvas_);
+    }
     return PJ::okStatus();
   }
 
  private:
   const TypeEntry& entry_;
-  nlohmann::json settings_ = nlohmann::json::object();
+  ApplySettings apply_settings_;
   QPointer<QWidget> root_;
   QPointer<BasicCanvas> canvas_;
 };

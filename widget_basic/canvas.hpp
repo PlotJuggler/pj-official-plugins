@@ -6,15 +6,23 @@
 #include <QFont>
 #include <QString>
 #include <QWidget>
+#include <initializer_list>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/expected.hpp>
 #include <pj_base/span.hpp>
+#include <string>
 
 namespace basic_widgets {
 
 /// Base of the four widgets' custom-painted surface. Each concrete canvas is promoted in its own .ui
 /// file, so the form creates it and the plugin only talks to this interface.
+///
+/// Settings are split in two steps on every concrete canvas: a static `parseSettings(json)` that
+/// validates the complete settings object without touching Qt, so it runs before the widget exists,
+/// and an `applySettings(Settings)` that cannot fail. Keys missing from the object take their manifest
+/// default (the member initializers of each `Settings`), so a setting the user cleared does not keep
+/// its previous value.
 ///
 /// Everything a canvas draws is read from the samples copied in setSamples(), never from the host
 /// during a paint: the pointers inside a PJ_widget_value_t die when onUpdate returns.
@@ -24,10 +32,6 @@ class BasicCanvas : public QWidget {
 
   /// Copy what is needed out of @p values and schedule a repaint.
   virtual void setSamples(PJ::Span<const PJ_widget_value_t> values) = 0;
-
-  /// Apply the complete settings object. Keys missing from it take their manifest default, so a
-  /// setting the user cleared does not keep its previous value. On error the canvas is unchanged.
-  virtual PJ::Status applySettings(const nlohmann::json& settings) = 0;
 };
 
 /// A canvas that shows one number, the first wire of input 0.
@@ -53,12 +57,16 @@ std::optional<double> numberAt(PJ::Span<const PJ_widget_value_t> values, uint32_
 /// Largest font, not above @p base's size and not below 6 px, whose @p text fits @p box.
 QFont fittedFont(const QFont& base, const QString& text, const QSizeF& box, double max_pixel_size);
 
-/// Reads settings keys with the manifest defaults. A key present with the wrong JSON type is an error.
-PJ::Status readNumber(const nlohmann::json& settings, const char* key, double fallback, double& out);
-PJ::Status readInteger(const nlohmann::json& settings, const char* key, int fallback, int min, int max, int& out);
-PJ::Status readText(const nlohmann::json& settings, const char* key, const QString& fallback, QString& out);
+/// Read one settings key into @p out. A key that is missing or null leaves @p out as it is (the caller
+/// initializes it to the manifest default); a key present with the wrong JSON type is an error.
+PJ::Status readNumber(const nlohmann::json& settings, const char* key, double& out);
+/// As readNumber, rounded and clamped to [@p min, @p max].
+PJ::Status readInteger(const nlohmann::json& settings, const char* key, int min, int max, int& out);
+PJ::Status readText(const nlohmann::json& settings, const char* key, std::string& out);
 /// The `decimals` setting every number-showing widget declares (0..12, as in the manifests).
-PJ::Status readDecimals(const nlohmann::json& settings, int fallback, int& out);
+PJ::Status readDecimals(const nlohmann::json& settings, int& out);
+/// The first failed status of @p statuses, or ok. Meant for a list of reads, which are all evaluated.
+PJ::Status firstError(std::initializer_list<PJ::Status> statuses);
 
 /// A measurement with fixed decimals, or "--" when there is no sample.
 QString formatNumber(std::optional<double> value, int decimals);

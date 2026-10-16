@@ -1,5 +1,5 @@
 {
-  "id": "basic_widgets",
+  "id": "basic-widgets",
   "name": "Basic Widgets",
   "version": "1.0.0",
   "description": "Gauge, numeric indicator, traffic light and value table dock widgets for live values.",
@@ -12,7 +12,8 @@
   "category": "widget",
   "tags": ["widget", "gauge", "indicator", "table"],
   "min_sdk_required": "0.37.0",
-  "min_plotjuggler_version": "4.0.0",
+  "min_plotjuggler_version": "4.1.0",
+  "supported_platforms": ["linux-x86_64", "windows-x86_64"],
   "qt_modules": ["Core", "Gui", "Widgets"],
   "widgets": [
     {

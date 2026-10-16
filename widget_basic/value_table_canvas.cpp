@@ -4,6 +4,7 @@
 #include <QPainter>
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace basic_widgets {
 
@@ -32,14 +33,17 @@ void ValueTableCanvas::setSamples(PJ::Span<const PJ_widget_value_t> values) {
   update();
 }
 
-PJ::Status ValueTableCanvas::applySettings(const nlohmann::json& settings) {
-  int decimals = 3;
-  if (auto status = readDecimals(settings, 3, decimals); !status) {
-    return status;
+PJ::Expected<ValueTableCanvas::Settings> ValueTableCanvas::parseSettings(const nlohmann::json& settings) {
+  Settings next;
+  if (auto status = readDecimals(settings, next.decimals); !status) {
+    return PJ::unexpected(std::move(status).error());
   }
-  decimals_ = decimals;
+  return next;
+}
+
+void ValueTableCanvas::applySettings(const Settings& settings) {
+  settings_ = settings;
   update();
-  return PJ::okStatus();
 }
 
 void ValueTableCanvas::paintEvent(QPaintEvent* /*event*/) {
@@ -72,7 +76,7 @@ void ValueTableCanvas::paintEvent(QPaintEvent* /*event*/) {
     painter.drawText(
         text_cell, Qt::AlignLeft | Qt::AlignVCenter,
         metrics.elidedText(row.label, Qt::ElideMiddle, text_cell.width() * 2 / 3));
-    painter.drawText(text_cell, Qt::AlignRight | Qt::AlignVCenter, formatNumber(row.value, decimals_));
+    painter.drawText(text_cell, Qt::AlignRight | Qt::AlignVCenter, formatNumber(row.value, settings_.decimals));
     y += row_height;
   }
 }

@@ -2,6 +2,7 @@
 
 #include <QPainter>
 #include <algorithm>
+#include <utility>
 
 namespace basic_widgets {
 
@@ -9,17 +10,19 @@ TrafficLightCanvas::TrafficLightCanvas(QWidget* parent) : NumberCanvas(parent) {
   setMinimumSize(40, 40);
 }
 
-PJ::Status TrafficLightCanvas::applySettings(const nlohmann::json& settings) {
+PJ::Expected<TrafficLightCanvas::Settings> TrafficLightCanvas::parseSettings(const nlohmann::json& settings) {
   Settings next;
-  if (auto status = readNumber(settings, "green_below", 50.0, next.green_below); !status) {
-    return status;
+  auto status = firstError(
+      {readNumber(settings, "green_below", next.green_below), readNumber(settings, "red_from", next.red_from)});
+  if (!status) {
+    return PJ::unexpected(std::move(status).error());
   }
-  if (auto status = readNumber(settings, "red_from", 80.0, next.red_from); !status) {
-    return status;
-  }
-  settings_ = next;
+  return next;
+}
+
+void TrafficLightCanvas::applySettings(const Settings& settings) {
+  settings_ = settings;
   update();
-  return PJ::okStatus();
 }
 
 void TrafficLightCanvas::paintEvent(QPaintEvent* /*event*/) {

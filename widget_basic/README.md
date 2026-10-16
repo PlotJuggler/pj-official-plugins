@@ -1,6 +1,6 @@
 # Basic Widgets (`widget_basic`)
 
-Four dockable widgets for live values, in one Widget-family library (`basic_widgets`):
+Four dockable widgets for live values, in one Widget-family library (`basic-widgets`):
 
 | Type | Input | Settings |
 |---|---|---|
@@ -15,8 +15,8 @@ missing takes its manifest default, and a key of the wrong type is rejected.
 
 Notes:
 
-- `value_table` labels its rows by slot ("Series 1", "Series 2", ...): the host does not give a
-  widget the name of the series behind a slot.
+- `value_table` labels each row with the display name the host sends with every value (the wired
+  series, e.g. `topic/field`); a row whose value comes without one is shown as "Series N".
 - Chrome (text, tracks, backgrounds) follows the palette. The green, amber and red of the status
   colours are fixed so they mean the same in a light and a dark theme.
 - The widgets read nothing from the host while painting: `onUpdate` copies the values and
@@ -25,7 +25,9 @@ Notes:
 ## Building
 
 This is the only plugin that links Qt, and it must be built against the official Qt that matches
-the host's major.minor (6.12), not a distribution or Conan package:
+the host's major.minor, not a distribution or Conan package. That version is pinned in the
+`QT_VERSION` file at the repository root (6.12.0), which CI reads to install the kit; configuring
+fails on another Qt minor or on a compiler other than GCC (Linux) or MSVC (Windows):
 
 ```bash
 export QT_ROOT_DIR=/path/to/Qt/6.12.0/gcc_64

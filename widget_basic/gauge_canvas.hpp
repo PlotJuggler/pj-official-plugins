@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <optional>
+#include <string>
 
 #include "canvas.hpp"
 
@@ -13,23 +14,24 @@ namespace basic_widgets {
 /// `red_from` upwards is marked and the fill turns red once the value reaches it.
 class GaugeCanvas : public NumberCanvas {
  public:
+  struct Settings {
+    double min = 0.0;
+    double max = 100.0;
+    double red_from = 80.0;
+    std::string unit;
+    int decimals = 2;
+    bool arc = true;
+  };
+
   explicit GaugeCanvas(QWidget* parent = nullptr);
 
-  PJ::Status applySettings(const nlohmann::json& settings) override;
+  static PJ::Expected<Settings> parseSettings(const nlohmann::json& settings);
+  void applySettings(const Settings& settings);
 
  protected:
   void paintEvent(QPaintEvent* event) override;
 
  private:
-  struct Settings {
-    double min = 0.0;
-    double max = 100.0;
-    double red_from = 80.0;
-    QString unit;
-    int decimals = 2;
-    bool arc = true;
-  };
-
   void paintArc(QPainter& painter, double fraction, const QString& text) const;
   void paintBar(QPainter& painter, double fraction, const QString& text) const;
   /// The tint of the scale from `red_from` up; nullopt when that threshold lies outside (min, max).

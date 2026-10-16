@@ -8,19 +8,20 @@ namespace basic_widgets {
 /// dark while there is no sample. `red_from` wins when the two thresholds are inverted.
 class TrafficLightCanvas : public NumberCanvas {
  public:
-  explicit TrafficLightCanvas(QWidget* parent = nullptr);
-
-  PJ::Status applySettings(const nlohmann::json& settings) override;
-
- protected:
-  void paintEvent(QPaintEvent* event) override;
-
- private:
   struct Settings {
     double green_below = 50.0;
     double red_from = 80.0;
   };
 
+  explicit TrafficLightCanvas(QWidget* parent = nullptr);
+
+  static PJ::Expected<Settings> parseSettings(const nlohmann::json& settings);
+  void applySettings(const Settings& settings);
+
+ protected:
+  void paintEvent(QPaintEvent* event) override;
+
+ private:
   Settings settings_;
 };
 

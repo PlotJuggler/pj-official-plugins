@@ -5,21 +5,22 @@
 
 #include <QApplication>
 #include <QImage>
-#include <QLibraryInfo>
 #include <QPixmap>
 #include <QWidget>
 #include <array>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/host/widget_library.hpp>
 #include <set>
 #include <string>
+#include <utility>
 
 namespace {
 
 PJ_widget_value_t numberValue(uint32_t input, uint32_t slot, double number) {
   PJ_widget_value_t value{};
-  value.struct_size = sizeof(PJ_widget_value_t);
   value.input = input;
   value.slot = slot;
   value.kind = PJ_WIDGET_VALUE_NUMBER;
@@ -57,20 +58,38 @@ class BasicWidgetsTest : public ::testing::Test {
   }
 
   std::unique_ptr<Panel> open(const std::string& type) {
+    auto panel = handleFor(type);
+    if (!panel || !realize(*panel)) {
+      return nullptr;
+    }
+    return panel;
+  }
+
+  /// A panel whose widget does not exist yet, as the host holds it while it restores the settings.
+  std::unique_ptr<Panel> handleFor(const std::string& type) {
     auto handle = library_->createHandle(type);
     EXPECT_TRUE(handle) << handle.error();
     if (!handle) {
       return nullptr;
     }
-    auto panel = std::make_unique<Panel>(std::move(*handle));
-    auto widget = panel->handle.createQWidget(&panel->parent);
+    return std::make_unique<Panel>(std::move(*handle));
+  }
+
+  /// Create the widget of @p panel; false when the plugin refuses.
+  static bool realize(Panel& panel) {
+    auto widget = panel.handle.createQWidget(&panel.parent);
     EXPECT_TRUE(widget) << widget.error();
     if (!widget) {
-      return nullptr;
+      return false;
     }
-    panel->widget = static_cast<QWidget*>(*widget);
-    panel->widget->resize(240, 200);
-    return panel;
+    panel.widget = static_cast<QWidget*>(*widget);
+    panel.widget->resize(240, 200);
+    return true;
+  }
+
+  template <std::size_t N>
+  static void push(Panel& panel, const std::array<PJ_widget_value_t, N>& values) {
+    panel.handle.onUpdate(PJ::Span<const PJ_widget_value_t>(values.data(), values.size()), 1.0);
   }
 
   static QImage paint(Panel& panel) {
@@ -80,17 +99,17 @@ class BasicWidgetsTest : public ::testing::Test {
   std::unique_ptr<PJ::WidgetLibrary> library_;
 };
 
-TEST_F(BasicWidgetsTest, BuildInfoMatchesRunningQt) {
+TEST_F(BasicWidgetsTest, BuildInfoMatchesThePinnedQt) {
+  // The host refuses a library whose build info names another Qt major.minor.
   const PJ_widget_build_info_t* info = library_->buildInfo();
   ASSERT_NE(info, nullptr);
-  const QVersionNumber running = QLibraryInfo::version();
-  EXPECT_EQ(info->qt_major, static_cast<uint32_t>(running.majorVersion()));
-  EXPECT_EQ(info->qt_minor, static_cast<uint32_t>(running.minorVersion()));
+  EXPECT_EQ(info->qt_major, static_cast<uint32_t>(PJ_EXPECTED_QT_MAJOR));
+  EXPECT_EQ(info->qt_minor, static_cast<uint32_t>(PJ_EXPECTED_QT_MINOR));
 }
 
 TEST_F(BasicWidgetsTest, ManifestDeclaresTheFourWidgetsWithSettings) {
   const auto manifest = nlohmann::json::parse(library_->vtable()->manifest_json);
-  EXPECT_EQ(manifest.at("id"), "basic_widgets");
+  EXPECT_EQ(manifest.at("id"), "basic-widgets");
   EXPECT_EQ(manifest.at("category"), "widget");
   std::set<std::string> types;
   for (const auto& widget : manifest.at("widgets")) {
@@ -109,7 +128,9 @@ TEST_F(BasicWidgetsTest, InputsAreDeclaredByName) {
   for (const char* type : kTypes) {
     auto panel = open(type);
     ASSERT_NE(panel, nullptr) << type;
-    const auto inputs = panel->handle.inputs();
+    const auto declared = panel->handle.inputs();
+    ASSERT_TRUE(declared) << type << ": " << declared.error();
+    const auto& inputs = *declared;
     ASSERT_EQ(inputs.size(), 1u) << type;
     EXPECT_EQ(inputs[0].kind, PJ::WidgetInputKind::kNumber) << type;
     if (std::string(type) == "value_table") {
@@ -152,6 +173,20 @@ TEST_F(BasicWidgetsTest, ValueTableShowsOneRowPerSlot) {
       numberValue(0, 0, 1.5), numberValue(0, 1, 2.5), numberValue(0, 2, 3.5)};
   panel->handle.onUpdate(PJ::Span<const PJ_widget_value_t>(three.data(), three.size()), 1.0);
   EXPECT_NE(paint(*panel), single);
+}
+
+TEST_F(BasicWidgetsTest, ValueTableDrawsTheWireLabel) {
+  auto panel = open("value_table");
+  ASSERT_NE(panel, nullptr);
+  const auto paintWith = [&](const char* label) {
+    std::array<PJ_widget_value_t, 1> row = {numberValue(0, 0, 1.5)};
+    row[0].label = PJ_string_view_t{label, static_cast<uint64_t>(std::strlen(label))};
+    push(*panel, row);
+    return paint(*panel);
+  };
+  // Without a label the row is "Series 1"; with one, the row shows it.
+  const QImage unlabelled = paintWith("");
+  EXPECT_NE(paintWith("engine/rpm"), unlabelled);
 }
 
 TEST_F(BasicWidgetsTest, ConfigTakesEffectAndBadConfigIsRejected) {
@@ -218,6 +253,56 @@ TEST_F(BasicWidgetsTest, ConfigBeforeTheWidgetExistsIsApplied) {
 
   configured->setParent(nullptr);
   handle->reset();
+}
+
+TEST_F(BasicWidgetsTest, BadConfigBeforeTheWidgetExistsIsRejectedAndTheDefaultsApply) {
+  // The host restores the saved settings before it creates the widget. A rejection there must not
+  // make the creation fail, and the widget then shows the defaults, not the valid part of the config.
+  const std::array<std::pair<const char*, const char*>, 4> bad = {{
+      {"gauge", R"({"max":10,"mode":"dial"})"},
+      {"numeric_indicator", R"({"decimals":0,"unit":5})"},
+      {"traffic_light", R"({"green_below":90,"red_from":"high"})"},
+      {"value_table", R"({"decimals":"two"})"},
+  }};
+  const std::array<PJ_widget_value_t, 1> value = {numberValue(0, 0, 65.4321)};
+  for (const auto& [type, config] : bad) {
+    auto plain = open(type);
+    ASSERT_NE(plain, nullptr) << type;
+    auto restored = handleFor(type);
+    ASSERT_NE(restored, nullptr) << type;
+    EXPECT_FALSE(restored->handle.loadConfig(config)) << type;
+    ASSERT_TRUE(realize(*restored)) << type;
+    push(*plain, value);
+    push(*restored, value);
+    EXPECT_EQ(paint(*restored), paint(*plain)) << type;
+  }
+}
+
+TEST_F(BasicWidgetsTest, EmptyConfigPaintsLikeTheManifestDefaults) {
+  // The defaults are written twice, in manifest.json (the host's settings form) and in each canvas's
+  // Settings: an empty config and the manifest defaults stated explicitly must paint the same.
+  const auto manifest = nlohmann::json::parse(library_->vtable()->manifest_json);
+  for (const auto& widget : manifest.at("widgets")) {
+    const std::string type = widget.at("type").get<std::string>();
+    nlohmann::json stated_defaults = nlohmann::json::object();
+    for (const auto& setting : widget.at("settings")) {
+      stated_defaults[setting.at("key").get<std::string>()] = setting.at("default");
+    }
+    auto implicit = open(type);
+    auto stated = open(type);
+    ASSERT_NE(implicit, nullptr) << type;
+    ASSERT_NE(stated, nullptr) << type;
+    ASSERT_TRUE(implicit->handle.loadConfig("{}")) << type;
+    ASSERT_TRUE(stated->handle.loadConfig(stated_defaults.dump())) << type;
+    // One value below, between and above the default thresholds (50 and 80), with more digits than
+    // any default shows.
+    for (const double number : {12.345678, 65.0, 95.0}) {
+      const std::array<PJ_widget_value_t, 1> value = {numberValue(0, 0, number)};
+      push(*implicit, value);
+      push(*stated, value);
+      EXPECT_EQ(paint(*implicit), paint(*stated)) << type << " at " << number;
+    }
+  }
 }
 
 TEST_F(BasicWidgetsTest, DestroyBeforeUnloadIsClean) {

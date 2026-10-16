@@ -47,10 +47,9 @@ QFont fittedFont(const QFont& base, const QString& text, const QSizeF& box, doub
   return font;
 }
 
-PJ::Status readNumber(const nlohmann::json& settings, const char* key, double fallback, double& out) {
+PJ::Status readNumber(const nlohmann::json& settings, const char* key, double& out) {
   const auto it = settings.find(key);
   if (it == settings.end() || it->is_null()) {
-    out = fallback;
     return PJ::okStatus();
   }
   if (!it->is_number()) {
@@ -60,33 +59,41 @@ PJ::Status readNumber(const nlohmann::json& settings, const char* key, double fa
   return PJ::okStatus();
 }
 
-PJ::Status readInteger(const nlohmann::json& settings, const char* key, int fallback, int min, int max, int& out) {
-  double value = 0.0;
-  if (auto status = readNumber(settings, key, fallback, value); !status) {
+PJ::Status readInteger(const nlohmann::json& settings, const char* key, int min, int max, int& out) {
+  double value = out;
+  if (auto status = readNumber(settings, key, value); !status) {
     return status;
   }
   out = static_cast<int>(std::clamp(std::lround(value), static_cast<long>(min), static_cast<long>(max)));
   return PJ::okStatus();
 }
 
-PJ::Status readDecimals(const nlohmann::json& settings, int fallback, int& out) {
-  return readInteger(settings, "decimals", fallback, 0, 12, out);
+PJ::Status readDecimals(const nlohmann::json& settings, int& out) {
+  return readInteger(settings, "decimals", 0, 12, out);
+}
+
+PJ::Status firstError(std::initializer_list<PJ::Status> statuses) {
+  for (const auto& status : statuses) {
+    if (!status) {
+      return status;
+    }
+  }
+  return PJ::okStatus();
 }
 
 QString formatNumber(std::optional<double> value, int decimals) {
   return value ? QString::number(*value, 'f', decimals) : QStringLiteral("--");
 }
 
-PJ::Status readText(const nlohmann::json& settings, const char* key, const QString& fallback, QString& out) {
+PJ::Status readText(const nlohmann::json& settings, const char* key, std::string& out) {
   const auto it = settings.find(key);
   if (it == settings.end() || it->is_null()) {
-    out = fallback;
     return PJ::okStatus();
   }
   if (!it->is_string()) {
     return PJ::unexpected(std::string("setting \"") + key + "\" must be text");
   }
-  out = QString::fromStdString(it->get<std::string>());
+  out = it->get<std::string>();
   return PJ::okStatus();
 }
 
