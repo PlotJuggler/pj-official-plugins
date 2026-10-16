@@ -34,7 +34,7 @@ void ValueTableCanvas::setSamples(PJ::Span<const PJ_widget_value_t> values) {
 
 PJ::Status ValueTableCanvas::applySettings(const nlohmann::json& settings) {
   int decimals = 3;
-  if (auto status = readInteger(settings, "decimals", 3, 0, 12, decimals); !status) {
+  if (auto status = readDecimals(settings, 3, decimals); !status) {
     return status;
   }
   decimals_ = decimals;
@@ -72,9 +72,7 @@ void ValueTableCanvas::paintEvent(QPaintEvent* /*event*/) {
     painter.drawText(
         text_cell, Qt::AlignLeft | Qt::AlignVCenter,
         metrics.elidedText(row.label, Qt::ElideMiddle, text_cell.width() * 2 / 3));
-    painter.drawText(
-        text_cell, Qt::AlignRight | Qt::AlignVCenter,
-        row.value ? QString::number(*row.value, 'f', decimals_) : QStringLiteral("--"));
+    painter.drawText(text_cell, Qt::AlignRight | Qt::AlignVCenter, formatNumber(row.value, decimals_));
     y += row_height;
   }
 }

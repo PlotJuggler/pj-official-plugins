@@ -57,5 +57,10 @@ QFont fittedFont(const QFont& base, const QString& text, const QSizeF& box, doub
 PJ::Status readNumber(const nlohmann::json& settings, const char* key, double fallback, double& out);
 PJ::Status readInteger(const nlohmann::json& settings, const char* key, int fallback, int min, int max, int& out);
 PJ::Status readText(const nlohmann::json& settings, const char* key, const QString& fallback, QString& out);
+/// The `decimals` setting every number-showing widget declares (0..12, as in the manifests).
+PJ::Status readDecimals(const nlohmann::json& settings, int fallback, int& out);
+
+/// A measurement with fixed decimals, or "--" when there is no sample.
+QString formatNumber(std::optional<double> value, int decimals);
 
 }  // namespace basic_widgets

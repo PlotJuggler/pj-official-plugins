@@ -26,6 +26,7 @@ class GaugeCanvas : public NumberCanvas {
     double max = 100.0;
     double red_from = 80.0;
     QString unit;
+    int decimals = 2;
     bool arc = true;
   };
 

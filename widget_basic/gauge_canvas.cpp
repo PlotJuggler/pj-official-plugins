@@ -33,6 +33,9 @@ PJ::Status GaugeCanvas::applySettings(const nlohmann::json& settings) {
   if (auto status = readText(settings, "unit", QString(), next.unit); !status) {
     return status;
   }
+  if (auto status = readDecimals(settings, 2, next.decimals); !status) {
+    return status;
+  }
   if (auto status = readText(settings, "mode", QStringLiteral("arc"), mode); !status) {
     return status;
   }
@@ -65,9 +68,8 @@ double GaugeCanvas::fractionOf(double value) const {
 void GaugeCanvas::paintEvent(QPaintEvent* /*event*/) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
-  const QString text =
-      value_ ? QString::number(*value_, 'g', 4) + (settings_.unit.isEmpty() ? QString() : " " + settings_.unit)
-             : QStringLiteral("--");
+  const QString text = formatNumber(value_, settings_.decimals) +
+                       (value_ && !settings_.unit.isEmpty() ? " " + settings_.unit : QString());
   const double fraction = value_ ? fractionOf(*value_) : 0.0;
   if (settings_.arc) {
     paintArc(painter, fraction, text);

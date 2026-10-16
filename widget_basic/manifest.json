@@ -24,6 +24,7 @@
         {"key": "max", "type": "number", "default": 100, "label": "Maximum"},
         {"key": "unit", "type": "text", "default": "", "label": "Unit"},
         {"key": "red_from", "type": "number", "default": 80, "label": "Red from"},
+        {"key": "decimals", "type": "integer", "min": 0, "max": 12, "default": 2, "label": "Decimals"},
         {"key": "mode", "type": "enum", "options": ["arc", "bar"], "default": "arc", "label": "Mode"}
       ]
     },
@@ -32,7 +33,7 @@
       "name": "Numeric Indicator",
       "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"1.5\" y=\"3.5\" width=\"13\" height=\"9\" rx=\"1.5\"/><path d=\"M5 10.5V6.5l-1 .8M8 6.5h2.5L8 10.5h2.5\"/></svg>",
       "settings": [
-        {"key": "decimals", "type": "number", "min": 0, "max": 12, "default": 2, "label": "Decimals"},
+        {"key": "decimals", "type": "integer", "min": 0, "max": 12, "default": 2, "label": "Decimals"},
         {"key": "unit", "type": "text", "default": "", "label": "Unit"},
         {"key": "label", "type": "text", "default": "", "label": "Label"}
       ]
@@ -51,7 +52,7 @@
       "name": "Value Table",
       "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"><rect x=\"1.5\" y=\"2.5\" width=\"13\" height=\"11\" rx=\"1.5\"/><path d=\"M1.5 6.2h13M1.5 9.8h13M7 2.5v11\"/></svg>",
       "settings": [
-        {"key": "decimals", "type": "number", "min": 0, "max": 12, "default": 3, "label": "Decimals"}
+        {"key": "decimals", "type": "integer", "min": 0, "max": 12, "default": 3, "label": "Decimals"}
       ]
     }
   ]

@@ -174,6 +174,28 @@ TEST_F(BasicWidgetsTest, ConfigTakesEffectAndBadConfigIsRejected) {
   EXPECT_EQ(saved, "{}");
 }
 
+TEST_F(BasicWidgetsTest, GaugeDecimalsChangeTheValueText) {
+  auto panel = open("gauge");
+  ASSERT_NE(panel, nullptr);
+  const std::array<PJ_widget_value_t, 1> value = {numberValue(0, 0, 12.345)};
+  panel->handle.onUpdate(PJ::Span<const PJ_widget_value_t>(value.data(), value.size()), 1.0);
+
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"decimals":0})"));
+  const QImage zero = paint(*panel);
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"decimals":3})"));
+  const QImage three = paint(*panel);
+  EXPECT_NE(zero, three);
+
+  // Out of range is clamped to the manifest bound (12), as in the other widgets; the wrong type is rejected.
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"decimals":12})"));
+  const QImage twelve = paint(*panel);
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"decimals":20})"));
+  EXPECT_EQ(paint(*panel), twelve);
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"decimals":3})"));
+  EXPECT_FALSE(panel->handle.loadConfig(R"({"decimals":"two"})"));
+  EXPECT_EQ(paint(*panel), three);
+}
+
 TEST_F(BasicWidgetsTest, ConfigBeforeTheWidgetExistsIsApplied) {
   auto plain = open("numeric_indicator");
   ASSERT_NE(plain, nullptr);

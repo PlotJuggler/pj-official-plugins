@@ -11,7 +11,7 @@ NumericIndicatorCanvas::NumericIndicatorCanvas(QWidget* parent) : NumberCanvas(p
 
 PJ::Status NumericIndicatorCanvas::applySettings(const nlohmann::json& settings) {
   Settings next;
-  if (auto status = readInteger(settings, "decimals", 2, 0, 12, next.decimals); !status) {
+  if (auto status = readDecimals(settings, 2, next.decimals); !status) {
     return status;
   }
   if (auto status = readText(settings, "unit", QString(), next.unit); !status) {
@@ -39,7 +39,7 @@ void NumericIndicatorCanvas::paintEvent(QPaintEvent* /*event*/) {
   }
 
   const QRectF body(area.left(), area.top() + caption_height, area.width(), area.height() - caption_height);
-  const QString number = value_ ? QString::number(*value_, 'f', settings_.decimals) : QStringLiteral("--");
+  const QString number = formatNumber(value_, settings_.decimals);
   const QString text = settings_.unit.isEmpty() || !value_ ? number : number + " " + settings_.unit;
   painter.setPen(palette().color(QPalette::WindowText));
   painter.setFont(fittedFont(font(), text, body.size(), body.height() * 0.8));

@@ -4,7 +4,7 @@ Four dockable widgets for live values, in one Widget-family library (`basic_widg
 
 | Type | Input | Settings |
 |---|---|---|
-| `gauge` | `value` | `min`, `max`, `unit`, `red_from`, `mode` (`arc` or `bar`) |
+| `gauge` | `value` | `min`, `max`, `unit`, `decimals`, `red_from`, `mode` (`arc` or `bar`) |
 | `numeric_indicator` | `value` | `decimals`, `unit`, `label` |
 | `traffic_light` | `value` | `green_below`, `red_from` |
 | `value_table` | `rows` (any number of series) | `decimals` |

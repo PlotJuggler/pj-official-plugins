@@ -69,6 +69,14 @@ PJ::Status readInteger(const nlohmann::json& settings, const char* key, int fall
   return PJ::okStatus();
 }
 
+PJ::Status readDecimals(const nlohmann::json& settings, int fallback, int& out) {
+  return readInteger(settings, "decimals", fallback, 0, 12, out);
+}
+
+QString formatNumber(std::optional<double> value, int decimals) {
+  return value ? QString::number(*value, 'f', decimals) : QStringLiteral("--");
+}
+
 PJ::Status readText(const nlohmann::json& settings, const char* key, const QString& fallback, QString& out) {
   const auto it = settings.find(key);
   if (it == settings.end() || it->is_null()) {
