@@ -1,7 +1,7 @@
 {
   "id": "candump-loader",
   "name": "candump Loader",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Data loader for Linux SocketCAN candump captures (log and screen format), decoded to signals via DBC or an ARUS-style CSV dictionary.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

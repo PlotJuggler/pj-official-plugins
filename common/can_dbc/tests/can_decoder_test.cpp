@@ -824,4 +824,23 @@ TEST(CanTopic, NamesTopicsByInterfaceNameAndMessage) {
   EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view(""), "", 0x7FFu), "CAN/0x7FF");
 }
 
+// A missing file used to surface as "DBC parse error ... Missing the required
+// version header" (the parser throws when its ifstream fails to open).
+TEST(CanDecoder, LoadDbcFileReportsMissingFileAsNotFound) {
+  CanDecoder decoder;
+  const auto status = decoder.loadDbcFile("/nonexistent_pj_can_dbc_dir/missing.dbc");
+  ASSERT_FALSE(status);
+  EXPECT_NE(status.error().find("DBC file not found: "), std::string::npos) << status.error();
+  EXPECT_EQ(status.error().find("version header"), std::string::npos) << status.error();
+}
+
+// Libdbc only accepts a case-sensitive ".dbc" suffix; the gate runs before the file is touched.
+TEST(CanDecoder, LoadDbcFileRejectsAWrongExtension) {
+  CanDecoder decoder;
+  const auto status = decoder.loadDbcFile("/nonexistent_pj_can_dbc_dir/vehicle.DBC");
+  ASSERT_FALSE(status);
+  EXPECT_NE(status.error().find("Expected a .dbc extension"), std::string::npos) << status.error();
+  EXPECT_NE(status.error().find("DBC parse error"), std::string::npos) << status.error();
+}
+
 }  // namespace

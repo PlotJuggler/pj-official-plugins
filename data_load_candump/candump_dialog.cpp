@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/time_format.hpp>
+#include <pj_can_dbc/dictionary_paths.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <sstream>
 #include <string>
@@ -218,10 +219,13 @@ std::string CandumpDialog::saveConfig() const {
   nlohmann::json mapping = nlohmann::json::object();
   for (const auto& [iface, paths] : iface_dicts_) {
     if (!paths.empty()) {
-      mapping[iface] = paths;
+      mapping[iface] = pj_can_dbc::toConfigPaths(paths, filepath_);
     }
   }
   cfg["iface_dicts"] = mapping;
+  if (const std::string base = pj_can_dbc::auxBaseDir(filepath_); !mapping.empty() && !base.empty()) {
+    cfg[pj_can_dbc::kAuxBaseDirKey] = base;
+  }
   cfg["raw_unassigned"] = raw_unassigned_;
   cfg["time_mode"] = time_mode_override_;
   return cfg.dump();
@@ -248,6 +252,9 @@ bool CandumpDialog::applyConfigJson(std::string_view config_json, bool scan_now)
     return false;
   }
   filepath_ = cfg.value("filepath", std::string{});
+  const pj_can_dbc::AuxPathContext context{
+      filepath_, cfg.value(pj_can_dbc::kSavedFilepathKey, std::string{}),
+      cfg.value(pj_can_dbc::kAuxBaseDirKey, std::string{})};
   raw_unassigned_ = cfg.value("raw_unassigned", true);
   time_mode_override_ = cfg.value("time_mode", 0);
   if (time_mode_override_ < 0 || time_mode_override_ > 3) {
@@ -265,6 +272,7 @@ bool CandumpDialog::applyConfigJson(std::string_view config_json, bool scan_now)
           paths.push_back(entry.get<std::string>());
         }
       }
+      paths = pj_can_dbc::resolveAuxPaths(paths, context);
     }
   }
   if (!filepath_.empty()) {
