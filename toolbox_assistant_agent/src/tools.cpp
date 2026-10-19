@@ -2119,12 +2119,15 @@ struct PendingEvaluation : std::enable_shared_from_this<PendingEvaluation> {
       }
       result.error = "timed out waiting for the host";
     } else if (value->state == PJ::sdk::EvaluationState::kFailed) {
-      const auto error = json::parse(value->json, nullptr, false);
-      result.error = error.is_object() && error.contains("error") && error["error"].is_string()
-                         ? error["error"].get<std::string>()
-                         : value->json;
-    } else if (value->state == PJ::sdk::EvaluationState::kCancelled) {
-      result.error = "cancelled by the host";
+      // A FAILED report has the shape of a COMPLETED one; its reason is coverage.error.
+      const auto report = json::parse(value->json, nullptr, false);
+      result.error = value->json;
+      if (report.is_object() && report.contains("coverage") && report["coverage"].is_object()) {
+        const auto& coverage = report["coverage"];
+        if (coverage.contains("error") && coverage["error"].is_string()) {
+          result.error = coverage["error"].get<std::string>();
+        }
+      }
     } else {
       result.report = json::parse(value->json, nullptr, false);
       result.ok = result.report.is_object();
@@ -2549,7 +2552,6 @@ ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
     input_names.push_back(ri.request_path);
   }
   const std::string params_json = args.contains("params") && args["params"].is_object() ? args["params"].dump() : "{}";
-  const std::string label = args.value("label", std::string{});
 
   bool undo_protection_unavailable = false;
   auto created = createHistoryExempt(
@@ -2561,7 +2563,6 @@ ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
         request.language = ctx.language;
         request.script = script;
         request.params_json = params_json;
-        request.label = label;
         request.inputs = input_names;
         request.outputs = parsed_outputs.outputs;
         request.flags = flags;
@@ -3171,9 +3172,6 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
 
 // --- the assistant's own scene views -----------------------------------------
 
-constexpr const char* kNoSceneViews =
-    "the host predates scene tabs in pj.plot_tabs.v1 (SDK 0.36.0): cannot open scene views";
-
 // Names of the scene tabs this assistant currently owns, mirroring
 // ownedTabList's role in plotTabTool's errors.
 std::string ownedViewList(ToolContext& ctx) {
@@ -3199,9 +3197,6 @@ ToolResult sceneViewTool(const json& args, ToolContext& ctx) {
   if (action.empty()) {
     return ToolResult::failure(
         "scene_view requires 'action': one of 'create', 'attach', 'detach', 'focus', 'close', 'list'");
-  }
-  if (!ctx.plot_tabs.hasSceneTabs()) {
-    return ToolResult::failure(kNoSceneViews);
   }
   if (action == "list") {
     auto ids = ctx.plot_tabs.list();
@@ -3956,8 +3951,7 @@ ToolRegistry::ToolRegistry() {
            {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "[\"name:type\", …], required"}}},
           {"body", {{"type", "string"}, {"description", "reads inputs[..], returns table of 'outputs'"}}},
           {"params", {{"type", "object"}, {"description", "forwarded to the script (optional)"}}},
-          {"pin_at_s", {{"type", "number"}, {"description", "OPTIONAL — pin as a finding, display seconds"}}},
-          {"label", {{"type", "string"}, {"description", "human-readable name (optional)"}}}}},
+          {"pin_at_s", {{"type", "number"}, {"description", "OPTIONAL — pin as a finding, display seconds"}}}}},
         {"required", json::array({"name", "inputs", "outputs", "body"})}},
        &createDerivedObject});
 

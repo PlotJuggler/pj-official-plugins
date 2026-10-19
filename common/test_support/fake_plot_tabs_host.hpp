@@ -67,7 +67,7 @@ struct FakePlotTabsHost {
   // Id the last focus_tab call brought to the front.
   std::string focused;
   // vtable.struct_size the fake advertises: 64 = a 0.35 host without the tail
-  // slots, 96 = the full 0.36 layout.
+  // slots, 96 = the full 0.38 layout.
   uint32_t struct_size = sizeof(PJ_plot_tab_host_vtable_t);
   // Leave the tail slots NULL even when struct_size covers them (a host with
   // no scene workspace).

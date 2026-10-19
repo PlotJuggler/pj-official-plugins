@@ -132,7 +132,6 @@ struct RecordingDpHost {
   std::int64_t last_window_start_ns = 0;
   std::int64_t last_window_end_ns = 0;
   std::int64_t last_instant_ns = 0;
-  std::string last_label;
   std::string last_params_json;                // params_json of the last v2 request (create or submit)
   std::vector<std::string> last_output_types;  // parallel to last_outputs
   std::uint64_t last_budget_max_millis = 0;
@@ -143,7 +142,7 @@ struct RecordingDpHost {
   std::uint64_t next_handle = 1;
   std::string last_poll_json;  // owned storage for the borrowed out_json view
 
-  // create_data_processor_v2's OWN snapshot of flags/time_flags/instant/label,
+  // create_data_processor_v2's OWN snapshot of flags/time_flags/instant,
   // taken separately from the shared last_* fields: create_derived_object
   // installs via createV2 and then immediately submitEvaluation()s the
   // installed node to read a finding back, and that second call's recordRequest
@@ -153,7 +152,6 @@ struct RecordingDpHost {
   std::uint32_t last_create_v2_flags = 0;
   std::uint32_t last_create_v2_time_flags = 0;
   std::int64_t last_create_v2_instant_ns = 0;
-  std::string last_create_v2_label;
 
   // One record per ACCEPTED persistent create, so a verdict can ask what a
   // surviving id actually is (kind, script, declared inputs) instead of judging
@@ -357,7 +355,6 @@ struct RecordingDpHost {
     self->last_create_v2_flags = request->flags;
     self->last_create_v2_time_flags = request->time_flags;
     self->last_create_v2_instant_ns = request->time_ns;
-    self->last_create_v2_label = self->last_label;
     self->last_create_v2_params_json = self->last_params_json;
     if ((request->flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) == 0) {
       ++self->persistent_creates;
@@ -463,7 +460,7 @@ struct RecordingDpHost {
 
   // Shared by tCreateV2/tSubmit: both take the same PJ_data_processor_request_t
   // shape, so both record it into the same last_* fields tCreate does (plus
-  // the v2-only ones: types, time flags, window/instant, label).
+  // the v2-only ones: types, time flags, window/instant).
   void recordRequest(const PJ_data_processor_request_t& request) {
     last_id = toStr(request.id);
     last_kind = toStr(request.kind);
@@ -473,7 +470,6 @@ struct RecordingDpHost {
     last_window_start_ns = request.window_start_ns;
     last_window_end_ns = request.window_end_ns;
     last_instant_ns = request.time_ns;
-    last_label = toStr(request.label);
     last_params_json = toStr(request.params_json);
     last_inputs.clear();
     for (uint64_t i = 0; i < request.input_count; ++i) {

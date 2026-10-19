@@ -76,7 +76,7 @@ One editor for series and objects.
 - A series function that returns several values (`return a, b`) creates `name/a`, `name/b`; the
   count is read from the return statements.
 - The Custom Topics "+" button and the pencil on a recipe made here open this editor.
-- Object inputs need a host with SDK 0.36 or newer; on an older host the editor says so, Create
+- Object inputs need a host with SDK 0.38 or newer; on an older host the editor says so, Create
   stays disabled for them and the series transform works as before.
 
 ## [1.0.4] - 2026-08-04

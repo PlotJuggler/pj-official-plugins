@@ -1916,7 +1916,6 @@ TEST(ToolRegistry, CreateDerivedObjectPinsAFinding) {
   EXPECT_NE(dp.last_create_v2_flags & PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT, 0u);
   EXPECT_NE(dp.last_create_v2_time_flags & PJ_DATA_PROCESSOR_TIME_FLAG_INSTANT, 0u);
   EXPECT_EQ(dp.last_create_v2_instant_ns, 2'500'000'000);
-  EXPECT_EQ(dp.last_create_v2_label, "cropped at 2.5s");
   EXPECT_EQ(notify_calls, 1);
   EXPECT_EQ(dp.submit_calls, 1) << "evaluated once after creating, so the model sees a finding";
   const json j = json::parse(r.content);
@@ -2929,28 +2928,31 @@ TEST(ToolRegistry, SceneViewListIsReadBack) {
   EXPECT_EQ(json::parse(empty_r.content)["count"], 0);
 }
 
-TEST(ToolRegistry, SceneViewOnOldHostReportsNotExposed) {
+TEST(ToolRegistry, SceneViewOnOldHostReportsTheMissingSlot) {
   ToolRegistry reg;
   FakePlotTabsHost tabs;
   tabs.struct_size = 64;  // a 0.35 host: the seven v1 slots, no tail
   ToolContext ctx;
   ctx.plot_tabs = tabs.view();
 
-  auto r = reg.execute("scene_view", {{"action", "list"}}, ctx);
+  auto r = reg.execute("scene_view", {{"action", "create"}}, ctx);
   EXPECT_FALSE(r.ok);
-  EXPECT_NE(r.content.find("predates scene tabs in pj.plot_tabs.v1"), std::string::npos) << r.content;
+  EXPECT_NE(r.content.find("does not support create_tab_v2"), std::string::npos) << r.content;
+  auto listed = reg.execute("scene_view", {{"action", "list"}}, ctx);
+  ASSERT_TRUE(listed.ok) << listed.content;
+  EXPECT_EQ(json::parse(listed.content)["count"], 0) << "such a host has no scene tabs";
 
   // Full-size vtable with NULL tail slots (a host with no scene workspace).
   FakePlotTabsHost no_scene;
   no_scene.null_tail = true;
   ctx.plot_tabs = no_scene.view();
-  EXPECT_FALSE(reg.execute("scene_view", {{"action", "list"}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("scene_view", {{"action", "create"}}, ctx).ok);
 
   // No plot tabs service at all.
   ToolContext unbound;
   auto u = reg.execute("scene_view", {{"action", "list"}}, unbound);
   EXPECT_FALSE(u.ok);
-  EXPECT_NE(u.content.find("predates scene tabs"), std::string::npos) << u.content;
+  EXPECT_NE(u.content.find("not bound"), std::string::npos) << u.content;
 }
 
 // The host list is the union of plot and scene tabs; each tool shows its own kind.
@@ -3569,15 +3571,16 @@ TEST(ToolRegistry, RefusesToCreateOverAnExistingName) {
   EXPECT_EQ(dp.create_calls, 1) << "and must not reach the host at all";
 }
 
-TEST(ToolRegistry, AsyncEvaluationTerminalStatesReleaseExactlyOnce) {
-  for (auto state : {PJ_EVALUATION_STATE_FAILED, PJ_EVALUATION_STATE_CANCELLED}) {
+TEST(ToolRegistry, AsyncEvaluationFailureReleasesExactlyOnceAndNamesTheCoverageError) {
+  {
     ToolRegistry reg;
     FakeCatalogHost host;
     host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
     RecordingDpHost dp;
     dp.pending_polls = 1;
-    dp.terminal_state = state;
-    dp.canned_report_json = R"({"error":"deliberate failure"})";
+    dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
+    dp.canned_report_json =
+        R"({"coverage":{"candidates":1,"evaluated":0,"stopped":"error","error":"deliberate failure","gaps":[]},"bundles":[]})";
     FakePlaybackHost playback;
     ToolContext ctx;
     ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
@@ -3591,6 +3594,8 @@ TEST(ToolRegistry, AsyncEvaluationTerminalStatesReleaseExactlyOnce) {
     EXPECT_FALSE(r.ok);
     EXPECT_FALSE(r.resume);
     EXPECT_EQ(dp.released_handles.size(), 1u);
+    EXPECT_NE(r.content.find("deliberate failure"), std::string::npos) << r.content;
+    EXPECT_EQ(r.content.find("coverage"), std::string::npos) << "the reason, not the raw report: " << r.content;
   }
 }
 

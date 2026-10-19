@@ -6,7 +6,7 @@
 // A recipe over series installs a per-sample transform; one with object inputs installs an on-demand
 // recipe whose outputs a trial run infers. Both go through pj.data_processors.v1, so the plugin carries no
 // script runtime; previews are EPHEMERAL recipes the host removes with the panel. Series need SDK >= 0.28,
-// object inputs the 0.36 surfaces (typed requests, catalog snapshot v2).
+// object inputs the 0.37 and 0.38 surfaces (typed requests, catalog snapshot v2).
 
 #include <algorithm>
 #include <cctype>
@@ -488,7 +488,7 @@ std::string formatValue(const nlohmann::json& entry, const std::string& fallback
   return text;
 }
 
-// What a trial evaluation (INFER_OUTPUTS, no declared outputs) learned, parsed ONCE from the report the
+// What a trial evaluation (no declared outputs) learned, parsed ONCE from the report the
 // host returns from poll_evaluation: the outputs the script returned, whether one of them was
 // unavailable at this instant (its type is not known yet), whether the instant had a sample at all, and
 // the host's error when the script failed, and whether the host was too busy to look at all.
@@ -666,7 +666,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   static constexpr const char* kNeedInputProblem = "Add an input (drag & drop a series or an object topic)";
   static constexpr const char* kNeedBodyProblem = "Write your function body";
-  static constexpr const char* kNeedNewHostProblem = "Object inputs require a PlotJuggler host with SDK 0.36 or newer";
+  static constexpr const char* kNeedNewHostProblem = "Object inputs require a PlotJuggler host with SDK 0.38 or newer";
 
  public:
   std::string manifest() const override {
@@ -839,8 +839,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     wd.setVisible("framePlotPreview", !scene_embedded || preview_has_numbers_ || !overlay.empty());
     wd.setVisible("frameScenePreview", scene_embedded);
     if (scene_embedded) {
-      wd.setSceneView("frameScenePreview", scene_embed_kind_);
-      wd.setSceneTopics("frameScenePreview", scene_embed_topics_);
+      wd.setSceneView("frameScenePreview", {scene_embed_kind_, scene_embed_topics_});
     } else {
       wd.clearSceneView("frameScenePreview");  // full state every tick: the host diffs each entry
     }
@@ -1869,7 +1868,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void catalogChanged() {
     ++form_revision_;
   }
-  /// False on a host without the 0.36 surfaces (object inputs cannot be used then).
+  /// False on a host without the 0.38 surfaces (object inputs cannot be used then).
   void setOnDemandSupported(bool supported) {
     if (supported != on_demand_supported_) {
       ++form_revision_;
@@ -2657,7 +2656,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   static void setTrialForm(OnDemandBuild& build) {
     build.trial_request = build.request;
     makeEphemeral(build.trial_request, kPreviewId, std::nullopt);
-    build.trial_request.flags |= PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS;
     build.form_key = requestSignature(build.trial_request);
   }
 
@@ -2723,7 +2721,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   // Create / Modify an on_demand recipe: the same request the assistant's create_derived_object
-  // builds (shared helpers), with the outputs the trial inferred (INFER_OUTPUTS: the host binds them by
+  // builds (shared helpers), with the outputs the trial inferred (declared outputs: the host binds them by
   // name, positional returns by position, and stays strict), the user's params and the editor state for
   // the pencil.
   void onSaveOnDemand() {
@@ -2747,9 +2745,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
 
     PJ::sdk::DataProcessorRequest request = build.request;
     request.id = id;
-    request.label = id;
     // The user's own recipe (not EPHEMERAL): undo/redo applies like it does to their transforms.
-    request.flags = PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS;
+    request.flags = 0;
     for (const auto& output : dialog_.inferredOutputs()) {
       request.outputs.push_back({output.name, output.type});
     }
@@ -2911,7 +2908,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   // The preview recipe of a trial that inferred its outputs: an EPHEMERAL on_demand recipe (it evaluates at
-  // the playhead, so the preview follows the cursor) with the inferred outputs and INFER_OUTPUTS. Its
+  // the playhead, so the preview follows the cursor) with the inferred outputs declared. Its
   // object topics show in the scene view embedded in the editor; each number output is plotted from the
   // series the host materializes for it (a newer host) or, without it, shown as the readout at the cursor.
   // The recipe is re-upserted in place when the form changes (at most every kPreviewRefresh); it is
@@ -2933,7 +2930,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         request.outputs.push_back({output.name, output.type});
       }
       makeEphemeral(request, kObjectPreviewId, std::nullopt);  // no instant: follows the cursor
-      request.flags |= PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS;
       const bool has_object = std::any_of(
           request.outputs.begin(), request.outputs.end(),
           [](const PJ::sdk::DataProcessorOutput& o) { return isObjectOutputType(o.type); });
@@ -3273,7 +3269,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   // The trial of an on-demand recipe: ONE evaluation, EPHEMERAL, with the outputs left for the host to
-  // infer (INFER_OUTPUTS), at the playhead's raw instant. `build` carries the request (inputs as request paths,
+  // infer, at the playhead's raw instant. `build` carries the request (inputs as request paths,
   // script, language and params) and the trial's own form of it; the instant is set here. A trial runs 300 ms
   // after the last edit and, for the readout at the cursor, at most every kTrialPeriod after that. When the
   // cursor is before the first instant at which every object input has a sample (`build.first_entry`), or has no
@@ -3359,11 +3355,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (!attempt) {
       error = attempt.error();
     } else if (attempt->state == PJ::sdk::EvaluationState::kFailed) {
-      const auto err = nlohmann::json::parse(attempt->json, nullptr, /*allow_exceptions=*/false);
-      error = err.is_object() && err.contains("error") && err["error"].is_string() ? err["error"].get<std::string>()
-                                                                                   : attempt->json;
-    } else if (attempt->state == PJ::sdk::EvaluationState::kCancelled) {
-      error = "cancelled by the host";
+      // A FAILED report has the shape of a COMPLETED one; its reason is coverage.error.
+      error = parseTrialReport(attempt->json).error;
+      if (error.empty()) {
+        error = "the host reported a failed evaluation";
+      }
     } else if (attempt->state != PJ::sdk::EvaluationState::kCompleted) {
       error = "timed out waiting for the host";
     }

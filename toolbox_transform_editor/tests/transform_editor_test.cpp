@@ -321,14 +321,12 @@ nlohmann::json renameVar(Rig& rig, int row, const std::string& text, bool press_
 // The trial run
 // ---------------------------------------------------------------------------
 
-TEST(TransformEditorTrial, SubmitsWithTheInferFlagAndNoOutputsAndParsesTheReport) {
+TEST(TransformEditorTrial, SubmitsEphemeralWithNoOutputsAndParsesTheReport) {
   Rig rig;
   rig.load(onDemandConfig("my_filter"));
   rig.refresh();
   ASSERT_EQ(rig.dp.submit_calls, 1);
-  EXPECT_EQ(
-      rig.dp.submits[0].flags,
-      static_cast<std::uint32_t>(PJ_DATA_PROCESSOR_FLAG_EPHEMERAL | PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS));
+  EXPECT_EQ(rig.dp.submits[0].flags, static_cast<std::uint32_t>(PJ_DATA_PROCESSOR_FLAG_EPHEMERAL));
   EXPECT_EQ(rig.dp.submits[0].output_count, 0u) << "the outputs are the host's to infer";
   EXPECT_EQ(rig.dp.submits[0].instant_ns, 3000000000) << "at the cursor";
   const auto& outputs = rig.dialog().inferredOutputs();
@@ -532,9 +530,7 @@ TEST(TransformEditorCreate, ModifySendsTheInferFlagTheInferredOutputsParamsEdito
   ASSERT_EQ(rig.dp.created.size(), 1u);
   EXPECT_EQ(rig.dp.created[0].kind, "on_demand");
   EXPECT_EQ(rig.dp.created[0].id, "my_filter");
-  EXPECT_EQ(rig.dp.last_create_v2_label, "my_filter");
-  EXPECT_EQ(rig.dp.last_create_v2_flags, static_cast<std::uint32_t>(PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS))
-      << "the user's own recipe is NOT ephemeral nor history-exempt";
+  EXPECT_EQ(rig.dp.last_create_v2_flags, 0u) << "the user's own recipe is NOT ephemeral nor history-exempt";
   EXPECT_EQ(rig.dp.last_create_v2_inputs, std::vector<std::string>{"/cloud"});
   EXPECT_EQ(rig.dp.created[0].outputs, (std::vector<std::string>{"cropped", "count"}));
   EXPECT_EQ(rig.dp.last_output_types, (std::vector<std::string>{"kPointCloud", "number"}));
@@ -601,7 +597,7 @@ TEST(TransformEditorCreate, CreateOpensThePromptWithTheSummaryAndOkCreatesUnderT
   ASSERT_EQ(rig.dp.persistent_creates, 1);
   EXPECT_EQ(rig.dp.created[0].id, "my_recipe");
   EXPECT_EQ(rig.dp.created[0].kind, "on_demand");
-  EXPECT_EQ(rig.dp.last_create_v2_flags, static_cast<std::uint32_t>(PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS));
+  EXPECT_EQ(rig.dp.last_create_v2_flags, 0u);
   EXPECT_EQ(rig.dp.created[0].outputs, (std::vector<std::string>{"cropped", "count"}));
 }
 
@@ -727,7 +723,7 @@ TEST(TransformEditorCreate, DisabledReasonsGoOnTheStatusLineAndTheButton) {
     rig.rebind();
     rig.load(onDemandConfig("my_filter"));
     rig.refresh();
-    EXPECT_NE(rig.dialog().canCreateReason().find("SDK 0.36"), std::string::npos);
+    EXPECT_NE(rig.dialog().canCreateReason().find("SDK 0.38"), std::string::npos);
     EXPECT_EQ(rig.widgets()["pushButtonCreate"]["enabled"], false);
     TransformEditorPreviewTestPeer::save(rig.editor);
     EXPECT_EQ(rig.dp.persistent_creates, 0);
@@ -1119,24 +1115,22 @@ TEST(TransformEditorPreview, ObjectOutputsPreviewInAnEphemeralRecipeShownInTheEm
   rig.load(onDemandConfig("my_filter"));
   rig.refresh();
   ASSERT_EQ(rig.dp.create_v2_calls, 1);
-  EXPECT_EQ(
-      rig.dp.last_create_v2_flags,
-      static_cast<std::uint32_t>(PJ_DATA_PROCESSOR_FLAG_EPHEMERAL | PJ_DATA_PROCESSOR_FLAG_INFER_OUTPUTS));
+  EXPECT_EQ(rig.dp.last_create_v2_flags, static_cast<std::uint32_t>(PJ_DATA_PROCESSOR_FLAG_EPHEMERAL));
   EXPECT_EQ(rig.dp.last_id, "__te_obj_preview__");
   EXPECT_EQ(rig.dp.last_outputs, (std::vector<std::string>{"cropped", "count"})) << "the inferred outputs";
   EXPECT_EQ(rig.dp.last_create_v2_time_flags, 0u) << "no instant: the preview follows the cursor";
   EXPECT_EQ(rig.dp.liveCount(), 0) << "an ephemeral recipe is never one of the user's";
   const auto widgets = rig.widgets();
-  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"], "3d");
-  ASSERT_EQ(widgets["frameScenePreview"]["scene_topics"].size(), 1u);
-  EXPECT_EQ(widgets["frameScenePreview"]["scene_topics"][0]["topic"], "cropped");
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"]["kind"], "3d");
+  ASSERT_EQ(widgets["frameScenePreview"]["scene_view"]["topics"].size(), 1u);
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"]["topics"][0]["topic"], "cropped");
   EXPECT_EQ(widgets["frameScenePreview"]["visible"], true);
   EXPECT_EQ(widgets["framePlotPreview"]["visible"], true) << "a mixed return shows both panes";
 
   // Ticks with an unchanged form install nothing new and keep sending the view.
   TransformEditorPreviewTestPeer::tick(rig.editor);
   EXPECT_EQ(rig.dp.create_v2_calls, 1);
-  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
+  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"]["kind"], "3d");
 
   // A change re-upserts the same id in place (no remove) and the view keeps its topics.
   rig.dp.last_removed.clear();
@@ -1145,7 +1139,7 @@ TEST(TransformEditorPreview, ObjectOutputsPreviewInAnEphemeralRecipeShownInTheEm
   EXPECT_EQ(rig.dp.create_v2_calls, 2);
   EXPECT_TRUE(rig.dp.last_removed.empty());
   const auto again = rig.widgets();
-  ASSERT_EQ(again["frameScenePreview"]["scene_topics"].size(), 1u);
+  ASSERT_EQ(again["frameScenePreview"]["scene_view"]["topics"].size(), 1u);
   EXPECT_NE(rig.dp.last_create_v2_params_json.find("\"k\":3"), std::string::npos);
 }
 
@@ -1154,7 +1148,7 @@ TEST(TransformEditorPreview, ObjectsOnlyHideThePlotAndNumbersOnlyHideTheSceneAnd
   rig.dp.canned_report_json = kObjectsReport;
   rig.newObjectRecipe("return { cropped = cloud }");
   auto widgets = rig.widgets();
-  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"], "3d");
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"]["kind"], "3d");
   EXPECT_EQ(widgets["frameScenePreview"]["visible"], true);
   EXPECT_EQ(widgets["framePlotPreview"]["visible"], false) << "objects only: the scene takes the area";
 
@@ -1167,7 +1161,6 @@ TEST(TransformEditorPreview, ObjectsOnlyHideThePlotAndNumbersOnlyHideTheSceneAnd
   EXPECT_EQ(widgets["framePlotPreview"]["visible"], true);
   ASSERT_TRUE(widgets["frameScenePreview"].contains("scene_view"));
   EXPECT_TRUE(widgets["frameScenePreview"]["scene_view"].is_null()) << "clearSceneView";
-  EXPECT_TRUE(widgets["frameScenePreview"]["scene_topics"].empty());
   // The full state goes out every tick: the view stays cleared.
   TransformEditorPreviewTestPeer::tick(rig.editor);
   const auto later = rig.widgets();
@@ -1199,12 +1192,12 @@ TEST(TransformEditorPreview, AHostWithoutCatalogV2StillWarnsAboutObjectInputs) {
   rig.dialog().onCodeChanged("functionText", "return value");
   rig.refresh();
   EXPECT_FALSE(rig.dialog().isOnDemand()) << "a scalar is a series input on any host";
-  EXPECT_EQ(rig.dialog().canCreateReason().find("SDK 0.36"), std::string::npos);
+  EXPECT_EQ(rig.dialog().canCreateReason().find("SDK 0.38"), std::string::npos);
 
   rig.dialog().onItemsDropped("tableSources", {"/cloud"});
   rig.refresh();
   EXPECT_TRUE(rig.dialog().isOnDemand()) << "not a scalar of the v1 snapshot: object-shaped";
-  EXPECT_NE(rig.dialog().canCreateReason().find("SDK 0.36"), std::string::npos) << rig.dialog().canCreateReason();
+  EXPECT_NE(rig.dialog().canCreateReason().find("SDK 0.38"), std::string::npos) << rig.dialog().canCreateReason();
   EXPECT_EQ(rig.widgets()["pushButtonCreate"]["enabled"], false);
   EXPECT_EQ(rig.dp.submit_calls, 0);
 }
@@ -1224,12 +1217,12 @@ TEST(TransformEditorPreview, TheEmbeddedViewIs2DOnlyWhenEveryObjectOutputIs2D) {
   Rig rig;
   rig.dp.canned_report_json = kImageReport;
   rig.newObjectRecipe("return { img = cloud }");
-  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "2d");
+  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"]["kind"], "2d");
   // A cloud next to the number of the default report is 3D.
   rig.dp.canned_report_json = kTrialReport;
   rig.dialog().onCodeChanged("functionText", "return { cropped = cloud, count = 1 }");
   rig.refresh();
-  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
+  EXPECT_EQ(rig.widgets()["frameScenePreview"]["scene_view"]["kind"], "3d");
 }
 
 TEST(TransformEditorPreview, AnOverlayAlonePreviewsOverItsImageInput) {
@@ -1242,18 +1235,18 @@ TEST(TransformEditorPreview, AnOverlayAlonePreviewsOverItsImageInput) {
   rig.dialog().onCodeChanged("functionText", "return { overlay = cam }");
   rig.refresh();
   const auto widgets = rig.widgets();
-  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"], "2d");
-  ASSERT_EQ(widgets["frameScenePreview"]["scene_topics"].size(), 2u);
-  EXPECT_EQ(widgets["frameScenePreview"]["scene_topics"][0]["topic"], "/cam");
-  EXPECT_EQ(widgets["frameScenePreview"]["scene_topics"][1]["topic"], "overlay");
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"]["kind"], "2d");
+  ASSERT_EQ(widgets["frameScenePreview"]["scene_view"]["topics"].size(), 2u);
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"]["topics"][0]["topic"], "/cam");
+  EXPECT_EQ(widgets["frameScenePreview"]["scene_view"]["topics"][1]["topic"], "overlay");
 
   // A result that is itself an image needs no other: only the outputs are shown.
   rig.dp.canned_report_json = kImageReport;
   rig.dialog().onCodeChanged("functionText", "return { img = cam }");
   rig.refresh();
   const auto image = rig.widgets();
-  ASSERT_EQ(image["frameScenePreview"]["scene_topics"].size(), 1u);
-  EXPECT_EQ(image["frameScenePreview"]["scene_topics"][0]["topic"], "img");
+  ASSERT_EQ(image["frameScenePreview"]["scene_view"]["topics"].size(), 1u);
+  EXPECT_EQ(image["frameScenePreview"]["scene_view"]["topics"][0]["topic"], "img");
 }
 
 TEST(TransformEditorPreview, CreateClearsTheEmbeddedView) {
@@ -1261,7 +1254,7 @@ TEST(TransformEditorPreview, CreateClearsTheEmbeddedView) {
   rig.dp.canned_report_json = kObjectsReport;
   rig.load(onDemandConfig("my_filter"));
   rig.refresh();
-  ASSERT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
+  ASSERT_EQ(rig.widgets()["frameScenePreview"]["scene_view"]["kind"], "3d");
   TransformEditorPreviewTestPeer::save(rig.editor);
   EXPECT_EQ(rig.dp.last_removed, "__te_obj_preview__");
   const auto widgets = rig.widgets();
@@ -1361,7 +1354,7 @@ TEST(TransformEditorPreview, CreateRemovesThePreviewRecipeAndCloseLeavesItToTheH
     Rig rig;
     rig.load(onDemandConfig("my_filter"));
     rig.refresh();
-    ASSERT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
+    ASSERT_EQ(rig.widgets()["frameScenePreview"]["scene_view"]["kind"], "3d");
     rig.dp.last_removed.clear();
     TransformEditorPreviewTestPeer::save(rig.editor);
     EXPECT_EQ(rig.dp.last_removed, "__te_obj_preview__");
@@ -1386,7 +1379,7 @@ TEST(TransformEditorPreview, AFailedTrialTakesThePreviewRecipeAway) {
   Rig rig;
   rig.load(onDemandConfig("my_filter"));
   rig.refresh();
-  ASSERT_EQ(rig.widgets()["frameScenePreview"]["scene_view"], "3d");
+  ASSERT_EQ(rig.widgets()["frameScenePreview"]["scene_view"]["kind"], "3d");
   rig.dp.canned_report_json = R"({"error":"boom"})";
   rig.dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
   rig.dialog().onCodeChanged("functionText", "return nope");
@@ -1628,19 +1621,21 @@ TEST(TransformEditorPreview, CompletedSameInstantRefreshesForLiveInputChanges) {
   EXPECT_EQ(host.submit_calls, 2);
   EXPECT_EQ(host.released_handles.size(), 2u);
 }
-TEST(TransformEditorPreview, FailedAndCancelledReleaseOnce) {
-  for (auto state : {PJ_EVALUATION_STATE_FAILED, PJ_EVALUATION_STATE_CANCELLED}) {
-    Host host;
-    host.pending_polls = 1;
-    host.terminal_state = state;
-    host.canned_report_json = R"({"error":"deliberate failure"})";
-    TransformEditorToolbox editor;
-    TransformEditorPreviewTestPeer::bind(editor, host.view());
-    TransformEditorPreviewTestPeer::submitPreview(editor);
-    TransformEditorPreviewTestPeer::submitPreview(editor);
-    EXPECT_FALSE(TransformEditorPreviewTestPeer::pending(editor));
-    EXPECT_EQ(host.released_handles.size(), 1u);
-  }
+TEST(TransformEditorPreview, FailedReleasesOnceAndShowsTheCoverageError) {
+  Host host;
+  host.pending_polls = 1;
+  host.terminal_state = PJ_EVALUATION_STATE_FAILED;
+  host.canned_report_json =
+      R"({"coverage":{"candidates":1,"evaluated":0,"stopped":"error","error":"deliberate failure","gaps":[]},"bundles":[]})";
+  TransformEditorToolbox editor;
+  TransformEditorPreviewTestPeer::bind(editor, host.view());
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  TransformEditorPreviewTestPeer::submitPreview(editor);
+  EXPECT_FALSE(TransformEditorPreviewTestPeer::pending(editor));
+  EXPECT_EQ(host.released_handles.size(), 1u);
+  const std::string shown = TransformEditorPreviewTestPeer::widgetText(editor);
+  EXPECT_NE(shown.find("deliberate failure"), std::string::npos) << shown;
+  EXPECT_EQ(shown.find("coverage"), std::string::npos) << "the reason, not the raw report: " << shown;
 }
 TEST(TransformEditorPreview, ExpiryReleasesOnceWithoutBlocking) {
   Host host;
@@ -2219,7 +2214,7 @@ TEST(TransformEditorFloorTest, OnDemandSubmitReportsUnsupportedOnFloorHost) {
   TransformEditorPreviewTestPeer::load(
       editor, R"({"output_name":"n","function_body":"return {count = 1}","sources":["/cloud"]})");
   const std::string reason = TransformEditorPreviewTestPeer::createReason(editor);
-  EXPECT_NE(reason.find("SDK 0.36"), std::string::npos) << reason;
+  EXPECT_NE(reason.find("SDK 0.38"), std::string::npos) << reason;
   TransformEditorPreviewTestPeer::saveAsIs(editor);
   EXPECT_EQ(host.dp.persistent_creates, 0);
   EXPECT_EQ(host.dp.create_v2_calls, 0);
