@@ -30,7 +30,7 @@ namespace fs = std::filesystem;
 
 void writeFile(const fs::path& file) {
   fs::create_directories(file.parent_path());
-  std::ofstream(file) << "VERSION \"\"\n";
+  std::ofstream(file, std::ios::binary) << "VERSION \"\"\n";
 }
 
 std::string at(const std::string& tail) {
