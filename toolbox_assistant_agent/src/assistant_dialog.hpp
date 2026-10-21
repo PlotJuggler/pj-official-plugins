@@ -41,6 +41,12 @@ class SettingsStore;
 // caching), so a value written to the conf before the app starts takes effect.
 [[nodiscard]] int resolveCatalogBudgetChars(const SettingsStore& store);
 
+// The same for the "PlotJuggler features" block (featuresBlock,
+// features_digest.hpp): settings key "assistant.features_budget_chars",
+// default 20000, clamped to [5000, 200000] (the minimum holds the built-in
+// reference, which is never trimmed), read fresh every turn.
+[[nodiscard]] int resolveFeaturesBudgetChars(const SettingsStore& store);
+
 // Per-conversation state a backend borrows (harness_memory.hpp).
 // Forward-declared so this header does not pull the backend implementations —
 // and their JSON dependency — into everything that includes it; the dialog's
@@ -171,6 +177,10 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   void setPlaybackProvider(std::function<PJ::sdk::PlaybackHostView()> provider);
   void setViewportProvider(std::function<PJ::sdk::ViewportHostView()> provider);
   void setPlotTabsProvider(std::function<PJ::sdk::PlotTabHostView()> provider);
+  // pj.feature_catalog.v1, optional: an unbound view (an older host) makes
+  // every turn carry the built-in reference instead (fallback_features.hpp).
+  // With no provider at all, no features block is sent.
+  void setFeatureCatalogProvider(std::function<PJ::sdk::FeatureCatalogView()> provider);
   void setSettings(PJ::sdk::SettingsView settings);
 
  private:
@@ -183,6 +193,10 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // GUI thread: take input_text, append it as a user turn, flip to
   // WaitingForLlm, and enqueue the backend call on the worker thread.
   void sendCurrentInput();
+
+  // GUI thread: this turn's "PlotJuggler features" block (TurnTools::features),
+  // empty when no provider is bound.
+  [[nodiscard]] std::string featuresForTurn();
 
   // Apply a BackendEvent to the ChatSession. Runs on the GUI thread (posted by
   // the worker's sink through the event queue).
@@ -319,6 +333,7 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   std::function<PJ::sdk::PlaybackHostView()> playback_provider_;
   std::function<PJ::sdk::ViewportHostView()> viewport_provider_;
   std::function<PJ::sdk::PlotTabHostView()> plot_tabs_provider_;
+  std::function<PJ::sdk::FeatureCatalogView()> feature_catalog_provider_;
   PJ::sdk::SettingsView settings_;
   // One restore per instance: setSettings can in principle be re-bound, and a
   // second load would duplicate the transcript on top of the live one.

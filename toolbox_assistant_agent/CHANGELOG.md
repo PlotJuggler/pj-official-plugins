@@ -3,6 +3,24 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## [0.3.0] - 2026-10-21
+
+### Added
+- The assistant now answers questions about PlotJuggler itself ("how do I
+  show an image?", "how do I use MQTT?") from what this PlotJuggler offers:
+  its built-in features, the plugins loaded, installed but disabled, or
+  available in the Extensions Marketplace, and its known limitations. It
+  names the feature and where to start it, says when a plugin has to be
+  installed or enabled first, and no longer sends you to another tool for
+  something PlotJuggler can do. The list comes from PlotJuggler itself when it
+  provides one (SDK 0.38.0 and later); otherwise the assistant uses a short
+  reference for PlotJuggler 4.1 that it carries itself.
+
+### Fixed
+- When a message failed before any answer (the CLI not logged in, for
+  example), the next message went out without the list of loaded data, so
+  the model never saw it. The retry now carries it again.
+
 ## [0.2.1] - 2026-10-05
 
 ### Fixed

@@ -23,6 +23,7 @@
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/feature_catalog_host.hpp>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/settings_store_host.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
@@ -32,6 +33,8 @@
 #include "claude_sessions.hpp"
 #include "codex_sessions.hpp"
 #include "conversation_state.hpp"
+#include "fallback_features.hpp"
+#include "features_digest.hpp"
 #include "harness_memory.hpp"
 #include "settings_store.hpp"
 #include "support/scoped_env.hpp"
@@ -53,6 +56,11 @@ class AssistantDialogTestPeer {
     dialog.applyBackendEvent({BackendEvent::Kind::Error, error});
     dialog.applyBackendEvent({BackendEvent::Kind::TurnComplete, {}});
   }
+
+  // The features block sendCurrentInput() hands the backend this turn.
+  static std::string featuresForTurn(AssistantDialog& dialog) {
+    return dialog.featuresForTurn();
+  }
 };
 
 }  // namespace assistant_agent
@@ -66,6 +74,7 @@ using assistant_agent::claudeSessionsDir;
 using assistant_agent::loadActiveSessionId;
 using assistant_agent::loadConversationTitles;
 using assistant_agent::resolveCatalogBudgetChars;
+using assistant_agent::resolveFeaturesBudgetChars;
 using assistant_agent::SettingsStore;
 using nlohmann::json;
 
@@ -1167,6 +1176,53 @@ TEST(AssistantDialogCatalogBudget, AbsentKeyReproducesTheDefaultBudgetDigestByte
       catalogDigest(PJ::sdk::ToolboxHostView(data_store.makeHost()), resolveCatalogBudgetChars(settings));
   const std::string digest_default_arg = catalogDigest(PJ::sdk::ToolboxHostView(data_store.makeHost()));
   EXPECT_EQ(digest_via_settings, digest_default_arg);
+}
+
+// --- Feature awareness ------------------------------------------------------
+
+// manifest.json's floor_test. On a host older than SDK 0.38.0 there is no
+// pj.feature_catalog.v1: services.get<FeatureCatalogService>() fails and
+// assistant_toolbox.cpp binds an empty FeatureCatalogView, which is exactly
+// what this provider returns. The turn must still carry a features block --
+// the reference built into the plugin -- and nothing may crash.
+TEST(AssistantDialogFeatures, WithoutTheHostServiceEveryTurnCarriesTheBuiltInReference) {
+  AssistantDialog dialog;
+  dialog.setFeatureCatalogProvider([]() { return PJ::sdk::FeatureCatalogView{}; });
+  const std::string features = AssistantDialogTestPeer::featuresForTurn(dialog);
+  EXPECT_EQ(features, assistant_agent::fallbackFeatures());
+  EXPECT_EQ(features.rfind("PlotJuggler features (PlotJuggler 4.1, built into this assistant):", 0), 0u);
+}
+
+TEST(AssistantDialogFeatures, WithTheHostServiceTheTurnCarriesTheHostListing) {
+  const std::string doc =
+      R"({"schema": 1, "host_version": "4.1.0", "core": [{"id": "layouts", "name": "Layouts", "summary": "Save it.",)"
+      R"( "entry_point": "File → Save Layout..."}], "registry": {"state": "fetched"}})";
+  PJ::sdk::FeatureCatalogHost host([&doc]() { return doc; });
+  AssistantDialog dialog;
+  dialog.setFeatureCatalogProvider([&host]() { return PJ::sdk::FeatureCatalogView(host.view()); });
+  EXPECT_EQ(AssistantDialogTestPeer::featuresForTurn(dialog), assistant_agent::featuresDigest(doc));
+}
+
+TEST(AssistantDialogFeatures, NoProviderMeansNoFeaturesBlock) {
+  AssistantDialog dialog;
+  EXPECT_TRUE(AssistantDialogTestPeer::featuresForTurn(dialog).empty());
+}
+
+TEST(AssistantDialogFeaturesBudget, DefaultsAndClamps) {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+  SettingsStore store{PJ::sdk::SettingsView{host.view()}};
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 20000);
+  store.setString("assistant.features_budget_chars", "5000");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 5000);
+  store.setString("assistant.features_budget_chars", "10");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 5000);
+  store.setString("assistant.features_budget_chars", "2000");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 5000) << "below the built-in reference's length";
+  store.setString("assistant.features_budget_chars", "999999999");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 200000);
+  store.setString("assistant.features_budget_chars", "lots");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 20000);
 }
 
 }  // namespace

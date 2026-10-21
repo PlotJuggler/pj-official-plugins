@@ -79,6 +79,7 @@ std::vector<std::string> buildClaudeArgv(
 ClaudeBackend::ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<HarnessMemory> memory)
     : cli_path_(cli_path.empty() ? "claude" : std::move(cli_path)),
       model_(std::move(model)),
+      instructions_(assistantInstructions()),
       memory_(memory ? std::move(memory) : std::make_shared<HarnessMemory>()) {}
 
 ClaudeBackend::~ClaudeBackend() = default;
@@ -169,14 +170,18 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
   // record overwrites the memory's id: it is what turns a 0-turn error into
   // "that session is gone" instead of a generic failure.
   const std::string resume_id = memory_->session_id;
-  const std::string payload = composePayload(text, tools.catalog, *memory_);
+  const SentListings told_before = sentListings(*memory_);
+  const std::string payload = composePayload(text, tools.features, tools.catalog, *memory_);
 
   const std::vector<std::string> argv = buildClaudeArgv(
-      loc.path, mcp_config_path, allowedToolsArg(*tools.registry), kSystemPrompt, model_, memory_->session_id);
+      loc.path, mcp_config_path, allowedToolsArg(*tools.registry), instructions_, model_, memory_->session_id);
 
   NdjsonSplitter splitter;
   bool emitted_text = false;
   bool errored = false;
+  // Text or a tool call: the model read this turn's payload, listings included.
+  bool model_answered = false;
+  bool rate_limited = false;  // this turn's; rate_limited_ stays set across turns
 
   auto on_line = [&](const std::string& line) {
     for (const auto& ev : parseClaudeLine(line)) {
@@ -189,13 +194,16 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
         case ClaudeEvent::Kind::AssistantText:
           sink({BackendEvent::Kind::AssistantText, ev.text});
           emitted_text = true;
+          model_answered = true;
           break;
         case ClaudeEvent::Kind::ToolUse:
           sink({BackendEvent::Kind::ToolActivity, prettyToolName(ev.tool_name)});
+          model_answered = true;
           break;
         case ClaudeEvent::Kind::RateLimit:
           if (ev.is_error) {
             rate_limited_ = true;
+            rate_limited = true;
             sink({BackendEvent::Kind::Error, "usage limit reached (" + ev.text + ")"});
           }
           break;
@@ -258,6 +266,14 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
     sink(
         {BackendEvent::Kind::Error,
          "Claude CLI exited " + std::to_string(res.exit_code) + " (check it is installed and logged in via Settings)"});
+  }
+  // A turn that failed before the model answered may never have reached it:
+  // forget that its listings were sent, so the retry carries them again. A
+  // successful turn (exit 0, no error reported) is never rolled back, even a
+  // silent one.
+  const bool failed = !res.spawned || cancel_.load() || res.exit_code != 0 || errored || rate_limited;
+  if (failed && !model_answered) {
+    restoreSentListings(*memory_, told_before);
   }
   // Report what the turn cost before closing it out. Only when the CLI actually
   // produced a result record: a turn that died early has no price to quote, and
