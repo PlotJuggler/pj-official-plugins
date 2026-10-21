@@ -6,7 +6,7 @@
     "availability 'unlisted': the fixture does not list the feature (registry unreachable); the answer must point to the Extensions Marketplace and must not call the feature unsupported.",
     "accept_tool_calls: action questions also pass when the reply made one of these tool calls.",
     "forbidden_steps: phrases that are invented steps for this question (for example a context menu that does not exist); a reply that uses one outside a negation fails as invented_step.",
-    "strict_steps: a UI path or quoted label that is not in the fixture's vocabulary fails the reply instead of only flagging it.",
+    "strict_steps: a UI path segment that is not in the fixture's vocabulary, or a path whose segments follow no fixture entry_point in order, fails the reply instead of only flagging it.",
     "negation_keywords: a supported question fails when the reply negates one of these words (\"cannot show images\").",
     "follows: a follow-up turn sent in the same conversation after the named question."
   ],

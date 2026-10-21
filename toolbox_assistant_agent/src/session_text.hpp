@@ -28,10 +28,51 @@ inline constexpr std::string_view kResumedConversationNote =
     "ones that do. The listing above is the data loaded now.)";
 inline constexpr std::string_view kFeaturesChangedNote = "(The PlotJuggler features listing changed.)";
 
-// First words of every features block (features_digest.cpp and
-// fallback_features.hpp build their header line from this constant), which
-// is how stripCatalogPrefix tells a features block from user text.
-inline constexpr std::string_view kFeaturesListingOpening = "PlotJuggler features";
+// The header line of every features block: the host's
+// (featuresHostHeader, used by features_digest.cpp) and the built-in
+// reference's (kFallbackFeaturesHeader, fallback_features.hpp).
+// stripCatalogPrefix recognizes a features block by this whole first line,
+// so user text that merely starts with "PlotJuggler features" is never taken
+// for one.
+inline constexpr std::string_view kFeaturesHostHeaderUnversioned = "PlotJuggler features (from the host):";
+inline constexpr std::string_view kFeaturesHeaderVersionOpening = "PlotJuggler features (PlotJuggler ";
+inline constexpr std::string_view kFeaturesHostHeaderClosing = ", from the host):";
+inline constexpr std::string_view kFeaturesFallbackHeaderClosing = ", built into this assistant):";
+inline constexpr std::string_view kFallbackFeaturesHeader =
+    "PlotJuggler features (PlotJuggler 4.1, built into this assistant):";
+
+// "PlotJuggler features (PlotJuggler <version>, from the host):", or the
+// unversioned header when the host does not report its version.
+[[nodiscard]] inline std::string featuresHostHeader(std::string_view host_version) {
+  if (host_version.empty()) {
+    return std::string(kFeaturesHostHeaderUnversioned);
+  }
+  std::string out(kFeaturesHeaderVersionOpening);
+  out += host_version;
+  out += kFeaturesHostHeaderClosing;
+  return out;
+}
+
+// Whether `line` is a header featuresHostHeader or kFallbackFeaturesHeader
+// produces. Any version is accepted, so sessions written by a build with
+// another fallback version, or against another host, still strip.
+[[nodiscard]] constexpr bool isFeaturesHeader(std::string_view line) {
+  if (line == kFeaturesHostHeaderUnversioned) {
+    return true;
+  }
+  if (!line.starts_with(kFeaturesHeaderVersionOpening)) {
+    return false;
+  }
+  const std::string_view rest = line.substr(kFeaturesHeaderVersionOpening.size());
+  for (const std::string_view closing : {kFeaturesHostHeaderClosing, kFeaturesFallbackHeaderClosing}) {
+    if (rest.size() > closing.size() && rest.ends_with(closing)) {  // a non-empty version
+      return true;
+    }
+  }
+  return false;
+}
+static_assert(isFeaturesHeader(kFallbackFeaturesHeader));
+static_assert(!isFeaturesHeader("PlotJuggler features I need:"));
 
 namespace detail {
 
@@ -100,9 +141,9 @@ inline std::string truncateTitle(std::string text) {
 // loaded back from disk: `[features\n\n[note\n\n]][catalog\n\n[note\n\n]]text`
 // (sessions written before the features block existed carry
 // `catalog\n[note]\ntext`, which strips the same way). A leading features
-// block is recognized by kFeaturesListingOpening, a catalog by "Loaded data";
-// text starting with neither (every turn after the first one that saw a given
-// listing) is returned unchanged.
+// block is recognized by its whole header line (isFeaturesHeader), a catalog
+// by "Loaded data"; text starting with neither (every turn after the first
+// one that saw a given listing) is returned unchanged.
 inline std::string stripCatalogPrefix(const std::string& text) {
   std::string_view rest = text;
   const auto starts = [&](std::string_view prefix) { return rest.substr(0, prefix.size()) == prefix; };
@@ -124,7 +165,7 @@ inline std::string stripCatalogPrefix(const std::string& text) {
     }
     return true;
   };
-  if (starts(kFeaturesListingOpening) && !skipBlock({detail::kFeaturesChangedNoteOpening})) {
+  if (isFeaturesHeader(rest.substr(0, rest.find('\n'))) && !skipBlock({detail::kFeaturesChangedNoteOpening})) {
     return text;
   }
   if (starts("Loaded data")) {

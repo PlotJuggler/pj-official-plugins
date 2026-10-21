@@ -180,7 +180,7 @@ TEST(FeaturesDigest, InstallWordingAppearsOnlyForMarketplaceEntries) {
       pluginLine(text, "MQTT Subscriber"),
       "- MQTT Subscriber 0.10.0 (streaming source): Real-time data streaming via MQTT protocol. Subscribe to topics "
       "and visualize live data. Install: File → Extensions Marketplace… → search \"MQTT Subscriber\" → Install; after "
-      "installing: Sources panel → Stream → MQTT Subscriber → Start streaming");
+      "installing: Sources panel → Stream → MQTT Subscriber → + (Start streaming)");
 }
 
 // --- installed_not_loaded ---------------------------------------------------
@@ -192,7 +192,8 @@ TEST(FeaturesDigest, ADisabledPluginIsInstalledNotInstallable) {
   EXPECT_NE(
       line.find("Not active: enable it in File → Extensions Marketplace… and restart PlotJuggler."), std::string::npos)
       << line;
-  EXPECT_NE(line.find("Then: Sources panel → Stream → MQTT Subscriber → Start streaming"), std::string::npos) << line;
+  EXPECT_NE(line.find("Then: Sources panel → Stream → MQTT Subscriber → + (Start streaming)"), std::string::npos)
+      << line;
   EXPECT_EQ(line.find("Install:"), std::string::npos) << line;
   EXPECT_EQ(count(text, "- MQTT Subscriber "), 1u) << "listed once, in the higher-precedence section";
 }
@@ -367,7 +368,7 @@ TEST(FeaturesDigest, OverBudgetMarketplaceSummariesGoFirst) {
   EXPECT_EQ(
       pluginLine(trimmed, "MQTT Subscriber"),
       "- MQTT Subscriber (streaming source): Install: File → Extensions Marketplace… → search \"MQTT Subscriber\" → "
-      "Install; after installing: Sources panel → Stream → MQTT Subscriber → Start streaming");
+      "Install; after installing: Sources panel → Stream → MQTT Subscriber → + (Start streaming)");
   // Installed plugins keep their summaries.
   EXPECT_EQ(pluginLine(trimmed, "CSV Loader"), pluginLine(full, "CSV Loader"));
 }
@@ -482,6 +483,16 @@ TEST(FallbackFeatures, ANoteGoesRightAfterTheReferenceSentence) {
   ASSERT_GE(all.size(), 4u);
   EXPECT_EQ(all[2], "(why)");
   EXPECT_EQ(all[3], "Built in:");
+}
+
+// The reference is never trimmed, so the smallest budget the setting allows
+// (resolveFeaturesBudgetChars) must hold it with either note featuresDigest
+// can attach.
+TEST(FeaturesBudget, TheMinimumHoldsTheBuiltInReference) {
+  const std::size_t min = assistant_agent::kMinFeaturesBudgetChars;
+  EXPECT_LE(fallbackFeatures().size(), min);
+  EXPECT_LE(featuresDigest("not json", min).size(), min);
+  EXPECT_LE(featuresDigest(R"({"schema": 1000000000000})", min).size(), min);
 }
 
 }  // namespace

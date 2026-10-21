@@ -16,6 +16,11 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
   provides one (SDK 0.38.0 and later); otherwise the assistant uses a short
   reference for PlotJuggler 4.1 that it carries itself.
 
+### Fixed
+- When a message failed before any answer (the CLI not logged in, for
+  example), the next message went out without the list of loaded data, so
+  the model never saw it. The retry now carries it again.
+
 ## [0.2.1] - 2026-10-05
 
 ### Fixed

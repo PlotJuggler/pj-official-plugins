@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-#include "session_text.hpp"  // kFeaturesListingOpening
+#include "session_text.hpp"  // kFallbackFeaturesHeader
 
 namespace assistant_agent {
 
@@ -27,10 +27,11 @@ inline constexpr std::string_view kFallbackFeaturesBody =
     "Built in:\n"
     "- Open a data file: File → Open Data File... (or Sources panel → File → Load a data file). Which formats open "
     "depends on the installed data loaders.\n"
-    "- Live streaming: Sources panel → Stream → choose the source → Start streaming.\n"
+    "- Live streaming: Sources panel → Stream → choose the source in the list → + (Start streaming).\n"
     "- Record streams to MCAP: while streaming, the record button in Sources panel → Stream saves the subscribed "
     "topics to MCAP files; the folder is set in File → Preferences... → Recording.\n"
-    "- Cloud sources: Sources panel → Cloud → choose the server → Open cloud browser (needs a cloud extension).\n"
+    "- Cloud sources: Sources panel → Cloud → choose the service in the list → + (Open cloud browser); needs a "
+    "cloud extension.\n"
     "- Layouts: File → Save Layout... / Load Layout... save the workspace to a file and load it again.\n"
     "- Extensions Marketplace: File → Extensions Marketplace… browses, installs, updates, enables or disables "
     "extensions; enabling or disabling takes effect after a restart. Installed list: Help → Installed Extensions.\n"
@@ -44,7 +45,7 @@ inline constexpr std::string_view kFallbackFeaturesBody =
     "- Playback: Timeline bar → Start/Stop player (Space), Loop, Speed, Step size.\n"
     "- Source timeline: Toggle bottom panel → Align sources, Merge the selected datasets, Reset all timeline "
     "changes.\n"
-    "- Splits: plot toolbar → Split horizontally / Split vertically.\n"
+    "- Splits: plot toolbar (shown when you hover the top edge of a plot) → Split horizontally / Split vertically.\n"
     "- Plot filters: Right-click a plot → Apply Filter...\n"
     "- Plot markers: Toggle right panel → Curves → Dataset markers / Global markers.\n"
     "- Preferences: File → Preferences... (Appearance, Plotting, Scene 2D, Scene 3D, Plugins, Recording).\n"
@@ -81,8 +82,8 @@ inline constexpr std::string_view kFallbackFeaturesBody =
 // format. `note` (one line, optional) says why the host's own listing was not
 // used when it exists but could not be read.
 [[nodiscard]] inline std::string fallbackFeatures(std::string_view note = {}) {
-  std::string out(kFeaturesListingOpening);
-  out += " (PlotJuggler 4.1, built into this assistant):\n";
+  std::string out(kFallbackFeaturesHeader);
+  out += '\n';
   out += "Reference built into this assistant for PlotJuggler 4.1: it may be incomplete or differ from your build.\n";
   if (!note.empty()) {
     out += note;

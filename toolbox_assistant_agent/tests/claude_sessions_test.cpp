@@ -219,7 +219,24 @@ TEST(StripCatalogPrefix, FeaturesAndCatalogBlocks) {
 
 TEST(StripCatalogPrefix, MalformedFeaturesBlockWithNoBlankLineIsLeftAlone) {
   EXPECT_EQ(
-      stripCatalogPrefix("PlotJuggler features (and nothing after it)"), "PlotJuggler features (and nothing after it)");
+      stripCatalogPrefix("PlotJuggler features (from the host):\n- and nothing after it"),
+      "PlotJuggler features (from the host):\n- and nothing after it");
+}
+
+// A features block is recognized by its whole header line, not by its first
+// words: user text that happens to open the same way, on a later turn that
+// carries no listing, is the user's own message.
+TEST(StripCatalogPrefix, UserTextOpeningLikeAFeaturesBlockIsKept) {
+  const std::string mine = "PlotJuggler features I need:\n\nShow images.";
+  EXPECT_EQ(stripCatalogPrefix(mine), mine);
+  EXPECT_EQ(stripCatalogPrefix("PlotJuggler features (from the host):\n- one\n\n" + mine), mine);
+  // Every header the producers write, whatever the version.
+  for (const std::string& header :
+       {std::string(assistant_agent::kFallbackFeaturesHeader), assistant_agent::featuresHostHeader(""),
+        assistant_agent::featuresHostHeader("4.2.0-rc1"),
+        std::string("PlotJuggler features (PlotJuggler 4.2, built into this assistant):")}) {
+    EXPECT_EQ(stripCatalogPrefix(header + "\n- one\n\nhi"), "hi") << header;
+  }
 }
 
 TEST(StripCatalogPrefix, MalformedCatalogWithNoBlankLineIsLeftAlone) {

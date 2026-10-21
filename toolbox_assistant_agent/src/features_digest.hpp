@@ -9,10 +9,14 @@
 
 namespace assistant_agent {
 
-// Default character budget for the features block, and the clamp the
-// "assistant.features_budget_chars" setting goes through
-// (resolveFeaturesBudgetChars, assistant_dialog.hpp).
+// Default character budget for the features block, and the lowest value the
+// "assistant.features_budget_chars" setting is clamped to
+// (resolveFeaturesBudgetChars, assistant_dialog.hpp). The minimum is above the
+// length of the built-in reference (fallback_features.hpp, pinned by a
+// static_assert in features_digest.cpp), which is sent whole and never
+// trimmed: a smaller budget could not be honoured.
 inline constexpr std::size_t kDefaultFeaturesBudgetChars = 20000;
+inline constexpr std::size_t kMinFeaturesBudgetChars = 5000;
 
 // Renders the host's pj.feature_catalog.v1 document (schema 1) as the plain
 // "PlotJuggler features" block prefixed to the user's message. Sections, in

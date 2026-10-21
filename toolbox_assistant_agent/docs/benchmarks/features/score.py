@@ -18,7 +18,8 @@ Hard failures (the reply fails):
     negated_supported       a supported feature described as impossible ("cannot show images")
     premature_external      a non-PlotJuggler tool named before any PlotJuggler route
     tool_calls_nonzero      a navigation question answered with tool calls
-    invented_step           strict_steps question: a UI path or quoted label not in the fixture
+    invented_step           strict_steps question: a UI path segment not in the fixture, a forbidden step,
+                            or a path whose segments, each known, follow no fixture entry_point in order
 Flags (manual review, not failures): unknown UI path segments, unknown quoted labels, and an
 external tool named after the PlotJuggler route.
 
@@ -89,17 +90,24 @@ def per_fixture(value, fixture):
     return value.get(fixture) if isinstance(value, dict) else value
 
 
+def fixture_entries(fixture: dict) -> list[dict]:
+    return (fixture.get("core", []) + fixture.get("loaded", []) + fixture.get("installed_not_loaded", [])
+            + fixture.get("available", []))
+
+
+def label_pieces(entry_point: str) -> set[str]:
+    """The labels in a normalized entry_point (or a part of one)."""
+    pieces = {p.strip().rstrip("…").strip() for p in re.split(r"→|/|\(|\)|,|;| or |\bthen\b", entry_point)}
+    pieces.discard("")
+    return pieces
+
+
 def fixture_vocabulary(fixture: dict) -> set[str]:
     """Every label the fixture puts in front of the model: names and entry-point pieces."""
     vocab = set()
-    entries = fixture.get("core", []) + fixture.get("loaded", []) + fixture.get("installed_not_loaded", [])
-    entries += fixture.get("available", [])
-    for e in entries:
+    for e in fixture_entries(fixture):
         vocab.add(norm_label(e.get("name", "")))
-        for piece in re.split(r"→|/|\(|\)|,|;| or |\bthen\b", norm(e.get("entry_point", ""))):
-            piece = piece.strip().rstrip("…").strip()
-            if piece:
-                vocab.add(piece)
+        vocab |= label_pieces(norm(e.get("entry_point", "")))
     vocab.discard("")
     return vocab
 
@@ -114,6 +122,47 @@ def segment_known(segment: str, vocab: set[str]) -> bool:
         if " " in seg and re.search(r"(?<!\w)" + re.escape(seg) + r"(?!\w)", label):
             return True
     return False
+
+
+def entry_routes(fixture: dict) -> list[list[set[str]]]:
+    """Every route the fixture lists: each entry_point split into its alternatives ("; ", ", or ",
+    "(or ...)"), each alternative into its "→" segments, each segment into its label_pieces."""
+    routes = []
+    for e in fixture_entries(fixture):
+        entry_point = re.sub(r"\(or ([^)]*)\)", r"; \1", norm(e.get("entry_point", "")))
+        for alternative in re.split(r";|, or ", entry_point):
+            route = [pieces for pieces in map(label_pieces, alternative.split("→")) if pieces]
+            if route:
+                routes.append(route)
+    return routes
+
+
+def route_paths(path: list[str]) -> list[list[str]]:
+    """Splits a reply path where a middle segment holds a sentence break ("File → Open Data File.
+    Then Sources panel → File"): the text before the break ends one route, the text after it
+    starts the next."""
+    out, current = [], [path[0]]
+    for segment in path[1:-1]:
+        parts = re.split(r"[.!?;]\s", segment)
+        if len(parts) == 1:
+            current.append(segment)
+            continue
+        out.append(current + [parts[0]])
+        current = [re.split(r"[.!?:;]\s|,\s", parts[-1])[-1]]
+    out.append(current + [path[-1]])
+    return [p for p in out if len(p) >= 2]
+
+
+def follows_route(path: list[str], route: list[set[str]]) -> bool:
+    """The path's segments match the route's segments in order, possibly skipping some; two
+    reply segments may fall in one route segment ("Empty plot area → 2D button")."""
+    j = 0
+    for segment in path:
+        while j < len(route) and not segment_known(segment, route[j]):
+            j += 1
+        if j == len(route):
+            return False
+    return True
 
 
 def ui_paths(text: str) -> list[list[str]]:
@@ -232,11 +281,19 @@ def score_reply(question: dict, fixture_name: str, fixture: dict, reply: str, to
     if question.get("category") == "navigation" and question.get("tool_calls_zero") and names:
         fails.append("tool_calls_nonzero")
 
-    # Only an unknown "A → B" path or a forbidden step fails a strict question; an unknown
+    # Only an unknown or out-of-order "A → B" path or a forbidden step fails a strict question; an unknown
     # quoted or bold phrase is often emphasis or a heading, so it goes to manual review.
     invented = []
+    routes = entry_routes(fixture) if question.get("strict_steps") else []
     for path in ui_paths(text):
-        invented += [f"path:{seg.strip()}" for seg in path if not segment_known(seg, vocab)]
+        unknown = [f"path:{seg.strip()}" for seg in path if not segment_known(seg, vocab)]
+        invented += unknown
+        if unknown or not routes:
+            continue
+        # Each segment is known; a strict question also wants them in an order the fixture lists.
+        for sub in route_paths(path):
+            if not any(follows_route(sub, route) for route in routes):
+                invented.append("route:" + " → ".join(seg.strip() for seg in sub))
     for phrase in question.get("forbidden_steps", []):
         for m in re.finditer(re.escape(norm_label(phrase)), text):
             sentence = re.split(r"[.!?\n]", text[:m.start()])[-1]
@@ -322,6 +379,9 @@ SELF_TEST = [
      "Install the MQTT Subscriber from File → Extensions Marketplace…, then Sources panel → Stream → "
      "MQTT Subscriber → Start streaming.", 0, True, []),
     ("Q02_mqtt", "host_bundled",
+     "Install the MQTT Subscriber from File → Extensions Marketplace…, then Sources panel → Stream → "
+     "MQTT Subscriber → + (Start streaming).", 0, True, []),
+    ("Q02_mqtt", "host_bundled",
      "Open the MQTT Subscriber from the Stream tab.", 0, False, ["no_marketplace"]),
     ("Q02_mqtt", "host_disabled",
      "The MQTT Subscriber is installed but disabled: enable it in File → Extensions Marketplace… and restart.",
@@ -345,6 +405,15 @@ SELF_TEST = [
     ("Q01b_exact_clicks", "host_bundled",
      "**1. Load the file**\nClick File → Open Data File...\n**2. Open the viewer**\nIn an empty plot area, click the "
      "2D button (image icon), then drag the image topic from the Datasets panel onto it.", 0, True, []),
+    # Every segment is a fixture label, but no entry_point leads from File to 2D.
+    ("Q01b_exact_clicks", "host_bundled",
+     "Click File → 2D, then drag the image topic from the Datasets panel onto it.", 0, False, ["invented_step"]),
+    ("Q01b_exact_clicks", "host_bundled",
+     "Load the file with Sources panel → File → Load a data file, then click the 2D button (image icon) in an empty "
+     "plot area.", 0, True, []),
+    ("Q01b_exact_clicks", "host_bundled",
+     "Click File → Open Data File.... Alternatively, in the Sources panel, click File → Load a data file. Then click "
+     "the 2D button in an empty plot area.", 0, True, []),
     ("Q02_mqtt", "host_bundled",
      "Install the MQTT Subscriber from File → Extensions Marketplace…, then Sources panel → Stream → MQTT Subscriber "
      "→ Start streaming. PlotJuggler only receives data: it cannot publish MQTT messages.", 0, True, []),

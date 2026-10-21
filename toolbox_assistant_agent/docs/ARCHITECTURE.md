@@ -123,7 +123,11 @@ awareness"). It has its own hash in `HarnessMemory`, so loading a file does not 
 list and enabling a plugin does not re-send the loaded data; a changed listing carries
 "(The PlotJuggler features listing changed.)". Neither block may contain a blank line, because
 `stripCatalogPrefix` (`session_text.hpp`) finds the end of each by the first one when it replays a
-transcript; host strings are flattened to one line for that reason.
+transcript; host strings are flattened to one line for that reason. It recognizes a features block
+by its whole header line (`isFeaturesHeader`, the same constants the producers use), so a message of
+the user's that merely opens with "PlotJuggler features" is kept. A turn that fails before the model
+answers with text or a tool call (the CLI not logged in, say) restores both hashes and
+`resumed_pending` (`restoreSentListings`), so the retry carries both blocks again.
 
 ## The Codex backend
 

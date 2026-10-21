@@ -110,9 +110,9 @@ product policy (`kProductPolicy`, `src/system_prompt.hpp`) telling the model to 
 listing and not from what it remembers of PlotJuggler 3.
 
 The listing is sized by the settings key `assistant.features_budget_chars` (characters, default
-20000, clamped to 2000–200000; not in the Settings dialog). Over budget, Marketplace descriptions go
-first, then Marketplace entries; built-in features, limitations and installed plugins are never
-dropped without saying so.
+20000, clamped to 5000–200000 so that the built-in reference, which is never trimmed, always fits;
+not in the Settings dialog). Over budget, Marketplace descriptions go first, then Marketplace
+entries; built-in features, limitations and installed plugins are never dropped without saying so.
 
 Privacy: like the catalog digest, the listing goes to the model provider of the backend you chose,
 so the provider sees which PlotJuggler version and plugins you have installed.

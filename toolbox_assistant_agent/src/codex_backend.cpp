@@ -219,6 +219,7 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
   // silent, empty-stdout exit 1 into "that session is gone" instead of a
   // generic failure.
   const std::string resume_id = memory_->session_id;
+  const SentListings told_before = sentListings(*memory_);
   const std::string payload = composePayload(text, tools.features, tools.catalog, *memory_);
 
   const std::vector<std::string> argv = buildCodexArgv(
@@ -237,6 +238,8 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
   bool saw_thread_started = false;
   bool in_turn = false;
   bool errored = false;
+  // Text or a tool call: the model read this turn's payload, listings included.
+  bool model_answered = false;
 
   auto on_line = [&](const std::string& line) {
     const CodexEvent ev = parseCodexLine(line);
@@ -252,9 +255,11 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
         break;
       case CodexEvent::Kind::AssistantText:
         sink({BackendEvent::Kind::AssistantText, ev.text});
+        model_answered = true;
         break;
       case CodexEvent::Kind::ToolCallStarted:
         sink({BackendEvent::Kind::ToolActivity, prettyToolName(ev.tool_name)});
+        model_answered = true;
         break;
       case CodexEvent::Kind::ToolCallFailed:
         sink({BackendEvent::Kind::ToolActivity, ev.tool_name + ": " + ev.text});
@@ -303,6 +308,15 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
     sink(
         {BackendEvent::Kind::Error,
          "Codex CLI exited " + std::to_string(res.exit_code) + " (check it is installed and logged in via Settings)"});
+  }
+  // A turn that failed before the model answered may never have reached it:
+  // forget that its listings were sent, so the retry carries them again. A
+  // successful turn (exit 0, no error reported) is never rolled back, even a
+  // silent one.
+  const bool failed =
+      !res.spawned || cancel_.load() || (!resume_id.empty() && !saw_thread_started) || res.exit_code != 0 || errored;
+  if (failed && !model_answered) {
+    restoreSentListings(*memory_, told_before);
   }
   if (last_metrics_.valid) {
     sink({BackendEvent::Kind::Metrics, {}, last_metrics_});

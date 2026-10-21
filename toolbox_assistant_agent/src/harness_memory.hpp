@@ -4,6 +4,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "conversation_state.hpp"  // fnv1aHex
 #include "session_text.hpp"        // the notes composePayload attaches to a listing
@@ -41,9 +42,30 @@ struct HarnessMemory {
   // so the next turn forces both listings to be re-sent, the catalog with a
   // note telling the model to inspect what exists now.
   // Consumed (cleared) by composePayload once a turn has carried every
-  // non-empty listing.
+  // non-empty listing, and restored with the hashes when that turn fails
+  // before the model answers (restoreSentListings).
   bool resumed_pending = false;
 };
+
+// What composePayload records as already told, saved before a turn so that a
+// turn the model never received can be undone (restoreSentListings). Without
+// it a failed first turn (the CLI not logged in, say) would leave both hashes
+// set and the retry would go out without either listing.
+struct SentListings {
+  std::string features_hash;
+  std::string catalog_hash;
+  bool resumed_pending = false;
+};
+
+[[nodiscard]] inline SentListings sentListings(const HarnessMemory& memory) {
+  return {memory.sent_features_hash, memory.sent_catalog_hash, memory.resumed_pending};
+}
+
+inline void restoreSentListings(HarnessMemory& memory, SentListings saved) {
+  memory.sent_features_hash = std::move(saved.features_hash);
+  memory.sent_catalog_hash = std::move(saved.catalog_hash);
+  memory.resumed_pending = saved.resumed_pending;
+}
 
 // The user text as actually sent: `features\n\n[note\n\n]catalog\n\n[note\n\n]text`,
 // where each listing is prepended only when its own hash differs from what

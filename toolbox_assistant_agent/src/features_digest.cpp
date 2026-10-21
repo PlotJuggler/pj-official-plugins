@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "fallback_features.hpp"
-#include "session_text.hpp"  // kFeaturesListingOpening
+#include "session_text.hpp"  // featuresHostHeader
 
 namespace assistant_agent {
 
@@ -30,6 +30,12 @@ constexpr std::string_view kTruncated = "(list truncated)";
 
 constexpr std::string_view kUnreadableNote =
     "(This PlotJuggler's own feature listing could not be read, so this reference is used instead.)";
+
+// The built-in reference is returned whole whatever the budget, so the
+// smallest budget the setting allows must hold it with its header, reference
+// line and note (the margin; FeaturesBudget.TheMinimumHoldsTheBuiltInReference
+// checks the exact length).
+static_assert(kFallbackFeaturesBody.size() + 400 <= kMinFeaturesBudgetChars);
 
 // Collapses every run of whitespace or control characters into one space and
 // trims: a host string can then never add a line, let alone the blank line
@@ -348,9 +354,7 @@ std::string featuresDigest(std::string_view json_text, std::size_t budget_chars)
         ", newer than this assistant reads, so this reference is used instead.)");
   }
 
-  const std::string host_version = text(doc, "host_version");
-  std::string header(kFeaturesListingOpening);
-  header += host_version.empty() ? " (from the host):" : " (PlotJuggler " + host_version + ", from the host):";
+  const std::string header = featuresHostHeader(text(doc, "host_version"));
 
   // Everything that is never dropped: built in, limitations, and what is
   // installed (loaded or not).

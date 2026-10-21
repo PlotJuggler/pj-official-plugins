@@ -1216,7 +1216,9 @@ TEST(AssistantDialogFeaturesBudget, DefaultsAndClamps) {
   store.setString("assistant.features_budget_chars", "5000");
   EXPECT_EQ(resolveFeaturesBudgetChars(store), 5000);
   store.setString("assistant.features_budget_chars", "10");
-  EXPECT_EQ(resolveFeaturesBudgetChars(store), 2000);
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 5000);
+  store.setString("assistant.features_budget_chars", "2000");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 5000) << "below the built-in reference's length";
   store.setString("assistant.features_budget_chars", "999999999");
   EXPECT_EQ(resolveFeaturesBudgetChars(store), 200000);
   store.setString("assistant.features_budget_chars", "lots");

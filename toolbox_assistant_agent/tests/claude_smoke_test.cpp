@@ -435,5 +435,54 @@ TEST(ClaudeBackendPayload, TheCliReceivesTheFeaturesBlockAheadOfTheCatalogAndThe
   std::remove((record + ".argv").c_str());
 }
 
+// A first turn whose CLI exits 1 before saying anything (not logged in, say)
+// never reached the model, so the retry must carry both listings again.
+TEST(ClaudeBackendPayload, AFailedTurnThatProducedNoAnswerLeavesTheListingsUnsent) {
+  const std::string record = assistant_agent::testing::makeRecordPrefix("claude_retry");
+  const std::string failing = assistant_agent::testing::writeRecordingCliScript({}, 1, record);
+  const std::string working = assistant_agent::testing::writeRecordingCliScript(
+      {R"({"type":"system","subtype":"init","session_id":"sess-1"})",
+       R"({"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"sess-1"})"},
+      0, record);
+  ASSERT_FALSE(failing.empty());
+  ASSERT_FALSE(working.empty());
+  ToolRegistry reg;
+  assistant_agent::TurnTools tools;
+  tools.registry = &reg;
+  tools.invoke = [](const std::string&, const nlohmann::json&) {
+    return assistant_agent::ToolResult::failure("no tool runs in this test");
+  };
+  tools.features = "PlotJuggler features (test):\n- one";
+  tools.catalog = "Loaded data: nothing is loaded yet.";
+  const std::string both = "PlotJuggler features (test):\n- one\n\nLoaded data: nothing is loaded yet.\n\n";
+  auto memory = std::make_shared<assistant_agent::HarnessMemory>();
+  memory->resumed_pending = true;
+
+  std::vector<BackendEvent> events;
+  ClaudeBackend(failing, "", memory).sendUserMessage("hi", tools, [&](BackendEvent e) {
+    events.push_back(std::move(e));
+  });
+  ASSERT_NE(firstError(events), nullptr);
+  EXPECT_TRUE(memory->sent_features_hash.empty());
+  EXPECT_TRUE(memory->sent_catalog_hash.empty());
+  EXPECT_TRUE(memory->resumed_pending) << "the resume note is still owed";
+
+  ClaudeBackend backend(working, "", memory);
+  backend.sendUserMessage("hi again", tools, [](BackendEvent) {});
+  const std::string sent = assistant_agent::testing::readFileToString(record + ".stdin");
+  EXPECT_EQ(sent.rfind(both, 0), 0u) << sent;
+  EXPECT_NE(sent.find(assistant_agent::kResumedConversationNote), std::string::npos) << sent;
+  EXPECT_FALSE(memory->resumed_pending);
+
+  // A successful turn is never rolled back, even one with no assistant text.
+  backend.sendUserMessage("third", tools, [](BackendEvent) {});
+  EXPECT_EQ(assistant_agent::testing::readFileToString(record + ".stdin"), "third");
+
+  removeFakeCli(failing);
+  removeFakeCli(working);
+  std::remove((record + ".stdin").c_str());
+  std::remove((record + ".argv").c_str());
+}
+
 }  // namespace
 #endif

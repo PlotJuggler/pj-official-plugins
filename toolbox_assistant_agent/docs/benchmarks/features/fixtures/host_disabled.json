@@ -13,7 +13,7 @@
       "id": "cloud_sources",
       "name": "Cloud data sources",
       "summary": "Browse and download recordings kept in a cloud service. Each service is provided by a cloud extension and appears in the Cloud tab of the Sources panel once installed.",
-      "entry_point": "Sources panel → Cloud → choose the service → Open cloud browser"
+      "entry_point": "Sources panel → Cloud → choose the service in the list → + (Open cloud browser)"
     },
     {
       "id": "custom_series",
@@ -49,7 +49,7 @@
       "id": "live_streaming",
       "name": "Live streaming",
       "summary": "Plot data while it arrives from a live source. The sources come from streaming extensions (for example MQTT, ZeroMQ, UDP or ROS 2). A stream can be paused, and the buffer length sets how many seconds of data are kept. With some sources a topic only starts receiving data once it is dropped into a view.",
-      "entry_point": "Sources panel → Stream → choose the source → Start streaming"
+      "entry_point": "Sources panel → Stream → choose the source in the list → + (Start streaming)"
     },
     {
       "id": "open_data_file",
@@ -67,7 +67,7 @@
       "id": "plot_tabs",
       "name": "Plot tabs, splits and XY plots",
       "summary": "Organise plots in tabs and split a plot area into several. Drag series from the Datasets panel onto a plot to show them. An XY plot draws one series against another.",
-      "entry_point": "+ on the tab bar adds a tab; plot area toolbar: Split horizontally / Split vertically / Fullscreen; XY plot: drag two series from the Datasets panel with the right mouse button onto an empty plot"
+      "entry_point": "+ on the tab bar adds a tab; plot area toolbar (shown when you hover the top edge of a plot): Split horizontally / Split vertically / Fullscreen; XY plot: drag two series from the Datasets panel with the right mouse button onto an empty plot"
     },
     {
       "id": "preferences",
@@ -189,7 +189,7 @@
       "version": "1.0.1",
       "category": "data_stream",
       "summary": "Generates synthetic sine, cosine, sawtooth, and noise signals for testing and demonstration.",
-      "entry_point": "Sources panel → Stream → Dummy Streamer → Start streaming",
+      "entry_point": "Sources panel → Stream → Dummy Streamer → + (Start streaming)",
       "in_registry": true
     },
     {
@@ -198,7 +198,7 @@
       "version": "1.1.0",
       "category": "data_stream",
       "summary": "Stream live ROS data from a Foxglove WebSocket server, such as foxglove_bridge running on your robot (the same server Foxglove Studio connects to).",
-      "entry_point": "Sources panel → Stream → Foxglove Bridge → Start streaming",
+      "entry_point": "Sources panel → Stream → Foxglove Bridge → + (Start streaming)",
       "in_registry": true
     },
     {
@@ -207,7 +207,7 @@
       "version": "1.0.1",
       "category": "data_stream",
       "summary": "Connect to PlotJuggler Bridge server for generic data streaming over WebSocket.",
-      "entry_point": "Sources panel → Stream → PlotJuggler Bridge → Start streaming",
+      "entry_point": "Sources panel → Stream → PlotJuggler Bridge → + (Start streaming)",
       "in_registry": true
     },
     {
@@ -216,7 +216,7 @@
       "version": "1.0.1",
       "category": "data_stream",
       "summary": "Watch live H.264 camera video from a WebRTC (WHEP) server such as mediamtx, go2rtc, LiveKit or Cloudflare Stream, next to your plots. Each camera reconnects on its own, and the cameras on a mediamtx server can be discovered automatically.",
-      "entry_point": "Sources panel → Stream → WebRTC Video Client → Start streaming",
+      "entry_point": "Sources panel → Stream → WebRTC Video Client → + (Start streaming)",
       "in_registry": true
     },
     {
@@ -279,7 +279,7 @@
       "version": "1.3.0",
       "category": "toolbox",
       "summary": "Browse Mosaico cloud servers and import their data: filter by metadata with Lua expressions, choose a time range, and stream several topics at once. Install the Arrow IPC Parser alongside it to decode scalar topics.",
-      "entry_point": "Sources panel → Cloud → Mosaico Cloud Server → Open cloud browser",
+      "entry_point": "Sources panel → Cloud → Mosaico Cloud Server → + (Open cloud browser)",
       "in_registry": true
     },
     {
@@ -306,7 +306,7 @@
       "version": "1.1.1",
       "category": "data_stream",
       "summary": "Subscribe to ROS 2 topics in real time and stream the decoded fields into PlotJuggler.",
-      "entry_point": "Sources panel → Stream → ROS 2 Topic Subscriber → Start streaming",
+      "entry_point": "Sources panel → Stream → ROS 2 Topic Subscriber → + (Start streaming)",
       "in_registry": true
     }
   ],
@@ -317,7 +317,7 @@
       "version": "0.10.0",
       "category": "data_stream",
       "summary": "Real-time data streaming via MQTT protocol. Subscribe to topics and visualize live data.",
-      "entry_point": "Sources panel → Stream → MQTT Subscriber → Start streaming",
+      "entry_point": "Sources panel → Stream → MQTT Subscriber → + (Start streaming)",
       "reason": "disabled"
     }
   ],
@@ -360,7 +360,7 @@
       "version": "0.9.2",
       "category": "data_stream",
       "summary": "Real-time streaming from Lab Streaming Layer (LSL) sources, including numeric and marker (string) streams.",
-      "entry_point": "Sources panel → Stream → Lab Streaming Layer → Start streaming"
+      "entry_point": "Sources panel → Stream → Lab Streaming Layer → + (Start streaming)"
     },
     {
       "id": "udp-server",
@@ -368,7 +368,7 @@
       "version": "0.9.1",
       "category": "data_stream",
       "summary": "Real-time data streaming via UDP. Supports unicast and multicast IPv4/IPv6.",
-      "entry_point": "Sources panel → Stream → UDP Server → Start streaming"
+      "entry_point": "Sources panel → Stream → UDP Server → + (Start streaming)"
     },
     {
       "id": "zmq-subscriber",
@@ -376,7 +376,7 @@
       "version": "0.9.3",
       "category": "data_stream",
       "summary": "Subscribe to a ZeroMQ publisher and plot the incoming data live.",
-      "entry_point": "Sources panel → Stream → ZMQ Subscriber → Start streaming"
+      "entry_point": "Sources panel → Stream → ZMQ Subscriber → + (Start streaming)"
     },
     {
       "id": "toolbox-anomaly-detector",

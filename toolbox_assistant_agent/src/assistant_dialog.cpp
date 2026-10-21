@@ -39,7 +39,6 @@ constexpr int kMaxCatalogBudgetChars = 200000;
 // features_digest.hpp), whose default is featuresDigest's own.
 constexpr const char* kKeyFeaturesBudgetChars = "assistant.features_budget_chars";
 constexpr int kFeaturesBudgetCharsDefault = static_cast<int>(kDefaultFeaturesBudgetChars);
-constexpr int kMinFeaturesBudgetChars = 2000;
 constexpr int kMaxFeaturesBudgetChars = 200000;
 
 // One row per backend this build knows about: its settings key, the
@@ -151,7 +150,7 @@ int resolveCatalogBudgetChars(const SettingsStore& store) {
 
 int resolveFeaturesBudgetChars(const SettingsStore& store) {
   return std::clamp(
-      store.getInt(kKeyFeaturesBudgetChars, kFeaturesBudgetCharsDefault), kMinFeaturesBudgetChars,
+      store.getInt(kKeyFeaturesBudgetChars, kFeaturesBudgetCharsDefault), static_cast<int>(kMinFeaturesBudgetChars),
       kMaxFeaturesBudgetChars);
 }
 
