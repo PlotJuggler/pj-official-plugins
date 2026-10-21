@@ -1,0 +1,60 @@
+{
+  "id": "basic-widgets",
+  "name": "Basic Widgets",
+  "version": "1.0.0",
+  "description": "Gauge, numeric indicator, traffic light and value table dock widgets for live values.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "widget",
+  "tags": ["widget", "gauge", "indicator", "table"],
+  "min_sdk_required": "0.39.0-dev.1",
+  "min_plotjuggler_version": "4.1.0",
+  "supported_platforms": ["linux-x86_64", "windows-x86_64"],
+  "qt_modules": ["Core", "Gui", "Widgets"],
+  "widgets": [
+    {
+      "type": "gauge",
+      "name": "Gauge",
+      "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"><path d=\"M2.5 12.5a6.5 6.5 0 1 1 11 0\"/><path d=\"M8 9l3-3\"/></svg>",
+      "settings": [
+        {"key": "min", "type": "number", "default": 0, "label": "Minimum"},
+        {"key": "max", "type": "number", "default": 100, "label": "Maximum"},
+        {"key": "unit", "type": "text", "default": "", "label": "Unit"},
+        {"key": "red_from", "type": "number", "default": 80, "label": "Red from"},
+        {"key": "decimals", "type": "integer", "min": 0, "max": 12, "default": 2, "label": "Decimals"},
+        {"key": "mode", "type": "enum", "options": ["arc", "bar"], "default": "arc", "label": "Mode"}
+      ]
+    },
+    {
+      "type": "numeric_indicator",
+      "name": "Numeric Indicator",
+      "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"1.5\" y=\"3.5\" width=\"13\" height=\"9\" rx=\"1.5\"/><path d=\"M5 10.5V6.5l-1 .8M8 6.5h2.5L8 10.5h2.5\"/></svg>",
+      "settings": [
+        {"key": "decimals", "type": "integer", "min": 0, "max": 12, "default": 2, "label": "Decimals"},
+        {"key": "unit", "type": "text", "default": "", "label": "Unit"},
+        {"key": "label", "type": "text", "default": "", "label": "Label"}
+      ]
+    },
+    {
+      "type": "traffic_light",
+      "name": "Traffic Light",
+      "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><rect x=\"5\" y=\"1.5\" width=\"6\" height=\"13\" rx=\"2\"/><circle cx=\"8\" cy=\"5\" r=\"1\"/><circle cx=\"8\" cy=\"8\" r=\"1\"/><circle cx=\"8\" cy=\"11\" r=\"1\"/></svg>",
+      "settings": [
+        {"key": "green_below", "type": "number", "default": 50, "label": "Green below"},
+        {"key": "red_from", "type": "number", "default": 80, "label": "Red from"}
+      ]
+    },
+    {
+      "type": "value_table",
+      "name": "Value Table",
+      "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"><rect x=\"1.5\" y=\"2.5\" width=\"13\" height=\"11\" rx=\"1.5\"/><path d=\"M1.5 6.2h13M1.5 9.8h13M7 2.5v11\"/></svg>",
+      "settings": [
+        {"key": "decimals", "type": "integer", "min": 0, "max": 12, "default": 3, "label": "Decimals"}
+      ]
+    }
+  ]
+}

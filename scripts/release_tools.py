@@ -46,6 +46,7 @@ import argparse
 import ctypes
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -72,7 +73,12 @@ VALID_PLATFORMS = [
     "windows-arm64",
 ]
 
-VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox"]
+VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox", "widget"]
+
+# A widget library links Qt and the host loads it only when it was built against the same Qt
+# major.minor, so it is built and shipped only where the official Qt for that platform is installed
+# in CI (Ubuntu 22.04 and MSVC 14.44), and nowhere else.
+WIDGET_PLATFORMS = ["linux-x86_64", "windows-x86_64"]
 
 # Semantic versioning regex (simplified: major.minor.patch with optional pre-release)
 import sys as _sys
@@ -92,9 +98,9 @@ SDK_VERSION_REGEX = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}")
 class PluginVtable(ctypes.Structure):
     """
     Partial vtable structure matching PJ_data_source_vtable_t, PJ_message_parser_vtable_t,
-    and PJ_toolbox_vtable_t.
+    PJ_toolbox_vtable_t and PJ_widget_vtable_t.
 
-    All three vtable types have the same initial fields up to manifest_json:
+    All four vtable types have the same initial fields up to manifest_json:
     - protocol_version (uint32_t) at offset +0
     - struct_size (uint32_t) at offset +4
     - create (void* function pointer) at offset +8
@@ -129,13 +135,24 @@ def extract_binary_manifest(plugin_path: Path) -> dict | None:
     Returns:
         Manifest dict if found, None if extraction failed
     """
+    # Widget-family DLLs depend on Qt. Since Python 3.8 Windows does not resolve a ctypes-loaded
+    # DLL's dependencies through PATH, so point the loader at Qt's bin dir when the build exported it.
+    if sys.platform == "win32" and os.environ.get("QT_ROOT_DIR"):
+        qt_bin = Path(os.environ["QT_ROOT_DIR"]) / "bin"
+        if qt_bin.is_dir():
+            os.add_dll_directory(str(qt_bin))
     try:
         lib = ctypes.CDLL(str(plugin_path))
     except OSError:
         return None
 
     vtable = None
-    for func_name in ["PJ_get_data_source_vtable", "PJ_get_message_parser_vtable", "PJ_get_toolbox_vtable"]:
+    for func_name in [
+        "PJ_get_data_source_vtable",
+        "PJ_get_message_parser_vtable",
+        "PJ_get_toolbox_vtable",
+        "PJ_get_widget_vtable",
+    ]:
         try:
             get_vtable = getattr(lib, func_name)
             get_vtable.restype = ctypes.POINTER(PluginVtable)
@@ -1328,10 +1345,13 @@ def cmd_resolve_build_scope(args) -> int:
     Outputs (key=value lines on stdout, redirected by the workflow into
     $GITHUB_OUTPUT):
       build_dir, build_script_args, conan_hash, scope, plugin_name,
-      platform, skip, use_release_override
+      platform, skip, use_release_override, needs_qt
 
     Notices and errors go to stderr where Actions still parses them as
     `::notice::` / `::error::` annotations.
+
+    A plugin whose manifest category is "widget" links Qt: it is limited to WIDGET_PLATFORMS and
+    reports needs_qt=true so the workflow installs the official Qt on that leg only.
 
     Optional per-plugin manifest fields honoured for plugin tags:
       supported_platforms  list of canonical "os-arch" strings (see
@@ -1353,6 +1373,7 @@ def cmd_resolve_build_scope(args) -> int:
     conan_hash_path = Path("conanfile.py")
     skip = False
     use_release_override = False
+    needs_qt = False
 
     is_plugin_tag = args.tag_type == "tag" and "/" in args.tag
 
@@ -1369,6 +1390,15 @@ def cmd_resolve_build_scope(args) -> int:
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text())
             platforms = manifest.get("supported_platforms")
+            if manifest.get("category") == "widget":
+                needs_qt = True
+                if canonical_platform not in WIDGET_PLATFORMS:
+                    skip = True
+                    print(
+                        f"::notice::Widget library {plugin_name} is built only on {WIDGET_PLATFORMS} — "
+                        f"skipping {canonical_platform}",
+                        file=sys.stderr,
+                    )
             if platforms is not None and canonical_platform not in platforms:
                 skip = True
                 print(
@@ -1422,6 +1452,7 @@ def cmd_resolve_build_scope(args) -> int:
         "platform": canonical_platform,
         "skip": "true" if skip else "false",
         "use_release_override": "true" if use_release_override else "false",
+        "needs_qt": "true" if needs_qt and not skip else "false",
     }
     for key, value in outputs.items():
         print(f"{key}={value}")
