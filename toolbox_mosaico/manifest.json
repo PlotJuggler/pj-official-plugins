@@ -3,7 +3,7 @@
   "name": "Mosaico Cloud Server",
   "version": "1.3.0",
   "description": "Browse Mosaico cloud servers and import their data: filter by metadata with Lua expressions, choose a time range, and stream several topics at once. Install the Arrow IPC Parser alongside it to decode scalar topics.",
-  "entry_point": "Sources panel → Cloud → Mosaico Cloud Server → Open cloud browser",
+  "entry_point": "Sources panel → Cloud → Mosaico Cloud Server → + (Open cloud browser)",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
