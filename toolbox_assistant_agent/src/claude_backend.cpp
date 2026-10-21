@@ -79,6 +79,7 @@ std::vector<std::string> buildClaudeArgv(
 ClaudeBackend::ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<HarnessMemory> memory)
     : cli_path_(cli_path.empty() ? "claude" : std::move(cli_path)),
       model_(std::move(model)),
+      instructions_(assistantInstructions()),
       memory_(memory ? std::move(memory) : std::make_shared<HarnessMemory>()) {}
 
 ClaudeBackend::~ClaudeBackend() = default;
@@ -169,10 +170,10 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
   // record overwrites the memory's id: it is what turns a 0-turn error into
   // "that session is gone" instead of a generic failure.
   const std::string resume_id = memory_->session_id;
-  const std::string payload = composePayload(text, tools.catalog, *memory_);
+  const std::string payload = composePayload(text, tools.features, tools.catalog, *memory_);
 
   const std::vector<std::string> argv = buildClaudeArgv(
-      loc.path, mcp_config_path, allowedToolsArg(*tools.registry), kSystemPrompt, model_, memory_->session_id);
+      loc.path, mcp_config_path, allowedToolsArg(*tools.registry), instructions_, model_, memory_->session_id);
 
   NdjsonSplitter splitter;
   bool emitted_text = false;

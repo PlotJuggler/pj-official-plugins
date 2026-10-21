@@ -25,6 +25,7 @@ set(ASSISTANT_AGENT_COMMON_SOURCES
   src/mcp_loopback.cpp
   src/harness_workdir.cpp
   src/tools.cpp
+  src/features_digest.cpp
   src/claude_sessions.cpp
   src/codex_sessions.cpp
   src/codex_models.cpp
@@ -199,6 +200,24 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_tool_registry_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentToolRegistryTest COMMAND toolbox_assistant_agent_tool_registry_test)
 
+  # featuresDigest / featuresBlock and the built-in reference, rendered
+  # against the feature-catalog benchmark fixtures.
+  add_executable(toolbox_assistant_agent_features_digest_test
+    tests/features_digest_test.cpp
+    src/features_digest.cpp
+  )
+  target_link_libraries(toolbox_assistant_agent_features_digest_test PRIVATE
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_features_digest_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(toolbox_assistant_agent_features_digest_test PRIVATE
+    ASSISTANT_FEATURES_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs/benchmarks/features/fixtures"
+  )
+  target_compile_features(toolbox_assistant_agent_features_digest_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentFeaturesDigestTest COMMAND toolbox_assistant_agent_features_digest_test)
+
   # Claude stream-json parser + NDJSON splitter. Pure, std + nlohmann only.
   add_executable(toolbox_assistant_agent_stream_json_test
     tests/stream_json_test.cpp
@@ -319,6 +338,29 @@ if(TARGET GTest::gtest_main)
   add_dependencies(toolbox_assistant_agent_codex_backend_test toolbox_assistant_agent_child_helper)
   target_compile_features(toolbox_assistant_agent_codex_backend_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentCodexBackendTest COMMAND toolbox_assistant_agent_codex_backend_test)
+
+  # Feature-awareness benchmark runner: asks the real CLI the product
+  # questions in docs/benchmarks/features/questions.json against each fixture
+  # and writes the replies as JSONL for score.py. Opt-in
+  # (ASSISTANT_FEATURES_EVAL=claude|codex); skips otherwise, so CI stays
+  # offline and spends nothing.
+  add_executable(toolbox_assistant_agent_features_eval_test
+    tests/features_eval_test.cpp
+    src/claude_backend.cpp
+    src/codex_backend.cpp
+    ${ASSISTANT_AGENT_COMMON_SOURCES}
+  )
+  target_link_libraries(toolbox_assistant_agent_features_eval_test PRIVATE
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_features_eval_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(toolbox_assistant_agent_features_eval_test PRIVATE
+    ASSISTANT_FEATURES_BENCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs/benchmarks/features"
+  )
+  target_compile_features(toolbox_assistant_agent_features_eval_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentFeaturesEvalTest COMMAND toolbox_assistant_agent_features_eval_test)
 
   # CodexSessions: the CLI's own ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
   # store — listing/ordering/titles, transcript replay, the cwd filter, and

@@ -8,16 +8,20 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <iterator>
 #include <optional>
 #include <pj_base/sdk/platform.hpp>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "claude_backend.hpp"
 #include "conversation_state.hpp"  // fnv1aHex, asserted against the stored hash
 #include "support/backend_test_helpers.hpp"
+#include "support/file_io.hpp"
+#include "system_prompt.hpp"
 #include "tool_registry.hpp"
 
 namespace {
@@ -123,22 +127,22 @@ TEST(ClaudeBackendCommandLine, PersistedSessionIdResumesOnTheFirstTurn) {
 TEST(ClaudeComposePayload, CatalogNoteRules) {
   assistant_agent::HarnessMemory memory;
 
-  const std::string first = assistant_agent::composePayload("hi", "CATALOG v1", memory);
+  const std::string first = assistant_agent::composePayload("hi", "", "CATALOG v1", memory);
   EXPECT_EQ(first.rfind("CATALOG v1", 0), 0u);
   EXPECT_EQ(first.find("loaded data changed"), std::string::npos);
   EXPECT_NE(first.find("hi"), std::string::npos);
   EXPECT_EQ(memory.sent_catalog_hash, assistant_agent::fnv1aHex("CATALOG v1"));
 
-  const std::string same = assistant_agent::composePayload("again", "CATALOG v1", memory);
+  const std::string same = assistant_agent::composePayload("again", "", "CATALOG v1", memory);
   EXPECT_EQ(same, "again") << "an unchanged listing must not be re-sent";
 
-  const std::string changed = assistant_agent::composePayload("third", "CATALOG v2", memory);
+  const std::string changed = assistant_agent::composePayload("third", "", "CATALOG v2", memory);
   EXPECT_EQ(changed.rfind("CATALOG v2", 0), 0u);
   EXPECT_NE(changed.find("(The loaded data changed; the listing above replaces the earlier one.)"), std::string::npos);
   EXPECT_EQ(memory.sent_catalog_hash, assistant_agent::fnv1aHex("CATALOG v2"));
 
   assistant_agent::HarnessMemory no_catalog;
-  EXPECT_EQ(assistant_agent::composePayload("bare", "", no_catalog), "bare");
+  EXPECT_EQ(assistant_agent::composePayload("bare", "", "", no_catalog), "bare");
   EXPECT_TRUE(no_catalog.sent_catalog_hash.empty());
 }
 
@@ -153,7 +157,7 @@ TEST(ClaudeComposePayload, ResumedPendingForcesTheResumeNoteOnceEvenIfTheHashAlr
   memory.sent_catalog_hash = assistant_agent::fnv1aHex("CATALOG v1");  // as if already sent
   memory.resumed_pending = true;
 
-  const std::string first = assistant_agent::composePayload("what tabs?", "CATALOG v1", memory);
+  const std::string first = assistant_agent::composePayload("what tabs?", "", "CATALOG v1", memory);
   EXPECT_EQ(first.rfind("CATALOG v1", 0), 0u) << "resuming must re-send the catalog despite the matching hash";
   EXPECT_NE(
       first.find(
@@ -167,8 +171,85 @@ TEST(ClaudeComposePayload, ResumedPendingForcesTheResumeNoteOnceEvenIfTheHashAlr
 
   // The very next turn, with the same (now-current) catalog: an ordinary
   // unchanged-listing turn, no note at all.
-  const std::string second = assistant_agent::composePayload("and now?", "CATALOG v1", memory);
+  const std::string second = assistant_agent::composePayload("and now?", "", "CATALOG v1", memory);
   EXPECT_EQ(second, "and now?");
+}
+
+// The features listing (features_digest.hpp) rides ahead of the catalog
+// under its own hash: each block is re-sent only when IT changed, so loading
+// a file does not re-send the plugin list and enabling a plugin does not
+// re-send the loaded data.
+TEST(ComposePayload, FeaturesAndCatalogHaveIndependentHashes) {
+  assistant_agent::HarnessMemory memory;
+
+  const std::string first = assistant_agent::composePayload("hi", "FEATURES v1", "CATALOG v1", memory);
+  EXPECT_EQ(first, "FEATURES v1\n\nCATALOG v1\n\nhi");
+  EXPECT_EQ(memory.sent_features_hash, assistant_agent::fnv1aHex("FEATURES v1"));
+  EXPECT_EQ(memory.sent_catalog_hash, assistant_agent::fnv1aHex("CATALOG v1"));
+
+  EXPECT_EQ(assistant_agent::composePayload("again", "FEATURES v1", "CATALOG v1", memory), "again");
+
+  // Only the catalog changed: the features block stays out.
+  EXPECT_EQ(
+      assistant_agent::composePayload("loaded more", "FEATURES v1", "CATALOG v2", memory),
+      "CATALOG v2\n\n(The loaded data changed; the listing above replaces the earlier one.)\n\nloaded more");
+
+  // Only the features changed: re-sent with its own note, the catalog stays out.
+  EXPECT_EQ(
+      assistant_agent::composePayload("enabled one", "FEATURES v2", "CATALOG v2", memory),
+      "FEATURES v2\n\n(The PlotJuggler features listing changed.)\n\nenabled one");
+  EXPECT_EQ(memory.sent_features_hash, assistant_agent::fnv1aHex("FEATURES v2"));
+  EXPECT_EQ(memory.sent_catalog_hash, assistant_agent::fnv1aHex("CATALOG v2"));
+
+  // Both changed: both notes, features first.
+  EXPECT_EQ(
+      assistant_agent::composePayload("both", "FEATURES v3", "CATALOG v3", memory),
+      "FEATURES v3\n\n(The PlotJuggler features listing changed.)\n\nCATALOG v3\n\n(The loaded data changed; "
+      "the listing above replaces the earlier one.)\n\nboth");
+
+  // An empty features block (no provider bound) is never sent and leaves the
+  // catalog rules exactly as they were.
+  assistant_agent::HarnessMemory no_features;
+  EXPECT_EQ(assistant_agent::composePayload("hi", "", "CATALOG v1", no_features), "CATALOG v1\n\nhi");
+  EXPECT_TRUE(no_features.sent_features_hash.empty());
+}
+
+TEST(ComposePayload, AResumeForcesBothBlocksOnceEvenIfBothHashesMatch) {
+  assistant_agent::HarnessMemory memory;
+  memory.sent_features_hash = assistant_agent::fnv1aHex("FEATURES v1");
+  memory.sent_catalog_hash = assistant_agent::fnv1aHex("CATALOG v1");
+  memory.resumed_pending = true;
+
+  const std::string first = assistant_agent::composePayload("what tabs?", "FEATURES v1", "CATALOG v1", memory);
+  EXPECT_EQ(
+      first,
+      "FEATURES v1\n\nCATALOG v1\n\n" + std::string(assistant_agent::kResumedConversationNote) + "\n\nwhat tabs?")
+      << "the resume note rides on the catalog; an unchanged features block carries no note";
+  EXPECT_FALSE(memory.resumed_pending);
+  EXPECT_EQ(assistant_agent::composePayload("and now?", "FEATURES v1", "CATALOG v1", memory), "and now?");
+}
+
+TEST(ComposePayload, AResumeIsConsumedOnceEveryNonEmptyBlockHasBeenSent) {
+  // Features only (no catalog this turn): the one non-empty block went out,
+  // so the resume is consumed.
+  assistant_agent::HarnessMemory features_only;
+  features_only.resumed_pending = true;
+  EXPECT_EQ(assistant_agent::composePayload("q", "FEATURES v1", "", features_only), "FEATURES v1\n\nq");
+  EXPECT_FALSE(features_only.resumed_pending);
+
+  // Catalog only (no provider bound): exactly the pre-features behaviour.
+  assistant_agent::HarnessMemory catalog_only;
+  catalog_only.resumed_pending = true;
+  EXPECT_EQ(
+      assistant_agent::composePayload("q", "", "CATALOG v1", catalog_only),
+      "CATALOG v1\n\n" + std::string(assistant_agent::kResumedConversationNote) + "\n\nq");
+  EXPECT_FALSE(catalog_only.resumed_pending);
+
+  // Nothing to send: the flag waits for a turn that has a listing.
+  assistant_agent::HarnessMemory nothing;
+  nothing.resumed_pending = true;
+  EXPECT_EQ(assistant_agent::composePayload("q", "", "", nothing), "q");
+  EXPECT_TRUE(nothing.resumed_pending);
 }
 
 // The conversation lives in the LENT memory, not in the backend object: a
@@ -182,7 +263,7 @@ TEST(ClaudeBackend, ConversationMemorySurvivesARebuild) {
   {
     assistant_agent::ClaudeBackend first("claude-never-spawned", "sonnet", memory);
     // What a completed turn leaves behind, written where the worker writes it.
-    (void)assistant_agent::composePayload("hello", "CATALOG v1", *memory);
+    (void)assistant_agent::composePayload("hello", "", "CATALOG v1", *memory);
     memory->session_id = "sess-42";
   }  // the backend dies here; the conversation must not
 
@@ -191,7 +272,7 @@ TEST(ClaudeBackend, ConversationMemorySurvivesARebuild) {
   EXPECT_EQ(memory->sent_catalog_hash, assistant_agent::fnv1aHex("CATALOG v1"));
   // The rebuilt backend composes over the same memory: an unchanged listing is
   // not re-sent, exactly as if the first backend were still alive.
-  EXPECT_EQ(assistant_agent::composePayload("again", "CATALOG v1", *memory), "again");
+  EXPECT_EQ(assistant_agent::composePayload("again", "", "CATALOG v1", *memory), "again");
 }
 
 #if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
@@ -305,4 +386,54 @@ TEST(ClaudeBackendApiError, NamesTheConfiguredModel) {
   EXPECT_EQ(
       err->text, "the Claude CLI could not reach the API with model 'opus' (unrecognized model, or the API is down)");
 }
+#endif
+
+// What a real turn hands the CLI, recorded by a fake one: the composed
+// payload on stdin (features block first, then the catalog, each only when
+// new) and the instructions in --append-system-prompt (the system prompt plus
+// the product policy, unless a caller measures without it).
+#if defined(__unix__) || defined(__APPLE__)
+namespace {
+
+TEST(ClaudeBackendPayload, TheCliReceivesTheFeaturesBlockAheadOfTheCatalogAndThePolicy) {
+  const std::string record = assistant_agent::testing::makeRecordPrefix("claude");
+  const std::string cli = assistant_agent::testing::writeRecordingCliScript(
+      {R"({"type":"system","subtype":"init","session_id":"sess-1"})",
+       R"({"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"sess-1"})"},
+      0, record);
+  ASSERT_FALSE(cli.empty());
+  ToolRegistry reg;
+  assistant_agent::TurnTools tools;
+  tools.registry = &reg;
+  tools.invoke = [](const std::string&, const nlohmann::json&) {
+    return assistant_agent::ToolResult::failure("no tool runs in this test");
+  };
+  tools.features = "PlotJuggler features (test):\n- one";
+  tools.catalog = "Loaded data: nothing is loaded yet.";
+
+  ClaudeBackend backend(cli, "");
+  backend.sendUserMessage("hi", tools, [](BackendEvent) {});
+  EXPECT_EQ(
+      assistant_agent::testing::readFileToString(record + ".stdin"),
+      "PlotJuggler features (test):\n- one\n\nLoaded data: nothing is loaded yet.\n\nhi");
+  EXPECT_NE(
+      assistant_agent::testing::readFileToString(record + ".argv").find(assistant_agent::kProductPolicy),
+      std::string::npos);
+
+  backend.sendUserMessage("again", tools, [](BackendEvent) {});
+  EXPECT_EQ(assistant_agent::testing::readFileToString(record + ".stdin"), "again") << "neither listing changed";
+
+  ClaudeBackend baseline(cli, "");
+  baseline.setInstructions(assistant_agent::assistantInstructions(/*with_product_policy=*/false));
+  baseline.sendUserMessage("hi", tools, [](BackendEvent) {});
+  const std::string argv = assistant_agent::testing::readFileToString(record + ".argv");
+  EXPECT_EQ(argv.find(assistant_agent::kProductPolicy), std::string::npos);
+  EXPECT_NE(argv.find(assistant_agent::kSystemPrompt), std::string::npos);
+
+  removeFakeCli(cli);
+  std::remove((record + ".stdin").c_str());
+  std::remove((record + ".argv").c_str());
+}
+
+}  // namespace
 #endif

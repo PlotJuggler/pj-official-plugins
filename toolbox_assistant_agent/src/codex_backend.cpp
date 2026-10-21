@@ -125,6 +125,7 @@ std::vector<std::string> buildCodexArgv(
 CodexBackend::CodexBackend(std::string cli_path, std::string model, std::shared_ptr<HarnessMemory> memory)
     : cli_path_(cli_path.empty() ? "codex" : std::move(cli_path)),
       model_(std::move(model)),
+      instructions_(assistantInstructions()),
       memory_(memory ? std::move(memory) : std::make_shared<HarnessMemory>()) {}
 
 CodexBackend::~CodexBackend() {
@@ -147,7 +148,7 @@ bool CodexBackend::ensureInstructionsFile(std::string& error) {
     return true;
   }
   const std::string contents =
-      std::string(kSystemPrompt) + "\n\nNever spawn sub-agents or use collaboration tools; do the work in this turn.";
+      instructions_ + "\n\nNever spawn sub-agents or use collaboration tools; do the work in this turn.";
   if (!writePrivateTempFile("pj_assistant_codex_", contents, instructions_path_)) {
     error = "could not write the Codex instructions file";
     return false;
@@ -218,7 +219,7 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
   // silent, empty-stdout exit 1 into "that session is gone" instead of a
   // generic failure.
   const std::string resume_id = memory_->session_id;
-  const std::string payload = composePayload(text, tools.catalog, *memory_);
+  const std::string payload = composePayload(text, tools.features, tools.catalog, *memory_);
 
   const std::vector<std::string> argv = buildCodexArgv(
       loc.path, work_dir_, mcp_.url(), kCodexMcpTokenEnvVar, instructions_path_, model_, memory_->session_id);

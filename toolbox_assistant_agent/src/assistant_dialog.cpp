@@ -14,6 +14,7 @@
 #include "codex_backend.hpp"
 #include "conversation_state.hpp"
 #include "fake_backend.hpp"
+#include "features_digest.hpp"
 #include "model_picker.hpp"
 #include "rename_conversation_ui.hpp"
 #include "settings_store.hpp"
@@ -34,6 +35,12 @@ constexpr const char* kKeyCatalogBudgetChars = "assistant.catalog_budget_chars";
 constexpr int kDefaultCatalogBudgetChars = 10000;
 constexpr int kMinCatalogBudgetChars = 1000;
 constexpr int kMaxCatalogBudgetChars = 200000;
+// The same for the "PlotJuggler features" block (featuresBlock,
+// features_digest.hpp), whose default is featuresDigest's own.
+constexpr const char* kKeyFeaturesBudgetChars = "assistant.features_budget_chars";
+constexpr int kFeaturesBudgetCharsDefault = static_cast<int>(kDefaultFeaturesBudgetChars);
+constexpr int kMinFeaturesBudgetChars = 2000;
+constexpr int kMaxFeaturesBudgetChars = 200000;
 
 // One row per backend this build knows about: its settings key, the
 // backendCombo index it fills, the settings keys/defaults for its
@@ -140,6 +147,12 @@ std::string resolveBackendKey(const SettingsStore& store) {
 int resolveCatalogBudgetChars(const SettingsStore& store) {
   return std::clamp(
       store.getInt(kKeyCatalogBudgetChars, kDefaultCatalogBudgetChars), kMinCatalogBudgetChars, kMaxCatalogBudgetChars);
+}
+
+int resolveFeaturesBudgetChars(const SettingsStore& store) {
+  return std::clamp(
+      store.getInt(kKeyFeaturesBudgetChars, kFeaturesBudgetCharsDefault), kMinFeaturesBudgetChars,
+      kMaxFeaturesBudgetChars);
 }
 
 AssistantDialog::AssistantDialog() {
@@ -395,6 +408,18 @@ void AssistantDialog::setViewportProvider(std::function<PJ::sdk::ViewportHostVie
 
 void AssistantDialog::setPlotTabsProvider(std::function<PJ::sdk::PlotTabHostView()> provider) {
   plot_tabs_provider_ = std::move(provider);
+}
+
+void AssistantDialog::setFeatureCatalogProvider(std::function<PJ::sdk::FeatureCatalogView()> provider) {
+  feature_catalog_provider_ = std::move(provider);
+}
+
+std::string AssistantDialog::featuresForTurn() {
+  if (!feature_catalog_provider_) {
+    return {};
+  }
+  const SettingsStore store(settings_);
+  return featuresBlock(feature_catalog_provider_(), static_cast<std::size_t>(resolveFeaturesBudgetChars(store)));
 }
 
 void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
@@ -818,12 +843,17 @@ void AssistantDialog::sendCurrentInput() {
     const SettingsStore store(settings_);
     catalog = catalogDigest(host_provider_(), static_cast<std::size_t>(resolveCatalogBudgetChars(store)));
   }
+  // What PlotJuggler offers, from the same GUI-thread snapshot point and for
+  // the same reason; rebuilt every turn too, so enabling or installing a
+  // plugin shows up (its own hash decides whether it is re-sent).
+  std::string features = featuresForTurn();
 
-  postCommand([this, text, catalog, backend = backend_]() {
+  postCommand([this, text, catalog, features = std::move(features), backend = backend_]() {
     LlmBackend::EventSink sink = [this](BackendEvent ev) { postEvent([this, ev]() { applyBackendEvent(ev); }); };
     TurnTools tools;
     tools.registry = &registry_;
     tools.catalog = catalog;
+    tools.features = features;
     tools.invoke = [this](const std::string& name, const nlohmann::json& args) {
       return gui_executor_.call(name, args);
     };

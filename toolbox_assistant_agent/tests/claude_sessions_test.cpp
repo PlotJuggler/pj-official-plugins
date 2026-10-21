@@ -189,6 +189,39 @@ TEST(StripCatalogPrefix, NotesAreRecognizedByTheirOpeningWordsAlone) {
   EXPECT_EQ(stripCatalogPrefix(text), "what tabs?");
 }
 
+// The payload shapes composePayload (harness_memory.hpp) writes once a
+// features block rides ahead of the catalog.
+TEST(StripCatalogPrefix, FeaturesAndCatalogBlocks) {
+  const std::string features =
+      "PlotJuggler features (PlotJuggler 4.1.0, from the host):\n"
+      "Built in:\n"
+      "- Layouts: Save the workspace. Start: File → Save Layout...";
+  const std::string catalog = "Loaded data (1 topic(s)):\n  /a/b: value (float64)\n";
+  EXPECT_EQ(stripCatalogPrefix(features + "\n\n" + catalog + "\n\nwhat is loaded?"), "what is loaded?");
+  EXPECT_EQ(
+      stripCatalogPrefix(
+          features + "\n\n(The PlotJuggler features listing changed.)\n\n" + catalog +
+          "\n\n(The loaded data changed; the listing above replaces the earlier one.)\n\nboth changed"),
+      "both changed");
+  EXPECT_EQ(
+      stripCatalogPrefix(
+          features + "\n\n" + catalog +
+          "\n\n(Resumed conversation. The tabs you composed earlier may no longer exist; plot_tab with action list "
+          "reports the ones that do. The listing above is the data loaded now.)\n\nwhat tabs?"),
+      "what tabs?");
+  // Features alone (the catalog unchanged this turn), with and without its note.
+  EXPECT_EQ(stripCatalogPrefix(features + "\n\n(The PlotJuggler features listing changed.)\n\nhi"), "hi");
+  EXPECT_EQ(stripCatalogPrefix(features + "\n\nhi"), "hi");
+  // The built-in reference opens the same way.
+  EXPECT_EQ(
+      stripCatalogPrefix("PlotJuggler features (PlotJuggler 4.1, built into this assistant):\nReference.\n\nhi"), "hi");
+}
+
+TEST(StripCatalogPrefix, MalformedFeaturesBlockWithNoBlankLineIsLeftAlone) {
+  EXPECT_EQ(
+      stripCatalogPrefix("PlotJuggler features (and nothing after it)"), "PlotJuggler features (and nothing after it)");
+}
+
 TEST(StripCatalogPrefix, MalformedCatalogWithNoBlankLineIsLeftAlone) {
   // Starts with the marker but never resolves to a blank line -- a truncated
   // record, say. Guessing here would risk eating real user text.
