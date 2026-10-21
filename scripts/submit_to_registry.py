@@ -57,6 +57,7 @@ MANIFEST_FIELDS = [
     "min_sdk_required",
     "suggested_sdk_version",
     "floor_test",
+    "entry_point",
 ]
 
 

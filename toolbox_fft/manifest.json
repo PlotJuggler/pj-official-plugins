@@ -2,7 +2,7 @@
   "id": "toolbox-fft",
   "name": "Fast Fourier Transform",
   "version": "1.0.1",
-  "description": "Compute the frequency-domain amplitude of numeric time series using FFT.",
+  "description": "Plot the frequency spectrum (FFT amplitude) of numeric time series.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
