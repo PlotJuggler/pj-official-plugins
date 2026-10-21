@@ -18,6 +18,9 @@ runs:
         version: ${{ inputs.version }}
         arch: ${{ inputs.arch }}
         cache: true
+        # Same aqt pin as PlotJuggler 4's CI: released aqt (3.3.0) cannot resolve the
+        # new repo layout of Qt 6.12 on Windows ("Failed to locate XML data").
+        aqtsource: git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b
 
     - name: Install Qt runtime libraries (Linux)
       if: runner.os == 'Linux'
