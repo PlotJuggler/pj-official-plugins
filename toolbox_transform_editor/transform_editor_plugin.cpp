@@ -824,6 +824,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (!preview_error_.empty()) {
       overlay += preview_error_ + "\n";
     }
+    for (const std::string& error : scene_view_errors_) {
+      overlay += error + "\n";
+    }
     if (!create_error_.empty()) {
       overlay += create_error_ + "\n";
     }
@@ -903,7 +906,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (!batch_validation_error_.empty()) {
       batch_term += batch_validation_error_ + "\n";
     }
-    wd.setChartPlaceholder("framePlotPreviewBatch", batch_term);
+    wd.setChartPlaceholder("framePlotPreviewBatch", batch_term.empty() ? batch_script_note_ : batch_term);
 
     // Each tab owns its Create action and validation gate. The reason a disabled Create is disabled goes
     // on the status line and, where the host shows it, on the button.
@@ -1690,8 +1693,26 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   /// The object outputs of the preview recipe shown by the scene view embedded next to the chart: its kind
   /// ("3d" | "2d") and the (topic, dataset) pairs it follows. An empty kind removes the view.
   void setEmbeddedScene(std::string kind, std::vector<PJ::SceneTopic> topics) {
+    const bool same = kind == scene_embed_kind_ &&
+                      std::equal(
+                          topics.begin(), topics.end(), scene_embed_topics_.begin(), scene_embed_topics_.end(),
+                          [](const PJ::SceneTopic& a, const PJ::SceneTopic& b) {
+                            return a.topic == b.topic && a.dataset == b.dataset;
+                          });
+    if (!same) {
+      scene_view_errors_.clear();  // the host answers each request once: a new one may succeed
+    }
     scene_embed_kind_ = std::move(kind);
     scene_embed_topics_ = std::move(topics);
+  }
+  /// The host could not show (a topic of) the embedded scene view: its reason goes over the chart, like the
+  /// other preview errors, until the scene request changes.
+  bool onSceneViewError(std::string_view widget_name, const PJ::SceneViewError& error) override {
+    if (widget_name != "frameScenePreview") {
+      return false;
+    }
+    scene_view_errors_.push_back("Scene view: " + (error.topic.empty() ? "" : error.topic + ": ") + error.reason);
+    return true;
   }
   /// Whether the preview recipe has a number output. With an embedded scene the plot is hidden when it has none.
   void setPreviewHasNumbers(bool has_numbers) {
@@ -1754,7 +1775,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
                "frame where it has a value";
       }
       if (!trial_ || trial_->outputs.empty()) {
-        return "Waiting for the script to run";
+        return script_note_.empty() ? "Waiting for the script to run" : script_note_;
       }
     }
     return {};
@@ -1827,6 +1848,15 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   /// where creating the series closes the editor). Honoured on the next widget_data().
   void requestClose() {
     pending_close_ = true;
+  }
+  /// The host could not check the script yet ("Not checked yet (<the host's reason>)"), shown on the status
+  /// line while the trial has not answered. Not a refusal: the trial runs the script. Empty = checked.
+  void setScriptNote(std::string note) {
+    script_note_ = std::move(note);
+  }
+  /// Batch-tab counterpart of setScriptNote, shown over the source list when nothing blocks Create.
+  void setBatchScriptNote(std::string note) {
+    batch_script_note_ = std::move(note);
   }
   /// Batch-tab counterpart of setValidationError (shown over the source list).
   void setBatchValidationError(std::string error) {
@@ -2297,12 +2327,15 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool preview_has_numbers_ = true;
   std::function<std::string(const std::string&)> input_type_of_;
   std::function<bool(const std::string&)> own_recipe_exists_;
-  bool edit_mode_ = false;              // opened to modify an existing series (locks the name, button = Modify)
-  std::string validation_error_;        // host's rejection message for the current script (empty = OK)
-  std::string preview_error_;           // why the preview recipe cannot be shown (see setPreviewError)
-  std::string create_error_;            // why Create failed, until the form changes (see setCreateError)
-  std::string batch_validation_error_;  // batch-tab counterpart (empty = OK)
-  bool batch_dirty_ = true;             // batch script/inputs changed → re-validate (start dirty)
+  bool edit_mode_ = false;                      // opened to modify an existing series (locks the name, button = Modify)
+  std::string validation_error_;                // host's rejection message for the current script (empty = OK)
+  std::string preview_error_;                   // why the preview recipe cannot be shown (see setPreviewError)
+  std::vector<std::string> scene_view_errors_;  // the host's refusals of the current scene request
+  std::string script_note_;                     // see setScriptNote
+  std::string batch_script_note_;               // see setBatchScriptNote
+  std::string create_error_;                    // why Create failed, until the form changes (see setCreateError)
+  std::string batch_validation_error_;          // batch-tab counterpart (empty = OK)
+  bool batch_dirty_ = true;                     // batch script/inputs changed → re-validate (start dirty)
 
   // Batch state
   std::string batch_global_code_;
@@ -2735,11 +2768,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       report(PJ::ToolboxMessageLevel::kError, "Transform Editor: " + build.error);
       return;
     }
-    if (auto valid = dp_view_.validateScript("on_demand", build.request.language, build.request.script); !valid) {
-      report(
-          PJ::ToolboxMessageLevel::kError,
-          "Transform Editor: invalid script: " +
-              transform_editor::text::remapScriptLines(std::string(valid.error()), build.layout));
+    // An unchecked script goes on: Create is enabled only after a trial ran this script.
+    if (const auto invalid =
+            checkScript("on_demand", build.request.language, {build.request.script, build.layout}).error) {
+      report(PJ::ToolboxMessageLevel::kError, "Transform Editor: invalid script: " + *invalid);
       return;
     }
 
@@ -3252,20 +3284,41 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return out.str();
   }
 
-  // The host's verdict on a script, asked once per form revision: compiling it is not free and the form does
-  // not change between ticks. nullopt when the script is accepted, else the host's message. `make_script`
+  // What a script the host could not check yet reads as: never a pass.
+  static std::string uncheckedNote(const std::string& message) {
+    return message.empty() ? "Not checked yet" : "Not checked yet (" + message + ")";
+  }
+
+  // The host's check of a script: the error when it refused it (or could not be asked), else nullopt with
+  // `unchecked` set when it could not decide yet.
+  struct ScriptVerdict {
+    std::optional<std::string> error;
+    std::string unchecked;  // uncheckedNote(), empty when the host decided
+  };
+  ScriptVerdict checkScript(
+      std::string_view kind, const std::string& language, const derived_recipes::BuiltScript& built) {
+    auto check = dp_view_.checkScript(kind, language, built.script);
+    if (!check) {
+      return {transform_editor::text::remapScriptLines(std::string(check.error()), built.layout), {}};
+    }
+    if (check->status == PJ::sdk::ScriptCheckStatus::kInvalid) {
+      return {transform_editor::text::remapScriptLines(check->message, built.layout), {}};
+    }
+    if (check->status == PJ::sdk::ScriptCheckStatus::kUnchecked) {
+      return {std::nullopt, uncheckedNote(check->message)};
+    }
+    return {};
+  }
+
+  // checkScript, asked once per form revision: compiling it is not free and the form does not change between
+  // ticks. An unchecked script is not asked again: the trial or the preview's own install runs it. `make_script`
   // builds the script only when the host is asked.
   template <typename MakeScript>
-  std::optional<std::string> scriptError(std::string_view kind, const std::string& language, MakeScript&& make_script) {
+  const ScriptVerdict& scriptVerdict(std::string_view kind, const std::string& language, MakeScript&& make_script) {
     if (!validation_ || validation_->revision != dialog_.formRevision() || validation_->kind != kind) {
-      const derived_recipes::BuiltScript built = make_script();
-      auto verdict = dp_view_.validateScript(kind, language, built.script);
-      validation_ = Validation{
-          dialog_.formRevision(), std::string(kind),
-          verdict ? std::optional<std::string>{}
-                  : transform_editor::text::remapScriptLines(std::string(verdict.error()), built.layout)};
+      validation_ = Validation{dialog_.formRevision(), std::string(kind), checkScript(kind, language, make_script())};
     }
-    return validation_->error;
+    return validation_->verdict;
   }
 
   // The trial of an on-demand recipe: ONE evaluation, EPHEMERAL, with the outputs left for the host to
@@ -3276,12 +3329,14 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   // sample, it runs at that entry instead and the outputs are learned there.
   // Returns false when the host rejected the script (the error is on the dialog).
   bool previewOnDemand(const OnDemandBuild& build) {
-    if (const auto invalid = scriptError("on_demand", build.request.language, [&] {
-          return derived_recipes::BuiltScript{build.request.script, build.layout};
-        })) {
+    const ScriptVerdict& verdict = scriptVerdict("on_demand", build.request.language, [&] {
+      return derived_recipes::BuiltScript{build.request.script, build.layout};
+    });
+    dialog_.setScriptNote(verdict.unchecked);
+    if (verdict.error) {
       tearDownPreview();
-      dialog_.setTrialFailure(*invalid);
-      dialog_.setValidationError(*invalid);
+      dialog_.setTrialFailure(*verdict.error);
+      dialog_.setValidationError(*verdict.error);
       return false;
     }
     const auto& anchor = build.anchor;
@@ -3545,10 +3600,12 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // function does not create/tear down a transform on every keystroke. The
     // validation script uses the host's expected "__validate__" class id (the
     // preview/create script keeps preview_id for the upsert).
-    const auto invalid = scriptError("transform", dialog_.language(), [&] {
+    // An unchecked script goes on: installing the preview compiles it, and its refusal is the verdict.
+    const ScriptVerdict& verdict = scriptVerdict("transform", dialog_.language(), [&] {
       return derived_recipes::buildTransformScript(
           "__validate__", "__validate__", global, body, num_extra, dialog_.language());
     });
+    const auto& invalid = verdict.error;
     dialog_.setValidationError(invalid.value_or(""));
     if (invalid) {
       tearDownPreview();
@@ -3594,7 +3651,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // The script compiled, but if the source has data and NONE of the M declared
     // outputs produced a row, the function never returns numbers (e.g. `return valu`)
     // — flag it. Fire ONLY when every output is empty: one empty channel among several
-    // is legitimate (a suppressed output). validateScript (compile-only) can't catch
+    // is legitimate (a suppressed output). checkScript (compile-only) can't catch
     // this runtime case; real inputs are used, so a valid MIMO is not falsely flagged.
     if (!ghost_raw.empty() && !any_result) {
       // The body must return EXACTLY as many values per point as the node has outputs (positional;
@@ -3630,10 +3687,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.setPreviewSeries(std::move(series));
   }
 
-  // Validate the BATCH function via the SDK's validateScript — the host compiles
+  // Check the BATCH function via the SDK's checkScript — the host compiles
   // it and runs a synthetic test point, with NO node/topic created (unlike the old
   // throwaway-transform approach). Drives the source-list error overlay; called
-  // only when the batch fields changed, not every tick.
+  // only when the batch fields changed, not every tick. An unchecked function is
+  // only noted: Create compiles it again and reports a refusal.
   void validateBatch() {
     if (!dp_view_.valid()) {
       return;
@@ -3641,13 +3699,14 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     const std::string& body = dialog_.batchFunctionBody();
     if (body.empty()) {
       dialog_.setBatchValidationError("");
+      dialog_.setBatchScriptNote("");
       return;
     }
     const derived_recipes::BuiltScript built = derived_recipes::buildTransformScript(
         "__validate__", "__validate__", dialog_.batchGlobalCode(), body, 0, dialog_.batchLanguage());
-    auto status = dp_view_.validateScript("transform", dialog_.batchLanguage(), built.script);
-    dialog_.setBatchValidationError(
-        status ? "" : transform_editor::text::remapScriptLines(std::string(status.error()), built.layout));
+    ScriptVerdict verdict = checkScript("transform", dialog_.batchLanguage(), built);
+    dialog_.setBatchValidationError(verdict.error.value_or(""));
+    dialog_.setBatchScriptNote(std::move(verdict.unchecked));
   }
 
   static constexpr auto kPreviewRefresh = std::chrono::milliseconds(250);  // between two preview recipe installs
@@ -3667,10 +3726,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   std::string catalog_v2_error_;
   // Set only on a host without catalog snapshot v2: source -> whether the v1 catalog lists it as a scalar.
   mutable std::optional<std::map<std::string, bool>> catalog_scalar_known_;
-  struct Validation {  // the host's verdict on the script of one form revision (see scriptError)
+  struct Validation {  // the host's verdict on the script of one form revision (see scriptVerdict)
     std::uint64_t revision = 0;
     std::string kind;
-    std::optional<std::string> error;
+    ScriptVerdict verdict;
   };
   std::optional<Validation> validation_;
   std::optional<OnDemandBuild> on_demand_build_;  // see buildOnDemandRequest()

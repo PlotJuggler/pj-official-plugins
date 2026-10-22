@@ -146,6 +146,8 @@ return {&quot;cropped&quot;: cropped, &quot;count&quot;: cropped.count()}&lt;/pr
 &lt;tr&gt;&lt;td&gt;`value` is not defined here&lt;/td&gt;&lt;td&gt;&lt;tt&gt;value&lt;/tt&gt; exists only with series inputs. Use the Var of the object.&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;line N: ...&lt;/td&gt;&lt;td&gt;An error at line N of your function (&lt;tt&gt;globals line N&lt;/tt&gt;: Global Variables).&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;Preview: ...&lt;/td&gt;&lt;td&gt;PlotJuggler refused or could not run the preview; the text says why.&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;Scene view: ...&lt;/td&gt;&lt;td&gt;The 3D or 2D view cannot show that output; the text says why.&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;Not checked yet&lt;/td&gt;&lt;td&gt;PlotJuggler could not check the script in time (Python busy or starting). The preview still runs it; wait for its result.&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;Create is disabled&lt;/td&gt;&lt;td&gt;It needs an input, a body and a run without error. Its tooltip says which is missing.&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;A dot after a row in Custom Topics&lt;/td&gt;&lt;td&gt;Blue: computing. Orange: an input is missing. Red: error. Grey: empty result. Hover the row for the detail.&lt;/td&gt;&lt;/tr&gt;
 &lt;tr&gt;&lt;td&gt;script memory limit (64 MB) exceeded&lt;/td&gt;&lt;td&gt;The script holds too much at once, often from reading a long list such as &lt;tt&gt;overlay.points&lt;/tt&gt;. Use methods (&lt;tt&gt;count()&lt;/tt&gt;, &lt;tt&gt;crop_box&lt;/tt&gt;...) instead.&lt;/td&gt;&lt;/tr&gt;
