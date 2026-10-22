@@ -44,6 +44,7 @@ target_compile_features(toolbox_assistant_agent_plugin PRIVATE cxx_std_20)
 target_compile_options(toolbox_assistant_agent_plugin PRIVATE ${PJ_WARNING_FLAGS})
 
 target_link_libraries(toolbox_assistant_agent_plugin PRIVATE
+  pj_derived_recipes
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
   ixwebsocket::ixwebsocket
@@ -191,7 +192,7 @@ if(TARGET GTest::gtest_main)
     src/tools.cpp
   )
   target_link_libraries(toolbox_assistant_agent_tool_registry_test PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+    pj_derived_recipes pj_test_support plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_tool_registry_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -220,7 +221,7 @@ if(TARGET GTest::gtest_main)
     src/tools.cpp
   )
   target_link_libraries(toolbox_assistant_agent_mcp_server_test PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_mcp_server_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -243,7 +244,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_assistant_dialog_test PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_assistant_dialog_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -284,7 +285,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_claude_smoke_test PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_claude_smoke_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -308,7 +309,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_codex_backend_test PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_codex_backend_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -355,7 +356,7 @@ if(TARGET GTest::gtest_main)
     tests/cli_locator_test.cpp
   )
   target_link_libraries(toolbox_assistant_agent_cli_locator_test PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_cli_locator_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
