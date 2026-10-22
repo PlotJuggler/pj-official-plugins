@@ -114,6 +114,9 @@ class TransformEditorPreviewTestPeer {
     TransformEditorToolbox::setTrialForm(build);
     editor.previewOnDemand(build);
   }
+  static void validateBatch(TransformEditorToolbox& editor) {
+    editor.validateBatch();
+  }
   static bool pending(const TransformEditorToolbox& editor) {
     return editor.pending_preview_.has_value();
   }
@@ -408,6 +411,35 @@ TEST(TransformEditorTrial, OtherHostErrorsAreLeftAsTheyAre) {
   rig.load(onDemandConfig("my_filter"));
   rig.refresh();
   EXPECT_EQ(rig.dialog().canCreateReason(), "syntax error near 'end'");
+}
+
+// A host that could not compile the script in time says so: "not checked yet", never a pass and never a
+// refusal. The trial runs the script anyway and its answer replaces the note.
+TEST(TransformEditorTrial, AnUncheckedScriptReadsNotCheckedYetUntilTheTrialAnswers) {
+  Rig rig;
+  rig.dp.check_unchecked = true;
+  rig.dp.pending_polls = 1;
+  rig.load(onDemandConfig("my_filter"));
+  rig.refresh();
+  EXPECT_EQ(rig.dp.submit_calls, 1) << "an unchecked script still runs";
+  EXPECT_EQ(TransformEditorPreviewTestPeer::status(rig.editor), "Not checked yet (test: not checked: busy)");
+  EXPECT_EQ(TransformEditorPreviewTestPeer::widgets(rig.editor)["pushButtonCreate"]["enabled"], false);
+  TransformEditorPreviewTestPeer::tick(rig.editor);
+  EXPECT_TRUE(TransformEditorPreviewTestPeer::showsReport(rig.editor))
+      << TransformEditorPreviewTestPeer::status(rig.editor);
+  EXPECT_EQ(rig.dialog().canCreateReason(), "");
+}
+
+TEST(TransformEditorTrial, AnUncheckedBatchFunctionReadsNotCheckedYetAndDoesNotBlockCreate) {
+  Rig rig;
+  rig.dp.check_unchecked = true;
+  rig.dialog().onItemsDropped("tableBatchSources", {"a/x"});
+  rig.dialog().onCodeChanged("functionTextBatch", "return value * 2");
+  rig.dialog().onTextChanged("suffixLineEdit", "_x2");
+  TransformEditorPreviewTestPeer::validateBatch(rig.editor);
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["framePlotPreviewBatch"]["chart_placeholder"], "Not checked yet (test: not checked: busy)");
+  EXPECT_EQ(widgets["pushButtonCreateBatch"]["enabled"], true) << "the host compiles it again at Create";
 }
 
 TEST(TransformEditorTrial, NoSampleAnywhereIsAReasonNotACrash) {
@@ -1141,6 +1173,34 @@ TEST(TransformEditorPreview, ObjectOutputsPreviewInAnEphemeralRecipeShownInTheEm
   const auto again = rig.widgets();
   ASSERT_EQ(again["frameScenePreview"]["scene_view"]["topics"].size(), 1u);
   EXPECT_NE(rig.dp.last_create_v2_params_json.find("\"k\":3"), std::string::npos);
+}
+
+// The host could not attach a topic of the embedded scene view: its reason shows in the preview, like the
+// other preview errors, until the scene request changes (the host does not retry the same request).
+TEST(TransformEditorPreview, ASceneViewErrorShowsInThePreviewUntilTheViewChanges) {
+  Rig rig;
+  rig.dp.canned_report_json = kObjectsReport;
+  rig.newObjectRecipe("return { cropped = cloud }");
+  ASSERT_EQ(rig.widgets()["frameScenePreview"]["scene_view"]["kind"], "3d");
+  const nlohmann::json event = {
+      {"scene_view_error", {{"kind", "3d"}, {"topic", "cropped"}, {"dataset", ""}, {"reason", "no layer for it"}}}};
+  PJ_error_t error{};
+  const auto* vtable =
+      PJ::DialogPluginBase::vtableWithCreate(static_cast<decltype(PJ_dialog_vtable_t::create)>(nullptr));
+  PJ::DialogPluginBase* dialog = &rig.dialog();
+  ASSERT_TRUE(vtable->on_widget_event(dialog, "frameScenePreview", event.dump().c_str(), &error)) << error.message;
+  const std::string reason = "Scene view: cropped: no layer for it";
+  auto widgets = rig.widgets();
+  EXPECT_NE(widgets["framePlotPreview"]["chart_placeholder"].dump().find(reason), std::string::npos);
+  EXPECT_EQ(widgets["framePlotPreview"]["visible"], true) << "the reason needs the pane the overlay is on";
+  TransformEditorPreviewTestPeer::tick(rig.editor);
+  EXPECT_NE(rig.widgets()["framePlotPreview"]["chart_placeholder"].dump().find(reason), std::string::npos);
+
+  // The script now returns a number: the view goes away, and its error with it.
+  rig.dp.canned_report_json = kNumberReport;
+  rig.dialog().onCodeChanged("functionText", "return cloud:count()");
+  rig.refresh();
+  EXPECT_EQ(rig.widgets()["framePlotPreview"]["chart_placeholder"].dump().find("Scene view"), std::string::npos);
 }
 
 TEST(TransformEditorPreview, ObjectsOnlyHideThePlotAndNumbersOnlyHideTheSceneAndClearTheView) {

@@ -36,6 +36,10 @@ struct RecordingDpHost {
   int validate_calls = 0;
   bool fail_validate = false;
   std::string validate_error = "compile error";  // what a failing validate_data_processor_script says
+  // check_data_processor_script (0.38.0) answers what validate would (VALID / INVALID with validate_error),
+  // or UNCHECKED with check_message when check_unchecked is set. Counted in validate_calls.
+  bool check_unchecked = false;
+  std::string check_message = "not checked: busy";
   bool fail_create = false;
   // Simulate a host that has not heard of any create_data_processor flag bit
   // besides EPHEMERAL (i.e. an older host, pre-HISTORY_EXEMPT): any other bit
@@ -277,6 +281,21 @@ struct RecordingDpHost {
     return true;
   }
 
+  static bool tCheck(
+      void* ctx, PJ_string_view_t kind, PJ_string_view_t language, PJ_string_view_t script, PJ_string_view_t params,
+      uint32_t* out_status, PJ_error_t* err) noexcept {
+    auto* self = static_cast<RecordingDpHost*>(ctx);
+    if (self->check_unchecked) {
+      ++self->validate_calls;
+      self->last_validate_script = toStr(script);
+      PJ::sdk::fillError(err, 1, "test", self->check_message.c_str());
+      *out_status = PJ_SCRIPT_CHECK_UNCHECKED;
+      return true;
+    }
+    *out_status = tValidate(ctx, kind, language, script, params, err) ? PJ_SCRIPT_CHECK_VALID : PJ_SCRIPT_CHECK_INVALID;
+    return true;
+  }
+
   // Ids this fake claims to have live, so the list/remove tools can be driven.
   // Kept separate from what create() recorded: a test needs to say "the host
   // already has these" without pretending this plugin made them here.
@@ -497,6 +516,7 @@ struct RecordingDpHost {
       v.submit_evaluation = &RecordingDpHost::tSubmit;
       v.poll_evaluation = &RecordingDpHost::tPoll;
       v.release_evaluation = &RecordingDpHost::tRelease;
+      v.check_data_processor_script = &RecordingDpHost::tCheck;
       return v;
     }();
     // struct_size stops right before create_data_processor_v2, so

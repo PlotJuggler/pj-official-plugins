@@ -64,6 +64,11 @@ One editor for series and objects.
   healthy again. A Create the host refuses is shown over the preview too, until you edit the form.
 - While the host computes the preview's series, the status line reads "Computing series: 3 / 10"
   on a host that reports its progress.
+- A script the host could not check in time (Python busy or still starting) reads "Not checked
+  yet" with the host's reason, never as accepted; the preview still runs it and its result replaces
+  the note. On the Batch tab the note shows over the source list and Create stays available.
+- When the embedded scene view cannot show an output, the reason is shown over the preview as
+  "Scene view: <topic>: <reason>" until the preview's outputs change.
 
 ### Fixed
 - Renaming a Var also renames it after a Luau concatenation (`"n=" .. cloud`); a field of the same
