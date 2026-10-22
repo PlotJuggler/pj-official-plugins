@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_blf/`.
 
+## [0.1.4] - 2026-10-19
+
+### Fixed
+
+- Dictionaries beside the data are saved relative to it, so a moved or copied layout folder keeps decoding with the DBC next to its data (absolute paths anywhere under the folder that moved, such as a `dbc/` folder next to `data/`, are rebased on replay).
+- A missing or unreadable DBC is reported as "DBC file not found" / "cannot read DBC file" instead of a parse error.
+
 ## [0.1.3] - 2026-09-21
 
 ### Added

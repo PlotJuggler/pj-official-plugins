@@ -114,15 +114,22 @@ add_executable(mf4_source_test
   tests/mf4_reader_test.cpp
   tests/mf4_dialog_test.cpp
   tests/mf4_integration_test.cpp
+  tests/mf4_layout_paths_test.cpp
   mf4_dialog.cpp
 )
 target_compile_features(mf4_source_test PRIVATE cxx_std_20)
 target_compile_options(mf4_source_test PRIVATE ${PJ_WARNING_FLAGS})
+target_compile_definitions(mf4_source_test PRIVATE MF4_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mf4_source_plugin>")
+# mf4_layout_paths_test drives the built plugin.
+add_dependencies(mf4_source_test mf4_source_plugin)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(mf4_source_test PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
 endif()
 # mf4_dialog.cpp includes the headers generated for the plugin target above.
-target_include_directories(mf4_source_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+# common/can_dbc/tests: source_import_harness.hpp (shared layout-path test harness).
+target_include_directories(mf4_source_test PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+  ${CMAKE_CURRENT_LIST_DIR}/../common/can_dbc/tests)
 target_link_libraries(mf4_source_test PRIVATE
   plotjuggler_sdk::plugin_host
   mf4_core
