@@ -5,7 +5,9 @@ streaming using the PJ binary protocol.
 
 ## Features
 
-- WebSocket connection with configurable address and port
+- WebSocket connection to an address and port, or to a full `ws://` / `wss://` URL
+  (see [Connection settings](#connection-settings))
+- Runs on the desktop (IXWebSocket) and in the browser build (`<emscripten/websocket.h>`)
 - Topic discovery with periodic refresh (~1s) while dialog is open
 - Case-insensitive topic filter in the dialog (matches name and type)
 - Binary frame parsing: ZSTD-compressed multi-message payloads
@@ -13,6 +15,27 @@ streaming using the PJ binary protocol.
 - Parser options: array size, clamp/skip, embedded timestamp
 - Connection-global pause/resume and a ~1 Hz heartbeat keep-alive
 - **Demand-driven per-topic subscriptions** (`pj.topic_subscription.v1`) — see below
+
+## Connection settings
+
+| Key | Meaning |
+|---|---|
+| `url` | Full `ws://` or `wss://` URL, path included (e.g. `wss://robot.local:8443/bridge`). When present it replaces `address`/`port`; anything else is rejected when the configuration is loaded. |
+| `address`, `port` | Used only when `url` is absent: the source connects to `ws://<address>:<port>` (default `127.0.0.1:9090`, the bridge server's default port). |
+
+In the dialog, type either a host name (with the Port field) or a full URL into the
+address field; the transport indicator follows the URL's scheme. A configuration saved
+without `url` behaves exactly as before. After Connect, the dialog retries a refused,
+unanswered (5 s per attempt) or dropped connection with a backoff from 1 s up to 10 s
+until it connects or the user presses Cancel; the label under the address shows
+connecting, retrying in N s with the last error, or connected.
+
+Starting the stream never waits for the network: `start()` only begins connecting, and
+each poll advances the connection from *connecting* (5 s deadline) to *discovery*
+(`get_topics` in demand mode, or the legacy `subscribe` and its 5 s response deadline)
+to *streaming*. A connection that cannot open, closes, or errors stops the stream with
+one error naming the URL; later events never replace that first error. When the dialog
+is already connected on OK, the source adopts that connection instead of dialing again.
 
 ## Protocol
 
@@ -57,13 +80,31 @@ the subscribe list. In demand mode that same selection becomes an **optional
 advertise filter** — leave it empty to advertise (and let the host subscribe to)
 everything.
 
-### Threading
+### Threading and transport
 
-Inbound WebSocket text frames (subscribe responses, `topics_changed`,
-`get_topics`) are queued on the socket thread and processed on the poll thread,
-so parser bindings are only ever created and read from the poll thread. Binary
-data frames are queued the same way. The desired-topic set from the host is held
-in a mutex-protected latest-wins slot and drained on the poll thread.
+`pj_bridge_websocket.hpp` is the plugin's transport contract; the build picks the
+backend by source file (`pj_bridge_websocket_native.cpp` or
+`pj_bridge_websocket_wasm.cpp`).
+
+- Every transport event (open, text and binary frames, close, error) is copied into
+  one bounded FIFO, `BridgeEventQueue`, and processed in arrival order on the poll
+  thread (on the dialog's tick while the dialog owns the connection), so parser
+  bindings are only ever created and read from the poll thread.
+- The queue holds at most 512 MiB of unprocessed data frames on the desktop and 64 MiB
+  in the browser. When the poll thread falls behind, the OLDEST data frames are dropped
+  (the newest is always kept) and one warning reports the running count, repeated at
+  most every 5 s; the stream keeps running. Control events (open, text, close, error)
+  are never dropped. A PJRB frame is self-contained, so a drop leaves a gap in the plots,
+  never a broken stream. A dropped frame of a latched or one-shot topic (`/tf_static`,
+  `/robot_description`) is not resent, so that data stays missing until the bridge
+  republishes it. The existing 256 MB decompression limit per frame is unchanged.
+- In the browser the WebSocket, its callbacks and every send, close and delete run on
+  the main runtime thread. The worker never waits for it: `stop()` queues the close
+  and returns, because the main thread may be joining that worker.
+- `stop()` is idempotent and closes the queue first, so callbacks that land late are
+  dropped; each start uses a fresh queue.
+- The desired-topic set from the host is held in a mutex-protected latest-wins slot
+  and drained on the poll thread once the connection is open.
 
 ## Compatibility policy
 
@@ -157,4 +198,4 @@ mixed server and the mcap player, which advertise a fixed topic set).
 - No per-topic rate limiting (`max_rate_hz`) — the wire protocol supports it, but
   it is not yet exposed.
 - No automatic reconnection: if the connection drops mid-stream the source stops
-  rather than retrying.
+  with an error rather than retrying (browsers offer no reconnection either).
