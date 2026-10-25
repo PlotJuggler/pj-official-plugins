@@ -3,12 +3,12 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <optional>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
+#include <pj_can_dbc/dictionary_paths.hpp>
 #include <pj_can_dbc/signal_row.hpp>
 #include <string>
 #include <string_view>
@@ -118,14 +118,13 @@ class CandumpSource : public PJ::FileSourceBase {
       for (const auto& path : paths) {
         PJ::Status status;
         if (endsWithCsv(path)) {
-          std::ifstream csv_file(path);
-          if (!csv_file.is_open()) {
-            status = PJ::unexpected(std::string("cannot open dictionary: ") + path);
+          auto csv_text = pj_can_dbc::readAuxFile(path, "dictionary");
+          if (!csv_text) {
+            status = PJ::unexpected(csv_text.error());
           } else {
-            const std::string csv_text((std::istreambuf_iterator<char>(csv_file)), std::istreambuf_iterator<char>());
             std::string dbc_text;
             std::string warnings;
-            status = candump_detail::arusCsvToDbc(csv_text, dbc_text, warnings);
+            status = candump_detail::arusCsvToDbc(*csv_text, dbc_text, warnings);
             if (status) {
               status = decoder.loadDbcString(dbc_text);
             }

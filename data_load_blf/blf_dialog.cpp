@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <nlohmann/json.hpp>
+#include <pj_can_dbc/dictionary_paths.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
 
@@ -61,10 +62,13 @@ std::string BlfDialog::saveConfig() const {
   nlohmann::json mapping = nlohmann::json::object();
   for (const auto& [channel, paths] : channel_dbcs_) {
     if (!paths.empty()) {
-      mapping[std::to_string(channel)] = paths;
+      mapping[std::to_string(channel)] = pj_can_dbc::toConfigPaths(paths, filepath_);
     }
   }
   cfg["channel_dbcs"] = mapping;
+  if (const std::string base = pj_can_dbc::auxBaseDir(filepath_); !mapping.empty() && !base.empty()) {
+    cfg[pj_can_dbc::kAuxBaseDirKey] = base;
+  }
   return cfg.dump();
 }
 
@@ -74,6 +78,9 @@ bool BlfDialog::loadConfig(std::string_view config_json) {
     return false;
   }
   filepath_ = cfg.value("filepath", std::string{});
+  const pj_can_dbc::AuxPathContext context{
+      filepath_, cfg.value(pj_can_dbc::kSavedFilepathKey, std::string{}),
+      cfg.value(pj_can_dbc::kAuxBaseDirKey, std::string{})};
   channel_dbcs_.clear();
   if (cfg.contains("channel_dbcs") && cfg["channel_dbcs"].is_object()) {
     for (const auto& [key, value] : cfg["channel_dbcs"].items()) {
@@ -87,6 +94,7 @@ bool BlfDialog::loadConfig(std::string_view config_json) {
           paths.push_back(entry.get<std::string>());
         }
       }
+      paths = pj_can_dbc::resolveAuxPaths(paths, context);
     }
   }
   if (!filepath_.empty()) {

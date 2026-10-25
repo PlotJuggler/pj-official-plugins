@@ -55,14 +55,18 @@ add_executable(candump_source_test
   tests/csv_dictionary_test.cpp
   tests/candump_decode_test.cpp
   tests/candump_dialog_test.cpp
+  tests/candump_layout_paths_test.cpp
   candump_dialog.cpp
 )
 target_compile_features(candump_source_test PRIVATE cxx_std_20)
 target_compile_options(candump_source_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(candump_source_test PRIVATE
-  CANDUMP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
+  CANDUMP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data"
+  CANDUMP_SOURCE_PLUGIN_PATH="$<TARGET_FILE:candump_source_plugin>")
+# candump_layout_paths_test drives the built plugin.
+add_dependencies(candump_source_test candump_source_plugin)
 # candump_dialog.cpp includes the headers generated for the plugin target above.
-# common/can_dbc/tests: shared findField() test helper (field_test_helpers.hpp).
+# common/can_dbc/tests: shared test helpers (field_test_helpers.hpp, source_import_harness.hpp).
 target_include_directories(candump_source_test PRIVATE
   ${CMAKE_CURRENT_BINARY_DIR}/generated
   ${CMAKE_CURRENT_LIST_DIR}/../common/can_dbc/tests)

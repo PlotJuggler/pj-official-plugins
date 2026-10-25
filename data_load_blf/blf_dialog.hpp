@@ -28,6 +28,8 @@ class BlfDialog : public PJ::DialogPluginTyped {
   const std::string& filePath() const {
     return filepath_;
   }
+  // Resolved paths to open (relative entries already joined to the current data
+  // file's directory); the saved config stores the portable form instead.
   const std::map<std::uint16_t, std::vector<std::string>>& channelDbcs() const {
     return channel_dbcs_;
   }
