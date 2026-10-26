@@ -1,0 +1,114 @@
+name: CI Widgets
+
+# Widget-family libraries (widget_basic) are the only plugins that link Qt. They get their own
+# lane, with the official Qt named in QT_VERSION installed, so that every other CI lane stays
+# Qt-free; the Qt-free lanes skip them (see "List plugins" in ci-linux.yml). The host loads a widget
+# library only when it was built against the same Qt major.minor, which is why Qt comes from the
+# official installer and not from Conan or the distribution.
+#
+# Two legs only: Ubuntu 22.04 (the host needs GLIBCXX_3.4.30 and no newer) and Windows with MSVC
+# 14.44 (windows-2022, as in ci-windows.yml).
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'widget_*/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'build.sh'
+      - 'conanfile.py'
+      - 'scripts/ensure_core.sh'
+      - 'scripts/release_tools.py'
+      - 'SDK_VERSION'
+      - 'QT_VERSION'
+      - '.github/actions/install-qt/**'
+      - '.github/workflows/ci-widgets.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'widget_*/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'build.sh'
+      - 'conanfile.py'
+      - 'scripts/ensure_core.sh'
+      - 'scripts/release_tools.py'
+      - 'SDK_VERSION'
+      - 'QT_VERSION'
+      - '.github/actions/install-qt/**'
+      - '.github/workflows/ci-widgets.yml'
+
+concurrency:
+  group: ci-widgets-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  widgets:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            qt_arch: linux_gcc_64
+            arch: x86_64
+          - runner: windows-2022
+            qt_arch: win64_msvc2022_64
+            arch: x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Conan
+        uses: conan-io/setup-conan@v1.3.0
+        with:
+          cache_packages: true
+
+      - name: Install cmake and ninja
+        # ninja 1.13.0 corrupts MSVC link response files; see ci-windows.yml.
+        run: pip install cmake "ninja==1.11.1.4"
+
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Read pinned Qt version
+        id: qt
+        shell: bash
+        run: echo "version=$(tr -d '[:space:]' < QT_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Qt ${{ steps.qt.outputs.version }} (official)
+        # Sets QT_ROOT_DIR, which widget_basic/CMakeLists.txt uses as a find_package hint.
+        uses: ./.github/actions/install-qt
+        with:
+          version: ${{ steps.qt.outputs.version }}
+          arch: ${{ matrix.qt_arch }}
+
+      - name: Detect Conan profile
+        shell: bash
+        run: conan profile detect --force
+
+      - name: Configure PlotJuggler JFrog Conan remote
+        if: github.repository == 'PlotJuggler/pj-official-plugins'
+        env:
+          JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+        shell: bash
+        run: scripts/configure_jfrog_conan.sh
+
+      - name: Acquire plotjuggler_sdk (JFrog -> source fallback)
+        shell: bash
+        run: scripts/ensure_core.sh
+
+      - name: Build widget_basic
+        shell: bash
+        run: ./build.sh widget_basic
+
+      - name: Test widget_basic
+        shell: bash
+        run: ctest --test-dir build/widget_basic/Release --output-on-failure -V

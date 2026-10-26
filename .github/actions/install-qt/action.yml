@@ -1,0 +1,30 @@
+name: Install Qt
+description: Official Qt from the Qt installer, plus the runtime libraries it needs on Linux.
+
+inputs:
+  version:
+    description: Qt version; must match the major.minor of the host
+    required: true
+  arch:
+    description: Qt architecture, e.g. linux_gcc_64 or win64_msvc2022_64
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: ${{ inputs.version }}
+        arch: ${{ inputs.arch }}
+        cache: true
+        # Same aqt pin as PlotJuggler 4's CI: released aqt (3.3.0) cannot resolve the
+        # new repo layout of Qt 6.12 on Windows ("Failed to locate XML data").
+        aqtsource: git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b
+
+    - name: Install Qt runtime libraries (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1-mesa-dev libxkbcommon0 libfontconfig1 libegl1

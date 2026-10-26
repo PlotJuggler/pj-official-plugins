@@ -5,6 +5,7 @@
 #   cmake -DPLUGIN_SO=<path/to/plugin.so>
 #         -DREQUIRED_EXPORTS=<sym1,sym2,...>
 #         [-DNM_TOOL=<toolchain nm>]
+#         [-DFORBID_QT=ON [-DREADELF_TOOL=<toolchain readelf>]]
 #         -P CheckElfPluginExports.cmake
 #
 # Fails the build when:
@@ -16,6 +17,10 @@
 #   2. any of REQUIRED_EXPORTS (comma-separated) is missing from the dynamic
 #      symbol table — catches an over-aggressive export allowlist that would
 #      make the host reject the plugin at the ABI handshake.
+#   3. with FORBID_QT=ON, the DSO lists any libQt6* in its DT_NEEDED entries.
+#      Only Widget-family plugins may link Qt: the host loads them under a
+#      same-major.minor Qt policy, and any other family has no such contract,
+#      so a Qt dependency there would load against whatever Qt the host has.
 
 if(NOT PLUGIN_SO OR NOT REQUIRED_EXPORTS)
   message(FATAL_ERROR "CheckElfPluginExports: PLUGIN_SO and REQUIRED_EXPORTS are required")
@@ -58,5 +63,28 @@ foreach(_symbol IN LISTS _required)
       "Check the version script's global list.")
   endif()
 endforeach()
+
+if(FORBID_QT)
+  if(NOT READELF_TOOL)
+    set(READELF_TOOL readelf)
+  endif()
+  execute_process(
+    COMMAND "${READELF_TOOL}" -d "${PLUGIN_SO}"
+    OUTPUT_VARIABLE _dynamic
+    ERROR_VARIABLE _readelf_err
+    RESULT_VARIABLE _readelf_rc
+  )
+  if(NOT _readelf_rc EQUAL 0)
+    message(FATAL_ERROR
+      "CheckElfPluginExports: ${READELF_TOOL} -d failed on ${PLUGIN_SO} (rc=${_readelf_rc}): ${_readelf_err}")
+  endif()
+  string(REGEX MATCHALL "\\(NEEDED\\)[^\n]*libQt6[^\n]*" _qt_needed "${_dynamic}")
+  if(_qt_needed)
+    list(JOIN _qt_needed "\n  " _qt_needed_text)
+    message(FATAL_ERROR
+      "CheckElfPluginExports: ${PLUGIN_SO} links Qt, which only Widget-family plugins may do:\n"
+      "  ${_qt_needed_text}")
+  endif()
+endif()
 
 message(STATUS "CheckElfPluginExports: ${PLUGIN_SO} — 0 unique symbols, all required exports present")

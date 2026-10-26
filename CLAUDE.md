@@ -83,6 +83,7 @@ Each plugin is a shared library (`.so`) loaded at runtime:
 
 - **DataSource plugins** — file importers (`FileSourceBase`) or streaming sources (`StreamSourceBase`)
 - **MessageParser plugins** — decode raw bytes into named fields (`MessageParserPluginBase`)
+- **Widget plugins** — dockable Qt widgets (`WidgetPluginBase`, `PJ_WIDGET_PLUGIN`), the only family that links Qt (`widget_basic/`). Every other plugin is gated Qt-free: `pj_harden_plugin_exports` runs `cmake/CheckElfPluginExports.cmake` with `FORBID_QT=ON` on Linux, which fails on any `libQt6*` DT_NEEDED unless `REQUIRED_EXPORTS` contains `PJ_get_widget_vtable`. Widgets build against the official Qt matching the host's major.minor (`QT_ROOT_DIR`, see `widget_basic/CMakeLists.txt`), not Conan; the repo-root `QT_VERSION` file pins that Qt for CMake and CI; the aggregate build skips them unless `-DPJ_BUILD_WIDGETS=ON`; CI is `ci-widgets.yml` (Ubuntu 22.04 and windows-2022 only).
 
 Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER_PLUGIN(Class, manifest_json)`, `PJ_DIALOG_PLUGIN(DialogClass, manifest_json)` (two-arg form requires plotjuggler_sdk >= 0.18.0 on MSVC).
 
