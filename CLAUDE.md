@@ -104,8 +104,12 @@ The core version is **not** pinned in CMake — `find_package` resolves whatever
 `SDK_VERSION` selects the SDK used to **build** every plugin. Each plugin's
 `manifest.json` must separately declare `min_sdk_required`: the oldest **host SDK
 contract** that the plugin requires. These values are independent. Official SDK
-pins and minimums name stable releases (`X.Y.Z`). `min_plotjuggler_version` is a
-separate application-version requirement.
+pins and minimums name released SDKs: `X.Y.Z`, or a development pre-release
+`X.Y.Z-dev.N` when it is the only release with a surface the build needs (the pin
+must then be that exact version, since Conan ranges skip pre-releases). Precedence
+is semver's: `X.Y.Z-dev.N` < `X.Y.Z`, so a host built from `0.38.0-dev.1` rejects a
+plugin requiring `0.38.0`. `min_plotjuggler_version` is a separate
+application-version requirement.
 
 **Before opening or updating a PR:**
 

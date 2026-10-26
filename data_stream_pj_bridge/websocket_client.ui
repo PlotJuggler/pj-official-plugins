@@ -58,7 +58,7 @@
         <font><pointsize>11</pointsize><bold>false</bold></font>
        </property>
        <property name="text">
-        <string>Address</string>
+        <string>Address or URL</string>
        </property>
       </widget>
      </item>
@@ -90,6 +90,12 @@
      </item>
      <item row="1" column="1">
       <widget class="QLineEdit" name="lineEditAddress">
+       <property name="placeholderText">
+        <string>host, or ws:// / wss:// URL</string>
+       </property>
+       <property name="toolTip">
+        <string>A host name or IP address (used with Port), or a full ws:// or wss:// URL including any path, e.g. wss://robot.local:8443/bridge</string>
+       </property>
        <property name="minimumSize">
         <size>
          <width>0</width>
@@ -113,7 +119,16 @@
      <item row="1" column="0">
       <widget class="QComboBox" name="comboBoxTransport">
        <property name="enabled"><bool>false</bool></property>
+       <!-- Indicator only: the scheme follows a URL typed into lineEditAddress. -->
        <item><property name="text"><string>ws://</string></property></item>
+       <item><property name="text"><string>wss://</string></property></item>
+      </widget>
+     </item>
+     <item row="2" column="0" colspan="4">
+      <!-- Connecting / retrying in N s with the last error / connected; empty when idle. -->
+      <widget class="QLabel" name="labelConnectionStatus">
+       <property name="text"><string/></property>
+       <property name="wordWrap"><bool>true</bool></property>
       </widget>
      </item>
     </layout>

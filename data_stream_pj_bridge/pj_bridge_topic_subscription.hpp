@@ -43,19 +43,6 @@ namespace PJ::BridgeProtocol {
 /// (nullopt), so a poll pass that finds nothing new is a cheap no-op.
 using DesiredTopicsSlot = PJ::sdk::LatestValueSlot<std::set<std::string>>;
 
-/// Mutex-protected FIFO for the socket-thread → poll-thread handoff of inbound
-/// TEXT frames (subscribe responses, topics_changed, get_topics responses).
-///
-/// THREADING CONTRACT — this is the fix for the demand-mode data race: parser
-/// bindings (`bindings_`) are created while decoding a subscribe response and
-/// read while draining binary data frames. Both must happen on the SAME (poll)
-/// thread. The ixwebsocket callback runs on the socket thread, so it may only
-/// ENQUEUE text frames here; the poll thread drains them in arrival order and
-/// does all binding work. push() is socket-thread; drain() is poll-thread.
-/// FIFO order is preserved so a topics_changed that supersedes an earlier one
-/// is applied last.
-using TextFrameQueue = PJ::sdk::DrainQueue<std::string>;
-
 /// Result of computeSubscriptionDiff: which topics to newly subscribe and which
 /// to drop, to reconcile the source's current subscriptions with a desired
 /// active-topic set. Each list maps to ONE wire command (`subscribe` is

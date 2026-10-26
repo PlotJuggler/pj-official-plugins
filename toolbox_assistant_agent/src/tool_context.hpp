@@ -12,15 +12,22 @@ namespace assistant_agent {
 // the text (usually compact JSON) the model reads; `ok=false` marks a failure
 // the model should see and react to (e.g. a rejected transform), NOT a plugin
 // crash — errors are data here, never exceptions across the ABI.
+struct ToolContext;
+
 struct ToolResult {
   bool ok = true;
   std::string content;
+  // GUI tick continuation; empty once the model-facing result is terminal.
+  std::function<ToolResult(ToolContext&)> resume;
 
   static ToolResult success(std::string content) {
-    return {true, std::move(content)};
+    return {true, std::move(content), {}};
+  }
+  static ToolResult deferred(std::function<ToolResult(ToolContext&)> continuation) {
+    return {true, {}, std::move(continuation)};
   }
   static ToolResult failure(std::string content) {
-    return {false, std::move(content)};
+    return {false, std::move(content), {}};
   }
 };
 

@@ -87,7 +87,7 @@ _sys.path.insert(0, str(Path(__file__).resolve().parent / "vendor"))
 import feature_floor_check as floor_core  # noqa: E402
 
 SEMVER_REGEX = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?(?:\+([a-zA-Z0-9.-]+))?$")
-SDK_VERSION_REGEX = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}")
+SDK_VERSION_REGEX = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}(?:-dev\.(?:0|[1-9][0-9]*))?")
 
 
 # =============================================================================
@@ -261,15 +261,22 @@ def validate_manifest(manifest: dict) -> list[str]:
 def validate_sdk_minimum(manifest: dict, sdk_version: str) -> list[str]:
     """Validate explicit official-plugin minimums, not inferred feature usage.
 
-    Official SDK pins and minimums name stable releases (X.Y.Z).
+    Official SDK pins and minimums name released SDKs: X.Y.Z, or a development
+    pre-release X.Y.Z-dev.N (semver precedence: X.Y.Z-dev.N < X.Y.Z).
     """
     minimum = manifest.get("min_sdk_required")
     for label, version in (("min_sdk_required", minimum), ("SDK_VERSION", sdk_version)):
         if not isinstance(version, str) or not SDK_VERSION_REGEX.fullmatch(version):
-            return [f"{label} must name a stable SDK release (X.Y.Z), got {version!r}"]
-    if tuple(map(int, minimum.split("."))) > tuple(map(int, sdk_version.split("."))):
+            return [f"{label} must name an SDK release (X.Y.Z or X.Y.Z-dev.N), got {version!r}"]
+    if sdk_precedence(minimum) > sdk_precedence(sdk_version):
         return [f"min_sdk_required {minimum} exceeds build SDK_VERSION {sdk_version}"]
     return []
+
+
+def sdk_precedence(version: str) -> tuple:
+    """Sort key of a validated SDK version: a dev pre-release sorts before its release."""
+    numbers, _, dev = version.partition("-dev.")
+    return tuple(map(int, numbers.split("."))), 0 if dev else 1, int(dev or 0)
 
 
 def validate_manifest_file(manifest_path: Path) -> tuple[dict | None, list[str]]:
