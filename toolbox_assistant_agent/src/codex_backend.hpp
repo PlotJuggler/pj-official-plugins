@@ -5,6 +5,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "claude_sessions.hpp"  // ConversationSummary, for listConversations()
@@ -68,6 +69,14 @@ class CodexBackend : public LlmBackend {
   void cancel() override;
   [[nodiscard]] std::string name() const override;
 
+  // The instructions written to model_instructions_file (plus the
+  // no-sub-agents addendum); assistantInstructions() unless replaced. Only the
+  // benchmark runner replaces them, to measure without the product policy.
+  // Must be called before the first turn: the file is written once.
+  void setInstructions(std::string instructions) {
+    instructions_ = std::move(instructions);
+  }
+
   // Probe: `<cli> --version` exits 0.
   [[nodiscard]] BackendTestResult testConnection() const override;
 
@@ -94,7 +103,7 @@ class CodexBackend : public LlmBackend {
 
  private:
   bool ensureWorkDir(std::string& error);
-  // Lazily writes kSystemPrompt, plus the no-sub-agents addendum, to a
+  // Lazily writes instructions_, plus the no-sub-agents addendum, to a
   // private mkstemp 0600 file, memoized for the life of this backend and
   // unlinked in the destructor. `model_instructions_file` is Codex's
   // replacement for its own "You are Codex" persona, the same job
@@ -103,6 +112,7 @@ class CodexBackend : public LlmBackend {
 
   std::string cli_path_;
   std::string model_;
+  std::string instructions_;
   std::shared_ptr<HarnessMemory> memory_;  // never null after construction
   TurnMetrics last_metrics_;
   McpLoopback mcp_;

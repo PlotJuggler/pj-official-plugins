@@ -142,6 +142,17 @@ tight even for bare counts falls back to the older two-step degradation (full tr
 names only), and it says so explicitly when truncated. That last part matters — a model that
 believes an incomplete listing is complete will confidently tell the user a signal does not exist.
 
+A second block rides ahead of it: the "PlotJuggler features" listing (README, "Feature
+awareness"). It has its own hash in `HarnessMemory`, so loading a file does not re-send the plugin
+list and enabling a plugin does not re-send the loaded data; a changed listing carries
+"(The PlotJuggler features listing changed.)". Neither block may contain a blank line, because
+`stripCatalogPrefix` (`session_text.hpp`) finds the end of each by the first one when it replays a
+transcript; host strings are flattened to one line for that reason. It recognizes a features block
+by its whole header line (`isFeaturesHeader`, the same constants the producers use), so a message of
+the user's that merely opens with "PlotJuggler features" is kept. A turn that fails before the model
+answers with text or a tool call (the CLI not logged in, say) restores both hashes and
+`resumed_pending` (`restoreSentListings`), so the retry carries both blocks again.
+
 ## The Codex backend
 
 Per turn it spawns `codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules
@@ -515,8 +526,8 @@ after a turn completes) would silently drop every row's trash can.
 **A resumed conversation refreshes current state.** The loaded layout and the set of tabs owned by
 this plugin may differ from what the transcript describes; `--resume` still replays that earlier
 history. So `switchToConversation` sets `HarnessMemory::resumed_pending`, which forces
-`composePayload` (`harness_memory.hpp`, shared by every backend) to re-send the catalog on the very
-next turn with a note instead of silence:
+`composePayload` (`harness_memory.hpp`, shared by every backend) to re-send both listings (features
+and catalog) on the very next turn, the catalog with a note instead of silence:
 *"Resumed conversation. The tabs you composed earlier may no longer exist; plot_tab with action list reports the ones that do. The listing above is the
 data loaded now."* Consumed once, the same way the ordinary "the loaded data changed" note is.
 

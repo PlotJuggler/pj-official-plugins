@@ -55,6 +55,12 @@ class AssistantToolbox : public PJ::ToolboxPluginBase {
     dialog_.setViewportProvider([this]() { return viewport_view_; });
     plot_tabs_view_ = services.get<PJ::sdk::PlotTabHostService>().value_or(PJ::sdk::PlotTabHostView{});
     dialog_.setPlotTabsProvider([this]() { return plot_tabs_view_; });
+    // What the host offers (pj.feature_catalog.v1): built-in features, the
+    // plugins loaded, installed or installable. Optional — a host without it
+    // (SDK < 0.39.0) leaves the view unbound and every turn carries the
+    // reference built into this plugin instead (fallback_features.hpp).
+    feature_catalog_view_ = services.get<PJ::sdk::FeatureCatalogService>().value_or(PJ::sdk::FeatureCatalogView{});
+    dialog_.setFeatureCatalogProvider([this]() { return feature_catalog_view_; });
     // Optional pj.settings.v1 store (QSettings-like persistence). An unbound
     // view reads defaults / drops writes, so this is safe when the host omits it.
     dialog_.setSettings(services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{}));
@@ -71,6 +77,7 @@ class AssistantToolbox : public PJ::ToolboxPluginBase {
   PJ::sdk::PlaybackHostView playback_view_;
   PJ::sdk::ViewportHostView viewport_view_;
   PJ::sdk::PlotTabHostView plot_tabs_view_;
+  PJ::sdk::FeatureCatalogView feature_catalog_view_;
 };
 
 }  // namespace assistant_agent

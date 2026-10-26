@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "claude_sessions.hpp"  // ConversationSummary, for listConversations()
@@ -59,6 +60,13 @@ class ClaudeBackend : public LlmBackend {
   void cancel() override;
   [[nodiscard]] std::string name() const override;
 
+  // The instructions passed as --append-system-prompt; assistantInstructions()
+  // (system prompt + product policy) unless replaced. Only the benchmark
+  // runner replaces them, to measure without the policy.
+  void setInstructions(std::string instructions) {
+    instructions_ = std::move(instructions);
+  }
+
   // Probe: `<cli> --version` exits 0.
   [[nodiscard]] BackendTestResult testConnection() const override;
 
@@ -105,6 +113,7 @@ class ClaudeBackend : public LlmBackend {
 
   std::string cli_path_;
   std::string model_;
+  std::string instructions_;
   std::shared_ptr<HarnessMemory> memory_;  // never null after construction
   TurnMetrics last_metrics_;
   bool rate_limited_ = false;

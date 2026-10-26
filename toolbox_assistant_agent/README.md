@@ -100,6 +100,27 @@ The catalog digest handed to the model at the top of every turn is sized by the 
 `assistant.catalog_budget_chars` (characters, default 10000, clamped to 1000–200000) — not exposed
 in the Settings dialog; set it in the settings store before launching PlotJuggler.
 
+### Feature awareness
+
+Questions about PlotJuggler itself ("how do I show an image?", "how do I use MQTT?") are answered
+from a "PlotJuggler features" listing sent ahead of the catalog digest: built-in features and their
+entry points, known limitations, the plugins loaded, installed but not active, and available in the
+Extensions Marketplace. The host supplies it through the optional `pj.feature_catalog.v1` service
+(SDK >= 0.39.0); the plugin renders it as plain text (`src/features_digest.cpp`) and re-sends it only
+when it changes. On a host without the service, or when its document cannot be read (a newer
+schema, invalid JSON), the plugin sends a short reference for PlotJuggler 4.1 it carries itself
+(`src/fallback_features.hpp`), which never claims what is installed. The system prompt adds a
+product policy (`kProductPolicy`, `src/system_prompt.hpp`) telling the model to answer from that
+listing and not from what it remembers of PlotJuggler 3.
+
+The listing is sized by the settings key `assistant.features_budget_chars` (characters, default
+20000, clamped to 5000–200000 so that the built-in reference, which is never trimmed, always fits;
+not in the Settings dialog). Over budget, Marketplace descriptions go first, then Marketplace
+entries; built-in features, limitations and installed plugins are never dropped without saying so.
+
+Privacy: like the catalog digest, the listing goes to the model provider of the backend you chose,
+so the provider sees which PlotJuggler version and plugins you have installed.
+
 ### Past conversations
 
 The **☰** button at the left of the panel's title bar (next to the settings gear) opens a
@@ -167,13 +188,20 @@ ctest --test-dir build/toolbox_assistant_agent/Release --output-on-failure
 
 The plugin lands in `build/toolbox_assistant_agent/Release/bin/`.
 
-The offline suite needs no network and no model. Two targets are opt-in because they spawn the
+The offline suite needs no network and no model. Three targets are opt-in because they spawn the
 real CLI and spend your subscription:
 
 ```bash
 ASSISTANT_CLAUDE_SMOKE=1 ctest --test-dir build/toolbox_assistant_agent/Release -R ClaudeSmoke
 ASSISTANT_CODEX_SMOKE=1  ctest --test-dir build/toolbox_assistant_agent/Release -R CodexBackend
+ASSISTANT_FEATURES_EVAL=claude ASSISTANT_FEATURES_EVAL_OUT=/tmp/features.jsonl \
+  ctest --test-dir build/toolbox_assistant_agent/Release -R FeaturesEval --timeout 3600
+python3 -I docs/benchmarks/features/score.py /tmp/features.jsonl
 ```
+
+The last one is the feature-awareness benchmark (`tests/features_eval_test.cpp`; its header lists
+the other `ASSISTANT_FEATURES_EVAL_*` variables, including `_BASELINE=1` to measure without the
+policy and the listing).
 
 Object evaluations yield between GUI ticks while the host reports `PENDING`.
 Completion, failure, cancellation, deadline expiry and panel teardown release

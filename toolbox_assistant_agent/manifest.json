@@ -1,8 +1,8 @@
 {
   "id": "toolbox-assistant-agent",
   "name": "Assistant Agent",
-  "version": "0.3.0",
-  "description": "A chat assistant that drives PlotJuggler through the plugin SDK: lists and describes topics and objects (point clouds, scene entities...), reads series statistics and evaluates computations over objects, and creates derived timeseries, objects, markers, plot tabs and 3D/2D scene views it owns. Uses the Claude Code or Codex CLI already installed and signed in on your machine; the plugin stores no API keys. Linux, macOS and Windows.",
+  "version": "0.4.0",
+  "description": "A chat assistant inside PlotJuggler: ask about your topics, signals and objects (point clouds, images, scene entities), get their statistics, ask how to do something in PlotJuggler, and have it create its own derived series and objects, markers, plot tabs and 2D/3D scene views. It uses the Claude Code or Codex command-line tool already installed and signed in on your machine; the plugin stores no API keys. Linux, macOS and Windows.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
@@ -19,7 +19,7 @@
   ],
   "min_sdk_required": "0.34.0",
   "min_plotjuggler_version": "4.0.0",
-  "suggested_sdk_version": "0.38.0",
-  "floor_test": "ToolRegistry.ListTopicsFallsBackToV1AndSaysSo",
+  "suggested_sdk_version": "0.39.0",
+  "floor_test": "AssistantDialogFeatures.WithoutTheHostServiceEveryTurnCarriesTheBuiltInReference",
   "badge": "AI"
 }
