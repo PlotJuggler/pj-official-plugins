@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../../common/builtin_object_compat.hpp"
+#include "../../data_stream_ros2/ros2_type_name.hpp"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/grid_map_codec.hpp"
 #include "pj_base/sdk/service_traits.hpp"
@@ -133,6 +134,29 @@ module pkg {
 )";
 
 // ---- Tests ----
+
+TEST(RosParserTest, StreamedActionFeedbackSchema) {
+  RosParserFixture f;
+  f.setUp();
+  // The streamer resolves typesupport with action/ but emits package/Type fields.
+  const auto feedback =
+      ros2_streamer::schemaTypeName(ros2_streamer::interfaceTypeName("pj_ros2_schema_probe::action", "Drive_Feedback"));
+  const std::string schema =
+      "unique_identifier_msgs/UUID goal_id\n" + feedback + " feedback\n================\nMSG: " + feedback +
+      "\nfloat64 remaining\n================\nMSG: unique_identifier_msgs/UUID\nuint8[16] uuid\n";
+  ASSERT_TRUE(f.bindSchema("pj_ros2_schema_probe/action/Drive_FeedbackMessage", schema));
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    for (int i = 0; i < 16; ++i) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(static_cast<uint8_t>(0)));
+    }
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(42.5));
+  });
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto* remaining = f.recorder.findField(f.recorder.rows().front(), "/feedback/remaining");
+  ASSERT_NE(remaining, nullptr);
+  EXPECT_DOUBLE_EQ(remaining->numeric, 42.5);
+}
 
 TEST(RosParserTest, SimpleScalarMessage) {
   RosParserFixture f;
