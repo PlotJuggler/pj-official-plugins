@@ -419,7 +419,7 @@ def main():
     parser = argparse.ArgumentParser(description="PJ Bridge protocol self-test client")
     parser.add_argument("url", nargs="?", default=None, help="ws://HOST:PORT (default ws://<host>:<port>)")
     parser.add_argument("--host", default="localhost")
-    parser.add_argument("--port", type=int, default=9871)
+    parser.add_argument("--port", type=int, default=9090)
     parser.add_argument("--expect-late-topic", default=None,
                         help="Topic name the server advertises late (test server --late-topic)")
     parser.add_argument("--late-timeout", type=float, default=8.0,
