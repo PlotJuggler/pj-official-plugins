@@ -57,7 +57,7 @@ class AssistantToolbox : public PJ::ToolboxPluginBase {
     dialog_.setPlotTabsProvider([this]() { return plot_tabs_view_; });
     // What the host offers (pj.feature_catalog.v1): built-in features, the
     // plugins loaded, installed or installable. Optional — a host without it
-    // (SDK < 0.38.0) leaves the view unbound and every turn carries the
+    // (SDK < 0.39.0) leaves the view unbound and every turn carries the
     // reference built into this plugin instead (fallback_features.hpp).
     feature_catalog_view_ = services.get<PJ::sdk::FeatureCatalogService>().value_or(PJ::sdk::FeatureCatalogView{});
     dialog_.setFeatureCatalogProvider([this]() { return feature_catalog_view_; });

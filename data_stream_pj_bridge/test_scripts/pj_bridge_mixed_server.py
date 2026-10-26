@@ -44,7 +44,7 @@ from pj_bridge_protocol import (  # noqa: E402
     topic_entry,
 )
 
-PORT = 9871
+PORT = 9090
 HOST = "localhost"
 MAGIC = 0x42524A50  # "PJRB" LE
 

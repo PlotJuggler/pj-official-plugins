@@ -43,7 +43,7 @@ inline constexpr std::size_t kMinFeaturesBudgetChars = 5000;
 
 // The block for one turn: the host's document when the service is bound and
 // answers, the built-in reference otherwise (an unbound view is a host older
-// than SDK 0.38.0, which is the floor case manifest.json's floor_test covers).
+// than SDK 0.39.0, which is the floor case manifest.json's floor_test covers).
 // GUI thread only, like every host view.
 [[nodiscard]] std::string featuresBlock(const PJ::sdk::FeatureCatalogView& view, std::size_t budget_chars);
 

@@ -1180,7 +1180,7 @@ TEST(AssistantDialogCatalogBudget, AbsentKeyReproducesTheDefaultBudgetDigestByte
 
 // --- Feature awareness ------------------------------------------------------
 
-// manifest.json's floor_test. On a host older than SDK 0.38.0 there is no
+// manifest.json's floor_test. On a host older than SDK 0.39.0 there is no
 // pj.feature_catalog.v1: services.get<FeatureCatalogService>() fails and
 // assistant_toolbox.cpp binds an empty FeatureCatalogView, which is exactly
 // what this provider returns. The turn must still carry a features block --

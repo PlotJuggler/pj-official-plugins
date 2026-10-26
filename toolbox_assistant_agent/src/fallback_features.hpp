@@ -10,7 +10,7 @@
 namespace assistant_agent {
 
 // The "PlotJuggler features" block used when the host has no
-// pj.feature_catalog.v1 service (a host older than SDK 0.38.0) or its
+// pj.feature_catalog.v1 service (a host older than SDK 0.39.0) or its
 // document cannot be used (featuresDigest, features_digest.hpp). Without it
 // the model answers product questions from its PlotJuggler 3 training.
 //
@@ -37,7 +37,8 @@ inline constexpr std::string_view kFallbackFeaturesBody =
     "extensions; enabling or disabling takes effect after a restart. Installed list: Help → Installed Extensions.\n"
     "- Datasets panel: lists the loaded datasets, topics and series. Filter... filters by name; right-click a "
     "dataset for Info, Merge, Reload, Replace or Remove.\n"
-    "- Custom Series: Custom Series panel → + (Add custom series) opens the Transform Editor (Lua functions).\n"
+    "- Custom Topics: Custom Topics panel → + (Add custom topic) opens the Transform Editor (Luau or Python "
+    "functions).\n"
     "- 2D view (camera images and video): Empty plot area: click the 2D button (image icon).\n"
     "- 3D view (point clouds, meshes, robot models, transforms, markers): Empty plot area: click the 3D button (cube "
     "icon).\n"
@@ -73,8 +74,8 @@ inline constexpr std::string_view kFallbackFeaturesBody =
     "- Fast Fourier Transform (frequency spectrum), Quaternion to RPY (roll, pitch, yaw), CSV/Parquet Exporter: if "
     "installed, each appears in the Toolbox menu under that name; otherwise install it from File → Extensions "
     "Marketplace….\n"
-    "- Transform Editor (new series computed from others with Lua): if installed, it opens from Custom Series panel "
-    "→ + (Add custom series); otherwise install it from File → Extensions Marketplace….\n"
+    "- Transform Editor (new series and 2D/3D objects computed from others with Luau or Python): if installed, it "
+    "opens from Custom Topics panel → + (Add custom topic); otherwise install it from File → Extensions Marketplace….\n"
     "Plugins are installed from File → Extensions Marketplace…; a plugin not listed here may still be distributed "
     "outside the Marketplace.";
 
