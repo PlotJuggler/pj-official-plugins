@@ -3,6 +3,7 @@
   "name": "Transform Editor",
   "version": "1.2.0",
   "description": "Create derived time series and 2D/3D objects from series and object topics with Luau or Python functions: drop the inputs, write the function, preview the result and create it. The successor of the Custom Series editor of PJ3.",
+  "entry_point": "Custom Topics panel → + (Add custom topic)",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
