@@ -258,7 +258,10 @@ So the creation tools report facts rather than intentions:
   computation any more than it does about a marker set; the difference is that objects have no
   `entryCount()`-shaped read-back to lean on at all, so the bundle IS the read-back, not an
   approximation of one. A failed read-back does not fail the tool call — the node is installed either
-  way — it degrades the response (`bundle_unavailable`) instead.
+  way — it degrades the response (`bundle_unavailable`) instead, with one exception: when the host
+  reports the node itself in the `error` state (its config says so), the node is removed and the tool
+  fails with the host's detail and the statement that nothing was kept, so the model corrects the
+  script instead of believing a "created" that cannot run.
 
 ### Facts, never instructions
 
@@ -352,7 +355,8 @@ below) asks; with it, `instant_ns` is set on the create request itself, which is
 what makes a pin a FINDING rather than a live node that happens to be looked at once. Either way the
 tool then calls `submitEvaluation` on the node it just installed (`id` naming it, an EMPTY script —
 `request->id naming an installed on_demand node ... with an empty script evaluates that node`, per
-the ABI doc-comment) at the pin or the current playhead, through the same `submitAndPoll` +
+the ABI doc-comment; the request carries no language, params, inputs, outputs or dataset, because the
+host rejects them on an installed node and uses its stored recipe) at the pin or the current playhead, through the same `submitAndPoll` +
 `renderBundles` evaluate's object path uses, and returns the first bundle: a finding is worth
 nothing if the model has to ask twice to see what it made.
 

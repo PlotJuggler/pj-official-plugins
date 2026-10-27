@@ -1950,6 +1950,91 @@ TEST(ToolRegistry, CreateDerivedObjectDisclosesMissingUndoProtection) {
   EXPECT_FALSE(j.contains("pinned_at_s"));
 }
 
+// The contract for evaluating an INSTALLED node: id/kind/flags/time only. The host refuses a language,
+// params, inputs, outputs or dataset on it, because the stored recipe is authoritative.
+namespace {
+json createObjectArgs() {
+  return {
+      {"name", "lidar_crop10"},
+      {"inputs", json::array({"/cloud"})},
+      {"outputs", json::array({"cropped:kPointCloud", "count:number"})},
+      {"body", "return { cropped = inputs[\"/cloud\"], count = 1 }"},
+      {"params", {{"radius", 10}}}};
+}
+}  // namespace
+
+TEST(ToolRegistry, CreateDerivedObjectEvaluatesTheInstalledNodeById) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute("create_derived_object", createObjectArgs(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  ASSERT_EQ(dp.submits.size(), 1u);
+  const auto& submit = dp.submits.front();
+  EXPECT_EQ(submit.language, "");
+  EXPECT_EQ(submit.script, "");
+  EXPECT_EQ(submit.input_count, 0u);
+  EXPECT_EQ(submit.output_count, 0u);
+  EXPECT_EQ(submit.params_json, "");
+  EXPECT_EQ(submit.dataset_id, 0u);
+  EXPECT_EQ(dp.last_id, "lidar_crop10");
+}
+
+TEST(ToolRegistry, AFailedFirstEvaluationRemovesTheNodeAndSaysWhy) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
+  dp.canned_report_json = R"({"coverage":{"complete":false,"error":"evaluation failed"},"bundles":[]})";
+  dp.canned_config_json = R"({"kind":"on_demand","state":"error","detail":"bad argument 'center': expected array"})";
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+  int notify_calls = 0;
+  ctx.notify_data_changed = [&]() { ++notify_calls; };
+
+  auto r = reg.execute("create_derived_object", createObjectArgs(), ctx);
+  EXPECT_FALSE(r.ok) << r.content;
+  EXPECT_NE(r.content.find("bad argument 'center': expected array"), std::string::npos) << r.content;
+  EXPECT_NE(r.content.find("Nothing was kept"), std::string::npos) << r.content;
+  EXPECT_EQ(dp.last_removed, "lidar_crop10");
+  EXPECT_EQ(dp.liveCount(), 0);
+  EXPECT_EQ(notify_calls, 2) << "once for the create, once for the removal";
+}
+
+TEST(ToolRegistry, AFailedFirstEvaluationOfASoundNodeKeepsItAndReportsBundleUnavailable) {
+  ToolRegistry reg;
+  FakeCatalogHost host;
+  host.addObjectTopic("/cloud", "kPointCloud", 100, 0, 5 * kSec);
+  RecordingDpHost dp;
+  dp.terminal_state = PJ_EVALUATION_STATE_FAILED;
+  dp.canned_report_json = R"({"coverage":{"complete":false,"error":"missing input at t=0"},"bundles":[]})";
+  dp.canned_config_json = R"({"kind":"on_demand","state":"ready"})";
+  FakePlaybackHost pb;
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  ctx.dp = dp.view();
+  ctx.playback = pb.view();
+
+  auto r = reg.execute("create_derived_object", createObjectArgs(), ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  const json j = json::parse(r.content);
+  EXPECT_EQ(j["bundle_unavailable"], "missing input at t=0");
+  EXPECT_EQ(j["created"], "lidar_crop10");
+  EXPECT_TRUE(dp.last_removed.empty());
+  EXPECT_EQ(dp.liveCount(), 1);
+}
+
 // --- PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT: set when the SDK has it, with a
 // fallback for a host that rejects the unknown bit -----------------------
 

@@ -124,6 +124,9 @@ struct RecordingDpHost {
     std::size_t output_count = 0;  // declared outputs
     std::string language;
     std::string script;
+    std::size_t input_count = 0;
+    std::string params_json;
+    std::uint32_t dataset_id = 0;
   };
   std::vector<RecordedRequest> submits;
   int create_v2_calls = 0;
@@ -410,7 +413,8 @@ struct RecordingDpHost {
     self->recordRequest(*request);
     self->submits.push_back(
         {request->time_ns, request->flags, static_cast<std::size_t>(request->output_count), toStr(request->language),
-         toStr(request->script)});
+         toStr(request->script), static_cast<std::size_t>(request->input_count), toStr(request->params_json),
+         request->dataset_id});
     if (budget != nullptr) {
       self->last_budget_max_millis = budget->max_millis;
       self->last_budget_max_evaluations = budget->max_evaluations;
