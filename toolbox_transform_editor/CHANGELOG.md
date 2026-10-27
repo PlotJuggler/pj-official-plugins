@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_transform_editor/`.
 
+## [1.2.1] - 2026-10-27
+
+### Fixed
+- The preview draws the series of a number output computed from an object input. It was read at the
+  name the host returned for the output, which is not where the series is; it is now read at the
+  topic the host reports for the series.
+
 ## [1.2.0] - 2026-10-05
 
 One editor for series and objects.

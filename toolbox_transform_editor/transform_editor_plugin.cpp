@@ -3013,6 +3013,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   // What the host says of the series of the preview recipe: `series{topic, rows, failed, first_error, complete}`
   // of the recipe's own config (the owner may read its ephemerals by id). nullopt when it says nothing.
   struct SeriesStatus {
+    std::string topic;  // the topic the series' samples live at: `<topic>/<output name>`
     std::uint64_t rows = 0;
     std::uint64_t failed = 0;
     std::string first_error;
@@ -3061,6 +3062,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     }
     const auto& series = parsed["series"];
     SeriesStatus status;
+    if (series.contains("topic") && series["topic"].is_string()) {
+      status.topic = series["topic"].get<std::string>();
+    }
     status.rows = series.value("rows", std::uint64_t{0});
     status.failed = series.value("failed", std::uint64_t{0});
     if (series.contains("first_error") && series["first_error"].is_string()) {
@@ -3121,6 +3125,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       if (status) {
         read = !series_progress_.read_rows || *series_progress_.read_rows != status->rows;
         series_progress_.read_rows = status->rows;
+        series_progress_.topic = status->topic;
         series_progress_.complete = status->complete;
         series_progress_.note = seriesNote(*status, build);
       } else {
@@ -3129,11 +3134,14 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         series_progress_.complete = series_available_ && !build.data_stamp.empty();
       }
       if (read) {
-        // The host returned the catalog path of each output's series (`<owner>/<id>/<name>`) when it creates
-        // the preview recipe; read exactly that, never a name guessed from the output.
+        // An output's samples are at `<series topic>/<name>`; a host naming no topic, at what create returned.
         std::vector<std::string> names;
         for (const std::size_t index : numbers) {
-          names.push_back(index < object_preview_topics_.size() ? object_preview_topics_[index] : std::string{});
+          if (!series_progress_.topic.empty()) {
+            names.push_back(series_progress_.topic + "/" + outputs[index].name);
+          } else {
+            names.push_back(index < object_preview_topics_.size() ? object_preview_topics_[index] : std::string{});
+          }
         }
         const auto samples = readManyRawSamples(names);
         std::vector<RawSamples> found;
@@ -3773,6 +3781,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     std::optional<std::uint64_t> read_rows;  // the row count the samples were last read at
     bool complete = false;                   // nothing left to wait for
     std::string note;                        // the status line's remark on the series
+    std::string topic;                       // the topic the host reports for the series; empty when it says none
   };
   SeriesProgress series_progress_;
 };
