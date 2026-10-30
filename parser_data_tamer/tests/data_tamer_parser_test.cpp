@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <data_tamer_parser/data_tamer_parser.hpp>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -135,6 +136,20 @@ TEST(DataTamerParserTest, BasicParsing) {
   auto* pres = findField(f.recorder.rows()[0], "/pressure");
   ASSERT_NE(pres, nullptr);
   EXPECT_DOUBLE_EQ(pres->numeric, 101.3);
+}
+
+TEST(DataTamerParserTest, FullWidthDeclaredHashParsesSnapshot) {
+  DTFixture f;
+  f.setUp();
+  const std::string text = "### hash: 18446744073709551615\nfloat64 value\n";
+  ASSERT_TRUE(f.bindSchema(text));
+  const auto schema = DataTamerParser::BuilSchemaFromText(text);
+  ASSERT_EQ(schema.hash, std::numeric_limits<uint64_t>::max());
+  ASSERT_TRUE(f.parse(buildSnapshot(schema, {42.5})));
+  ASSERT_EQ(f.recorder.rows().size(), 1U);
+  const auto* value = findField(f.recorder.rows()[0], "/value");
+  ASSERT_NE(value, nullptr);
+  EXPECT_DOUBLE_EQ(value->numeric, 42.5);
 }
 
 TEST(DataTamerParserTest, MixedTypes) {

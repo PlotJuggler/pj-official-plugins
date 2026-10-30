@@ -4596,3 +4596,42 @@ TEST(RosParserTest, FoxgloveGridScalarRoute) {
 }
 
 }  // namespace
+
+TEST(RosParserTest, DataTamerFullWidthDeclaredHashParsesSnapshot) {
+  RosParserFixture schemas;
+  schemas.setUp();
+  ASSERT_TRUE(schemas.bindSchema(
+      "data_tamer_msgs/Schemas",
+      "data_tamer_msgs/Schema[] schemas\n================\nMSG: data_tamer_msgs/Schema\n"
+      "uint64 hash\nstring channel_name\nstring schema_text\n"));
+  const auto hash = std::numeric_limits<uint64_t>::max();
+  ASSERT_TRUE(schemas.parse(serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(1);
+    enc.serialize(RosMsgParser::UINT64, RosMsgParser::Variant(hash));
+    enc.serializeString("wide_hash");
+    enc.serializeString("### hash: 18446744073709551615\nfloat64 value\n");
+  })));
+  RosParserFixture snapshot;
+  snapshot.setUp();
+  ASSERT_TRUE(snapshot.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(snapshot.bindSchema(
+      "data_tamer_msgs/Snapshot", "uint64 timestamp_nsec\nuint64 schema_hash\nuint8[] active_mask\nuint8[] payload\n"));
+  const double value = 42.5;
+  const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
+  ASSERT_TRUE(snapshot.parse(serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::UINT64, RosMsgParser::Variant(uint64_t{123456789}));
+    enc.serialize(RosMsgParser::UINT64, RosMsgParser::Variant(hash));
+    enc.serializeUInt32(1);
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(uint8_t{1}));
+    enc.serializeUInt32(sizeof(value));
+    for (size_t i = 0; i < sizeof(value); ++i) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(bytes[i]));
+    }
+  })));
+  ASSERT_EQ(snapshot.recorder.rows().size(), 1U);
+  const auto& row = snapshot.recorder.rows()[0];
+  EXPECT_EQ(row.timestamp, 123456789);
+  const auto* field = findField(row, "/wide_hash/value");
+  ASSERT_NE(field, nullptr);
+  EXPECT_DOUBLE_EQ(field->numeric, value);
+}

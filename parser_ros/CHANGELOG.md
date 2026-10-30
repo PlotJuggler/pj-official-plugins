@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
+## [1.2.7] - 2026-10-01
+
+### Fixed
+- Accept the full 64-bit range of DataTamer schema hashes on Windows. The
+  dependency uses `stoull` instead of the platform-dependent-width `stoul`.
+- Temporarily pin the reviewed dependency commit from data_tamer PR #92 until
+  its release is published.
+
 ## [1.2.5] - 2026-09-29
 
 ### Fixed

@@ -35,7 +35,9 @@ endif()
 # data_tamer_parser — header-only library for DataTamer schema/snapshot parsing.
 CPMAddPackage(
   NAME data_tamer
-  URL https://github.com/PickNikRobotics/data_tamer/archive/refs/tags/1.0.3.zip
+  # Includes the uint64 hash conversion from data_tamer PR #92; use its release tag when published.
+  URL https://github.com/PickNikRobotics/data_tamer/archive/ade60da565a1929813b9fe442635e2cf53b3eec2.zip
+  URL_HASH SHA256=82ecdb6067fc4b5b104de059c0f3ba26690a57d7644a3545424f5d0c78960131
   DOWNLOAD_ONLY YES
 )
 add_library(data_tamer_parser INTERFACE)
