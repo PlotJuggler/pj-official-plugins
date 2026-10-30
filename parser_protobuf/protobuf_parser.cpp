@@ -1,5 +1,6 @@
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/descriptor.pb.h>
+#include <google/protobuf/descriptor_database.h>
 #include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/reflection.h>
 
@@ -32,6 +33,14 @@
 namespace gp = google::protobuf;
 
 namespace {
+
+/// Adds every file of a schema to `database`. A pool built on the database resolves imports on
+/// demand, so the set may list a file before the files it imports, as the MCAP C++ example does.
+void addSchemaFiles(const gp::FileDescriptorSet& fd_set, gp::SimpleDescriptorDatabase& database) {
+  for (const auto& file : fd_set.file()) {
+    database.Add(file);
+  }
+}
 
 struct FlattenedField {
   std::string name;
@@ -393,13 +402,14 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::unexpected(std::string("failed to parse FileDescriptorSet"));
     }
 
-    pool_ = std::make_unique<gp::DescriptorPool>();
+    // The pool keeps a pointer to its database: release it before replacing the database.
+    descriptor_ = nullptr;
+    factory_.reset();
+    pool_.reset();
+    database_ = std::make_unique<gp::SimpleDescriptorDatabase>();
+    addSchemaFiles(fd_set, *database_);
+    pool_ = std::make_unique<gp::DescriptorPool>(database_.get());
     factory_ = std::make_unique<gp::DynamicMessageFactory>(pool_.get());
-
-    for (int i = 0; i < fd_set.file_size(); ++i) {
-      const auto& file = fd_set.file(i);
-      pool_->BuildFile(file);
-    }
 
     descriptor_ = pool_->FindMessageTypeByName(std::string(type_name));
     if (descriptor_ == nullptr) {
@@ -801,14 +811,13 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     if (!fd_set.ParseFromArray(schema.data(), static_cast<int>(schema.size()))) {
       return;
     }
-    gp::DescriptorPool pool;
-    for (int i = 0; i < fd_set.file_size(); ++i) {
-      pool.BuildFile(fd_set.file(i));
-    }
+    gp::SimpleDescriptorDatabase database;
+    addSchemaFiles(fd_set, database);
+    gp::DescriptorPool pool(&database);
     const gp::Descriptor* descriptor = pool.FindMessageTypeByName(std::string(type_name));
     if (descriptor == nullptr) {
       // The schema was present but unbuildable (e.g. a dependency like
-      // google.protobuf.Timestamp missing or out of order in the set). We fall
+      // google.protobuf.Timestamp missing from the set). We fall
       // back to the official field numbers — but make that visible, because the
       // bug this whole path fixes is a SILENT misparse of a renumbered schema.
       std::cerr << "[protobuf_parser] could not resolve a descriptor for " << type_name
@@ -1145,6 +1154,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
+  // Declared in dependency order: the factory uses the pool, which builds from the database.
+  std::unique_ptr<gp::SimpleDescriptorDatabase> database_;
   std::unique_ptr<gp::DescriptorPool> pool_;
   std::unique_ptr<gp::DynamicMessageFactory> factory_;
   const gp::Descriptor* descriptor_ = nullptr;
