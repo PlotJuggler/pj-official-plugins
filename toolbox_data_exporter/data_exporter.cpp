@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/dataset_qualified_name.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 
 #include "data_exporter_manifest.hpp"
@@ -63,6 +64,19 @@ void stripGroupPrefix(std::vector<std::string>& names, const std::string& group_
       column_name.erase(0, start);
     }
   }
+}
+
+/// For a one-paragraph status: the first few names and how many more.
+std::string joinedNames(const std::vector<std::string>& names) {
+  constexpr size_t kMaxShown = 5;
+  std::string joined;
+  for (size_t index = 0; index < std::min(names.size(), kMaxShown); ++index) {
+    joined += (index == 0 ? "" : ", ") + names[index];
+  }
+  if (names.size() > kMaxShown) {
+    joined += " and " + std::to_string(names.size() - kMaxShown) + " more";
+  }
+  return joined;
 }
 
 std::string sanitizeGroupName(std::string group_name) {
@@ -160,6 +174,11 @@ bool DataExporterDialog::onItemsDropped(std::string_view widget_name, const std:
     invokeRecomputeRange();
   }
   return true;
+}
+
+bool DataExporterDialog::onDroppedItems(std::string_view widget_name, const std::vector<DroppedItem>& items) {
+  return on_drop_rows_ ? onItemsDropped(widget_name, on_drop_rows_(items))
+                       : DialogPluginTyped::onDroppedItems(widget_name, items);
 }
 
 bool DataExporterDialog::onClicked(std::string_view widget_name) {
@@ -629,6 +648,8 @@ void DataExporterToolbox::wireCallbacks() {
   // installed once, while catalog/range refresh happens on every dialog open.
   dialog_.setOnRecomputeRange([this]() { recomputeRange(); });
   dialog_.setOnAddAll([this]() { return allCatalogFields(); });
+  dialog_.setOnDropRows(
+      [this](const std::vector<DataExporterDialog::DroppedItem>& items) { return rowsForDrop(items); });
   dialog_.setOnExportSingle([this](bool is_csv, const std::string& path) { exportSingle(is_csv, path); });
   dialog_.setOnExportMulti([this](bool is_csv, const std::string& directory, const std::string& prefix) {
     exportMulti(is_csv, directory, prefix);
@@ -649,7 +670,9 @@ void DataExporterToolbox::refreshCatalog() {
   std::map<std::string, PJ::sdk::FieldHandle> new_field_index;
   std::map<std::string, std::string> new_field_topic;
   std::map<std::string, PJ::PrimitiveType> new_field_type;
-  std::set<std::string> new_streaming_topics;
+  std::map<std::string, std::vector<std::pair<uint32_t, std::string>>> new_series_sources;
+  std::set<uint32_t> streaming_sources;
+  std::set<std::string> streaming_rows;
   const auto topics = catalog->topics();
   const auto fields = catalog->fields();
 
@@ -658,14 +681,34 @@ void DataExporterToolbox::refreshCatalog() {
   // catalog tree renders. Collect the topics owned by such sources so the
   // refresh button can gate on "the table holds live data".
   constexpr std::string_view kStreamSourcePrefix = "[stream] ";
+  std::map<uint32_t, std::string> source_names;
   for (const auto& source : catalog->dataSources()) {
-    if (!PJ::sdk::toStringView(source.name).starts_with(kStreamSourcePrefix)) {
-      continue;
+    source_names[source.handle.id] = std::string(PJ::sdk::toStringView(source.name));
+    if (PJ::sdk::toStringView(source.name).starts_with(kStreamSourcePrefix)) {
+      streaming_sources.insert(source.handle.id);
     }
-    for (uint32_t topic_offset = 0; topic_offset < source.topic_count; ++topic_offset) {
-      const uint64_t topic_index = static_cast<uint64_t>(source.first_topic) + topic_offset;
-      if (topic_index < topics.size()) {
-        new_streaming_topics.emplace(PJ::sdk::toStringView(topics[static_cast<size_t>(topic_index)].name));
+  }
+  const auto series_path = [](const std::string& topic_name, const PJ_field_info_t& field) {
+    return topic_name + "/" + std::string(PJ::sdk::toStringView(field.name));
+  };
+  // First walk: who carries what. A row's name and file group depend on it.
+  std::map<std::string, std::set<uint32_t>> topic_sources;
+  for (const auto& topic : topics) {
+    const std::string topic_name(PJ::sdk::toStringView(topic.name));
+    topic_sources[topic_name].insert(topic.source.id);
+    for (uint32_t field_offset = 0; field_offset < topic.field_count; ++field_offset) {
+      const uint64_t field_index = static_cast<uint64_t>(topic.first_field) + field_offset;
+      if (field_index >= fields.size()) {
+        continue;
+      }
+      const auto& field = fields[static_cast<size_t>(field_index)];
+      const PJ::PrimitiveType type = PJ::sdk::fromAbiType(field.type);
+      if (isNumericType(type) || type == PJ::PrimitiveType::kString) {
+        // A source's topics are contiguous; a name repeated inside one source is not a second carrier.
+        auto& carriers = new_series_sources[series_path(topic_name, field)];
+        if (carriers.empty() || carriers.back().first != topic.source.id) {
+          carriers.emplace_back(topic.source.id, source_names[topic.source.id]);
+        }
       }
     }
   }
@@ -682,30 +725,54 @@ void DataExporterToolbox::refreshCatalog() {
       if (!isNumericType(type) && type != PJ::PrimitiveType::kString) {
         continue;
       }
-      const std::string path = topic_name + "/" + std::string(PJ::sdk::toStringView(field.name));
-      const auto [iterator, inserted] = new_field_index.emplace(path, field.handle);
-      (void)iterator;
-      if (!inserted) {
-        if (reported_duplicate_paths_.insert(path).second) {
-          report(PJ::ToolboxMessageLevel::kWarning, "Duplicate field path ignored: " + path);
-        }
-        continue;
+      const std::string bare_path = series_path(topic_name, field);
+      const std::string& source_name = source_names[topic.source.id];
+      const auto& carriers = new_series_sources[bare_path];
+      std::vector<std::string> rows;
+      if (carriers.size() == 1) {
+        rows.push_back(bare_path);
       }
-      new_field_topic.emplace(path, topic_name);
-      new_field_type.emplace(path, type);
+      // A file loaded twice has one qualified name: answering it would pick one copy with no word to the user.
+      const bool source_name_is_unique =
+          !source_name.empty() && std::count_if(carriers.begin(), carriers.end(), [&source_name](const auto& carrier) {
+                                    return carrier.second == source_name;
+                                  }) == 1;
+      if (source_name_is_unique) {
+        rows.push_back(PJ::sdk::qualifiedSeriesName(source_name, bare_path));
+      }
+      // One topic of two recordings exports to two files, whichever of its fields both carry; the bare rows of such a
+      // topic keep their full name as the column, since it does not start with the group.
+      const std::string group = topic_sources[topic_name].size() > 1 && !source_name.empty()
+                                    ? PJ::sdk::qualifiedSeriesName(source_name, topic_name)
+                                    : topic_name;
+      for (const std::string& path : rows) {
+        const auto [iterator, inserted] = new_field_index.emplace(path, field.handle);
+        (void)iterator;
+        if (!inserted) {
+          if (reported_duplicate_paths_.insert(path).second) {
+            report(PJ::ToolboxMessageLevel::kWarning, "Duplicate field path ignored: " + path);
+          }
+          continue;
+        }
+        new_field_topic.emplace(path, group);
+        new_field_type.emplace(path, type);
+        if (streaming_sources.count(topic.source.id) > 0) {
+          streaming_rows.insert(path);
+        }
+      }
     }
   }
   field_index_.swap(new_field_index);
   field_topic_.swap(new_field_topic);
   field_type_.swap(new_field_type);
+  series_sources_.swap(new_series_sources);
 
   // Re-gate the refresh button after every catalog walk — the entry points
   // (drop/add/remove/clear/mode switch/export) are exactly the moments the
   // table contents can change.
   bool any_streaming = false;
   for (const auto& path : dialog_.topics()) {
-    const auto topic = field_topic_.find(path);
-    if (topic != field_topic_.end() && new_streaming_topics.count(topic->second) > 0) {
+    if (streaming_rows.count(path) > 0) {
       any_streaming = true;
       break;
     }
@@ -713,14 +780,80 @@ void DataExporterToolbox::refreshCatalog() {
   dialog_.setHasStreamingTopics(any_streaming);
 }
 
+std::vector<std::string> DataExporterToolbox::rowsForDrop(const std::vector<DataExporterDialog::DroppedItem>& items) {
+  refreshCatalog();
+  dialog_.setStatus({});
+  std::vector<std::string> rows;
+  std::vector<std::string> refused;
+  for (const auto& item : items) {
+    const auto carriers = series_sources_.find(item.name);
+    if (carriers == series_sources_.end()) {
+      rows.push_back(item.name);  // its data may load after its row
+      continue;
+    }
+    const auto dragged = std::find_if(carriers->second.begin(), carriers->second.end(), [&item](const auto& carrier) {
+      return carrier.first == item.data_source_id;
+    });
+    const bool known_source = dragged != carriers->second.end();
+    if (carriers->second.size() == 1 && (item.data_source_id == 0 || known_source)) {
+      rows.push_back(item.name);
+    } else if (known_source && field_index_.count(PJ::sdk::qualifiedSeriesName(dragged->second, item.name)) > 0) {
+      rows.push_back(PJ::sdk::qualifiedSeriesName(dragged->second, item.name));
+    } else {
+      refused.push_back(item.name);
+    }
+  }
+  if (!refused.empty()) {
+    report(
+        PJ::ToolboxMessageLevel::kWarning,
+        "Not added: " + joinedNames(refused) +
+            ". Several recordings carry these names, and the row could not say which one: this PlotJuggler does not "
+            "report it, or two of them have the same file name.");
+  }
+  return rows;
+}
+
+bool DataExporterToolbox::reportUnresolvedRows() {
+  std::vector<std::string> missing;
+  for (const auto& path : dialog_.topics()) {
+    if (field_index_.count(path) == 0) {
+      missing.push_back(path);
+    }
+  }
+  if (missing.empty()) {
+    return false;
+  }
+  report(
+      PJ::ToolboxMessageLevel::kWarning, "Nothing exported. No loaded data, or several recordings, answer: " +
+                                             joinedNames(missing) + ". Remove the row and drag the series you want.");
+  return true;
+}
+
 std::vector<std::string> DataExporterToolbox::allCatalogFields() {
   refreshCatalog();
   std::vector<std::string> fields;
+  std::vector<std::string> refused;
   fields.reserve(field_index_.size());
-  for (const auto& [path, handle] : field_index_) {
-    (void)handle;
-    fields.push_back(path);
+  for (const auto& [path, carriers] : series_sources_) {
+    if (carriers.size() == 1) {
+      fields.push_back(path);
+      continue;
+    }
+    for (const auto& carrier : carriers) {
+      const std::string row = PJ::sdk::qualifiedSeriesName(carrier.second, path);
+      if (field_index_.count(row) > 0) {
+        fields.push_back(row);
+      } else if (refused.empty() || refused.back() != path) {
+        refused.push_back(path);
+      }
+    }
   }
+  if (!refused.empty()) {
+    report(
+        PJ::ToolboxMessageLevel::kWarning,
+        "Not added: " + joinedNames(refused) + ". Two recordings with the same file name carry these names.");
+  }
+  std::sort(fields.begin(), fields.end());
   return fields;
 }
 
@@ -783,6 +916,9 @@ void DataExporterToolbox::exportSingle(bool is_csv, const std::string& path) {
     report(PJ::ToolboxMessageLevel::kWarning, "No topics selected.");
     return;
   }
+  if (reportUnresolvedRows()) {
+    return;
+  }
 
   std::vector<NumericSeriesData> numeric;
   std::vector<StringSeriesData> strings;
@@ -830,6 +966,9 @@ void DataExporterToolbox::exportMulti(bool is_csv, const std::string& directory,
   // first-write-failure abort, and close only after at least one saved file.
   if (dialog_.topics().empty()) {
     report(PJ::ToolboxMessageLevel::kWarning, "No topics selected.");
+    return;
+  }
+  if (reportUnresolvedRows()) {
     return;
   }
 
