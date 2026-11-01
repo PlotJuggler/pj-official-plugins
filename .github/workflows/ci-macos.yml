@@ -15,7 +15,7 @@ jobs:
   build:
     # Apple silicon, matching the only macOS leg the release matrix still builds.
     # Intel Macs are not a supported target for the time being.
-    runs-on: macos-14
+    runs-on: macos-15
     # 90, not the 60 this job carried before: it now also builds the plugins the
     # aggregate leaves out (see the step below). Recent runs land at 27-45 min, so
     # 60 left no room for the extra legs on a cold Conan cache.
@@ -29,6 +29,10 @@ jobs:
         uses: conan-io/setup-conan@v1.3.0
         with:
           cache_packages: true
+
+      - name: Seed Conan source download cache
+        shell: bash
+        run: scripts/seed_conan_sources.sh
 
       - name: Install cmake and ninja
         run: pip install cmake ninja

@@ -6,6 +6,8 @@ repos:
     rev: v4.5.0
     hooks:
       - id: check-added-large-files
+        # Deliberately stored, sha256-addressed third-party source tarballs (see its README).
+        exclude: ^\.github/conan/source-backup/
       - id: check-ast
       - id: check-case-conflict
       - id: check-merge-conflict
