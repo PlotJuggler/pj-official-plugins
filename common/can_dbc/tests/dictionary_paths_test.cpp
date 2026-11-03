@@ -14,7 +14,6 @@ namespace {
 using pj_can_dbc::auxBaseDir;
 using pj_can_dbc::auxBaseDirToSave;
 using pj_can_dbc::AuxPathContext;
-using pj_can_dbc::makeAuxPathContext;
 using pj_can_dbc::readAuxFile;
 using pj_can_dbc::resolveAuxPath;
 using pj_can_dbc::resolveAuxPaths;
@@ -96,7 +95,7 @@ TEST(DictionaryPaths, AuxBaseDirIsEmptyWithoutAnAbsoluteFilesystemDirectory) {
 }
 
 // ---------------------------------------------------------------------------
-// config glue: auxBaseDirToSave / makeAuxPathContext
+// config glue: auxBaseDirToSave
 // ---------------------------------------------------------------------------
 
 TEST(DictionaryPaths, AuxBaseDirToSaveIsTheDataDirectoryWhenPathsAreStored) {
@@ -108,13 +107,6 @@ TEST(DictionaryPaths, AuxBaseDirToSaveIsNulloptWithoutPathsOrDirectory) {
   EXPECT_EQ(auxBaseDirToSave("", true), std::nullopt);
   EXPECT_EQ(auxBaseDirToSave("data.blf", true), std::nullopt);
   EXPECT_EQ(auxBaseDirToSave("s3://b/d.blf", true), std::nullopt);
-}
-
-TEST(DictionaryPaths, MakeAuxPathContextKeepsEachValueInItsField) {
-  const AuxPathContext context = makeAuxPathContext(at("new/data.blf"), at("old/data.blf"), at("old"));
-  EXPECT_EQ(context.data_file, at("new/data.blf"));
-  EXPECT_EQ(context.saved_data_file, at("old/data.blf"));
-  EXPECT_EQ(context.base_dir, at("old"));
 }
 
 // ---------------------------------------------------------------------------

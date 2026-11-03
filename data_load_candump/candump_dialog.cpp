@@ -252,9 +252,9 @@ bool CandumpDialog::applyConfigJson(std::string_view config_json, bool scan_now)
     return false;
   }
   filepath_ = cfg.value("filepath", std::string{});
-  const auto context = pj_can_dbc::makeAuxPathContext(
+  const pj_can_dbc::AuxPathContext context{
       filepath_, cfg.value(pj_can_dbc::kSavedFilepathKey, std::string{}),
-      cfg.value(pj_can_dbc::kAuxBaseDirKey, std::string{}));
+      cfg.value(pj_can_dbc::kAuxBaseDirKey, std::string{})};
   raw_unassigned_ = cfg.value("raw_unassigned", true);
   time_mode_override_ = cfg.value("time_mode", 0);
   if (time_mode_override_ < 0 || time_mode_override_ > 3) {

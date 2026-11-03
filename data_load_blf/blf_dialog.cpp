@@ -78,9 +78,9 @@ bool BlfDialog::loadConfig(std::string_view config_json) {
     return false;
   }
   filepath_ = cfg.value("filepath", std::string{});
-  const auto context = pj_can_dbc::makeAuxPathContext(
+  const pj_can_dbc::AuxPathContext context{
       filepath_, cfg.value(pj_can_dbc::kSavedFilepathKey, std::string{}),
-      cfg.value(pj_can_dbc::kAuxBaseDirKey, std::string{}));
+      cfg.value(pj_can_dbc::kAuxBaseDirKey, std::string{})};
   channel_dbcs_.clear();
   if (cfg.contains("channel_dbcs") && cfg["channel_dbcs"].is_object()) {
     for (const auto& [key, value] : cfg["channel_dbcs"].items()) {

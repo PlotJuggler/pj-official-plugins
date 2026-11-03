@@ -56,10 +56,6 @@ std::string auxBaseDir(std::string_view data_file);
 /// dictionary path and that directory is not empty; otherwise nullopt (write no key).
 std::optional<std::string> auxBaseDirToSave(std::string_view data_file, bool stores_paths);
 
-/// The AuxPathContext for loadConfig, from the config's "filepath", kSavedFilepathKey and kAuxBaseDirKey
-/// values (each empty when absent).
-AuxPathContext makeAuxPathContext(std::string data_file, std::string saved_data_file, std::string base_dir);
-
 /// Path to open for a stored path: relative -> against the current data dir (or the pre-fill base_dir when no
 /// saved_data_file); absolute under the folder that moved (the common trailing part of saved_data_file and
 /// data_file) -> the rebased path if that file exists, else the stored file if it exists, else the rebased path;

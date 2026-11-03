@@ -78,9 +78,9 @@ bool Mf4Dialog::loadConfig(std::string_view config_json) {
     return false;
   }
   filepath_ = cfg.value("filepath", std::string{});
-  const auto context = pj_can_dbc::makeAuxPathContext(
+  const pj_can_dbc::AuxPathContext context{
       filepath_, cfg.value(pj_can_dbc::kSavedFilepathKey, std::string{}),
-      cfg.value(pj_can_dbc::kAuxBaseDirKey, std::string{}));
+      cfg.value(pj_can_dbc::kAuxBaseDirKey, std::string{})};
   dbc_paths_.clear();
   if (cfg.contains("dbc_paths") && cfg["dbc_paths"].is_array()) {
     for (const auto& entry : cfg["dbc_paths"]) {

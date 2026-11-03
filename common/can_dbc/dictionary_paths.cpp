@@ -124,10 +124,6 @@ std::optional<std::string> auxBaseDirToSave(std::string_view data_file, bool sto
   return base;
 }
 
-AuxPathContext makeAuxPathContext(std::string data_file, std::string saved_data_file, std::string base_dir) {
-  return AuxPathContext{std::move(data_file), std::move(saved_data_file), std::move(base_dir)};
-}
-
 std::string resolveAuxPath(std::string_view stored, const AuxPathContext& context) {
   if (stored.empty() || isUrl(stored) || context.data_file.empty() || isUrl(context.data_file)) {
     return std::string(stored);
