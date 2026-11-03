@@ -80,6 +80,12 @@ bool visitNumericValues(const PJ::sdk::MaterializedSeriesView& series, Callback&
 // controls, last FFT result (so "Save" can materialise it into the datastore).
 // ---------------------------------------------------------------------------
 
+/// A data source carrying a series: its catalog handle id and name.
+struct SeriesSource {
+  uint32_t id = 0;
+  std::string name;
+};
+
 class FFTDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
@@ -103,7 +109,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
         .setItems("window_combo", {"Hann (recommended)", "Rectangular"})
         .setCurrentIndex("window_combo", window_ == WindowFunction::kHann ? 0 : 1)
         .setText("suffix_edit", suffix_)
-        .setText("selected_value", selected_fields_.empty() ? "No input selected" : selected_fields_.front())
+        .setText("selected_value", selected_fields_.empty() ? "No input selected" : selectedLabel())
         .setEnabled("btn_compute", !selected_fields_.empty())
         .setEnabled("btn_save", !last_result_.frequencies_hz.empty())
         .setEnabled("btn_clear", !selected_fields_.empty())
@@ -144,30 +150,46 @@ class FFTDialog : public PJ::DialogPluginTyped {
 
   // --- Event handlers -------------------------------------------------------
 
-  bool onItemsDropped(std::string_view widget_name, const std::vector<std::string>& items) override {
+  bool onDroppedItems(std::string_view widget_name, const std::vector<DroppedItem>& items) override {
     if (widget_name != "inputFrame") {
       return false;
     }
     if (items.empty()) {
       return false;
     }
-    if (std::find(available_fields_.begin(), available_fields_.end(), items.front()) == available_fields_.end()) {
+    if (on_refresh_fields_) {
+      on_refresh_fields_();
+    }
+    const std::string& name = items.front().name;
+    const auto carriers = available_fields_.find(name);
+    uint32_t data_source = items.front().data_source_id;
+    if (carriers != available_fields_.end() && data_source == 0 && carriers->second.size() > 1) {
+      status_msg_ = "'" + name + "' is in several recordings, and this PlotJuggler does not say which one you dragged";
+      return true;
+    }
+    if (carriers != available_fields_.end() && data_source == 0) {
+      data_source = carriers->second.front().id;
+    }
+    const auto is_dropped_source = [data_source](const SeriesSource& source) { return source.id == data_source; };
+    if (carriers == available_fields_.end() ||
+        std::none_of(carriers->second.begin(), carriers->second.end(), is_dropped_source)) {
       status_msg_ = "The dropped field is unavailable or is not numeric";
       return true;
     }
     // This tool computes one spectrum at a time. A multi-selection drop chooses
     // the first item explicitly instead of previewing several curves while
     // silently computing only one of them.
-    const std::vector<std::string> replacement{items.front()};
-    if (selected_fields_ == replacement) {
+    const std::vector<std::string> replacement{name};
+    if (selected_fields_ == replacement && selected_source_ == data_source) {
       return false;
     }
     selected_fields_ = replacement;
+    selected_source_ = data_source;
     saved_selected_.clear();
     clearFftOutput();
     resetZoomRange();
-    status_msg_ = items.size() > 1 ? "Selected '" + items.front() + "' (FFT accepts one input at a time)"
-                                   : "Selected '" + items.front() + "'";
+    status_msg_ = items.size() > 1 ? "Selected '" + selectedLabel() + "' (FFT accepts one input at a time)"
+                                   : "Selected '" + selectedLabel() + "'";
     invokeRefreshPreview();
     return true;
   }
@@ -244,6 +266,11 @@ class FFTDialog : public PJ::DialogPluginTyped {
       return false;
     }
     last_preview_refresh_ = now;
+    // The host does not say when a recording loads or unloads under an open panel, so this walks the catalog every
+    // 500 ms while the panel is open; a host data-changed call would replace it.
+    if (on_refresh_fields_) {
+      on_refresh_fields_();
+    }
     invokeRefreshPreview();
     return true;  // widget_data changed → host re-reads it
   }
@@ -259,6 +286,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
     }
     if (name == "btn_clear") {
       selected_fields_.clear();
+      selected_source_ = 0;
       saved_selected_.clear();
       input_series_.clear();
       clearFftOutput();
@@ -324,6 +352,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
     window_ = window;
     saved_selected_ = std::move(saved_selected);
     selected_fields_.clear();
+    selected_source_ = 0;
     clearFftOutput();
     resetZoomRange();
     return true;
@@ -331,9 +360,10 @@ class FFTDialog : public PJ::DialogPluginTyped {
 
   // --- Public accessors used by FFTToolbox ----------------------------------
 
-  void setAvailableFields(const std::vector<std::string>& fields) {
+  /// `fields`: each numeric series name with the data sources carrying it.
+  void setAvailableFields(std::map<std::string, std::vector<SeriesSource>> fields) {
     const auto previous_selection = selected_fields_;
-    available_fields_ = fields;
+    available_fields_ = std::move(fields);
 
     // Keep the desired field pending while a layout's data source is absent.
     // A late catalog update can then restore it instead of silently losing the
@@ -346,8 +376,8 @@ class FFTDialog : public PJ::DialogPluginTyped {
     }
 
     selected_fields_.clear();
-    if (desired_field &&
-        std::find(available_fields_.begin(), available_fields_.end(), *desired_field) != available_fields_.end()) {
+    const auto carriers = desired_field ? available_fields_.find(*desired_field) : available_fields_.end();
+    if (carriers != available_fields_.end() && bindSelectedSource(carriers->second)) {
       selected_fields_.push_back(*desired_field);
       saved_selected_.clear();
     } else if (desired_field) {
@@ -359,8 +389,17 @@ class FFTDialog : public PJ::DialogPluginTyped {
     if (selected_fields_ != previous_selection) {
       clearFftOutput();
       resetZoomRange();
-      status_msg_ = selected_fields_.empty() ? "The selected input is not available yet" : "Input selection restored";
+      status_msg_ = !selected_fields_.empty() ? "Input selection restored"
+                    : selected_source_ != 0   ? "The recording of this input was unloaded: drop the series again"
+                                              : "The selected input is not available yet";
     }
+    // Reported once: this runs on every tick and must not overwrite a newer message.
+    const bool ambiguous = selected_fields_.empty() && selected_source_ == 0 && carriers != available_fields_.end();
+    const std::string now_ambiguous = ambiguous ? *desired_field : std::string();
+    if (ambiguous && now_ambiguous != reported_ambiguous_) {
+      status_msg_ = "'" + now_ambiguous + "' is in several recordings: drop the one you want";
+    }
+    reported_ambiguous_ = now_ambiguous;
   }
 
   void setInputPreview(std::vector<PJ::ChartSeries> series) {
@@ -398,6 +437,29 @@ class FFTDialog : public PJ::DialogPluginTyped {
 
   [[nodiscard]] const std::vector<std::string>& selectedFields() const {
     return selected_fields_;
+  }
+  /// The data source of selectedFields(), 0 when nothing is selected.
+  [[nodiscard]] uint32_t selectedSource() const {
+    return selected_source_;
+  }
+  /// The selected source's name when several sources carry the selected name, else empty.
+  [[nodiscard]] std::string selectedRecording() const {
+    if (selected_fields_.empty()) {
+      return {};
+    }
+    const auto carriers = available_fields_.find(selected_fields_.front());
+    if (carriers == available_fields_.end() || carriers->second.size() < 2) {
+      return {};
+    }
+    for (const SeriesSource& source : carriers->second) {
+      if (source.id == selected_source_) {
+        return source.name;
+      }
+    }
+    return {};
+  }
+  void setOnRefreshFields(std::function<void()> cb) {
+    on_refresh_fields_ = std::move(cb);
   }
   [[nodiscard]] bool removeDC() const {
     return remove_dc_;
@@ -441,8 +503,31 @@ class FFTDialog : public PJ::DialogPluginTyped {
     zoom_range_.reset();
   }
 
-  std::vector<std::string> available_fields_;
+  /// A dragged selection stays with its recording, even once another carries the name or its own unloads. A restored
+  /// name (source 0) binds only to the one source carrying it: guessing would read the wrong recording.
+  bool bindSelectedSource(const std::vector<SeriesSource>& carriers) {
+    if (selected_source_ != 0) {
+      return std::any_of(carriers.begin(), carriers.end(), [this](const SeriesSource& source) {
+        return source.id == selected_source_;
+      });
+    }
+    if (carriers.size() != 1) {
+      return false;
+    }
+    selected_source_ = carriers.front().id;
+    return true;
+  }
+
+  [[nodiscard]] std::string selectedLabel() const {
+    const std::string recording = selectedRecording();
+    return recording.empty() ? selected_fields_.front() : selected_fields_.front() + " (" + recording + ")";
+  }
+
+  std::map<std::string, std::vector<SeriesSource>> available_fields_;
   std::vector<std::string> selected_fields_;
+  uint32_t selected_source_ = 0;
+  std::function<void()> on_refresh_fields_;
+  std::string reported_ambiguous_;
   std::vector<std::string> saved_selected_;
   bool remove_dc_ = false;
   bool range_zoomed_ = false;
@@ -485,6 +570,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
         refreshInputPreview();
       });
       dialog_.setOnSave([this]() { saveLastResult(); });
+      dialog_.setOnRefreshFields([this]() { refreshFieldList(); });
       callbacks_wired_ = true;
     }
     refreshFieldList();
@@ -531,7 +617,11 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
       return;
     }
 
-    std::vector<std::string> fields;
+    std::map<uint32_t, std::string> source_names;
+    for (const auto& source : catalog->dataSources()) {
+      source_names[source.handle.id] = std::string(PJ::sdk::toStringView(source.name));
+    }
+    std::map<std::string, std::vector<SeriesSource>> fields;
     field_index_.clear();
 
     auto all_topics = catalog->topics();
@@ -547,12 +637,15 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
         }
         auto field_name = PJ::sdk::toStringView(field.name);
         std::string path = std::string(topic_name) + "/" + std::string(field_name);
-        field_index_[path] = field.handle;
-        fields.push_back(path);
+        field_index_[{topic.source.id, path}] = field.handle;
+        // A source's topics are contiguous; a name repeated inside one source is not a second carrier.
+        auto& carriers = fields[path];
+        if (carriers.empty() || carriers.back().id != topic.source.id) {
+          carriers.push_back({topic.source.id, source_names[topic.source.id]});
+        }
       }
     }
-    std::sort(fields.begin(), fields.end());
-    dialog_.setAvailableFields(fields);
+    dialog_.setAvailableFields(std::move(fields));
   }
 
   /// Rebuild the input preview chart for each selected field. Time is plotted
@@ -572,7 +665,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     bool t0_set = false;
 
     for (const auto& path : dialog_.selectedFields()) {
-      auto it = field_index_.find(path);
+      auto it = field_index_.find({dialog_.selectedSource(), path});
       if (it == field_index_.end()) {
         continue;
       }
@@ -615,7 +708,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
   /// Returns false if the field is missing, non-numeric, or has no samples in range.
   bool readField(const std::string& field_path, std::vector<int64_t>& out_ts, std::vector<double>& out_vals) {
     auto host = toolboxHost();
-    auto it = field_index_.find(field_path);
+    auto it = field_index_.find({dialog_.selectedSource(), field_path});
     if (it == field_index_.end()) {
       return false;
     }
@@ -733,7 +826,9 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     }
 
     auto host = toolboxHost();
-    auto source = host.createDataSource("fft_output");
+    // Two recordings' outputs share a topic name: their source tells them apart.
+    const std::string recording = dialog_.selectedRecording();
+    auto source = host.createDataSource(recording.empty() ? "fft_output" : "fft_output (" + recording + ")");
     if (!source) {
       dialog_.setStatus(std::string("createDataSource failed: ") + source.error());
       return;
@@ -772,7 +867,8 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
   }
 
   FFTDialog dialog_;
-  std::map<std::string, PJ::sdk::FieldHandle> field_index_;
+  // By data source and name: two recordings carry the same names.
+  std::map<std::pair<uint32_t, std::string>, PJ::sdk::FieldHandle> field_index_;
   bool callbacks_wired_ = false;
   // First timestamp (ns) of the first series in the last preview refresh.
   // Used to convert chart zoom range (seconds relative to t0) back to absolute ns.

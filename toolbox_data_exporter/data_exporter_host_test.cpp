@@ -20,6 +20,7 @@
 #include <unistd.h>
 #endif
 
+#include "../toolbox_assistant_agent/tests/support/fake_multi_dataset_host.hpp"
 #include "data_exporter.hpp"
 #include "export_core.hpp"
 
@@ -279,7 +280,7 @@ TEST(DataExporterHostTest, SecondMultiFileFailureKeepsFirstFileAndAborts) {
   EXPECT_EQ(state["statusLabel"]["label"].get<std::string>().find("Files saved"), std::string::npos);
 }
 
-TEST(DataExporterHostTest, UnresolvableFieldPathReportsNoSamples) {
+TEST(DataExporterHostTest, UnresolvableFieldPathStopsTheExport) {
   PJ::testing::ToolboxTestStore store;
   store.addTopic("known").addField("known", "value", {0}, {1.0});
   DataExporterToolbox toolbox;
@@ -294,7 +295,7 @@ TEST(DataExporterHostTest, UnresolvableFieldPathReportsNoSamples) {
   ASSERT_TRUE(dialog.onFileSelected("saveButton", output_path.string()));
 
   const auto state = render(dialog);
-  EXPECT_EQ(state["statusLabel"]["label"].get<std::string>(), "No samples found in the selected time range.");
+  EXPECT_NE(state["statusLabel"]["label"].get<std::string>().find("never_registered/value"), std::string::npos);
   EXPECT_FALSE(state.contains("__request_accept"));
   EXPECT_FALSE(std::filesystem::exists(output_path));
 }
@@ -416,5 +417,202 @@ TEST(DataExporterHostTest, EmptyMultiFileGroupIsSkippedWhilePopulatedGroupSuccee
 // UTF-8 population API. M3's Arrow-reader suite therefore remains the direct
 // string/null integration coverage (including sliced arrays and embedded NULs),
 // while this bound-host test covers the production toolbox orchestration.
+
+using assistant_agent::testing::FakeMultiDatasetHost;
+using DroppedItem = DataExporterDialog::DroppedItem;
+
+// The fake numbers its data sources from 1, in addDataset order.
+constexpr uint32_t kRunA = 1;
+constexpr uint32_t kRunB = 2;
+
+void bindFake(
+    DataExporterToolbox& toolbox, FakeMultiDatasetHost& host, PJ::testing::ToolboxTestStore& store,
+    PJ::ServiceRegistryBuilder& registry) {
+  registry.registerService<PJ::sdk::ToolboxHostService>(host.makeHost());
+  registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
+  ASSERT_TRUE(toolbox.bind(PJ::sdk::ServiceRegistry(registry.view())));
+  toolbox.prepareDialog();
+}
+
+// Serves the two recordings' /imu different samples: a swapped handle shows in the file.
+struct TwoRecordings {
+  FakeMultiDatasetHost host;
+  PJ::testing::ToolboxTestStore store;
+  CanonicalStoreReadHost canonical_host{store.makeHost()};
+  DataExporterToolbox toolbox;
+  PJ::ServiceRegistryBuilder registry;
+
+  TwoRecordings() {
+    host.addDataset("run_a.mcap", {"/imu"}).addDataset("run_b.mcap", {"/imu", "/gps"});
+    store.addTopic("a").addField("a", "value", {5'000'000'000LL, 7'000'000'000LL}, {1.0, 2.0});
+    store.addTopic("b").addField("b", "value", {5'000'000'000LL, 7'000'000'000LL}, {3.0, 4.0});
+    store.addTopic("c").addField("c", "value", {5'000'000'000LL, 7'000'000'000LL}, {5.0, 6.0});
+    const auto samples = PJ::sdk::ToolboxHostView(store.makeHost()).catalogSnapshot();
+    EXPECT_TRUE(samples);
+    const auto fields = samples->fields();
+    host.servedBy(canonical_host.makeHost(), {fields[0].handle, fields[1].handle, fields[2].handle});
+    bindFake(toolbox, host, store, registry);
+  }
+};
+
+TEST(DataExporterHostTest, SameNamedADropExportsTheRecordingItWasDraggedFrom) {
+  TwoRecordings run;
+  DataExporterDialog& dialog = run.toolbox.dialog();
+
+  dialog.onDroppedItems("tableWidget", {DroppedItem{"/gps/value", kRunB}, DroppedItem{"/imu/value", kRunB}});
+  EXPECT_EQ(dialog.topics(), (std::vector<std::string>{"/gps/value", "run_b.mcap:/imu/value"}));
+
+  TempDirectory temp_directory;
+  const auto path = temp_directory.path() / "out.csv";
+  dialog.onFileSelected("saveButton", path.string());
+  EXPECT_EQ(
+      readFile(path),
+      "time,/gps/value,run_b.mcap:/imu/value\n"
+      "5.000000,5,3\n"
+      "7.000000,6,4\n");
+}
+
+TEST(DataExporterHostTest, SameNamedADropWithoutASourceIsRefusedOnlyWhenTheNameIsShared) {
+  TwoRecordings run;
+  DataExporterDialog& dialog = run.toolbox.dialog();
+
+  dialog.onDroppedItems("tableWidget", {DroppedItem{"/imu/value", 0}});
+  EXPECT_TRUE(dialog.topics().empty());
+  EXPECT_NE(statusText(dialog).find("Not added: /imu/value"), std::string::npos);
+
+  dialog.onDroppedItems("tableWidget", {DroppedItem{"/gps/value", 0}});
+  EXPECT_EQ(dialog.topics(), (std::vector<std::string>{"/gps/value"}));
+  EXPECT_TRUE(statusText(dialog).empty()) << "the refusal of the previous drop is over";
+}
+
+TEST(DataExporterHostTest, SameNamedADropNamingASourceWithoutTheSeriesIsRefused) {
+  TwoRecordings run;
+  DataExporterDialog& dialog = run.toolbox.dialog();
+
+  dialog.onDroppedItems("tableWidget", {DroppedItem{"/gps/value", kRunA}});
+  EXPECT_TRUE(dialog.topics().empty());
+}
+
+TEST(DataExporterHostTest, SameNamedOneDropWalksTheCatalogOnceAndReportsOnce) {
+  TwoRecordings run;
+  DataExporterDialog& dialog = run.toolbox.dialog();
+
+  int before = run.host.catalogAcquires();
+  dialog.onDroppedItems("tableWidget", {DroppedItem{"/imu/value", 0}});
+  const int one_item = run.host.catalogAcquires() - before;
+
+  before = run.host.catalogAcquires();
+  dialog.onDroppedItems(
+      "tableWidget", {DroppedItem{"/imu/value", 0}, DroppedItem{"/imu/value", 0}, DroppedItem{"/imu/value", 0}});
+  EXPECT_EQ(run.host.catalogAcquires() - before, one_item);
+}
+
+TEST(DataExporterHostTest, SameNamedAFileLoadedTwiceIsRefusedAsARow) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run.mcap", {"/imu"}).addDataset("run.mcap", {"/imu"});
+  PJ::testing::ToolboxTestStore store;
+  DataExporterToolbox toolbox;
+  PJ::ServiceRegistryBuilder registry;
+  bindFake(toolbox, host, store, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+
+  dialog.onDroppedItems("tableWidget", {DroppedItem{"/imu/value", kRunA}});
+  EXPECT_TRUE(dialog.topics().empty());
+  EXPECT_NE(statusText(dialog).find("Not added: /imu/value"), std::string::npos);
+}
+
+TEST(DataExporterHostTest, SameNamedAddAllSaysWhatTwoSameNamedFilesKeepOut) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run.mcap", {"/imu"}).addDataset("run.mcap", {"/imu", "/gps"});
+  PJ::testing::ToolboxTestStore store;
+  DataExporterToolbox toolbox;
+  PJ::ServiceRegistryBuilder registry;
+  bindFake(toolbox, host, store, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+
+  dialog.onClicked("buttonAddAllFiles");
+  EXPECT_EQ(dialog.topics(), (std::vector<std::string>{"/gps/value"}));
+  EXPECT_NE(statusText(dialog).find("Not added: /imu/value"), std::string::npos);
+}
+
+TEST(DataExporterHostTest, SameNamedARowThatBecameAmbiguousStopsTheExportAndSaysWhich) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", {"/imu"});
+  PJ::testing::ToolboxTestStore store;
+  DataExporterToolbox toolbox;
+  PJ::ServiceRegistryBuilder registry;
+  bindFake(toolbox, host, store, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+  dialog.onDroppedItems("tableWidget", {DroppedItem{"/imu/value", kRunA}});
+  ASSERT_EQ(dialog.topics(), (std::vector<std::string>{"/imu/value"}));
+
+  host.addDataset("run_b.mcap", {"/imu"});
+  TempDirectory temp_directory;
+  const auto single_path = temp_directory.path() / "out.csv";
+  dialog.onFileSelected("saveButton", single_path.string());
+
+  EXPECT_NE(statusText(dialog).find("/imu/value"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(single_path));
+  EXPECT_FALSE(render(dialog).contains("__request_accept"));
+
+  ASSERT_TRUE(dialog.onToggled("checkBoxMultifile", true));
+  EXPECT_FALSE(dialog.onTextChanged("lineEditPrefix", "out"));
+  ASSERT_TRUE(dialog.onFolderSelected("saveButton", temp_directory.path().string()));
+  EXPECT_NE(statusText(dialog).find("/imu/value"), std::string::npos);
+  EXPECT_TRUE(std::filesystem::is_empty(temp_directory.path()));
+}
+
+TEST(DataExporterHostTest, SameNamedARowNamingAFileLoadedAgainStopsTheExport) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run.mcap", {"/imu"}).addDataset("other.mcap", {"/imu"});
+  PJ::testing::ToolboxTestStore store;
+  DataExporterToolbox toolbox;
+  PJ::ServiceRegistryBuilder registry;
+  bindFake(toolbox, host, store, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+  dialog.onDroppedItems("tableWidget", {DroppedItem{"/imu/value", kRunA}});
+  ASSERT_EQ(dialog.topics(), (std::vector<std::string>{"run.mcap:/imu/value"}));
+
+  host.addDataset("run.mcap", {"/imu"});
+  TempDirectory temp_directory;
+  const auto path = temp_directory.path() / "out.csv";
+  dialog.onFileSelected("saveButton", path.string());
+  EXPECT_NE(statusText(dialog).find("run.mcap:/imu/value"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST(DataExporterHostTest, SameNamedALongRefusalNamesOnlyTheFirstRows) {
+  std::vector<std::string> topics;
+  std::vector<DroppedItem> items;
+  for (int index = 0; index < 8; ++index) {
+    topics.push_back("/t" + std::to_string(index));
+    items.push_back(DroppedItem{topics.back() + "/value", 0});
+  }
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", topics).addDataset("run_b.mcap", topics);
+  PJ::testing::ToolboxTestStore store;
+  DataExporterToolbox toolbox;
+  PJ::ServiceRegistryBuilder registry;
+  bindFake(toolbox, host, store, registry);
+  DataExporterDialog& dialog = toolbox.dialog();
+
+  dialog.onDroppedItems("tableWidget", items);
+  EXPECT_NE(statusText(dialog).find("and 3 more"), std::string::npos);
+  EXPECT_EQ(statusText(dialog).find("/t7/value"), std::string::npos);
+}
+
+TEST(DataExporterHostTest, SameNamedEachRecordingsTopicGoesToItsOwnFile) {
+  TwoRecordings run;
+  DataExporterDialog& dialog = run.toolbox.dialog();
+
+  dialog.onDroppedItems("tableWidget", {DroppedItem{"/imu/value", kRunA}, DroppedItem{"/imu/value", kRunB}});
+  ASSERT_TRUE(dialog.onToggled("checkBoxMultifile", true));
+  EXPECT_FALSE(dialog.onTextChanged("lineEditPrefix", "out"));
+  TempDirectory temp_directory;
+  ASSERT_TRUE(dialog.onFolderSelected("saveButton", temp_directory.path().string()));
+
+  EXPECT_EQ(readFile(temp_directory.path() / "out_run_a.mcap__imu.csv"), "time,value\n5.000000,1\n7.000000,2\n");
+  EXPECT_EQ(readFile(temp_directory.path() / "out_run_b.mcap__imu.csv"), "time,value\n5.000000,3\n7.000000,4\n");
+}
 
 }  // namespace
