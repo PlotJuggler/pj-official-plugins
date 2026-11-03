@@ -2174,6 +2174,21 @@ std::uint64_t requestedBudgetEvaluations(const json& args) {
   return static_cast<std::uint64_t>(std::max<std::int64_t>(args.value("budget_evaluations", std::int64_t{50}), 1));
 }
 
+// The host's error text for an installed node whose recipe is in the "error" state, or nullopt when the
+// config is unreadable or the node is not in error.
+std::optional<std::string> installedNodeErrorDetail(ToolContext& ctx, const std::string& id) {
+  auto recipe = ctx.dp.recipeOf(id);
+  if (!recipe) {
+    return std::nullopt;
+  }
+  const auto config = json::parse(*recipe, nullptr, false);
+  if (!config.is_object() || config.value("state", std::string{}) != "error") {
+    return std::nullopt;
+  }
+  const auto detail = config.find("detail");
+  return detail != config.end() && detail->is_string() ? detail->get<std::string>() : std::string("unknown error");
+}
+
 // evaluate()'s object path proper: validate 'outputs'/'body', resolve every
 // input (object or scalar), turn 'at_s'/'window' (display seconds) or the
 // current playhead into raw ns, submit an EPHEMERAL on_demand evaluation,
@@ -2601,12 +2616,12 @@ ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
     PJ::sdk::DataProcessorRequest eval_request;
     eval_request.id = name;
     eval_request.kind = "on_demand";
-    eval_request.language = ctx.language;
+    // An installed node is evaluated by id only: its stored recipe is authoritative (SDK contract).
     eval_request.instant_ns = eval_ns;
 
     return submitAndPoll(
         ctx, eval_request, 1000, 1,
-        [result = std::move(result), source = *resolved.anchor_source](
+        [result = std::move(result), name, source = *resolved.anchor_source](
             ToolContext& current, const SubmitAndPollResult& polled) mutable {
           if (polled.ok) {
             const RenderedBundles rendered = renderBundles(current, source, polled.report, false);
@@ -2614,6 +2629,16 @@ ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
               result["bundle"] = rendered.bundles.front();
             }
           } else {
+            // A node in error is a script that compiles but cannot run: remove it and fail so the model fixes it.
+            if (auto detail = installedNodeErrorDetail(current, name)) {
+              (void)current.dp.remove(name);
+              if (current.notify_data_changed) {
+                current.notify_data_changed();
+              }
+              return ToolResult::failure(
+                  "create_derived_object: '" + name + "' failed when evaluated: " + *detail +
+                  ". Nothing was kept; fix the script and call create_derived_object again.");
+            }
             result["bundle_unavailable"] = polled.error;
           }
           return ToolResult::success(result.dump());

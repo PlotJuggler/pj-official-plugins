@@ -59,6 +59,12 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 ### Fixed
 - The crop and pin examples handed to the model use the positional coordinate arrays the Luau
   binder accepts.
+- `create_derived_object` evaluated the node it had just installed with a language on the request,
+  which the host rejects for an installed node (its stored recipe is used), so the first bundle was
+  always reported as unavailable. The evaluation now carries only the id, kind and time. If that
+  evaluation fails and the host reports the node in the `error` state, the node is removed and the
+  tool fails with the host's detail, so the model corrects the script instead of being told it was
+  created.
 
 ### Requires
 - `create_derived_object`, the object path of `evaluate`, and `scene_view`
