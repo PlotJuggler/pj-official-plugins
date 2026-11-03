@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <pj_can_dbc/dictionary_paths.hpp>
 #include <string>
 #include <vector>
@@ -11,7 +12,9 @@
 namespace {
 
 using pj_can_dbc::auxBaseDir;
+using pj_can_dbc::auxBaseDirToSave;
 using pj_can_dbc::AuxPathContext;
+using pj_can_dbc::makeAuxPathContext;
 using pj_can_dbc::readAuxFile;
 using pj_can_dbc::resolveAuxPath;
 using pj_can_dbc::resolveAuxPaths;
@@ -90,6 +93,28 @@ TEST(DictionaryPaths, AuxBaseDirIsEmptyWithoutAnAbsoluteFilesystemDirectory) {
   EXPECT_EQ(auxBaseDir(""), "");
   EXPECT_EQ(auxBaseDir("data.blf"), "");
   EXPECT_EQ(auxBaseDir("s3://b/d.blf"), "");
+}
+
+// ---------------------------------------------------------------------------
+// config glue: auxBaseDirToSave / makeAuxPathContext
+// ---------------------------------------------------------------------------
+
+TEST(DictionaryPaths, AuxBaseDirToSaveIsTheDataDirectoryWhenPathsAreStored) {
+  EXPECT_EQ(auxBaseDirToSave(at("run/sub/../data.blf"), true), std::optional<std::string>(at("run")));
+}
+
+TEST(DictionaryPaths, AuxBaseDirToSaveIsNulloptWithoutPathsOrDirectory) {
+  EXPECT_EQ(auxBaseDirToSave(at("run/data.blf"), false), std::nullopt);
+  EXPECT_EQ(auxBaseDirToSave("", true), std::nullopt);
+  EXPECT_EQ(auxBaseDirToSave("data.blf", true), std::nullopt);
+  EXPECT_EQ(auxBaseDirToSave("s3://b/d.blf", true), std::nullopt);
+}
+
+TEST(DictionaryPaths, MakeAuxPathContextKeepsEachValueInItsField) {
+  const AuxPathContext context = makeAuxPathContext(at("new/data.blf"), at("old/data.blf"), at("old"));
+  EXPECT_EQ(context.data_file, at("new/data.blf"));
+  EXPECT_EQ(context.saved_data_file, at("old/data.blf"));
+  EXPECT_EQ(context.base_dir, at("old"));
 }
 
 // ---------------------------------------------------------------------------

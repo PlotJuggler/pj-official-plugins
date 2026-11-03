@@ -223,8 +223,8 @@ std::string CandumpDialog::saveConfig() const {
     }
   }
   cfg["iface_dicts"] = mapping;
-  if (const std::string base = pj_can_dbc::auxBaseDir(filepath_); !mapping.empty() && !base.empty()) {
-    cfg[pj_can_dbc::kAuxBaseDirKey] = base;
+  if (const auto base = pj_can_dbc::auxBaseDirToSave(filepath_, !mapping.empty())) {
+    cfg[pj_can_dbc::kAuxBaseDirKey] = *base;
   }
   cfg["raw_unassigned"] = raw_unassigned_;
   cfg["time_mode"] = time_mode_override_;
@@ -252,9 +252,9 @@ bool CandumpDialog::applyConfigJson(std::string_view config_json, bool scan_now)
     return false;
   }
   filepath_ = cfg.value("filepath", std::string{});
-  const pj_can_dbc::AuxPathContext context{
+  const auto context = pj_can_dbc::makeAuxPathContext(
       filepath_, cfg.value(pj_can_dbc::kSavedFilepathKey, std::string{}),
-      cfg.value(pj_can_dbc::kAuxBaseDirKey, std::string{})};
+      cfg.value(pj_can_dbc::kAuxBaseDirKey, std::string{}));
   raw_unassigned_ = cfg.value("raw_unassigned", true);
   time_mode_override_ = cfg.value("time_mode", 0);
   if (time_mode_override_ < 0 || time_mode_override_ > 3) {
