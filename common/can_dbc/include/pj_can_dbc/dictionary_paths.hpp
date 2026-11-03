@@ -21,6 +21,7 @@
 // A string containing "://" is a URL, never a filesystem path: it is never
 // rewritten, and a data file given as a URL has no directory.
 
+#include <optional>
 #include <pj_base/expected.hpp>
 #include <string>
 #include <string_view>
@@ -50,6 +51,10 @@ std::string toConfigPath(std::string_view aux_path, std::string_view data_file);
 /// kAuxBaseDirKey value: data_file's lexically normal directory ('/' separators); empty when data_file is
 /// empty, relative or contains "://".
 std::string auxBaseDir(std::string_view data_file);
+
+/// What saveConfig stores under kAuxBaseDirKey: auxBaseDir(data_file) when the config stores at least one
+/// dictionary path and that directory is not empty; otherwise nullopt (write no key).
+std::optional<std::string> auxBaseDirToSave(std::string_view data_file, bool stores_paths);
 
 /// Path to open for a stored path: relative -> against the current data dir (or the pre-fill base_dir when no
 /// saved_data_file); absolute under the folder that moved (the common trailing part of saved_data_file and

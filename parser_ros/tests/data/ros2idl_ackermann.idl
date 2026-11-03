@@ -1,0 +1,51 @@
+================================================================================
+IDL: autoware_auto_control_msgs/msg/AckermannLateralCommand
+#include "builtin_interfaces/msg/Time.idl"
+
+module autoware_auto_control_msgs {
+  module msg {
+    @verbatim (language="comment", text=
+      " Lateral control message for Ackermann-style platforms" "\n"
+      " Note regarding tires: If the platform has multiple steering tires, the commands"
+      " given here are for a virtual tire at the average lateral position of the steering tires.")
+
+    struct AckermannLateralCommand {
+      builtin_interfaces::msg::Time stamp;
+
+      @verbatim (language="comment", text=
+        " Desired angle of the steering tire in radians left (positive)"
+        " or right (negative) of center (0.0)")
+      @default (value=0.0)
+      float steering_tire_angle;
+
+      @verbatim (language="comment", text=
+        " Desired rate of change of the steering tire angle in radians per second")
+      @default (value=0.0)
+      float steering_tire_rotation_rate;
+    };
+  };
+};
+
+================================================================================
+IDL: builtin_interfaces/msg/Time
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from builtin_interfaces/msg/Time.msg
+// generated code does not contain a copyright notice
+
+
+module builtin_interfaces {
+  module msg {
+    @verbatim (language="comment", text=
+      "This message communicates ROS Time defined here:" "\n"
+      "https://design.ros2.org/articles/clock_and_time.html")
+    struct Time {
+      @verbatim (language="comment", text=
+        "The seconds component, valid over all int32 values.")
+      int32 sec;
+
+      @verbatim (language="comment", text=
+        "The nanoseconds component, valid in the range [0, 10e9).")
+      uint32 nanosec;
+    };
+  };
+};

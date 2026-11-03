@@ -66,8 +66,8 @@ std::string BlfDialog::saveConfig() const {
     }
   }
   cfg["channel_dbcs"] = mapping;
-  if (const std::string base = pj_can_dbc::auxBaseDir(filepath_); !mapping.empty() && !base.empty()) {
-    cfg[pj_can_dbc::kAuxBaseDirKey] = base;
+  if (const auto base = pj_can_dbc::auxBaseDirToSave(filepath_, !mapping.empty())) {
+    cfg[pj_can_dbc::kAuxBaseDirKey] = *base;
   }
   return cfg.dump();
 }

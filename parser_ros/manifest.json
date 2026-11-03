@@ -24,6 +24,7 @@
   "encoding": [
     "ros2msg",
     "omgidl",
+    "ros2idl",
     "ros1msg",
     "ros1",
     "ros2"
