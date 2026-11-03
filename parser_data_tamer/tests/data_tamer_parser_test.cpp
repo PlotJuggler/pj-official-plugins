@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -127,6 +128,21 @@ TEST(DataTamerParserTest, ManifestContainsEncoding) {
   f.setUp();
   // Manifest uses "encoding" as an array containing all supported encodings
   EXPECT_NE(f.handle.manifest().find("\"data_tamer\""), std::string::npos);
+}
+
+// A schema hash above UINT32_MAX: data_tamer 1.x read it with stoul, 32 bits on Windows.
+TEST(DataTamerParserTest, FullWidthDeclaredHashParsesSnapshot) {
+  DTFixture f;
+  f.setUp();
+  const std::string text = "### version: 5\n### hash: 18446744073709551615\n### channel_name: wide\n\nfloat64 value\n";
+  ASSERT_TRUE(f.bindSchema(text));
+  const auto schema = DataTamerParser::BuildSchemaFromText(text);
+  ASSERT_EQ(schema.hash, std::numeric_limits<uint64_t>::max());
+  ASSERT_TRUE(f.parse(buildSnapshot(schema, {42.5})));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto* value = findField(f.recorder.rows()[0], "/value");
+  ASSERT_NE(value, nullptr);
+  EXPECT_DOUBLE_EQ(value->numeric, 42.5);
 }
 
 TEST(DataTamerParserTest, BasicParsing) {

@@ -2,9 +2,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # data_tamer_parser — header-only library for DataTamer schema/snapshot parsing.
-# data_tamer 2.0.0 (tag 2.0.0, commit 0c48ed0). Its own CPM name: parser_ros pins data_tamer 1.x
-# as `data_tamer`, and CPM reuses the first package of a name, so in the aggregate build this
-# plugin would get parser_ros's 1.x sources.
+# data_tamer 2.0.0 (tag 2.0.0, commit 0c48ed0). parser_ros declares the same CPM package: CPM
+# reuses the first package of a name, so keep the name, URL and hash identical in both.
 CPMAddPackage(
   NAME data_tamer_2
   URL https://github.com/facontidavide/data_tamer/archive/refs/tags/2.0.0.zip
