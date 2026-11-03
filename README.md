@@ -21,6 +21,7 @@
 | [![data_load_3d](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_3d.json)](data_load_3d/) | DataSource | PLY/PCD point cloud & mesh loading |
 | [![data_load_mf4](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mf4.json)](data_load_mf4/) | DataSource | ASAM MF4/MDF loading (+ DBC CAN decode) |
 | [![data_load_blf](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_blf.json)](data_load_blf/) | DataSource | Vector BLF CAN-log loading (DBC decode) |
+| [data_load_candump](data_load_candump/) | DataSource | Linux SocketCAN `candump` log/screen capture loading (DBC or ARUS-CSV decode) |
 | [![data_stream_zmq](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_zmq.json)](data_stream_zmq/) | DataSource | ZeroMQ streaming |
 | [![data_stream_mqtt](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_mqtt.json)](data_stream_mqtt/) | DataSource | MQTT streaming |
 | [![data_stream_foxglove_bridge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_foxglove_bridge.json)](data_stream_foxglove_bridge/) | DataSource | Foxglove WebSocket bridge |
@@ -33,9 +34,10 @@
 | [![toolbox_fft](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_fft.json)](toolbox_fft/) | Toolbox | FFT frequency-domain transform |
 | [![toolbox_quaternion](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_quaternion.json)](toolbox_quaternion/) | Toolbox | Quaternion → roll/pitch/yaw |
 | [![toolbox_mosaico](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_mosaico.json)](toolbox_mosaico/) | Toolbox | Mosaico cloud server browsing (Arrow Flight) |
-| [![toolbox_transform_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_transform_editor.json)](toolbox_transform_editor/) | Toolbox | Lua-based derived/custom series editor |
+| [![toolbox_transform_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_transform_editor.json)](toolbox_transform_editor/) | Toolbox | Lua-based editor for derived series and 2D/3D objects |
 | [toolbox_anomaly_detector](toolbox_anomaly_detector/) | Toolbox | Lua anomaly detection → plot markers (shares its engine with the headless runner) |
 | [toolbox_assistant_agent](toolbox_assistant_agent/) | Toolbox | LLM assistant driving the plugin SDK through your Claude Code / Codex CLI (Linux/macOS runtime) |
+| [widget_basic](widget_basic/) | Widget | Gauge, numeric indicator, traffic light and value table dock widgets (links Qt; Linux x86_64 and Windows x64 only) |
 
 In addition to the plugins above, [`tools/anomaly_runner`](tools/anomaly_runner/) is a
 standalone **headless CLI** that runs the same anomaly-detection rules without a GUI (CSV/MCAP
@@ -253,7 +255,7 @@ is available (`scripts/ensure_core.sh`).
 | rosx_introspection | parser_ros |
 | data_tamer | parser_ros, parser_data_tamer |
 | mdflib | data_load_mf4 |
-| dbc_parser_cpp + fast_float | data_load_mf4, data_load_blf (shared `common/can_dbc`) |
+| dbc_parser_cpp + fast_float | data_load_mf4, data_load_blf, data_load_candump (shared `common/can_dbc`) |
 | lblf | data_load_blf |
 
 ### Pinned transitive dependencies

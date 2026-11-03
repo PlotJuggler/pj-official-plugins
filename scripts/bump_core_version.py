@@ -2,7 +2,7 @@
 """Manage the single plotjuggler_sdk version pin.
 
 The core version now lives in ONE place: the top-level ``SDK_VERSION`` file (an exact
-version, e.g. ``0.5.1``). Every Conan recipe (root ``conanfile.py`` and each plugin's
+version, e.g. ``0.5.1``, or a development pre-release such as ``0.38.0-dev.1``). Every Conan recipe (root ``conanfile.py`` and each plugin's
 ``conanfile.py``) reads it live; scripts/ensure_core.sh clones the matching ``v<version>``
 tag when no prebuilt package is available.
 
@@ -53,7 +53,7 @@ def cmd_check() -> int:
     ok = True
     version = read_sdk_version()
     if not SDK_VERSION_REGEX.fullmatch(version):
-        print(f"SDK_VERSION '{version}' is not an exact X.Y.Z version", file=sys.stderr)
+        print(f"SDK_VERSION '{version}' is not an exact X.Y.Z or X.Y.Z-dev.N version", file=sys.stderr)
         ok = False
 
     for path in recipe_files():
@@ -75,7 +75,7 @@ def cmd_check() -> int:
 
 def cmd_set(version: str, dry_run: bool) -> int:
     if not SDK_VERSION_REGEX.fullmatch(version):
-        print(f"error: '{version}' is not an exact version (e.g. 0.5.2)", file=sys.stderr)
+        print(f"error: '{version}' is not an exact version (e.g. 0.5.2 or 0.38.0-dev.1)", file=sys.stderr)
         return 2
 
     old = read_sdk_version() if SDK_VERSION_FILE.is_file() else "(none)"

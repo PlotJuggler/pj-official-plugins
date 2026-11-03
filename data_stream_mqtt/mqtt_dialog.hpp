@@ -42,6 +42,8 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
   ~MqttDialog() override {
+    // Must run first: destroys the client before topics_mutex_ and
+    // discovered_topics_, which its message callback uses.
     disconnectBroker();
   }
 
@@ -53,14 +55,17 @@ class MqttDialog : public PJ::DialogPluginTyped {
     wd.setText("lineEditPort", std::to_string(port_));
     wd.setText("lineEditUsername", username_);
     wd.setText("lineEditPassword", password_);
-    wd.setEnabled("lineEditHost", !connected_);
-    wd.setEnabled("lineEditPort", !connected_);
+    wd.setEnabled("lineEditHost", !connected_ && !connecting());
+    wd.setEnabled("lineEditPort", !connected_ && !connecting());
 
-    // Connect button state + error feedback (label_12 stays empty while idle).
-    wd.setButtonText("buttonConnect", connected_ ? "Disconnect" : "Connect");
-    wd.setText(
-        "label_12", last_connect_error_.empty() ? (connected_ ? "Connected — select topics below" : "")
-                                                : ("Connection error: " + last_connect_error_));
+    // Connect button state + feedback (label_12 stays empty while idle). While
+    // connecting, the button is Cancel.
+    if (connected_) {
+      wd.setButtonText("buttonConnect", "Disconnect");
+    } else {
+      wd.setButtonText("buttonConnect", connecting() ? "Cancel" : "Connect");
+    }
+    wd.setText("label_12", connectionStatusText());
 
     // Protocol version combo
     wd.setCurrentIndex("comboBoxVersion", protocol_version_index_);
@@ -117,15 +122,37 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
   bool onTick() override {
     // Check if new topics have arrived from the MQTT callback
-    bool new_topics = false;
+    bool changed = false;
     {
       std::lock_guard<std::mutex> lock(topics_mutex_);
       if (topics_dirty_) {
         topics_dirty_ = false;
-        new_topics = true;
+        changed = true;
       }
     }
-    return new_topics;
+
+    // try_wait() never blocks: false while pending, true on success, throws on
+    // failure (the same error the old blocking connect()->wait() reported).
+    if (connecting()) {
+      try {
+        if (connect_token_->try_wait()) {
+          connect_token_.reset();
+          // The discovered topics arrive through the message callback, so the
+          // subscribe ack is not awaited.
+          discovery_client_->subscribe(topic_filter_.empty() ? "#" : topic_filter_, 0);
+          connected_ = true;
+          last_connect_error_.clear();
+          changed = true;
+        }
+      } catch (const mqtt::exception& e) {
+        last_connect_error_ = e.what();
+        connect_token_.reset();
+        discovery_client_.reset();
+        changed = true;
+      }
+    }
+
+    return changed;
   }
 
   bool onTextChanged(std::string_view widget_name, std::string_view text) override {
@@ -235,7 +262,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view widget_name) override {
     if (widget_name == "buttonConnect") {
-      if (connected_) {
+      if (connected_ || connecting()) {
         disconnectBroker();
       } else {
         connectBroker();
@@ -322,8 +349,8 @@ class MqttDialog : public PJ::DialogPluginTyped {
     };
 
     try {
-      discovery_client_ =
-          std::make_unique<mqtt::async_client>(pj::mqtt_support::brokerUri(settings), "pj_mqtt_discovery");
+      discovery_client_ = std::make_unique<mqtt::async_client>(
+          pj::mqtt_support::brokerUri(settings), pj::mqtt_support::randomClientId("pj_mqtt_discovery_"));
 
       // Collect discovered topic names from incoming messages
       discovery_client_->set_message_callback([this](mqtt::const_message_ptr msg) {
@@ -333,28 +360,29 @@ class MqttDialog : public PJ::DialogPluginTyped {
         }
       });
 
-      discovery_client_->connect(pj::mqtt_support::makeConnectOptions(settings))->wait();
-      // Subscribe to the user's topic filter to discover topics
-      std::string sub_filter = topic_filter_.empty() ? "#" : topic_filter_;
-      discovery_client_->subscribe(sub_filter, 0)->wait();
-      connected_ = true;
+      // Not awaited here: onTick polls it, so an unresponsive broker never
+      // blocks the UI thread.
+      connect_token_ = discovery_client_->connect(pj::mqtt_support::makeConnectOptions(settings));
       last_connect_error_.clear();
     } catch (const mqtt::exception& e) {
       last_connect_error_ = e.what();
+      connect_token_.reset();
       discovery_client_.reset();
       connected_ = false;
     }
   }
 
   void disconnectBroker() {
-    if (discovery_client_) {
-      try {
-        if (discovery_client_->is_connected()) {
-          discovery_client_->disconnect()->wait();
-        }
-      } catch (...) {}
-      discovery_client_.reset();
-    }
+    // Cancel (connect in flight) and Disconnect are the same: destroy the
+    // client. That is what ends a connect in flight; paho serializes the
+    // destroy with the delivery of its callbacks under its own mutex, so once
+    // ~async_client returns none of them runs again. It also closes the
+    // session itself (DISCONNECT when connected), so nothing waits on an
+    // unresponsive broker. It blocks ~100 ms when this is the last paho
+    // client (paho stops its threads), and for as long as paho is still
+    // resolving the broker's hostname, which it does holding that mutex.
+    connect_token_.reset();
+    discovery_client_.reset();
     connected_ = false;
     // Drop the discovered catalog: it belongs to the broker we just left, and
     // stale entries would show phantom topics (and count as "visible" for the
@@ -365,6 +393,20 @@ class MqttDialog : public PJ::DialogPluginTyped {
       std::lock_guard<std::mutex> lock(topics_mutex_);
       discovered_topics_.clear();
     }
+  }
+
+  [[nodiscard]] bool connecting() const {
+    return connect_token_ != nullptr;
+  }
+
+  [[nodiscard]] std::string connectionStatusText() const {
+    if (connecting()) {
+      return "Connecting...";
+    }
+    if (!last_connect_error_.empty()) {
+      return "Connection error: " + last_connect_error_;
+    }
+    return connected_ ? "Connected — select topics below" : "";
   }
 
   std::vector<std::string> available_encodings_;
@@ -385,6 +427,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
 
   // Dialog-time discovery state
   bool connected_ = false;
+  mqtt::token_ptr connect_token_;  // set while a connect is in flight; polled from onTick
   std::string last_connect_error_;
   std::unique_ptr<mqtt::async_client> discovery_client_;
   std::mutex topics_mutex_;

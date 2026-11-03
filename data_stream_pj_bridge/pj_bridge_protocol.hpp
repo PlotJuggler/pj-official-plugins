@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,14 @@ struct RawMessage {
   const uint8_t* cdr_data = nullptr;
   size_t cdr_size = 0;
 };
+
+/// Largest decompressed payload a data frame may declare; bigger frames are rejected.
+inline constexpr size_t kMaxDecompressedSize = size_t{256} * 1024 * 1024;
+
+/// The decompressed size a frame declares (its ZSTD frame content size), or nullopt when it is
+/// unknown, an error sentinel, or above kMaxDecompressedSize. Takes the raw 64-bit value: on
+/// 32-bit targets (wasm32) narrowing to size_t first would let a sentinel through as a small size.
+[[nodiscard]] std::optional<size_t> checkedDecompressedSize(uint64_t content_size);
 
 /// Parse a binary data frame into individual raw messages.
 /// Frame format: [magic:4][msg_count:4][zstd_compressed_payload]

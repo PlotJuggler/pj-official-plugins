@@ -150,11 +150,12 @@ def _surfaces_payload(path: Path) -> object:
     }
 
 
-def _repo_sdk_version(repo_root: Path) -> tuple[int, int, int] | None:
+def _repo_sdk_version(repo_root: Path) -> str | None:
+    """The SDK_VERSION text as pinned (a Conan version, so a dev pre-release keeps its suffix)."""
     version_file = repo_root / "SDK_VERSION"
     if not version_file.is_file():
         return None
-    return core.parse_version(version_file.read_text().strip(), "SDK_VERSION file")
+    return version_file.read_text().strip()
 
 
 def _verify_and_load_table(
@@ -214,12 +215,11 @@ def _pj_sdk_root_table_path(root_value: str) -> Path:
     )
 
 
-def _conan_cache_table_path(sdk_version: tuple[int, int, int], *, err: TextIO) -> Path | None:
+def _conan_cache_table_path(sdk_version: str, *, err: TextIO) -> Path | None:
     """Best-effort lookup of the pinned SDK's export_source in the Conan
     cache. Any failure (no conan, cache miss, unexpected layout) is soft: it
     only notes to err and lets the caller try the next source."""
-    formatted = core.format_version(sdk_version)
-    package_ref = f"plotjuggler_sdk/{formatted}"
+    package_ref = f"plotjuggler_sdk/{sdk_version}"
     try:
         result = subprocess.run(
             ["conan", "cache", "path", package_ref, "--folder=export_source"],
@@ -240,7 +240,7 @@ def _conan_cache_table_path(sdk_version: tuple[int, int, int], *, err: TextIO) -
     return table_path
 
 
-def _resolve_post_cutover_table_path(sdk_version: tuple[int, int, int], *, err: TextIO) -> Path:
+def _resolve_post_cutover_table_path(sdk_version: str, *, err: TextIO) -> Path:
     """Once SDK_VERSION ships the table, find it without an explicit
     --sdk-floors: PJ_SDK_ROOT wins when set (and must resolve, no fallback),
     otherwise try the Conan cache."""
@@ -272,10 +272,13 @@ def resolve_surface_table(
     vendored_core_path = repo_root / "scripts" / "vendor" / VENDORED_CORE_NAME
 
     sdk_version = _repo_sdk_version(repo_root)
-    ships_table = sdk_version is not None and sdk_version >= SDK_SHIPS_TABLE_FROM
+    ships_table = (
+        sdk_version is not None
+        and core.parse_declared_version(sdk_version, "SDK_VERSION file")[0] >= SDK_SHIPS_TABLE_FROM
+    )
     if ships_table and interim_path.is_file():
         raise CheckError(
-            f"SDK_VERSION {core.format_version(sdk_version)} ships the floor table in the "
+            f"SDK_VERSION {sdk_version} ships the floor table in the "
             f"package — delete the interim table {interim_path}; the check resolves the SDK's "
             "table via --sdk-floors, PJ_SDK_ROOT or the Conan cache"
         )
@@ -698,7 +701,7 @@ def check_sdk_feature_floors(
         plugin_name = _display_path(plugin_dir, repo_root)
         try:
             manifest = _read_manifest(plugin_dir)
-            declared = core.parse_version(
+            declared, _ = core.parse_declared_version(
                 manifest.get("min_sdk_required"),
                 f"min_sdk_required in {plugin_name}/manifest.json",
             )

@@ -21,6 +21,11 @@ so the plugin `.so` has no extra runtime dependencies.
 - Standard and extended (29-bit / J1939) frames are disambiguated; unmatched
   frames, matched-but-undecodable frames (e.g. truncated), and channels without
   a DBC are each counted and reported.
+- A signal decoded from a DBC `VAL_` value table also gets a
+  **`<signal>_label`** text field (decoded label, or the raw value as text
+  when unmatched) — see `common/can_dbc`'s `signal_row.hpp` for the full
+  convention. It is `<signal>_label_2` (then `_3`, ...) when the message
+  already has a signal named `<signal>_label`.
 
 ## Timestamp Handling
 
@@ -33,9 +38,20 @@ the object-flags unit bit).
 ```json
 {
   "filepath": "/path/to/log.blf",
-  "channel_dbcs": { "1": ["powertrain.dbc"], "2": ["chassis.dbc"] }
+  "channel_dbcs": { "1": ["powertrain.dbc"], "2": ["chassis.dbc"] },
+  "aux_base_dir": "/path/to"
 }
 ```
+
+Dictionary paths are portable. A dictionary that lies inside the data file's
+folder is saved relative to it (`"powertrain.dbc"`, `"dbc/powertrain.dbc"`), so
+a moved or copied layout folder decodes with the dictionary beside the data;
+other paths are saved as given. `aux_base_dir` records the data file's folder
+at save time, so settings reused for a different data file still find relative
+entries. Absolute paths saved by earlier versions that lie under the folder
+that moved (for example a `dbc/` folder next to `data/`) are rebased onto the
+data file that is open; the moved folder is worked out from the old and new
+data file paths.
 
 ## Testing
 
