@@ -347,6 +347,84 @@ TEST(ProtobufParserTest, NestedMessage) {
   EXPECT_TRUE(found_val);
 }
 
+// A schema whose FileDescriptorSet lists the message's file BEFORE the file it
+// imports, as written by the MCAP C++ example (BuildFileDescriptorSet) and by
+// writers derived from it.
+TEST(ProtobufParserTest, SchemaFileBeforeItsImport) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  gp::FileDescriptorProto header_file;
+  header_file.set_name("header.proto");
+  header_file.set_package("pkg");
+  header_file.set_syntax("proto3");
+  auto* hdr = header_file.add_message_type();
+  hdr->set_name("Header");
+  auto* seq = hdr->add_field();
+  seq->set_name("seq");
+  seq->set_number(1);
+  seq->set_type(gp::FieldDescriptorProto::TYPE_INT32);
+  seq->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+
+  gp::FileDescriptorProto stamped_file;
+  stamped_file.set_name("stamped.proto");
+  stamped_file.set_package("pkg");
+  stamped_file.set_syntax("proto3");
+  stamped_file.add_dependency("header.proto");
+  auto* stamped = stamped_file.add_message_type();
+  stamped->set_name("Stamped");
+  auto* hf = stamped->add_field();
+  hf->set_name("header");
+  hf->set_number(1);
+  hf->set_type(gp::FieldDescriptorProto::TYPE_MESSAGE);
+  hf->set_type_name(".pkg.Header");
+  hf->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+  auto* vf = stamped->add_field();
+  vf->set_name("value");
+  vf->set_number(2);
+  vf->set_type(gp::FieldDescriptorProto::TYPE_DOUBLE);
+  vf->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+
+  gp::FileDescriptorSet fd_set;
+  *fd_set.add_file() = stamped_file;
+  *fd_set.add_file() = header_file;
+  std::string schema;
+  fd_set.SerializeToString(&schema);
+  ASSERT_TRUE(f.bindSchema("pkg.Stamped", schema));
+
+  gp::DescriptorPool pool;
+  ASSERT_NE(pool.BuildFile(header_file), nullptr);
+  ASSERT_NE(pool.BuildFile(stamped_file), nullptr);
+  const gp::Descriptor* stamped_desc = pool.FindMessageTypeByName("pkg.Stamped");
+  gp::DynamicMessageFactory factory;
+  std::unique_ptr<gp::Message> msg(factory.GetPrototype(stamped_desc)->New());
+  const gp::Reflection* ref = msg->GetReflection();
+#pragma push_macro("GetMessage")
+#undef GetMessage
+  gp::Message* header_msg = ref->MutableMessage(msg.get(), stamped_desc->FindFieldByName("header"));
+#pragma pop_macro("GetMessage")
+  header_msg->GetReflection()->SetInt32(header_msg, header_msg->GetDescriptor()->FindFieldByName("seq"), 7);
+  ref->SetDouble(msg.get(), stamped_desc->FindFieldByName("value"), 3.14);
+  std::string payload;
+  msg->SerializeToString(&payload);
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  bool found_seq = false;
+  bool found_val = false;
+  for (const auto& field : f.recorder.rows()[0].fields) {
+    if (field.name == "header/seq") {
+      EXPECT_DOUBLE_EQ(field.numeric, 7.0);
+      found_seq = true;
+    } else if (field.name == "value") {
+      EXPECT_DOUBLE_EQ(field.numeric, 3.14);
+      found_val = true;
+    }
+  }
+  EXPECT_TRUE(found_seq);
+  EXPECT_TRUE(found_val);
+}
+
 TEST(ProtobufParserTest, RepeatedField) {
   ProtobufParserFixture f;
   f.setUp();

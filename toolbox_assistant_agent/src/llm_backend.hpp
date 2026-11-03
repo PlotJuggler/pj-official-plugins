@@ -54,6 +54,12 @@ struct TurnTools {
   // that carries its own history injects it on the first turn only, while one
   // that rebuilds the message list every turn has to include it every time.
   std::string catalog;
+
+  // What PlotJuggler offers (built-in features, plugins loaded, installable,
+  // known limitations), rendered on the GUI thread by featuresBlock
+  // (features_digest.hpp). Goes ahead of `catalog` in the message, under its
+  // own dedup hash (harness_memory.hpp). Empty means no block at all.
+  std::string features;
 };
 
 // Result of a backend connectivity probe (claude CLI present, a harness

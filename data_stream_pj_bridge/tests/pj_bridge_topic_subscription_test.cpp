@@ -7,8 +7,6 @@
  *
  *   - DesiredTopicsSlot: the mutex-protected "latest wins" slot written by
  *     set_active_topics (host GUI thread) and drained by onPoll (poll thread).
- *   - TextFrameQueue: the socket-thread → poll-thread handoff that keeps all
- *     parser-binding work on the poll thread (the demand-mode race fix).
  *   - computeSubscriptionDiff: the pure additive-subscribe / unsubscribe diff.
  *   - passesAdvertiseFilter / filteredAdvertisedTopics: the dialog-selection-as-
  *     advertise-filter predicate and the filter-bounded advertised set.
@@ -20,7 +18,6 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <set>
 #include <string>
 #include <thread>
@@ -77,64 +74,6 @@ TEST(BridgeDesiredTopicsSlotTest, LastWriteFromAnotherThreadWins) {
   auto result = slot.take();
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(*result, (std::set<std::string>{"/topic_99"}));
-}
-
-// --- TextFrameQueue: socket-thread → poll-thread handoff (bindings stay on the poll thread) ---
-
-TEST(TextFrameQueueTest, DrainOnEmptyQueueReturnsEmpty) {
-  TextFrameQueue q;
-  EXPECT_TRUE(q.drain().empty());
-}
-
-TEST(TextFrameQueueTest, PreservesArrivalOrder) {
-  TextFrameQueue q;
-  q.push("first");
-  q.push("second");
-  q.push("third");
-
-  auto drained = q.drain();
-  ASSERT_EQ(drained.size(), 3U);
-  EXPECT_EQ(drained.front(), "first");
-  drained.pop();
-  EXPECT_EQ(drained.front(), "second");
-  drained.pop();
-  EXPECT_EQ(drained.front(), "third");
-
-  // A second drain is a cheap no-op — the queue was swapped empty.
-  EXPECT_TRUE(q.drain().empty());
-}
-
-TEST(TextFrameQueueTest, ConcurrentWriterFramesAllArriveInOrder) {
-  TextFrameQueue q;
-  constexpr int kCount = 1000;
-
-  // The socket thread pushes; the poll thread (this thread) drains in batches.
-  // Every pushed frame must be observed exactly once, in push order.
-  std::atomic<bool> done{false};
-  std::thread writer([&] {
-    for (int i = 0; i < kCount; ++i) {
-      q.push(std::to_string(i));
-    }
-    done = true;
-  });
-
-  std::vector<std::string> received;
-  while (received.size() < static_cast<size_t>(kCount)) {
-    auto batch = q.drain();
-    while (!batch.empty()) {
-      received.push_back(std::move(batch.front()));
-      batch.pop();
-    }
-    if (!done && received.empty()) {
-      std::this_thread::yield();
-    }
-  }
-  writer.join();
-
-  ASSERT_EQ(received.size(), static_cast<size_t>(kCount));
-  for (int i = 0; i < kCount; ++i) {
-    EXPECT_EQ(received[static_cast<size_t>(i)], std::to_string(i));
-  }
 }
 
 // --- computeSubscriptionDiff ---

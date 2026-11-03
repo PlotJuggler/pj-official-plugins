@@ -1,5 +1,6 @@
 #include <mqtt/async_client.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -24,6 +25,12 @@ struct MqttMessage {
 
 class MqttSource : public PJ::StreamSourceBase {
  public:
+  ~MqttSource() override {
+    // The client's callbacks use message_queue_ and the atomics declared after
+    // client_, so it must die first even if the host never called onStop.
+    client_.reset();
+  }
+
   PJ_borrowed_dialog_t getDialog() override {
     return PJ::borrowDialog(dialog_);
   }
@@ -63,7 +70,6 @@ class MqttSource : public PJ::StreamSourceBase {
     const auto connection = pj::mqtt_support::connectionSettingsFromJson(cfg);
     topic_filter_ = cfg.value("topics", std::string("#"));
     qos_ = cfg.value("qos", 0);
-    client_id_ = cfg.value("client_id", std::string("plotjuggler_mqtt"));
     default_encoding_ = cfg.value("default_encoding", std::string("json"));
 
     // Read selected topics (from dialog discovery)
@@ -76,8 +82,13 @@ class MqttSource : public PJ::StreamSourceBase {
       }
     }
 
+    initial_connect_done_.store(false, std::memory_order_relaxed);
+    (void)lost_cause_.take();
+    reconnected_.store(false, std::memory_order_relaxed);
+
     try {
-      client_ = std::make_unique<mqtt::async_client>(pj::mqtt_support::brokerUri(connection), client_id_);
+      client_ = std::make_unique<mqtt::async_client>(
+          pj::mqtt_support::brokerUri(connection), pj::mqtt_support::randomClientId("plotjuggler_mqtt_"));
 
       // Set up callback for incoming messages
       client_->set_message_callback([this](mqtt::const_message_ptr msg) {
@@ -93,22 +104,26 @@ class MqttSource : public PJ::StreamSourceBase {
         message_queue_.push(std::move(m));
       });
 
-      // Detect connection loss
-      client_->set_connection_lost_handler([this](const std::string& cause) {
-        runtimeHost().reportMessage(
-            PJ::DataSourceMessageLevel::kWarning, "MQTT connection lost" + (cause.empty() ? "" : ": " + cause));
+      // These run on paho's internal thread: just latch state for onPoll to act on,
+      // no host/API calls here.
+      client_->set_connection_lost_handler([this](const std::string& cause) { lost_cause_.set(cause); });
+      client_->set_connected_handler([this](const std::string& /*cause*/) {
+        // Also fires for the initial connect below, which reports its own errors
+        // synchronously; only automatic-reconnect completions should hit onPoll.
+        if (initial_connect_done_.load(std::memory_order_relaxed)) {
+          reconnected_.store(true, std::memory_order_relaxed);
+        }
       });
 
-      client_->connect(pj::mqtt_support::makeConnectOptions(connection))->wait();
+      auto opts = pj::mqtt_support::makeConnectOptions(connection);
+      opts.set_automatic_reconnect(std::chrono::seconds(1), std::chrono::seconds(5));
+      client_->connect(opts)->wait();
 
-      // Subscribe to selected topics from dialog, or fall back to topic filter
-      if (!selected_topics_.empty()) {
-        for (const auto& topic : selected_topics_) {
-          client_->subscribe(topic, qos_)->wait();
-        }
-      } else {
-        client_->subscribe(topic_filter_, qos_)->wait();
+      for (const auto& topic : topicsToSubscribe()) {
+        client_->subscribe(topic, qos_)->wait();
       }
+
+      initial_connect_done_.store(true, std::memory_order_relaxed);
 
     } catch (const mqtt::exception& e) {
       return PJ::unexpected(std::string("MQTT error: ") + e.what());
@@ -118,6 +133,24 @@ class MqttSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status onPoll() override {
+    if (auto cause = lost_cause_.take()) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning,
+          "MQTT connection lost" + (cause->empty() ? "" : ": " + *cause) + "; reconnecting");
+    }
+
+    if (reconnected_.exchange(false, std::memory_order_relaxed)) {
+      for (const auto& topic : topicsToSubscribe()) {
+        try {
+          client_->subscribe(topic, qos_);
+        } catch (const mqtt::exception& e) {
+          runtimeHost().reportMessage(
+              PJ::DataSourceMessageLevel::kWarning, "Failed to re-subscribe to " + topic + ": " + e.what());
+        }
+      }
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "Reconnected to MQTT broker");
+    }
+
     auto batch = message_queue_.drain();
 
     while (!batch.empty()) {
@@ -144,30 +177,25 @@ class MqttSource : public PJ::StreamSourceBase {
   }
 
   void onStop() override {
-    if (client_) {
-      try {
-        if (client_->is_connected()) {
-          if (!selected_topics_.empty()) {
-            for (const auto& topic : selected_topics_) {
-              client_->unsubscribe(topic)->wait();
-            }
-          } else {
-            client_->unsubscribe(topic_filter_)->wait();
-          }
-          client_->disconnect()->wait();
-        }
-      } catch (...) {}
-      client_.reset();
-    }
+    // ~async_client closes the session (DISCONNECT when connected) and is the
+    // only thing that stops the automatic-reconnect loop while the link is down
+    // (disconnect() throws "Disconnected" then and leaves the loop running).
+    // paho serializes it with its callbacks, and it waits on no broker reply.
+    client_.reset();
     ingest_.clear();
   }
 
  private:
+  /// Topics to (re)subscribe to: the dialog's discovered selection, or the
+  /// broker-side filter as a fallback. Shared by onStart and the onPoll resubscribe.
+  std::vector<std::string> topicsToSubscribe() const {
+    return selected_topics_.empty() ? std::vector<std::string>{topic_filter_} : selected_topics_;
+  }
+
   MqttDialog dialog_;
 
   std::string topic_filter_ = "#";
   int qos_ = 0;
-  std::string client_id_ = "plotjuggler_mqtt";
   std::string default_encoding_ = "json";
   std::vector<std::string> selected_topics_;
   std::string parser_config_override_;
@@ -175,6 +203,11 @@ class MqttSource : public PJ::StreamSourceBase {
   std::unique_ptr<mqtt::async_client> client_;
   PJ::sdk::DrainQueue<MqttMessage> message_queue_;
   PJ::sdk::DelegatedIngestCache ingest_;
+
+  // Set by paho's callback thread, consumed by onPoll on the poll thread.
+  std::atomic<bool> initial_connect_done_{false};
+  std::atomic<bool> reconnected_{false};
+  PJ::sdk::LatestValueSlot<std::string> lost_cause_;  // set = connection lost, value = paho's cause
 };
 
 }  // namespace

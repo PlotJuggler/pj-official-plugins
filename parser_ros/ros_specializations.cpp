@@ -1,5 +1,7 @@
-#include <data_tamer_parser/data_tamer_parser.hpp>
+#include <data_tamer_v2/data_tamer_parser.hpp>
 #include <queue>
+#include <stdexcept>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 
@@ -292,7 +294,7 @@ void RosParser::handleDataTamerSchemas() {
     std::string schema_text;
     deserializer_->deserializeString(schema_text);
 
-    auto schema = DataTamerParser::BuilSchemaFromText(schema_text);
+    auto schema = DataTamerParser::BuildSchemaFromText(schema_text);
     schema.hash = wire_hash;
     schema.channel_name = channel_name;
     g_data_tamer_schemas.insert({wire_hash, schema});
@@ -324,10 +326,18 @@ void RosParser::handleDataTamerSnapshot() {
 
   const auto to_double = [](const auto& value) { return static_cast<double>(value); };
 
-  DataTamerParser::ParseSnapshot(
-      schema, snapshot, [&](const std::string& field_name, const DataTamerParser::VarNumber& value) {
-        addField("/" + schema.channel_name + "/" + field_name, std::visit(to_double, value));
+  const std::string prefix = "/" + schema.channel_name + "/";
+  const bool parsed = DataTamerParser::ParseSnapshot(
+      schema, snapshot,
+      [&](const std::string& field_name, const DataTamerParser::VarNumber& value) {
+        addField(prefix + field_name, std::visit(to_double, value));
+      },
+      [&](const std::string& field_name, std::string_view text) {
+        addStringField(prefix + field_name, std::string(text));
       });
+  if (!parsed) {
+    throw std::runtime_error("DataTamer snapshot payload does not match the schema of channel " + schema.channel_name);
+  }
 }
 
 void RosParser::handlePalStatisticsNames() {

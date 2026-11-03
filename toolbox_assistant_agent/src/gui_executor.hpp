@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -66,35 +67,66 @@ class GuiExecutor {
       batch.swap(queue_);
     }
     for (auto& slot : batch) {
-      ToolResult r = registry.execute(slot->name, slot->args, ctx);
-      std::lock_guard<std::mutex> lk(slot->mu);
-      if (slot->abandoned) {
-        continue;
+      {
+        std::lock_guard<std::mutex> lk(slot->mu);
+        if (slot->abandoned) {
+          slot->result = {};
+          continue;
+        }
       }
-      slot->result = std::move(r);
-      slot->done = true;
-      slot->cv.notify_one();
+      ToolResult r;
+      try {
+        r = slot->result.resume ? slot->result.resume(ctx) : registry.execute(slot->name, slot->args, ctx);
+      } catch (const std::exception& e) {
+        r = ToolResult::failure(e.what());
+      } catch (...) {
+        r = ToolResult::failure("tool continuation failed");
+      }
+      bool pending = false;
+      {
+        std::lock_guard<std::mutex> lk(slot->mu);
+        if (slot->abandoned) {
+          slot->result = {};
+          continue;
+        }
+        slot->result = std::move(r);
+        pending = static_cast<bool>(slot->result.resume);
+        if (!pending) {
+          slot->done = true;
+          slot->cv.notify_one();
+        }
+      }
+      if (pending) {
+        std::lock_guard<std::mutex> lk(mu_);
+        queue_.push_back(slot);
+      }
     }
     return batch.size();
   }
 
-  // Teardown: fail every waiter so no worker thread blocks past destruction.
-  void shutdown() {
+  // GUI thread: cancel this turn while keeping the executor usable by the next.
+  // Destroy continuations here, while their host services are still valid.
+  void cancelPending(std::string reason = "tool call cancelled") {
     std::deque<std::shared_ptr<Slot>> batch;
     {
       std::lock_guard<std::mutex> lk(mu_);
-      shutting_down_ = true;
       batch.swap(queue_);
     }
     for (auto& slot : batch) {
       std::lock_guard<std::mutex> lk(slot->mu);
-      if (slot->abandoned) {
-        continue;
-      }
-      slot->result = ToolResult::failure("assistant is shutting down");
+      slot->result = ToolResult::failure(reason);
       slot->done = true;
       slot->cv.notify_one();
     }
+  }
+
+  // GUI thread teardown: reject future calls, release handles and wake waiters.
+  void shutdown() {
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      shutting_down_ = true;
+    }
+    cancelPending("assistant is shutting down");
   }
 
  private:

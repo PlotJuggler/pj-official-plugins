@@ -71,11 +71,18 @@ function(pj_harden_plugin_exports TARGET)
 
   list(PREPEND ARG_REQUIRED_EXPORTS pj_plugin_abi_version)
   list(JOIN ARG_REQUIRED_EXPORTS "," _required)
+  if("PJ_get_widget_vtable" IN_LIST ARG_REQUIRED_EXPORTS)
+    set(_forbid_qt OFF)
+  else()
+    set(_forbid_qt ON)
+  endif()
   add_custom_command(TARGET ${TARGET} POST_BUILD
     COMMAND ${CMAKE_COMMAND}
       -DPLUGIN_SO=$<TARGET_FILE:${TARGET}>
       -DREQUIRED_EXPORTS=${_required}
       -DNM_TOOL=${CMAKE_NM}
+      -DFORBID_QT=${_forbid_qt}
+      -DREADELF_TOOL=${CMAKE_READELF}
       -P ${_checker}
     COMMENT "${TARGET}: verifying export allowlist (no STB_GNU_UNIQUE leaks)"
     VERBATIM)

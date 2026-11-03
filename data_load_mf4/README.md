@@ -23,7 +23,13 @@ dependencies.
   bus channel), one field per signal. Standard and extended (29-bit / J1939)
   frames are disambiguated. Frames that match a message id but cannot be decoded
   (truncated, or a CAN FD payload > 8 bytes) are counted and reported, not
-  silently dropped.
+  silently dropped. A signal decoded from a DBC `VAL_` value table also gets
+  a **`<signal>_label`** text field (decoded label, or the raw value as text
+  when unmatched) — see `common/can_dbc`'s `signal_row.hpp` for the full
+  convention. It is `<signal>_label_2` (then `_3`, ...) when the message
+  already has a signal named `<signal>_label`. Distinct from MDF's own native
+  enum/value-to-text channel conversion (out of scope — see Known
+  Limitations).
 - Preview dialog listing the file's channel groups (name, sample count, channel
   count, bus type)
 
@@ -32,6 +38,26 @@ dependencies.
 Absolute nanoseconds = the file header start time (`GetStartTime()`) plus the
 channel group's master (time) channel offset. CAN frame times come from the
 frame's own relative timestamp added to the header start time.
+
+## Configuration
+
+```json
+{
+  "filepath": "/path/to/log.mf4",
+  "dbc_paths": ["powertrain.dbc", "chassis.dbc"],
+  "aux_base_dir": "/path/to"
+}
+```
+
+Dictionary paths are portable. A dictionary that lies inside the data file's
+folder is saved relative to it (`"powertrain.dbc"`, `"dbc/powertrain.dbc"`), so
+a moved or copied layout folder decodes with the dictionary beside the data;
+other paths are saved as given. `aux_base_dir` records the data file's folder
+at save time, so settings reused for a different data file still find relative
+entries. Absolute paths saved by earlier versions that lie under the folder
+that moved (for example a `dbc/` folder next to `data/`) are rebased onto the
+data file that is open; the moved folder is worked out from the old and new
+data file paths.
 
 ## Testing
 

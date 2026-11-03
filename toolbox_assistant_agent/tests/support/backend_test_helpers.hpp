@@ -73,6 +73,50 @@ inline std::string writeFakeCliScript(const std::vector<std::string>& stdout_lin
   return tmpl;
 }
 
+// A fresh path prefix under /tmp for writeRecordingCliScript's two files.
+inline std::string makeRecordPrefix(const char* tag) {
+  std::string tmpl = std::string("/tmp/pj_assistant_record_") + tag + "_XXXXXX";
+  const int fd = mkstemp(tmpl.data());
+  if (fd < 0) {
+    return {};
+  }
+  close(fd);
+  unlink(tmpl.c_str());
+  return tmpl;
+}
+
+// writeFakeCliScript's twin that also RECORDS what the backend handed it:
+// stdin goes to `<record_prefix>.stdin`, and each argv entry to
+// `<record_prefix>.argv`, one per line. POSIX only -- the offline tests that
+// pin what a turn sends (the composed payload, the instructions) need no
+// Windows twin, because composePayload and the instruction strings are
+// platform-independent.
+inline std::string writeRecordingCliScript(
+    const std::vector<std::string>& stdout_lines, int exit_code, const std::string& record_prefix) {
+  char tmpl[] = "/tmp/pj_assistant_fake_cli_XXXXXX";
+  const int fd = mkstemp(tmpl);
+  if (fd < 0) {
+    return {};
+  }
+  close(fd);
+  {
+    std::ofstream script(tmpl);
+    script << "#!/bin/sh\n"
+           << "cat > '" << record_prefix << ".stdin'\n"
+           << "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '" << record_prefix << ".argv'\n";
+    if (!stdout_lines.empty()) {
+      script << "cat <<'EOF'\n";
+      for (const auto& line : stdout_lines) {
+        script << line << "\n";
+      }
+      script << "EOF\n";
+    }
+    script << "exit " << exit_code << "\n";
+  }
+  chmod(tmpl, 0700);
+  return tmpl;
+}
+
 // Removes a fake CLI writeFakeCliScript created. POSIX's is a single file;
 // kept for parity with the Windows overload below so call sites never need
 // an #ifdef of their own.

@@ -56,11 +56,13 @@ bool sameCwd(const std::string& a, const std::string& b) {
 #endif
 }
 
-// See codex_sessions.hpp's file comment: codex exec prepends these two
-// harness-injected "user"-role messages before the real prompt, and nothing
-// in the JSON marks them as synthetic — the opening tag is the only signal.
+// See codex_sessions.hpp's file comment: codex prepends these harness-injected
+// "user"-role messages before the real prompt (including the user's global
+// ~/.codex/AGENTS.md since 0.158), and nothing in the JSON marks them as
+// synthetic — the opening text is the only signal.
 bool isHarnessInjectedUserText(const std::string& text) {
-  return text.rfind("<environment_context>", 0) == 0 || text.rfind("<recommended_plugins>", 0) == 0;
+  return text.rfind("<environment_context>", 0) == 0 || text.rfind("<recommended_plugins>", 0) == 0 ||
+         text.rfind("# AGENTS.md instructions", 0) == 0;
 }
 
 // The first block carrying a "text" field in a response_item message's

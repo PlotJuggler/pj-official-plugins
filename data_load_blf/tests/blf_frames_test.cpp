@@ -4,17 +4,21 @@
 
 #include <cstdint>
 #include <cstring>
+#include <field_test_helpers.hpp>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
 #include <pj_can_dbc/can_decoder.hpp>
+#include <pj_can_dbc/signal_row.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
 
 using blf_detail::CanFrame;
+using pj_can_dbc::testing::findField;
 
 std::vector<CanFrame> readFixtureFrames() {
   const std::string path = (std::filesystem::path(BLF_TEST_DATA_DIR) / "sample.blf").string();
@@ -98,6 +102,44 @@ BO_ 256 EngineData: 8 ECU
   EXPECT_EQ(signals[0].name, "Speed");
   EXPECT_DOUBLE_EQ(signals[0].value, 100.0);
   EXPECT_EQ(signals[0].unit, "km/h");
+}
+
+// Twin of FixtureFramesDecodeThroughDbc, but through the full
+// SignalRowBuilder path importData() actually uses: a DBC with a VAL_ value
+// table on a signal sharing the fixture's already-known raw value (frame 0's
+// bytes 0-1 = 0x03E8 = 1000, same bits Speed decodes above) must produce a
+// "<signal>_label" text field with the table's text for that value.
+TEST(BlfDecode, FixtureFramesDecodeThroughDbcWithValueTable) {
+  const char* const kDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 256 EngineData: 8 ECU
+ SG_ Speed : 0|16@1+ (0.1,0) [0|6553.5] "km/h" ECU
+ SG_ Mode : 0|16@1+ (1,0) [0|65535] "" ECU
+VAL_ 256 Mode 1000 "CRUISE" ;
+)DBC";
+
+  pj_can_dbc::CanDecoder decoder;
+  ASSERT_TRUE(decoder.loadDbcString(kDbc).has_value());
+
+  const auto frames = readFixtureFrames();
+  ASSERT_EQ(frames.size(), 3u);
+
+  pj_can_dbc::DecodeResult result = pj_can_dbc::DecodeResult::kNoMatch;
+  const auto signals = decoder.decode(frames[0].can_id, frames[0].extended, frames[0].data, result);
+  ASSERT_EQ(result, pj_can_dbc::DecodeResult::kDecoded);
+
+  pj_can_dbc::SignalRowBuilder builder;
+  const auto fields = builder.build(signals);
+  const auto* mode_label = findField(fields, "Mode_label");
+  ASSERT_NE(mode_label, nullptr);
+  ASSERT_TRUE(std::holds_alternative<std::string_view>(mode_label->value));
+  EXPECT_EQ(std::get<std::string_view>(mode_label->value), "CRUISE");
 }
 
 }  // namespace

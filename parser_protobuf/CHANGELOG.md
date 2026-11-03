@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_protobuf/`.
 
+## [1.2.1] - 2026-11-03
+
+### Fixed
+- MCAP files whose protobuf schema lists a file before the files it imports, as the
+  MCAP C++ example writes them, open again. Every channel of such a file was rejected
+  with "message type not found".
+
 ## [1.2.0] - 2026-09-06
 
 ### Added

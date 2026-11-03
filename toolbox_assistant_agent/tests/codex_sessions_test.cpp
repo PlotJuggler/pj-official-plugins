@@ -117,16 +117,42 @@ TEST_F(CodexSessionsTest, FiltersByCwdDropsZeroAssistantAndSortsNewestFirst) {
 
   // -codex-wrongcwd-01 carries a different cwd (its own real value from the
   // spike) and must not appear even though its last_ts is the newest of all
-  // four fixtures.
+  // six fixtures.
   EXPECT_EQ(findById(convs, "codex-wrongcwd-01"), nullptr);
   // -codex-noreply-01 has zero assistant messages (a cancelled turn).
   EXPECT_EQ(findById(convs, "codex-noreply-01"), nullptr);
 
-  ASSERT_EQ(convs.size(), 2u);
+  ASSERT_EQ(convs.size(), 4u);
   // -codex-normal-01's last turn (08:45:40.200) is newer than
   // -codex-corrupt-01's (08:45:11.000) -- newest first.
   EXPECT_EQ(convs[0].id, "codex-normal-01");
   EXPECT_EQ(convs[1].id, "codex-corrupt-01");
+  // The two 09-02 fixtures (AGENTS.md / environment_context first) are older.
+  EXPECT_EQ(convs[2].id, "codex-envfirst-01");
+  EXPECT_EQ(convs[3].id, "codex-agentsmd-01");
+}
+
+TEST_F(CodexSessionsTest, TitleSkipsAnInjectedAgentsMdBlock) {
+  const std::vector<ConversationSummary> convs = listCodexConversations(dir_, kWorkDir);
+  const ConversationSummary* conv = findById(convs, "codex-agentsmd-01");
+  ASSERT_NE(conv, nullptr);
+  EXPECT_EQ(conv->title, "Plot the speed channel");
+}
+
+TEST_F(CodexSessionsTest, TitleSkipsAnEnvironmentContextThatComesFirst) {
+  const std::vector<ConversationSummary> convs = listCodexConversations(dir_, kWorkDir);
+  const ConversationSummary* conv = findById(convs, "codex-envfirst-01");
+  ASSERT_NE(conv, nullptr);
+  EXPECT_EQ(conv->title, "Show me the battery voltage");
+}
+
+TEST_F(CodexSessionsTest, TranscriptOmitsAnInjectedAgentsMdBlock) {
+  const std::vector<ChatMessage> rows = loadCodexTranscript(dir_, "codex-agentsmd-01");
+  ASSERT_EQ(rows.size(), 2u);
+  EXPECT_EQ(rows[0].role, ChatMessage::Role::User);
+  EXPECT_EQ(rows[0].text, "Plot the speed channel");
+  EXPECT_EQ(rows[1].role, ChatMessage::Role::Assistant);
+  EXPECT_EQ(rows[1].text, "done");
 }
 
 TEST_F(CodexSessionsTest, TitleIsTheFirstRealUserTextHarnessInjectedOnesSkipped) {
