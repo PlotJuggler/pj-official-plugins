@@ -150,14 +150,18 @@ pj_embed_ui(blf_source_plugin
 add_executable(blf_source_test
   tests/blf_frames_test.cpp
   tests/blf_dialog_test.cpp
+  tests/blf_layout_paths_test.cpp
   blf_dialog.cpp
 )
 target_compile_features(blf_source_test PRIVATE cxx_std_20)
 target_compile_options(blf_source_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(blf_source_test PRIVATE
-  BLF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
+  BLF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data"
+  BLF_SOURCE_PLUGIN_PATH="$<TARGET_FILE:blf_source_plugin>")
+# blf_layout_paths_test drives the built plugin.
+add_dependencies(blf_source_test blf_source_plugin)
 # blf_dialog.cpp includes the headers generated for the plugin target above.
-# common/can_dbc/tests: shared findField() test helper (field_test_helpers.hpp).
+# common/can_dbc/tests: shared test helpers (field_test_helpers.hpp, source_import_harness.hpp).
 target_include_directories(blf_source_test PRIVATE
   ${CMAKE_CURRENT_BINARY_DIR}/generated
   ${CMAKE_CURRENT_LIST_DIR}/../common/can_dbc/tests)

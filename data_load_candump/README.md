@@ -110,6 +110,7 @@ included), as candump prints them.
 {
   "filepath": "/path/to/capture.log",
   "iface_dicts": { "can0": ["powertrain.dbc"], "vcan1": ["dictionary.csv"] },
+  "aux_base_dir": "/path/to",
   "raw_unassigned": true,
   "time_mode": 0
 }
@@ -117,6 +118,16 @@ included), as candump prints them.
 
 `time_mode`: `0` auto-detect, `1` force absolute, `2` force relative
 monotonic (`-t z`), `3` force relative delta (`-t d`).
+
+Dictionary paths are portable. A dictionary that lies inside the data file's
+folder is saved relative to it (`"powertrain.dbc"`, `"dbc/powertrain.dbc"`), so
+a moved or copied layout folder decodes with the dictionary beside the data;
+other paths are saved as given. `aux_base_dir` records the data file's folder
+at save time, so settings reused for a different data file still find relative
+entries. Absolute paths saved by earlier versions that lie under the folder
+that moved (for example a `dbc/` folder next to `data/`) are rebased onto the
+data file that is open; the moved folder is worked out from the old and new
+data file paths.
 
 ## Testing
 

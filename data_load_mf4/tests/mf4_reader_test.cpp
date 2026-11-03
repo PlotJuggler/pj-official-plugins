@@ -1,8 +1,6 @@
 #include "../mf4_reader.hpp"
 
 #include <gtest/gtest.h>
-#include <mdf/canconfigadapter.h>
-#include <mdf/canmessage.h>
 #include <mdf/ichannel.h>
 #include <mdf/ichannelgroup.h>
 #include <mdf/idatagroup.h>
@@ -20,6 +18,8 @@
 #include <limits>
 #include <string>
 #include <vector>
+
+#include "mf4_can_fixture.hpp"
 
 namespace {
 
@@ -396,42 +396,8 @@ std::string writeCanBusFile(const std::string& stem) {
   const auto p = std::filesystem::temp_directory_path() / ("mf4rtest_" + stem + ".mf4");
   std::error_code ec;
   std::filesystem::remove(p, ec);
-  const std::string path = p.string();
-
-  auto writer = mdf::MdfFactory::CreateMdfWriter(mdf::MdfWriterType::MdfBusLogger);
-  EXPECT_TRUE(writer->Init(path));
-  writer->Header()->StartTime(kStartNs);
-  writer->BusType(mdf::MdfBusType::CAN);
-  writer->StorageType(mdf::MdfStorageType::FixedLengthStorage);
-  writer->MaxLength(8);
-  mdf::CanConfigAdapter config(*writer);
-  auto* dg = writer->CreateDataGroup();
-  EXPECT_NE(dg, nullptr);
-  config.CreateConfig(*dg);
-  writer->PreTrigTime(0.0);
-  writer->CompressData(false);
-  auto* data_frame_cg = dg->GetChannelGroup("CAN_DataFrame");
-  EXPECT_NE(data_frame_cg, nullptr);
-  EXPECT_TRUE(writer->InitMeasurement());
-  writer->StartMeasurement(kStartNs);
-  for (std::uint64_t i = 0; i < 3; ++i) {
-    mdf::CanMessage msg;
-    msg.MessageId(0x100);
-    msg.BusChannel(1);
-    msg.DataBytes({1, 2, 3, 4, 5, 6, 7, 8});
-    writer->SaveCanMessage(*data_frame_cg, kStartNs + i * kPeriodNs, msg);
-  }
-  for (std::uint64_t i = 0; i < 2; ++i) {
-    mdf::CanMessage msg;
-    msg.MessageId(0x18FEF100);
-    msg.ExtendedId(true);
-    msg.BusChannel(2);
-    msg.DataBytes({9, 9, 9, 9, 9, 9, 9, 9});
-    writer->SaveCanMessage(*data_frame_cg, kStartNs + (3 + i) * kPeriodNs, msg);
-  }
-  writer->StopMeasurement(kStartNs + 6 * kPeriodNs);
-  writer->FinalizeMeasurement();
-  return path;
+  mf4_test::writeCanBusMf4(p.string());
+  return p.string();
 }
 
 // Frames from different physical buses must be distinguishable downstream:
