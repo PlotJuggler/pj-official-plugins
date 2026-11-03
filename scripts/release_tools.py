@@ -61,7 +61,11 @@ from pathlib import Path
 # =============================================================================
 
 REQUIRED_MANIFEST_FIELDS = ["id", "name", "version", "category"]
-OPTIONAL_MANIFEST_FIELDS = ["description", "author", "publisher", "license"]
+# Optional free-text fields: when present they must be strings.
+# entry_point: where the user starts the extension in the host UI, as live
+# label strings (e.g. "Toolbox menu → FFT"); overrides the host's default
+# derived from category/tags.
+OPTIONAL_MANIFEST_FIELDS = ["description", "author", "publisher", "license", "entry_point"]
 
 VALID_PLATFORMS = [
     "linux-x86_64",
@@ -237,6 +241,10 @@ def validate_manifest(manifest: dict) -> list[str]:
     if "category" in manifest and manifest["category"]:
         if manifest["category"] not in VALID_CATEGORIES:
             errors.append(f"Invalid category: {manifest['category']} (valid: {VALID_CATEGORIES})")
+
+    for field in OPTIONAL_MANIFEST_FIELDS:
+        if field in manifest and not isinstance(manifest[field], str):
+            errors.append(f"Optional field {field} must be a string, got {type(manifest[field]).__name__}")
 
     return errors
 
