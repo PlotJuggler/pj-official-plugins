@@ -1878,19 +1878,19 @@ TEST(TransformEditorSeries, ItIsReadAgainAsTheRowsGrowAndNotAnyMoreOnceComplete)
   numberRecipe(rig);
   rig.dp.config_series = {{"value", 0, 0, "", false}, {"value", 4, 0, "", false}, {"value", 8, 0, "", true}};
   PJ::testing::ToolboxTestStore store;
-  store.addTopic("value").addField("value", "v", {}, {});
+  store.addTopic("value").addField("value", "value", {}, {});
   TransformEditorPreviewTestPeer::reinstall(rig.editor);
 
   TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
   EXPECT_EQ(plottedPoints(rig), -1) << "no row yet";
   EXPECT_NE(statusOf(rig).find("computing the series…"), std::string::npos) << statusOf(rig);
 
-  store.extendField("v", {0, 1000000000, 2000000000, 3000000000}, {1, 2, 3, 4});
+  store.extendField("value", {0, 1000000000, 2000000000, 3000000000}, {1, 2, 3, 4});
   TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
   EXPECT_EQ(plottedPoints(rig), 4);
   EXPECT_NE(statusOf(rig).find("computing the series… 4 rows"), std::string::npos) << statusOf(rig);
 
-  store.extendField("v", {4000000000, 5000000000, 6000000000, 7000000000}, {5, 6, 7, 8});
+  store.extendField("value", {4000000000, 5000000000, 6000000000, 7000000000}, {5, 6, 7, 8});
   TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
   EXPECT_EQ(plottedPoints(rig), 8) << "re-read as the rows grew";
   EXPECT_EQ(statusOf(rig).find("computing"), std::string::npos) << statusOf(rig);
@@ -1903,17 +1903,30 @@ TEST(TransformEditorSeries, ItIsReadAgainAsTheRowsGrowAndNotAnyMoreOnceComplete)
   EXPECT_EQ(plottedPoints(rig), 8);
 }
 
+TEST(TransformEditorSeries, NumberOutputsPlotTheSeriesTheHostNames) {
+  Rig rig;
+  numberRecipe(rig);
+  // The host returns the bare output name and names the topic of the series in the recipe's config.
+  rig.dp.config_series = {{"owner/~preview/1/x", 4, 0, "", true}};
+  PJ::testing::ToolboxTestStore store;
+  store.addTopic("owner/~preview/1/x")
+      .addField("owner/~preview/1/x", "value", {0, 1000000000, 2000000000, 3000000000}, {1, 2, 3, 4});
+  TransformEditorPreviewTestPeer::reinstall(rig.editor);
+  TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
+  EXPECT_EQ(plottedPoints(rig), 4);
+}
+
 TEST(TransformEditorSeries, ARowCountThatDidNotMoveIsNotReadAgain) {
   Rig rig;
   numberRecipe(rig);
   rig.dp.config_series = {{"value", 4, 0, "", false}, {"value", 4, 0, "", false}, {"value", 6, 0, "", false}};
   PJ::testing::ToolboxTestStore store;
-  store.addTopic("value").addField("value", "v", {0, 1000000000, 2000000000, 3000000000}, {1, 2, 3, 4});
+  store.addTopic("value").addField("value", "value", {0, 1000000000, 2000000000, 3000000000}, {1, 2, 3, 4});
   TransformEditorPreviewTestPeer::reinstall(rig.editor);
   TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
   ASSERT_EQ(plottedPoints(rig), 4);
   // The store grows behind the editor's back: with the host's row count unchanged there is nothing new to read.
-  store.extendField("v", {4000000000, 5000000000}, {5, 6});
+  store.extendField("value", {4000000000, 5000000000}, {5, 6});
   TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
   EXPECT_EQ(plottedPoints(rig), 4);
   TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
@@ -1925,14 +1938,14 @@ TEST(TransformEditorSeries, WhilePendingThePreviousCurveStaysAndTheStatusSaysCom
   numberRecipe(rig);
   rig.dp.config_series = {{"value", 3, 0, "", true}};
   PJ::testing::ToolboxTestStore first;
-  first.addTopic("value").addField("value", "v", {0, 1000000000, 2000000000}, {1, 2, 3});
+  first.addTopic("value").addField("value", "value", {0, 1000000000, 2000000000}, {1, 2, 3});
   TransformEditorPreviewTestPeer::reinstall(rig.editor);
   TransformEditorPreviewTestPeer::pollSeries(rig.editor, first, kValueOutput, "value");
   ASSERT_EQ(plottedPoints(rig), 3);
 
   // An edit re-installs the recipe: the host restarts the series, so the topic is empty for a while.
   PJ::testing::ToolboxTestStore restarted;
-  restarted.addTopic("value").addField("value", "v", {}, {});
+  restarted.addTopic("value").addField("value", "value", {}, {});
   rig.dp.config_series = {{"value", 0, 0, "", false}};
   rig.dp.config_series_served = 0;
   TransformEditorPreviewTestPeer::reinstall(rig.editor);
@@ -1950,7 +1963,7 @@ TEST(TransformEditorSeries, WhilePendingThePreviousCurveStaysAndTheStatusSaysCom
 
   // Rows arrive: the new curve replaces it.
   PJ::testing::ToolboxTestStore arrived;
-  arrived.addTopic("value").addField("value", "v", {0, 1000000000}, {7, 8});
+  arrived.addTopic("value").addField("value", "value", {0, 1000000000}, {7, 8});
   rig.dp.config_series = {{"value", 2, 0, "", true}};
   rig.dp.config_series_served = 0;
   TransformEditorPreviewTestPeer::reinstall(rig.editor);
@@ -1967,7 +1980,7 @@ TEST(TransformEditorSeries, TheHostsFirstSeriesErrorIsOnTheStatusLine) {
   rig.dp.config_series = {
       {"value", 0, 5, "script:" + std::to_string(body_line) + ": attempt to index nil with 'count'", true}};
   PJ::testing::ToolboxTestStore store;
-  store.addTopic("value").addField("value", "v", {}, {});
+  store.addTopic("value").addField("value", "value", {}, {});
   TransformEditorPreviewTestPeer::reinstall(rig.editor);
   TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, kValueOutput, "value");
   EXPECT_NE(statusOf(rig).find("series error: line 1: attempt to index nil with 'count'"), std::string::npos)
@@ -2131,7 +2144,7 @@ TEST(TransformEditorChart, ThePreviewZoomsAndSendsTheSeriesWithAutoZoom) {
   rig.newObjectRecipe("return cloud:count()");
   rig.dp.config_series = {{"value", 3, 0, "", true}};
   PJ::testing::ToolboxTestStore store;
-  store.addTopic("value").addField("value", "v", {0, 1000000000, 2000000000}, {1, 2, 3});
+  store.addTopic("value").addField("value", "value", {0, 1000000000, 2000000000}, {1, 2, 3});
   TransformEditorPreviewTestPeer::reinstall(rig.editor);
   TransformEditorPreviewTestPeer::pollSeries(rig.editor, store, {{"value", "number"}}, "value");
   ASSERT_EQ(plottedPoints(rig), 3);
