@@ -3,8 +3,9 @@ description: Official Qt from the Qt installer, plus the runtime libraries it ne
 
 inputs:
   version:
-    description: Qt version; must match the major.minor of the host
-    required: true
+    description: Qt version; must match the major.minor of the host. Defaults to the repo's QT_VERSION file.
+    required: false
+    default: ''
   arch:
     description: Qt architecture, e.g. linux_gcc_64 or win64_msvc2022_64
     required: true
@@ -12,10 +13,23 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install Qt
+    - name: Resolve Qt version
+      id: version
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        # Steps run in the workspace root, where QT_VERSION pins the Qt for CMake and CI.
+        version="$INPUT_VERSION"
+        if [ -z "$version" ]; then
+          version="$(tr -d '[:space:]' < QT_VERSION)"
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Install Qt ${{ steps.version.outputs.version }}
       uses: jurplel/install-qt-action@v4
       with:
-        version: ${{ inputs.version }}
+        version: ${{ steps.version.outputs.version }}
         arch: ${{ inputs.arch }}
         cache: true
         # Same aqt pin as PlotJuggler 4's CI: released aqt (3.3.0) cannot resolve the
