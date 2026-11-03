@@ -77,16 +77,10 @@ jobs:
         with:
           arch: x64
 
-      - name: Read pinned Qt version
-        id: qt
-        shell: bash
-        run: echo "version=$(tr -d '[:space:]' < QT_VERSION)" >> "$GITHUB_OUTPUT"
-
-      - name: Install Qt ${{ steps.qt.outputs.version }} (official)
+      - name: Install Qt (official, version from QT_VERSION)
         # Sets QT_ROOT_DIR, which widget_basic/CMakeLists.txt uses as a find_package hint.
         uses: ./.github/actions/install-qt
         with:
-          version: ${{ steps.qt.outputs.version }}
           arch: ${{ matrix.qt_arch }}
 
       - name: Detect Conan profile

@@ -79,11 +79,6 @@ VALID_PLATFORMS = [
 
 VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox", "widget"]
 
-# A widget library links Qt and the host loads it only when it was built against the same Qt
-# major.minor, so it is built and shipped only where the official Qt for that platform is installed
-# in CI (Ubuntu 22.04 and MSVC 14.44), and nowhere else.
-WIDGET_PLATFORMS = ["linux-x86_64", "windows-x86_64"]
-
 # Semantic versioning regex (simplified: major.minor.patch with optional pre-release)
 import sys as _sys
 
@@ -1365,8 +1360,10 @@ def cmd_resolve_build_scope(args) -> int:
     Notices and errors go to stderr where Actions still parses them as
     `::notice::` / `::error::` annotations.
 
-    A plugin whose manifest category is "widget" links Qt: it is limited to WIDGET_PLATFORMS and
-    reports needs_qt=true so the workflow installs the official Qt on that leg only.
+    A plugin whose manifest category is "widget" links Qt: it reports needs_qt=true so the workflow
+    installs the official Qt on that leg only. The host loads a widget library only when it was
+    built against the same Qt major.minor, so a widget manifest limits supported_platforms to where
+    CI installs the official Qt (linux-x86_64 and windows-x86_64).
 
     Optional per-plugin manifest fields honoured for plugin tags:
       supported_platforms  list of canonical "os-arch" strings (see
@@ -1405,15 +1402,7 @@ def cmd_resolve_build_scope(args) -> int:
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text())
             platforms = manifest.get("supported_platforms")
-            if manifest.get("category") == "widget":
-                needs_qt = True
-                if canonical_platform not in WIDGET_PLATFORMS:
-                    skip = True
-                    print(
-                        f"::notice::Widget library {plugin_name} is built only on {WIDGET_PLATFORMS} — "
-                        f"skipping {canonical_platform}",
-                        file=sys.stderr,
-                    )
+            needs_qt = manifest.get("category") == "widget"
             if platforms is not None and canonical_platform not in platforms:
                 skip = True
                 print(

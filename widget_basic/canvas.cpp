@@ -34,16 +34,42 @@ std::optional<double> numberAt(PJ::Span<const PJ_widget_value_t> values, uint32_
 }
 
 QFont fittedFont(const QFont& base, const QString& text, const QSizeF& box, double max_pixel_size) {
+  constexpr int kMinPixelSize = 6;
+  const int max_size = static_cast<int>(std::max(static_cast<double>(kMinPixelSize), max_pixel_size));
   QFont font = base;
-  double size = std::max(6.0, max_pixel_size);
-  for (; size > 6.0; size -= 1.0) {
-    font.setPixelSize(static_cast<int>(size));
-    const QFontMetricsF metrics(font);
-    if (metrics.horizontalAdvance(text) <= box.width() && metrics.height() <= box.height()) {
-      return font;
-    }
+  font.setPixelSize(max_size);
+  if (max_size <= kMinPixelSize) {
+    return font;
   }
-  font.setPixelSize(6);
+  const auto fits = [&](int pixel_size) {
+    font.setPixelSize(pixel_size);
+    const QFontMetricsF metrics(font);
+    return metrics.horizontalAdvance(text) <= box.width() && metrics.height() <= box.height();
+  };
+
+  // Measure once at the largest size. Text extent grows close to linearly with the pixel size, so
+  // that one measurement gives a near-exact estimate. Hinting makes it only near-exact, so the
+  // estimate is then corrected by a step or two in whichever direction it is off.
+  const QFontMetricsF metrics(font);
+  const double width = metrics.horizontalAdvance(text);
+  const double height = metrics.height();
+  if (width <= box.width() && height <= box.height()) {
+    return font;
+  }
+  double scale = height > 0.0 ? box.height() / height : 1.0;
+  if (width > 0.0) {
+    scale = std::min(scale, box.width() / width);
+  }
+  int size = static_cast<int>(
+      std::clamp(scale * max_size, static_cast<double>(kMinPixelSize), static_cast<double>(max_size - 1)));
+  if (fits(size)) {
+    while (size + 1 < max_size && fits(size + 1)) {
+      ++size;
+    }
+  } else {
+    while (size > kMinPixelSize && !fits(--size)) {}
+  }
+  font.setPixelSize(size);
   return font;
 }
 
