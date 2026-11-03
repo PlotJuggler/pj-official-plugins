@@ -4607,8 +4607,8 @@ std::vector<uint8_t> dataTamerSchemasMessage(uint64_t hash, const std::string& c
   });
 }
 
-std::vector<uint8_t> dataTamerSnapshotMessage(uint64_t timestamp, uint64_t hash, const std::vector<uint8_t>& mask,
-                                              const std::vector<uint8_t>& payload) {
+std::vector<uint8_t> dataTamerSnapshotMessage(
+    uint64_t timestamp, uint64_t hash, const std::vector<uint8_t>& mask, const std::vector<uint8_t>& payload) {
   return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
     enc.serialize(RosMsgParser::UINT64, RosMsgParser::Variant(timestamp));
     enc.serialize(RosMsgParser::UINT64, RosMsgParser::Variant(hash));
@@ -4644,8 +4644,9 @@ TEST(RosParserTest, DataTamerFullWidthHashAndTextField) {
   std::memcpy(payload.data(), &value, sizeof(value));
   const std::string label = "hi";
   const auto label_size = static_cast<uint32_t>(label.size());
-  payload.insert(payload.end(), reinterpret_cast<const uint8_t*>(&label_size),
-                 reinterpret_cast<const uint8_t*>(&label_size) + sizeof(label_size));
+  payload.insert(
+      payload.end(), reinterpret_cast<const uint8_t*>(&label_size),
+      reinterpret_cast<const uint8_t*>(&label_size) + sizeof(label_size));
   payload.insert(payload.end(), label.begin(), label.end());
 
   ASSERT_TRUE(snapshot.parse(dataTamerSnapshotMessage(123456789, hash, {0x03}, payload)));

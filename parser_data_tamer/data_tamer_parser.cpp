@@ -109,7 +109,8 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
       snapshot.schema_hash = schema_.hash;
 
       const bool parsed = DataTamerParser::ParseSnapshot(
-          schema_, snapshot, [&on_value](const std::string& field_name, const DataTamerParser::VarNumber& var) {
+          schema_, snapshot,
+          [&on_value](const std::string& field_name, const DataTamerParser::VarNumber& var) {
             auto value = std::visit(
                 [](const auto& v) -> PJ::sdk::ValueRef {
                   using T = std::decay_t<decltype(v)>;
