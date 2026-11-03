@@ -3,6 +3,12 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_ros2/`.
 
+## [1.1.2] - 2026-10-01
+
+### Fixed
+- Nested action feedback and service interfaces retain their namespace when
+  building schemas, avoiding truncated package names and wrong typesupport lookup.
+
 ## [1.1.1] - 2026-09-30
 
 ### Fixed
