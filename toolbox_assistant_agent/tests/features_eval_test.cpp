@@ -235,7 +235,6 @@ void runEval(const Settings& settings) {
   EXPECT_GT(conversations, 0) << "ASSISTANT_FEATURES_EVAL_ONLY matched no question";
 }
 
-#if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 TEST(FeaturesEval, AnswersTheProductQuestions) {
   const std::optional<std::string> backend = PJ::sdk::getEnv("ASSISTANT_FEATURES_EVAL");
   if (!backend) {
@@ -264,6 +263,5 @@ TEST(FeaturesEval, AnswersTheProductQuestions) {
     FAIL() << "ASSISTANT_FEATURES_EVAL must be claude or codex, got '" << settings.backend << "'";
   }
 }
-#endif
 
 }  // namespace
