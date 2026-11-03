@@ -54,7 +54,8 @@ QColor badColor();
 /// The value of the first wire of input @p input, when it holds a finite number.
 std::optional<double> numberAt(PJ::Span<const PJ_widget_value_t> values, uint32_t input);
 
-/// Largest font, not above @p base's size and not below 6 px, whose @p text fits @p box.
+/// @p base at the largest whole pixel size, from 6 up to @p max_pixel_size, at which @p text fits
+/// @p box; 6 px when no size fits.
 QFont fittedFont(const QFont& base, const QString& text, const QSizeF& box, double max_pixel_size);
 
 /// Read one settings key into @p out. A key that is missing or null leaves @p out as it is (the caller
