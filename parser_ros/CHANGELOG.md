@@ -3,14 +3,30 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
-## [1.2.6] - 2026-10-01
+## [1.3.1] - 2026-11-03
 
 ### Fixed
 - MCAP messages with `ros2idl` schemas are recognized and decoded. The parser
   resolves bundled IDL files and includes, preserves include ordering, and
   normalizes ROS2 resource names for decoding and builtin-object classification.
-- Quoted annotation text is decoded with the rosx_introspection fix in PR #48,
-  temporarily pinned by commit until the dependency release is published.
+- IDL annotations whose arguments hold quoted text with commas, parentheses or
+  escaped quotes (rosidl `@verbatim` comments) parse, with rosx_introspection 3.1.3.
+
+## [1.3.0] - 2026-11-03
+
+### Added
+- DataTamer text values (`std::string`, recorded by data_tamer 2.0.0 as the schema type
+  `string`) from `data_tamer_msgs/Snapshot` are imported as text series.
+
+### Changed
+- DataTamer schemas and snapshots are decoded with data_tamer 2.0.0, the same parser as
+  the DataTamer Parser plugin. Schemas of data_tamer 1.x (version 4) still decode.
+- A snapshot whose payload does not match its schema is reported as an error instead of
+  being dropped silently.
+
+### Fixed
+- Accept the full 64-bit range of DataTamer schema hashes on Windows. The schema text's
+  hash was converted with the 32-bit `stoul` there.
 
 ## [1.2.5] - 2026-09-29
 

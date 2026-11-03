@@ -22,11 +22,12 @@ namespace assistant_agent {
 // the listing here; Claude's own store is already split one directory per
 // cwd, so it needs no such filter).
 //
-// `codex exec` prepends a couple of harness-injected "user"-role messages
-// ("<environment_context>...", "<recommended_plugins>...") before the actual
-// prompt on (at least) a session's first turn — verified against real files
+// `codex exec` prepends a few harness-injected "user"-role messages
+// ("<environment_context>...", "<recommended_plugins>...", and, since 0.158,
+// the user's global ~/.codex/AGENTS.md as "# AGENTS.md instructions...")
+// before the actual prompt on (at least) a session's first turn — verified against real files
 // under ~/.codex/sessions/2026/09/03/. Nothing in the JSON marks them as
-// synthetic, so both functions below recognize them by their opening tag
+// synthetic, so both functions below recognize them by their opening text
 // (codex_sessions.cpp's isHarnessInjectedUserText) and treat them exactly
 // like a Claude `developer` record: skipped for both the title and the
 // transcript.

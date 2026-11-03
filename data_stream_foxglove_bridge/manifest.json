@@ -2,7 +2,7 @@
   "id": "foxglove-bridge",
   "name": "Foxglove Bridge",
   "version": "1.1.0",
-  "description": "Connect to Foxglove WebSocket server for ROS data streaming. Compatible with Foxglove Studio.",
+  "description": "Stream live ROS data from a Foxglove WebSocket server, such as foxglove_bridge running on your robot (the same server Foxglove Studio connects to).",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",

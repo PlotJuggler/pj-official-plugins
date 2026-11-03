@@ -8,6 +8,11 @@ cmake_minimum_required(VERSION 3.22)
 # or pass -DPJ_BUILD_ANOMALY_RUNNER=ON.
 option(PJ_BUILD_ANOMALY_RUNNER "Build the headless anomaly_runner CLI (needs pj_scripting_core)" OFF)
 
+# Widget-family libraries (widget_basic) link Qt, which the aggregate build and its Conan closure do
+# not provide: they build only with -DPJ_BUILD_WIDGETS=ON (and Qt on the prefix path), or alone via
+# `./build.sh widget_basic`.
+option(PJ_BUILD_WIDGETS "Build the Qt-linking Widget-family plugins (needs the official Qt)" OFF)
+
 # ---------------------------------------------------------------------------
 # Dual-mode: standalone project OR subdirectory of plotjuggler_sdk.
 #
@@ -30,10 +35,13 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/query)
   add_subdirectory(common/transfer_rate)
   add_subdirectory(common/toolbox_preview)
+  add_subdirectory(common/derived_recipes)
+  add_subdirectory(common/test_support)
   # This block always adds every plugin (no PJ_BUILD_PLUGIN filtering), so its
-  # consumers data_load_mf4/data_load_blf are always present — add their shared
-  # can_dbc unconditionally too. (The standalone block below, which DOES honor
-  # PJ_BUILD_PLUGIN, gates it to avoid the CPM download for unrelated plugins.)
+  # consumers data_load_mf4/data_load_blf/data_load_candump are always present
+  # — add their shared can_dbc unconditionally too. (The standalone block
+  # below, which DOES honor PJ_BUILD_PLUGIN, gates it to avoid the CPM
+  # download for unrelated plugins.)
   add_subdirectory(common/can_dbc)
 
   # Enabled entries track the v4 ABI (PJ_ABI_VERSION == 4): service-
@@ -48,6 +56,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(data_load_ulog)
   add_subdirectory(data_load_mf4)
   add_subdirectory(data_load_blf)
+  add_subdirectory(data_load_candump)
   add_subdirectory(data_load_3d)
   add_subdirectory(data_load_lerobot)
   add_subdirectory(data_load_mp4)
@@ -74,6 +83,9 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(toolbox_mosaico)
   add_subdirectory(toolbox_transform_editor)
   add_subdirectory(toolbox_assistant_agent)
+  if(PJ_BUILD_WIDGETS)
+    add_subdirectory(widget_basic)
+  endif()
   return()
 endif()
 
@@ -196,7 +208,7 @@ add_subdirectory(common/query)
 add_subdirectory(common/transfer_rate)
 # common/can_dbc has a CPM download side-effect, so configure it only for its
 # consumers (skipped when building an unrelated single plugin).
-set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf)
+set(PJ_CAN_DBC_CONSUMERS data_load_mf4 data_load_blf data_load_candump)
 if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_CAN_DBC_CONSUMERS)
   add_subdirectory(common/can_dbc)
 endif()
@@ -210,6 +222,14 @@ if(DEFINED PJ_BUILD_PLUGIN)
   endif()
 else()
   add_subdirectory(common/toolbox_preview)
+endif()
+
+# Shared derived-recipe helpers (path/input resolution, typed outputs, Luau chunk) and the header-only
+# fake hosts of their unit tests: consumed by the assistant and the Transform Editor.
+set(PJ_DERIVED_RECIPES_CONSUMERS toolbox_assistant_agent toolbox_transform_editor)
+if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_DERIVED_RECIPES_CONSUMERS)
+  add_subdirectory(common/derived_recipes)
+  add_subdirectory(common/test_support)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -232,6 +252,7 @@ else()
   add_subdirectory(data_load_ulog)
   add_subdirectory(data_load_mf4)
   add_subdirectory(data_load_blf)
+  add_subdirectory(data_load_candump)
   add_subdirectory(data_load_3d)
   add_subdirectory(data_load_lerobot)
   add_subdirectory(data_load_mp4)
@@ -253,4 +274,7 @@ else()
   add_subdirectory(toolbox_mosaico)
   add_subdirectory(toolbox_transform_editor)
   add_subdirectory(toolbox_assistant_agent)
+  if(PJ_BUILD_WIDGETS)
+    add_subdirectory(widget_basic)
+  endif()
 endif()

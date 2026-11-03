@@ -35,7 +35,7 @@ import websockets
 import zstandard as zstd
 from mcap.reader import make_reader
 
-PORT = 9871
+PORT = 9090
 HOST = "localhost"
 MAGIC = 0x42524A50  # "PJRB" LE
 

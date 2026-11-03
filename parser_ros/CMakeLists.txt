@@ -8,12 +8,12 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 # on the host but we are not building inside a colcon workspace.
 set(CMAKE_DISABLE_FIND_PACKAGE_ament_cmake TRUE)
 
-# Includes the annotation-literal fix from rosx_introspection PR #48.
-# Replace this commit pin with the released tag after that fix is published.
+# Pin rosx_introspection 3.x for IDL-support APIs used by the PJ3 ROS parser lineage.
+# 3.1.3: quoted text in IDL annotation arguments (#48), null/truncated CDR headers (#49).
 CPMAddPackage(
   NAME rosx_introspection
-  URL https://github.com/facontidavide/rosx_introspection/archive/53bfd41714582d77b7c54828c2288e700184d970.zip
-  URL_HASH SHA256=5e0060bf49f9e4bd574aa5846f35e7f336624b9bbc64be7006f4c48b4f0a22d5
+  URL https://github.com/facontidavide/rosx_introspection/archive/refs/tags/3.1.3.zip
+  URL_HASH SHA256=d12637fc579164c302067f0f6f6beca0c5739a89983c91317eb3f7be5d67a599
   OPTIONS "ROSX_HAS_JSON OFF"
 )
 
@@ -34,14 +34,16 @@ if(_rosx_includes)
 endif()
 
 # data_tamer_parser — header-only library for DataTamer schema/snapshot parsing.
+# data_tamer 2.0.0, the same CPM package parser_data_tamer declares: keep the two in step.
 CPMAddPackage(
-  NAME data_tamer
-  URL https://github.com/PickNikRobotics/data_tamer/archive/refs/tags/1.0.3.zip
+  NAME data_tamer_2
+  URL https://github.com/facontidavide/data_tamer/archive/refs/tags/2.0.0.zip
+  URL_HASH SHA256=0a8caef329d641b2cc72fa68211af37a36759614807add4bdba2ed2bf2fc8963
   DOWNLOAD_ONLY YES
 )
 add_library(data_tamer_parser INTERFACE)
 target_include_directories(data_tamer_parser SYSTEM INTERFACE
-  "${data_tamer_SOURCE_DIR}/data_tamer_cpp/include")
+  "${data_tamer_2_SOURCE_DIR}/data_tamer_cpp/include")
 
 set(PARSER_ROS_COMMON_SOURCES
   ros_parser.cpp

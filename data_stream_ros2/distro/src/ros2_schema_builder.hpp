@@ -15,6 +15,8 @@
 #include <set>
 #include <string>
 
+#include "../../ros2_type_name.hpp"
+
 namespace ros2_streamer {
 
 namespace detail {
@@ -54,7 +56,7 @@ inline std::string buildRos2Schema(const std::string& base_type) {
 
     if (with_separator) {
       schema += "=====================================\nMSG: ";
-      schema += type_name;
+      schema += schemaTypeName(type_name);
       schema += '\n';
     }
 
@@ -104,15 +106,10 @@ inline std::string buildRos2Schema(const std::string& base_type) {
           break;
         case ROS_TYPE_MESSAGE: {
           const auto* nested = reinterpret_cast<const MessageMembers*>(member.members_->data);
-          // message_namespace_ is "<package>::msg" — strip the trailing "::msg".
-          std::string ns = nested->message_namespace_;
-          if (ns.size() >= 5) {
-            ns.resize(ns.size() - 5);
-          }
-          std::string field_type = ns + "/" + nested->message_name_;
-          schema += field_type;
-          if (done.count(field_type) == 0) {
-            pending.insert(field_type);
+          const std::string nested_type = interfaceTypeName(nested->message_namespace_, nested->message_name_);
+          schema += schemaTypeName(nested_type);
+          if (done.count(nested_type) == 0) {
+            pending.insert(nested_type);
           }
         } break;
       }
