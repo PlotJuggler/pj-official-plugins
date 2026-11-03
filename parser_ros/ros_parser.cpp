@@ -1,11 +1,16 @@
 #include <cctype>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
+#include <regex>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "ros_parser_internal.hpp"
 
@@ -79,20 +84,28 @@ bool parseStringAsDouble(const std::string& str, double& value, bool remove_suff
 std::string normalizedMessageType(std::string_view type_name, RosMsgParser::SchemaFormat schema_format) {
   std::string msg_type(type_name);
   if (schema_format == RosMsgParser::DDS_IDL) {
-    // OMG IDL schemas use scoped names such as "pkg::Type". rosx_introspection
-    // expects the root type as "pkg/Type", matching PJ3's ParserOMGIDL.
+    // ROS2 IDL uses package resource names; OMG IDL uses scoped names.
+    // rosx_introspection keeps module separators as "::" and the last as "/".
+    for (size_t pos = 0; (pos = msg_type.find('/', pos)) != std::string::npos; pos += 2) {
+      msg_type.replace(pos, 1, "::");
+    }
     if (auto pos = msg_type.rfind("::"); pos != std::string::npos) {
       msg_type.replace(pos, 2, "/");
     }
-  } else if (auto pos = msg_type.find("/msg/"); pos != std::string::npos) {
-    msg_type.erase(pos, 4);
+  } else {
+    for (size_t pos = 0; (pos = msg_type.find("::", pos)) != std::string::npos; ++pos) {
+      msg_type.replace(pos, 2, "/");
+    }
+    if (auto pos = msg_type.find("/msg/"); pos != std::string::npos) {
+      msg_type.erase(pos, 4);
+    }
   }
   return msg_type;
 }
 
 PJ::Expected<std::pair<std::string, RosMsgParser::SchemaFormat>> schemaEncodingToFormat(std::string_view encoding) {
-  if (encoding == "omgidl") {
-    return std::make_pair(std::string("omgidl"), RosMsgParser::DDS_IDL);
+  if (encoding == "omgidl" || encoding == "ros2idl") {
+    return std::make_pair(std::string(encoding), RosMsgParser::DDS_IDL);
   }
   if (encoding == "ros1msg" || encoding == "ros1") {
     return std::make_pair(std::string("ros1msg"), RosMsgParser::ROS_MSG);
@@ -101,6 +114,67 @@ PJ::Expected<std::pair<std::string, RosMsgParser::SchemaFormat>> schemaEncodingT
     return std::make_pair(std::string("ros2msg"), RosMsgParser::ROS_MSG);
   }
   return PJ::unexpected(std::string("unsupported ROS schema encoding: ") + std::string(encoding));
+}
+
+// MCAP ros2idl bundles named files. Expand only the root and its includes;
+// other preprocessor directives are ignored by the format's limited preprocessor.
+std::string ros2IdlDefinition(const std::string& root_name, const std::string& bundle) {
+  const std::string separator(80, '=');
+  std::map<std::string, std::string> files;
+  std::istringstream input(bundle);
+  std::string line;
+  std::string file_name;
+  while (std::getline(input, line)) {
+    if (line.ends_with('\r')) {
+      line.pop_back();
+    }
+    if (line == separator) {
+      if (!std::getline(input, line) || !line.starts_with("IDL: ")) {
+        throw std::runtime_error("ros2idl section is missing its IDL file name");
+      }
+      if (line.ends_with('\r')) {
+        line.pop_back();
+      }
+      file_name = line.substr(5);
+      if (file_name.empty() || !files.emplace(file_name, std::string{}).second) {
+        throw std::runtime_error("empty or duplicate ros2idl file name: " + file_name);
+      }
+    } else {
+      if (file_name.empty()) {
+        throw std::runtime_error("ros2idl content precedes its first section");
+      }
+      files.at(file_name) += line + '\n';
+    }
+  }
+
+  static const std::regex include_pattern(R"rx(^\s*#\s*include\s*(?:"([^"]+)\.idl"|<([^>]+)\.idl>)\s*(?://.*)?$)rx");
+  std::vector<std::istringstream> sources;
+  std::set<std::string> included;
+  std::string definition;
+  const auto include_file = [&](const std::string& name) {
+    if (!included.insert(name).second) {
+      return;
+    }
+    const auto file = files.find(name);
+    if (file == files.end()) {
+      throw std::runtime_error("missing ros2idl file: " + name);
+    }
+    sources.emplace_back(file->second);
+  };
+  include_file(root_name);
+  while (!sources.empty()) {
+    if (!std::getline(sources.back(), line)) {
+      sources.pop_back();
+      continue;
+    }
+    std::smatch match;
+    if (std::regex_match(line, match, include_pattern)) {
+      include_file(match[1].matched ? match[1].str() : match[2].str());
+    } else if (const auto first = line.find_first_not_of(" \t"); first == std::string::npos || line[first] != '#') {
+      definition += line + '\n';
+    }
+  }
+  return definition;
 }
 
 }  // namespace
@@ -436,7 +510,8 @@ RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_typ
   // Catalog lookup: exact match for this schema, otherwise the kDefault
   // entry (generic introspection fallback). kDefault is guaranteed to be
   // present in the catalog, so the second find always hits.
-  auto it = catalog().find(msg_type);
+  const std::string catalog_type = normalizedMessageType(msg_type, RosMsgParser::ROS_MSG);
+  auto it = catalog().find(catalog_type);
   if (it == catalog().end()) {
     it = catalog().find(CatalogEntry::kDefault);
   }
@@ -449,7 +524,7 @@ RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_typ
   // (e.g. "/my_robot/robot_description").
   const bool robot_description_topic =
       topic_name_ == "robot_description" || topic_name_.ends_with("/robot_description");
-  if (msg_type == "std_msgs/String" && robot_description_topic) {
+  if (catalog_type == "std_msgs/String" && robot_description_topic) {
     // Object-only: the URDF/SDF/MJCF text is consumed as a model, not stored
     // as a giant string column in the datastore.
     entry = CatalogEntry{
@@ -473,13 +548,16 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
 
   // Normalize root names to the conventions used by rosx_introspection. ROS 2
   // .msg schemas use "pkg/msg/Type" externally and "pkg/Type" internally;
-  // OMG IDL schemas use scoped names externally and "pkg/Type" internally.
+  // IDL schemas retain module scopes internally, such as "pkg::msg/Type".
   // Compile the message definition once and keep the rosx_introspection
   // parser cached on this instance — it is reused for every message of
   // this type. The array policy controls how variable-length fields are
   // truncated by the generic introspection walker.
   try {
-    parser_.emplace("", RosMsgParser::ROSType(msg_type), schema_definition_, schema_format_);
+    const auto definition = schema_format_ == RosMsgParser::DDS_IDL && schema_definition_.starts_with("====")
+                                ? ros2IdlDefinition(type_name_, schema_definition_)
+                                : schema_definition_;
+    parser_.emplace("", RosMsgParser::ROSType(msg_type), definition, schema_format_);
     auto policy =
         discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
     parser_->setMaxArrayPolicy(policy, max_array_size_);
@@ -492,13 +570,22 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   detectSchemaFeatures();
   ensureDeserializer();
 
-  // visualization_msgs/Marker has two wire layouts: ROS 2 humble+ added a
-  // texture block (texture_resource / texture / uv_coordinates) and a
-  // mesh_file field; EOL foxy/galactic and ROS 1 lack them. Sniff the bound
-  // definition so the positional decoder consumes the correct variable tail.
-  if (msg_type == "visualization_msgs/Marker" || msg_type == "visualization_msgs/MarkerArray") {
-    marker_has_texture_block_ = schema_definition_.find("uv_coordinates") != std::string::npos;
-    marker_has_mesh_file_ = schema_definition_.find("mesh_file") != std::string::npos;
+  // Humble+ Marker adds texture and mesh fields. Inspect the parsed Marker
+  // fields so comments or unrelated bundled definitions cannot change its layout.
+  const std::string ros_type = normalizedMessageType(msg_type, RosMsgParser::ROS_MSG);
+  if (ros_type == "visualization_msgs/Marker" || ros_type == "visualization_msgs/MarkerArray") {
+    marker_has_texture_block_ = false;
+    marker_has_mesh_file_ = false;
+    for (const auto& [type, message] : parser_->getSchema()->msg_library) {
+      if (normalizedMessageType(type.baseName(), RosMsgParser::ROS_MSG) != "visualization_msgs/Marker") {
+        continue;
+      }
+      for (const auto& field : message->fields()) {
+        marker_has_texture_block_ |= field.name() == "uv_coordinates";
+        marker_has_mesh_file_ |= field.name() == "mesh_file";
+      }
+      break;
+    }
   }
   if (register_specialized_handler) {
     registerBoundSchemaHandler(selectCatalogEntry(msg_type));
@@ -753,7 +840,9 @@ void RosParser::detectSchemaFeatures() {
   const auto& schema = parser_->getSchema();
   const auto& root_fields = schema->root_msg->fields();
 
-  has_header_ = !root_fields.empty() && root_fields.front().type().baseName() == "std_msgs/Header";
+  has_header_ =
+      !root_fields.empty() &&
+      normalizedMessageType(root_fields.front().type().baseName(), RosMsgParser::ROS_MSG) == "std_msgs/Header";
 
   quaternion_prefixes_.clear();
   findQuaternionPrefixes(schema->root_msg.get(), "", schema->msg_library);
@@ -769,7 +858,7 @@ void RosParser::findQuaternionPrefixes(
     std::string fp = prefix + "/" + field.name();
     const auto& type = field.type();
 
-    if (type.baseName() == "geometry_msgs/Quaternion") {
+    if (normalizedMessageType(type.baseName(), RosMsgParser::ROS_MSG) == "geometry_msgs/Quaternion") {
       // For arrays, the flattened name includes [i]; skip at bind time.
       if (!field.isArray()) {
         quaternion_prefixes_.push_back(fp);
