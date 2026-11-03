@@ -2,23 +2,23 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # data_tamer_parser — header-only library for DataTamer schema/snapshot parsing.
-# Reuse cached download if parser_ros already fetched it.
+# data_tamer 2.0.0 (tag 2.0.0, commit 0c48ed0). parser_ros declares the same CPM package: CPM
+# reuses the first package of a name, so keep the name, URL and hash identical in both.
 CPMAddPackage(
-  NAME data_tamer
-  URL https://github.com/PickNikRobotics/data_tamer/archive/refs/tags/1.0.3.zip
+  NAME data_tamer_2
+  URL https://github.com/facontidavide/data_tamer/archive/refs/tags/2.0.0.zip
+  URL_HASH SHA256=0a8caef329d641b2cc72fa68211af37a36759614807add4bdba2ed2bf2fc8963
   DOWNLOAD_ONLY YES
 )
-if(NOT TARGET data_tamer_parser)
-  add_library(data_tamer_parser INTERFACE)
-  target_include_directories(data_tamer_parser SYSTEM INTERFACE
-    "${data_tamer_SOURCE_DIR}/data_tamer_cpp/include")
-endif()
+add_library(parser_data_tamer_headers INTERFACE)
+target_include_directories(parser_data_tamer_headers SYSTEM INTERFACE
+  "${data_tamer_2_SOURCE_DIR}/data_tamer_cpp/include")
 
 # --- Plugin shared library ---
 add_library(parser_data_tamer_plugin SHARED data_tamer_parser.cpp)
 target_compile_features(parser_data_tamer_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_data_tamer_plugin PRIVATE ${PJ_WARNING_FLAGS})
-target_link_libraries(parser_data_tamer_plugin PRIVATE plotjuggler_sdk::plugin_sdk data_tamer_parser)
+target_link_libraries(parser_data_tamer_plugin PRIVATE plotjuggler_sdk::plugin_sdk parser_data_tamer_headers)
 
 pj_embed_manifest(parser_data_tamer_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/data_tamer_manifest.hpp
@@ -38,11 +38,12 @@ target_compile_features(data_tamer_parser_test PRIVATE cxx_std_20)
 target_compile_options(data_tamer_parser_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(data_tamer_parser_test PRIVATE
   PJ_DATA_TAMER_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_data_tamer_plugin>"
+  PJ_DATA_TAMER_VECTORS_DIR="${data_tamer_2_SOURCE_DIR}/docs/wire_format/vectors"
 )
 target_link_libraries(data_tamer_parser_test PRIVATE
   plotjuggler_sdk::plugin_sdk
   plotjuggler_sdk::plugin_host
-  data_tamer_parser
+  parser_data_tamer_headers
   GTest::gtest_main
 )
 add_test(NAME data_tamer_parser_test COMMAND data_tamer_parser_test)

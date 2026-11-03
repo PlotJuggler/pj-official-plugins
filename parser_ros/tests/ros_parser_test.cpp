@@ -4619,4 +4619,75 @@ TEST(RosParserTest, FoxgloveGridScalarRoute) {
   EXPECT_EQ(row.fields.size(), 7u);
 }
 
+// data_tamer_msgs Schemas + Snapshot through data_tamer 2.0.0: a schema hash above
+// UINT32_MAX (it was read with the 32-bit stoul on Windows), a "string" field decoded
+// as text, and a payload that does not match its schema reported as an error.
+std::vector<uint8_t> dataTamerSchemasMessage(uint64_t hash, const std::string& channel, const std::string& text) {
+  return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serializeUInt32(1);
+    enc.serialize(RosMsgParser::UINT64, RosMsgParser::Variant(hash));
+    enc.serializeString(channel);
+    enc.serializeString(text);
+  });
+}
+
+std::vector<uint8_t> dataTamerSnapshotMessage(
+    uint64_t timestamp, uint64_t hash, const std::vector<uint8_t>& mask, const std::vector<uint8_t>& payload) {
+  return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::UINT64, RosMsgParser::Variant(timestamp));
+    enc.serialize(RosMsgParser::UINT64, RosMsgParser::Variant(hash));
+    for (const auto* bytes : {&mask, &payload}) {
+      enc.serializeUInt32(static_cast<uint32_t>(bytes->size()));
+      for (const uint8_t byte : *bytes) {
+        enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(byte));
+      }
+    }
+  });
+}
+
+TEST(RosParserTest, DataTamerFullWidthHashAndTextField) {
+  const auto hash = std::numeric_limits<uint64_t>::max();
+  RosParserFixture schemas;
+  schemas.setUp();
+  ASSERT_TRUE(schemas.bindSchema(
+      "data_tamer_msgs/Schemas",
+      "data_tamer_msgs/Schema[] schemas\n================\nMSG: data_tamer_msgs/Schema\n"
+      "uint64 hash\nstring channel_name\nstring schema_text\n"));
+  ASSERT_TRUE(schemas.parse(dataTamerSchemasMessage(
+      hash, "wide_hash",
+      "### version: 5\n### hash: 18446744073709551615\n### channel_name: wide_hash\n\nfloat64 value\nstring label\n")));
+
+  RosParserFixture snapshot;
+  snapshot.setUp();
+  ASSERT_TRUE(snapshot.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  ASSERT_TRUE(snapshot.bindSchema(
+      "data_tamer_msgs/Snapshot", "uint64 timestamp_nsec\nuint64 schema_hash\nuint8[] active_mask\nuint8[] payload\n"));
+
+  std::vector<uint8_t> payload(sizeof(double));
+  const double value = 42.5;
+  std::memcpy(payload.data(), &value, sizeof(value));
+  const std::string label = "hi";
+  const auto label_size = static_cast<uint32_t>(label.size());
+  payload.insert(
+      payload.end(), reinterpret_cast<const uint8_t*>(&label_size),
+      reinterpret_cast<const uint8_t*>(&label_size) + sizeof(label_size));
+  payload.insert(payload.end(), label.begin(), label.end());
+
+  ASSERT_TRUE(snapshot.parse(dataTamerSnapshotMessage(123456789, hash, {0x03}, payload)));
+  ASSERT_EQ(snapshot.recorder.rows().size(), 1U);
+  const auto& row = snapshot.recorder.rows()[0];
+  EXPECT_EQ(row.timestamp, 123456789);
+  const auto* number = findField(row, "/wide_hash/value");
+  ASSERT_NE(number, nullptr);
+  EXPECT_DOUBLE_EQ(number->numeric, value);
+  const auto* text = findField(row, "/wide_hash/label");
+  ASSERT_NE(text, nullptr);
+  EXPECT_EQ(text->type, PJ::PrimitiveType::kString);
+  EXPECT_EQ(text->string_value, label);
+
+  payload.push_back(0);  // one byte more than the schema describes
+  EXPECT_FALSE(snapshot.parse(dataTamerSnapshotMessage(123456790, hash, {0x03}, payload)));
+  EXPECT_EQ(snapshot.recorder.rows().size(), 1U);
+}
+
 }  // namespace
