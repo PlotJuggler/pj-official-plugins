@@ -200,7 +200,7 @@ Triggered by tags matching `*/v*` pattern.
 | Linux x86_64 | ubuntu-22.04 | x86_64 |
 | Linux ARM64 | ubuntu-22.04-arm | aarch64 |
 | macOS Intel | macos-15-intel | x86_64 |
-| macOS Apple Silicon | macos-14 | arm64 |
+| macOS Apple Silicon | macos-15 | arm64 |
 | Windows x64 | windows-2022 | x64 |
 | Windows ARM64 | windows-11-arm | arm64 |
 

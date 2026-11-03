@@ -37,8 +37,8 @@ jobs:
             lib_ext: so
           # macOS x86_64 is intentionally absent: Intel Macs are not a supported
           # target for the time being. The runners are also the scarcest and
-          # slowest in the matrix (15-25 min builds vs ~40 s on macos-14).
-          - runner: macos-14
+          # slowest in the matrix (15-25 min builds vs ~40 s on macos-15).
+          - runner: macos-15
             arch: arm64
             os_label: macos
             lib_ext: dylib
@@ -97,6 +97,11 @@ jobs:
         if: steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: conan profile detect --force
+
+      - name: Seed Conan source download cache
+        if: runner.os == 'macOS' && steps.build-scope.outputs.skip != 'true'
+        shell: bash
+        run: scripts/seed_conan_sources.sh
 
       - name: Configure PlotJuggler JFrog Conan remote
         if: steps.build-scope.outputs.skip != 'true' && github.repository == 'PlotJuggler/pj-official-plugins'
