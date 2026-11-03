@@ -67,6 +67,33 @@ inline void restoreSentListings(HarnessMemory& memory, SentListings saved) {
   memory.resumed_pending = saved.resumed_pending;
 }
 
+// The rollback policy for one turn's listings, shared by every harness backend.
+// Construct it before composePayload marks the listings as told; call
+// answered() on every event that shows the model read the payload (text or a
+// tool call); call finish() once the turn is over. A turn that failed before
+// the model answered may never have reached it: finish() forgets that its
+// listings were sent, so the retry carries them again. A successful turn
+// (exit 0, no error reported) is never rolled back, even a silent one.
+class ListingsTurn {
+ public:
+  explicit ListingsTurn(HarnessMemory& memory) : memory_(memory), told_before_(sentListings(memory)) {}
+
+  void answered() {
+    model_answered_ = true;
+  }
+
+  void finish(bool failed) {
+    if (failed && !model_answered_) {
+      restoreSentListings(memory_, std::move(told_before_));
+    }
+  }
+
+ private:
+  HarnessMemory& memory_;
+  SentListings told_before_;
+  bool model_answered_ = false;
+};
+
 // The user text as actually sent: `features\n\n[note\n\n]catalog\n\n[note\n\n]text`,
 // where each listing is prepended only when its own hash differs from what
 // this conversation was already told (first turn, or that listing changed —

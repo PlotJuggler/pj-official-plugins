@@ -395,27 +395,28 @@ TEST(ClaudeBackendApiError, NamesTheConfiguredModel) {
 #if defined(__unix__) || defined(__APPLE__)
 namespace {
 
+using assistant_agent::TurnTools;
+using assistant_agent::testing::kTestCatalog;
+using assistant_agent::testing::kTestFeatures;
+using assistant_agent::testing::payloadTestTools;
+using assistant_agent::testing::RecordingCliCleanup;
+
 TEST(ClaudeBackendPayload, TheCliReceivesTheFeaturesBlockAheadOfTheCatalogAndThePolicy) {
   const std::string record = assistant_agent::testing::makeRecordPrefix("claude");
   const std::string cli = assistant_agent::testing::writeRecordingCliScript(
       {R"({"type":"system","subtype":"init","session_id":"sess-1"})",
        R"({"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"sess-1"})"},
       0, record);
+  const RecordingCliCleanup cleanup({cli}, record);
   ASSERT_FALSE(cli.empty());
   ToolRegistry reg;
-  assistant_agent::TurnTools tools;
-  tools.registry = &reg;
-  tools.invoke = [](const std::string&, const nlohmann::json&) {
-    return assistant_agent::ToolResult::failure("no tool runs in this test");
-  };
-  tools.features = "PlotJuggler features (test):\n- one";
-  tools.catalog = "Loaded data: nothing is loaded yet.";
+  const TurnTools tools = payloadTestTools(reg);
 
   ClaudeBackend backend(cli, "");
   backend.sendUserMessage("hi", tools, [](BackendEvent) {});
   EXPECT_EQ(
       assistant_agent::testing::readFileToString(record + ".stdin"),
-      "PlotJuggler features (test):\n- one\n\nLoaded data: nothing is loaded yet.\n\nhi");
+      std::string(kTestFeatures) + "\n\n" + kTestCatalog + "\n\nhi");
   EXPECT_NE(
       assistant_agent::testing::readFileToString(record + ".argv").find(assistant_agent::kProductPolicy),
       std::string::npos);
@@ -429,10 +430,6 @@ TEST(ClaudeBackendPayload, TheCliReceivesTheFeaturesBlockAheadOfTheCatalogAndThe
   const std::string argv = assistant_agent::testing::readFileToString(record + ".argv");
   EXPECT_EQ(argv.find(assistant_agent::kProductPolicy), std::string::npos);
   EXPECT_NE(argv.find(assistant_agent::kSystemPrompt), std::string::npos);
-
-  removeFakeCli(cli);
-  std::remove((record + ".stdin").c_str());
-  std::remove((record + ".argv").c_str());
 }
 
 // A first turn whose CLI exits 1 before saying anything (not logged in, say)
@@ -444,17 +441,12 @@ TEST(ClaudeBackendPayload, AFailedTurnThatProducedNoAnswerLeavesTheListingsUnsen
       {R"({"type":"system","subtype":"init","session_id":"sess-1"})",
        R"({"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"sess-1"})"},
       0, record);
+  const RecordingCliCleanup cleanup({failing, working}, record);
   ASSERT_FALSE(failing.empty());
   ASSERT_FALSE(working.empty());
   ToolRegistry reg;
-  assistant_agent::TurnTools tools;
-  tools.registry = &reg;
-  tools.invoke = [](const std::string&, const nlohmann::json&) {
-    return assistant_agent::ToolResult::failure("no tool runs in this test");
-  };
-  tools.features = "PlotJuggler features (test):\n- one";
-  tools.catalog = "Loaded data: nothing is loaded yet.";
-  const std::string both = "PlotJuggler features (test):\n- one\n\nLoaded data: nothing is loaded yet.\n\n";
+  const TurnTools tools = payloadTestTools(reg);
+  const std::string both = std::string(kTestFeatures) + "\n\n" + kTestCatalog + "\n\n";
   auto memory = std::make_shared<assistant_agent::HarnessMemory>();
   memory->resumed_pending = true;
 
@@ -477,11 +469,6 @@ TEST(ClaudeBackendPayload, AFailedTurnThatProducedNoAnswerLeavesTheListingsUnsen
   // A successful turn is never rolled back, even one with no assistant text.
   backend.sendUserMessage("third", tools, [](BackendEvent) {});
   EXPECT_EQ(assistant_agent::testing::readFileToString(record + ".stdin"), "third");
-
-  removeFakeCli(failing);
-  removeFakeCli(working);
-  std::remove((record + ".stdin").c_str());
-  std::remove((record + ".argv").c_str());
 }
 
 }  // namespace

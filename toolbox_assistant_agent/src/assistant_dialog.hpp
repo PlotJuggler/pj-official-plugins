@@ -43,8 +43,10 @@ class SettingsStore;
 
 // The same for the "PlotJuggler features" block (featuresBlock,
 // features_digest.hpp): settings key "assistant.features_budget_chars",
-// default 20000, clamped to [5000, 200000] (the minimum holds the built-in
-// reference, which is never trimmed), read fresh every turn.
+// default kDefaultFeaturesBudgetChars, clamped to [kMinFeaturesBudgetChars,
+// kMaxFeaturesBudgetChars] (features_digest.hpp / assistant_dialog.cpp; the
+// minimum holds the built-in reference, which is never trimmed), read fresh
+// every turn.
 [[nodiscard]] int resolveFeaturesBudgetChars(const SettingsStore& store);
 
 // Per-conversation state a backend borrows (harness_memory.hpp).

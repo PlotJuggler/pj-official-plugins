@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "llm_backend.hpp"    // BackendEvent, LlmBackend, TurnTools
@@ -125,6 +127,47 @@ inline void removeFakeCli(const std::string& cli_path) {
     unlink(cli_path.c_str());
   }
 }
+
+// The listings every backend-payload test (claude_smoke_test.cpp,
+// codex_backend_test.cpp) hands its turns.
+inline constexpr const char* kTestFeatures = "PlotJuggler features (test):\n- one";
+inline constexpr const char* kTestCatalog = "Loaded data: nothing is loaded yet.";
+
+// The TurnTools of a payload test: `reg` (which must outlive the result), an
+// invoke that refuses every call, and kTestFeatures/kTestCatalog.
+inline TurnTools payloadTestTools(const ToolRegistry& reg) {
+  TurnTools tools;
+  tools.registry = &reg;
+  tools.invoke = [](const std::string&, const nlohmann::json&) {
+    return ToolResult::failure("no tool runs in this test");
+  };
+  tools.features = kTestFeatures;
+  tools.catalog = kTestCatalog;
+  return tools;
+}
+
+// Removes the fake CLIs and writeRecordingCliScript's record files when the
+// test leaves scope, including through an early ASSERT_* return.
+class RecordingCliCleanup {
+ public:
+  RecordingCliCleanup(std::vector<std::string> clis, std::string record_prefix)
+      : clis_(std::move(clis)), record_prefix_(std::move(record_prefix)) {}
+  RecordingCliCleanup(const RecordingCliCleanup&) = delete;
+  RecordingCliCleanup& operator=(const RecordingCliCleanup&) = delete;
+  ~RecordingCliCleanup() {
+    for (const auto& cli : clis_) {
+      removeFakeCli(cli);
+    }
+    if (!record_prefix_.empty()) {
+      std::remove((record_prefix_ + ".stdin").c_str());
+      std::remove((record_prefix_ + ".argv").c_str());
+    }
+  }
+
+ private:
+  std::vector<std::string> clis_;
+  std::string record_prefix_;
+};
 
 #elif defined(_WIN32)
 
