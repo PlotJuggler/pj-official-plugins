@@ -66,8 +66,8 @@ std::string Mf4Dialog::saveConfig() const {
   nlohmann::json cfg;
   cfg["filepath"] = filepath_;
   cfg["dbc_paths"] = pj_can_dbc::toConfigPaths(dbc_paths_, filepath_);
-  if (const std::string base = pj_can_dbc::auxBaseDir(filepath_); !dbc_paths_.empty() && !base.empty()) {
-    cfg[pj_can_dbc::kAuxBaseDirKey] = base;
+  if (const auto base = pj_can_dbc::auxBaseDirToSave(filepath_, !dbc_paths_.empty())) {
+    cfg[pj_can_dbc::kAuxBaseDirKey] = *base;
   }
   return cfg.dump();
 }

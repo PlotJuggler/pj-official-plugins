@@ -38,7 +38,6 @@ constexpr int kMaxCatalogBudgetChars = 200000;
 // The same for the "PlotJuggler features" block (featuresBlock,
 // features_digest.hpp), whose default is featuresDigest's own.
 constexpr const char* kKeyFeaturesBudgetChars = "assistant.features_budget_chars";
-constexpr int kFeaturesBudgetCharsDefault = static_cast<int>(kDefaultFeaturesBudgetChars);
 constexpr int kMaxFeaturesBudgetChars = 200000;
 
 // One row per backend this build knows about: its settings key, the
@@ -141,17 +140,22 @@ std::string resolveBackendKey(const SettingsStore& store) {
   const std::string choice = store.getString(kKeyBackend, "claude");
   return backendByKey(choice) ? choice : "echo";
 }
+
+// An integer setting, `def` when absent or unparsable, clamped to [lo, hi].
+int clampedSetting(const SettingsStore& store, const char* key, int def, int lo, int hi) {
+  return std::clamp(store.getInt(key, def), lo, hi);
+}
 }  // namespace
 
 int resolveCatalogBudgetChars(const SettingsStore& store) {
-  return std::clamp(
-      store.getInt(kKeyCatalogBudgetChars, kDefaultCatalogBudgetChars), kMinCatalogBudgetChars, kMaxCatalogBudgetChars);
+  return clampedSetting(
+      store, kKeyCatalogBudgetChars, kDefaultCatalogBudgetChars, kMinCatalogBudgetChars, kMaxCatalogBudgetChars);
 }
 
 int resolveFeaturesBudgetChars(const SettingsStore& store) {
-  return std::clamp(
-      store.getInt(kKeyFeaturesBudgetChars, kFeaturesBudgetCharsDefault), static_cast<int>(kMinFeaturesBudgetChars),
-      kMaxFeaturesBudgetChars);
+  return clampedSetting(
+      store, kKeyFeaturesBudgetChars, static_cast<int>(kDefaultFeaturesBudgetChars),
+      static_cast<int>(kMinFeaturesBudgetChars), kMaxFeaturesBudgetChars);
 }
 
 AssistantDialog::AssistantDialog() {

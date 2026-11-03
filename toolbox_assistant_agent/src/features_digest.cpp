@@ -262,8 +262,8 @@ std::string registryReasonWords(const std::string& reason) {
   return {};
 }
 
-// Whether the Marketplace list was fetched, and the line saying so when not.
-std::pair<bool, std::string> registryLine(const json& doc) {
+// The line saying the Marketplace list was not fetched; empty when it was.
+std::string registryLine(const json& doc) {
   std::string state;
   std::string reason;
   const auto it = doc.find("registry");
@@ -272,16 +272,15 @@ std::pair<bool, std::string> registryLine(const json& doc) {
     reason = text(*it, "reason");
   }
   if (state == "fetched") {
-    return {true, {}};
+    return {};
   }
   std::string words = registryStateWords(state);
   const std::string reason_words = registryReasonWords(reason);
   if (!reason_words.empty()) {
     words += ": " + reason_words;
   }
-  return {
-      false, "The Marketplace list could not be checked (" + words + "); more plugins may exist: see " +
-                 std::string(kMarketplace)};
+  return "The Marketplace list could not be checked (" + words + "); more plugins may exist: see " +
+         std::string(kMarketplace);
 }
 
 std::size_t textSize(const std::vector<std::string>& lines) {
@@ -368,9 +367,8 @@ std::string featuresDigest(std::string_view json_text, std::size_t budget_chars)
   addListSection(fixed, doc, "loaded", "Plugins loaded (installed and ready to use):", loadedLine, &seen);
   addListSection(fixed, doc, "installed_not_loaded", "Installed but not active:", installedLine, &seen);
 
-  const auto registry = registryLine(doc);
-  const bool fetched = registry.first;
-  const std::string& registry_line = registry.second;
+  const std::string registry_line = registryLine(doc);
+  const bool fetched = registry_line.empty();
   std::vector<Entry> available;
   bool show_available = false;
   if (auto list = readEntries(doc, "available")) {

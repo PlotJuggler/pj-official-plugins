@@ -393,6 +393,11 @@ TEST(CodexSmoke, ListTopicsThroughMcp) {
 // composed payload on stdin, and the instructions -- written to the file
 // model_instructions_file names -- carrying the product policy.
 #if defined(__unix__) || defined(__APPLE__)
+using assistant_agent::testing::kTestCatalog;
+using assistant_agent::testing::kTestFeatures;
+using assistant_agent::testing::payloadTestTools;
+using assistant_agent::testing::RecordingCliCleanup;
+
 // The instructions file a recorded argv names, read while the backend that
 // wrote it is still alive (its destructor unlinks it).
 std::string instructionsFrom(const std::string& argv) {
@@ -411,22 +416,17 @@ TEST(CodexBackendPayload, TheCliReceivesTheFeaturesBlockAheadOfTheCatalogAndTheP
       {R"({"type":"thread.started","thread_id":"sess-1"})", R"({"type":"turn.started"})",
        R"({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}})"},
       0, record);
+  const RecordingCliCleanup cleanup({cli}, record);
   ASSERT_FALSE(cli.empty());
   ToolRegistry reg;
-  TurnTools tools;
-  tools.registry = &reg;
-  tools.invoke = [](const std::string&, const nlohmann::json&) {
-    return assistant_agent::ToolResult::failure("no tool runs in this test");
-  };
-  tools.features = "PlotJuggler features (test):\n- one";
-  tools.catalog = "Loaded data: nothing is loaded yet.";
+  const TurnTools tools = payloadTestTools(reg);
 
   {
     CodexBackend backend(cli, "");
     backend.sendUserMessage("hi", tools, [](BackendEvent) {});
     EXPECT_EQ(
         assistant_agent::testing::readFileToString(record + ".stdin"),
-        "PlotJuggler features (test):\n- one\n\nLoaded data: nothing is loaded yet.\n\nhi");
+        std::string(kTestFeatures) + "\n\n" + kTestCatalog + "\n\nhi");
     const std::string instructions = instructionsFrom(assistant_agent::testing::readFileToString(record + ".argv"));
     EXPECT_NE(instructions.find(assistant_agent::kProductPolicy), std::string::npos) << instructions;
 
@@ -441,10 +441,6 @@ TEST(CodexBackendPayload, TheCliReceivesTheFeaturesBlockAheadOfTheCatalogAndTheP
     EXPECT_NE(instructions.find(assistant_agent::kSystemPrompt), std::string::npos) << instructions;
     EXPECT_EQ(instructions.find(assistant_agent::kProductPolicy), std::string::npos);
   }
-
-  assistant_agent::testing::removeFakeCli(cli);
-  std::remove((record + ".stdin").c_str());
-  std::remove((record + ".argv").c_str());
 }
 
 // A first turn whose CLI exits 1 with empty stdout (not logged in, say) never
@@ -456,17 +452,12 @@ TEST(CodexBackendPayload, AFailedTurnThatProducedNoAnswerLeavesTheListingsUnsent
       {R"({"type":"thread.started","thread_id":"sess-1"})", R"({"type":"turn.started"})",
        R"({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}})"},
       0, record);
+  const RecordingCliCleanup cleanup({failing, working}, record);
   ASSERT_FALSE(failing.empty());
   ASSERT_FALSE(working.empty());
   ToolRegistry reg;
-  TurnTools tools;
-  tools.registry = &reg;
-  tools.invoke = [](const std::string&, const nlohmann::json&) {
-    return assistant_agent::ToolResult::failure("no tool runs in this test");
-  };
-  tools.features = "PlotJuggler features (test):\n- one";
-  tools.catalog = "Loaded data: nothing is loaded yet.";
-  const std::string both = "PlotJuggler features (test):\n- one\n\nLoaded data: nothing is loaded yet.\n\n";
+  const TurnTools tools = payloadTestTools(reg);
+  const std::string both = std::string(kTestFeatures) + "\n\n" + kTestCatalog + "\n\n";
   auto memory = std::make_shared<HarnessMemory>();
 
   std::vector<BackendEvent> events;
@@ -484,11 +475,6 @@ TEST(CodexBackendPayload, AFailedTurnThatProducedNoAnswerLeavesTheListingsUnsent
   // A successful turn is never rolled back, even one with no assistant text.
   backend.sendUserMessage("third", tools, [](BackendEvent) {});
   EXPECT_EQ(assistant_agent::testing::readFileToString(record + ".stdin"), "third");
-
-  assistant_agent::testing::removeFakeCli(failing);
-  assistant_agent::testing::removeFakeCli(working);
-  std::remove((record + ".stdin").c_str());
-  std::remove((record + ".argv").c_str());
 }
 #endif
 

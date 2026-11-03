@@ -570,12 +570,12 @@ class RosParser : public PJ::MessageParserPluginBase {
     string_storage_.clear();
     named_fields_.clear();
     current_timestamp_ = ts;
-    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
     // The object handlers each carry their own try/catch; the scalar void handlers
     // do not, and this wrapper is the C-ABI-facing entry for them. A CDR decode
     // throw (e.g. readByteSequence / deserializeString on a truncated message) must
     // become an Expected error here, never propagate into the noexcept trampoline.
     try {
+      deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
       (this->*Handler)();
     } catch (const std::exception& e) {
       return PJ::unexpected(std::string("ROS scalar decode error: ") + e.what());
