@@ -2,11 +2,11 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # data_tamer_parser — header-only library for DataTamer schema/snapshot parsing.
-# A main commit of data_tamer 2.x: switch to the 2.0.0 tag once it is released.
+# data_tamer 2.0.0 (tag 2.0.0, commit 0c48ed0).
 CPMAddPackage(
   NAME data_tamer
-  URL https://github.com/facontidavide/data_tamer/archive/7b4dc8244ca29b7d609453f82843dd2f947a019b.zip
-  URL_HASH SHA256=cad8e213bae7f8fb686ab3fef5b49e8161b60b4e765bbfd76f6712eda25bcdd2
+  URL https://github.com/facontidavide/data_tamer/archive/refs/tags/2.0.0.zip
+  URL_HASH SHA256=0a8caef329d641b2cc72fa68211af37a36759614807add4bdba2ed2bf2fc8963
   DOWNLOAD_ONLY YES
 )
 add_library(parser_data_tamer_headers INTERFACE)

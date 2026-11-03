@@ -9,6 +9,8 @@ below; for earlier releases see the git history of `parser_data_tamer/`.
 - Read data_tamer 2.x recordings with line schemas (version 5) and YAML schemas
   (version 6), including nested fields. Data_tamer 1.x recordings (version 4)
   remain supported.
+- Text values (`std::string`, recorded by data_tamer 2.0.0 as the schema type
+  `string`) are imported as text series, also inside vectors and nested types.
 
 ### Changed
 - Schema texts from releases before data_tamer 0.7.0, without a `### version:`

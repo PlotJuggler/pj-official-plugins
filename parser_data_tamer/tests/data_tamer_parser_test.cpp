@@ -477,6 +477,65 @@ INSTANTIATE_TEST_SUITE_P(SchemaFormats, DataTamerGoldenTest, testing::Values("tx
   return std::string(case_info.param) == "txt" ? "LineV5" : "YamlV6";
 });
 
+// data_tamer 2.0.0 records std::string as the schema type "string": each one is a
+// text field, also an empty one and one that is not valid UTF-8 (bytes as written).
+// A "char" stays a byte, also inside a char[].
+TEST(DataTamerParserTest, StringFieldsDecodeAsText) {
+  DTFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema(readVectorText("schema_strings.txt")));
+  const auto message =
+      frameMessage(readVectorBytes("snapshot_strings.mask"), readVectorBytes("snapshot_strings.payload"));
+  ASSERT_TRUE(f.parse(message));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows().front();
+
+  const std::map<std::string, std::string> texts = {
+      {"/ascii", "data_tamer"}, {"/empty", ""},   {"/utf8", "Z\xC3\xBCrich \xE2\x9C\x93"},
+      {"/tags[0]", "t"},        {"/tags[1]", ""}, {"/labels[0]/text", "x"},
+      {"/labels[1]/text", ""}};
+  for (const auto& [name, text] : texts) {
+    const auto* field = findField(row, name);
+    ASSERT_NE(field, nullptr) << name;
+    EXPECT_EQ(field->type, PJ::PrimitiveType::kString) << name;
+    EXPECT_EQ(field->string_value, text) << name;
+  }
+  const auto* invalid = findField(row, "/invalid");
+  ASSERT_NE(invalid, nullptr);
+  EXPECT_EQ(invalid->type, PJ::PrimitiveType::kString);
+  ASSERT_GE(invalid->string_value.size(), 3u);
+  EXPECT_EQ(invalid->string_value.front(), 'a');
+  EXPECT_EQ(invalid->string_value.back(), 'b');
+
+  for (const auto& [name, letter] : std::map<std::string, char>{{"/fixed[0]", 'a'}, {"/chars[1]", 'i'}}) {
+    const auto* field = findField(row, name);
+    ASSERT_NE(field, nullptr) << name;
+    EXPECT_EQ(field->type, PJ::PrimitiveType::kUint8) << name;
+    EXPECT_EQ(field->numeric, static_cast<uint8_t>(letter)) << name;
+  }
+  const auto* id = findField(row, "/labels[1]/id");
+  ASSERT_NE(id, nullptr);
+  EXPECT_EQ(id->numeric, 2.0);
+
+  // parseScalars hands the texts out in a record that outlives the payload.
+  std::map<std::string, std::string> functional;
+  auto status = f.handle.parseScalarsFunctional(
+      1000, PJ::Span<const uint8_t>(message.data(), message.size()),
+      [&](std::optional<PJ::Timestamp>, PJ::Span<const PJ_named_field_value_t> fields) {
+        for (const auto& field : fields) {
+          if (field.value.type == PJ_PRIMITIVE_TYPE_STRING) {
+            functional[std::string(field.name.data, field.name.size)] =
+                std::string(field.value.data.as_string.data, field.value.data.as_string.size);
+          }
+        }
+        return PJ::okStatus();
+      });
+  ASSERT_TRUE(status) << status.error();
+  for (const auto& [name, text] : texts) {
+    EXPECT_EQ(functional[name], text) << name;
+  }
+}
+
 TEST(DataTamerParserTest, VersionlessSchemaIsRejectedWithClearError) {
   DTFixture f;
   f.setUp();

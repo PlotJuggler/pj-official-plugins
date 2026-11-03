@@ -1,4 +1,5 @@
 #include <data_tamer_v2/data_tamer_parser.hpp>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <optional>
@@ -76,7 +77,12 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
   PJ::Expected<PJ::sdk::ScalarRecord> parseScalarsImpl(
       PJ::Timestamp /*timestamp_ns*/, PJ::Span<const uint8_t> payload) {
     owned_fields_.clear();
+    owned_texts_.clear();
     auto status = forEachValue(payload, [this](const std::string& field_name, PJ::sdk::ValueRef value) {
+      // The record outlives this call: own a text instead of pointing into the payload.
+      if (const auto* text = std::get_if<std::string_view>(&value)) {
+        value = std::string_view(owned_texts_.emplace_back(*text));
+      }
       owned_fields_.push_back({"/" + field_name, value});
     });
     if (!status) {
@@ -95,7 +101,7 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
 
   /// Decodes one snapshot and calls `on_value(field_name, value)` per field in
   /// schema order. `field_name` has no leading '/' and is only valid during the
-  /// call.
+  /// call. A "string" field arrives as a string_view into `payload`.
   template <typename OnValue>
   PJ::Status forEachValue(PJ::Span<const uint8_t> payload, const OnValue& on_value) {
     try {
@@ -116,6 +122,9 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
                 },
                 var);
             on_value(field_name, value);
+          },
+          [&on_value](const std::string& field_name, std::string_view text) {
+            on_value(field_name, PJ::sdk::ValueRef{text});
           });
       if (!parsed) {
         return PJ::unexpected(std::string("DataTamer snapshot payload does not match the schema"));
@@ -133,6 +142,7 @@ class DataTamerParserPlugin : public PJ::MessageParserPluginBase {
     PJ::sdk::ValueRef value;
   };
   std::vector<Field> owned_fields_;
+  std::deque<std::string> owned_texts_;  ///< texts of the last record; a deque keeps their addresses stable
   std::vector<PJ::sdk::NamedFieldValue> named_fields_;
   std::unordered_map<std::string, PJ::sdk::FieldHandle> field_handles_;  ///< keyed by raw schema name, no '/'
   std::vector<PJ::sdk::BoundFieldValue> bound_fields_;
