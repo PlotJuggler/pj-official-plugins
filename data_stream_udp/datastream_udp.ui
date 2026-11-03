@@ -71,7 +71,7 @@
      </item>
      <item row="1" column="1">
       <widget class="QLineEdit" name="lineEditAddress">
-       <property name="toolTip"><string>For unicast or broadcast, enter a local interface address or 0.0.0.0 (IPv4) / :: (IPv6) to listen on all interfaces. For multicast, enter the multicast group address to join.</string></property>
+       <property name="toolTip"><string>For unicast, enter a local interface address, or 0.0.0.0 (IPv4) / :: (IPv6) to listen on all interfaces. For broadcast, enter 0.0.0.0: a socket bound to one interface address does not receive broadcast packets. For multicast, enter the multicast group address to join.</string></property>
        <property name="placeholderText"><string>127.0.0.1</string></property>
       </widget>
      </item>
