@@ -1,0 +1,548 @@
+{
+  "schema": 1,
+  "notes": [
+    "expect_entry_ids: the answer passes navigation when it contains at least one accepted label of at least one listed entry (case-insensitive; arrows, quotes and trailing ellipses normalized).",
+    "expect_entry_ids and availability are either one value for every fixture or an object keyed by fixture name.",
+    "availability 'unlisted': the fixture does not list the feature (registry unreachable); the answer must point to the Extensions Marketplace and must not call the feature unsupported.",
+    "accept_tool_calls: action questions also pass when the reply made one of these tool calls.",
+    "forbidden_steps: phrases that are invented steps for this question (for example a context menu that does not exist); a reply that uses one outside a negation fails as invented_step.",
+    "strict_steps: a UI path segment that is not in the fixture's vocabulary, or a path whose segments follow no fixture entry_point in order, fails the reply instead of only flagging it.",
+    "negation_keywords: a supported question fails when the reply negates one of these words (\"cannot show images\").",
+    "follows: a follow-up turn sent in the same conversation after the named question."
+  ],
+  "questions": [
+    {
+      "id": "Q01_show_image",
+      "text": "How do I show an image?",
+      "fixtures": [
+        "host_bundled",
+        "host_offline",
+        "host_disabled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "viewer_2d"
+      ],
+      "accepted_labels": {
+        "viewer_2d": [
+          "2D",
+          "2D button",
+          "image icon",
+          "2D viewer"
+        ]
+      },
+      "availability": "core",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "image",
+        "images",
+        "picture",
+        "pictures"
+      ]
+    },
+    {
+      "id": "Q01b_exact_clicks",
+      "follows": "Q01_show_image",
+      "text": "Give me the exact clicks.",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "viewer_2d"
+      ],
+      "accepted_labels": {
+        "viewer_2d": [
+          "2D",
+          "2D button",
+          "image icon",
+          "2D viewer"
+        ]
+      },
+      "availability": "core",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "strict_steps": true,
+      "forbidden_steps": [
+        "right-click",
+        "right click",
+        "context menu"
+      ],
+      "negation_keywords": [
+        "image",
+        "images"
+      ]
+    },
+    {
+      "id": "Q02_mqtt",
+      "text": "How do I use MQTT?",
+      "fixtures": [
+        "host_bundled",
+        "host_disabled",
+        "host_offline"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": {
+        "host_bundled": [
+          "mqtt-subscriber"
+        ],
+        "host_disabled": [
+          "mqtt-subscriber"
+        ],
+        "host_offline": [
+          "extensions"
+        ]
+      },
+      "accepted_labels": {
+        "mqtt-subscriber": [
+          "MQTT Subscriber"
+        ],
+        "extensions": [
+          "Extensions Marketplace"
+        ]
+      },
+      "availability": {
+        "host_bundled": "installable",
+        "host_disabled": "disabled",
+        "host_offline": "unlisted"
+      },
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "mqtt"
+      ]
+    },
+    {
+      "id": "Q03_video_next_to_plots",
+      "text": "I filmed the test run. Can I watch the video next to my plots?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "mp4-loader",
+        "viewer_2d"
+      ],
+      "accepted_labels": {
+        "mp4-loader": [
+          "MP4 Loader"
+        ],
+        "viewer_2d": [
+          "2D",
+          "2D button",
+          "image icon",
+          "2D viewer"
+        ]
+      },
+      "availability": "loaded",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "video",
+        "videos"
+      ]
+    },
+    {
+      "id": "Q04_ros2_bag_mcap",
+      "text": "How do I open a ROS 2 bag or an MCAP file?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "mcap-loader",
+        "open_data_file"
+      ],
+      "accepted_labels": {
+        "mcap-loader": [
+          "MCAP Loader"
+        ],
+        "open_data_file": [
+          "Open Data File",
+          "Load a data file"
+        ]
+      },
+      "availability": "loaded",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "mcap",
+        "bag",
+        "bags"
+      ]
+    },
+    {
+      "id": "Q05_live_ros2",
+      "text": "How can I plot live ROS 2 topics from my robot?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "ros2-topic-subscriber",
+        "foxglove-bridge"
+      ],
+      "accepted_labels": {
+        "ros2-topic-subscriber": [
+          "ROS 2 Topic Subscriber"
+        ],
+        "foxglove-bridge": [
+          "Foxglove Bridge"
+        ]
+      },
+      "availability": "loaded",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "ros 2",
+        "ros2",
+        "live",
+        "topics"
+      ]
+    },
+    {
+      "id": "Q06_csv",
+      "text": "How do I load a CSV file?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "csv-loader",
+        "open_data_file"
+      ],
+      "accepted_labels": {
+        "csv-loader": [
+          "CSV Loader"
+        ],
+        "open_data_file": [
+          "Open Data File",
+          "Load a data file"
+        ]
+      },
+      "availability": "loaded",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "csv"
+      ]
+    },
+    {
+      "id": "Q07_fft",
+      "text": "Can I see the frequency spectrum of a signal?",
+      "fixtures": [
+        "host_bundled",
+        "host_offline"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": {
+        "host_bundled": [
+          "toolbox-fft"
+        ],
+        "host_offline": [
+          "extensions"
+        ]
+      },
+      "accepted_labels": {
+        "toolbox-fft": [
+          "Fast Fourier Transform",
+          "FFT"
+        ],
+        "extensions": [
+          "Extensions Marketplace"
+        ]
+      },
+      "availability": {
+        "host_bundled": "installable",
+        "host_offline": "unlisted"
+      },
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "spectrum",
+        "fft",
+        "frequency"
+      ]
+    },
+    {
+      "id": "Q08_threshold_markers",
+      "text": "Mark on the plot every moment the motor current goes above 10 A.",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "action",
+      "expect_entry_ids": [
+        "toolbox-anomaly-detector"
+      ],
+      "accepted_labels": {
+        "toolbox-anomaly-detector": [
+          "Anomaly Detector"
+        ]
+      },
+      "accept_tool_calls": [
+        "create_markers"
+      ],
+      "availability": "installable",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": false,
+      "negation_keywords": [
+        "mark",
+        "markers"
+      ],
+      "accept_offer_words": [
+        "marker"
+      ]
+    },
+    {
+      "id": "Q09_save_setup",
+      "text": "How do I save my plot setup so I can reuse it tomorrow?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "layouts"
+      ],
+      "accepted_labels": {
+        "layouts": [
+          "Save Layout",
+          "Load Layout"
+        ]
+      },
+      "availability": "core",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "save",
+        "layout"
+      ]
+    },
+    {
+      "id": "Q10_udp_zmq",
+      "text": "Can PlotJuggler receive data over UDP or ZeroMQ?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "udp-server",
+        "zmq-subscriber"
+      ],
+      "accepted_labels": {
+        "udp-server": [
+          "UDP Server"
+        ],
+        "zmq-subscriber": [
+          "ZMQ Subscriber"
+        ]
+      },
+      "availability": "installable",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "udp",
+        "zeromq",
+        "zmq"
+      ]
+    },
+    {
+      "id": "Q11_publish_commands",
+      "text": "How do I send a command back to my robot from PlotJuggler?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [],
+      "accepted_labels": {},
+      "limitation_ids": [
+        "publish_to_robot"
+      ],
+      "availability": "unsupported",
+      "external_redirect_allowed": true,
+      "tool_calls_zero": true
+    },
+    {
+      "id": "Q12_point_cloud",
+      "text": "How do I visualize a point cloud?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "scene_3d",
+        "pointcloud-3d-loader"
+      ],
+      "accepted_labels": {
+        "scene_3d": [
+          "3D",
+          "3D button",
+          "cube icon",
+          "3D scene"
+        ],
+        "pointcloud-3d-loader": [
+          "3D Loader"
+        ]
+      },
+      "availability": "core",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "point cloud",
+        "point clouds",
+        "pointcloud"
+      ]
+    },
+    {
+      "id": "Q13_formula_two_signals",
+      "text": "How do I make a new signal that is the difference between two others?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "custom_series",
+        "toolbox-transform-editor"
+      ],
+      "accepted_labels": {
+        "custom_series": [
+          "Custom Series",
+          "Add custom series"
+        ],
+        "toolbox-transform-editor": [
+          "Transform Editor"
+        ]
+      },
+      "availability": "loaded",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "signal",
+        "series",
+        "difference"
+      ]
+    },
+    {
+      "id": "Q14_quaternion_rpy",
+      "text": "My IMU logs orientation as a quaternion. How do I get roll, pitch and yaw?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "toolbox-quaternion"
+      ],
+      "accepted_labels": {
+        "toolbox-quaternion": [
+          "Quaternion to RPY"
+        ]
+      },
+      "availability": "loaded",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "quaternion",
+        "roll",
+        "rpy"
+      ]
+    },
+    {
+      "id": "Q15_export_excel",
+      "text": "Can I export my data to Excel?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "toolbox-data-exporter"
+      ],
+      "accepted_labels": {
+        "toolbox-data-exporter": [
+          "CSV/Parquet Exporter"
+        ]
+      },
+      "availability": "installable",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "csv",
+        "parquet"
+      ]
+    },
+    {
+      "id": "Q16_record_stream",
+      "text": "How do I record a live stream to a file?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "record_streams"
+      ],
+      "accepted_labels": {
+        "record_streams": [
+          "Record the subscribed topics",
+          "record button",
+          "Record streams to MCAP"
+        ]
+      },
+      "availability": "core",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "record",
+        "recording"
+      ]
+    },
+    {
+      "id": "Q17_foxglove_bridge",
+      "text": "I run foxglove_bridge on my robot. Can PlotJuggler connect to it?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "foxglove-bridge"
+      ],
+      "accepted_labels": {
+        "foxglove-bridge": [
+          "Foxglove Bridge"
+        ]
+      },
+      "availability": "loaded",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "connect",
+        "foxglove"
+      ]
+    },
+    {
+      "id": "Q18_camera_in_mcap",
+      "text": "My MCAP file has camera images. Can I see them in PlotJuggler?",
+      "fixtures": [
+        "host_bundled"
+      ],
+      "category": "navigation",
+      "expect_entry_ids": [
+        "viewer_2d"
+      ],
+      "accepted_labels": {
+        "viewer_2d": [
+          "2D",
+          "2D button",
+          "image icon",
+          "2D viewer"
+        ]
+      },
+      "availability": "core",
+      "external_redirect_allowed": false,
+      "tool_calls_zero": true,
+      "negation_keywords": [
+        "image",
+        "images",
+        "camera"
+      ]
+    }
+  ]
+}

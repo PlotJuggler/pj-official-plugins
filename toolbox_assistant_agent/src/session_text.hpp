@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <initializer_list>
 #include <string>
 #include <string_view>
 
@@ -15,30 +16,80 @@ namespace assistant_agent {
 // session-store reader can pull it in without a second copy of these rules.
 
 // The two notes composePayload (harness_memory.hpp) can prepend alongside a
-// (re-)sent catalog listing. stripCatalogPrefix recognizes them by their
-// OPENING words only, so the rest of each sentence may be reworded without
-// orphaning the notes already written into session files; the static_asserts
-// below pin those openings.
+// (re-)sent catalog listing, and the one it can prepend alongside a re-sent
+// features listing. stripCatalogPrefix recognizes them by their OPENING words
+// only, so the rest of each sentence may be reworded without orphaning the
+// notes already written into session files; the static_asserts below pin
+// those openings.
 inline constexpr std::string_view kCatalogChangedNote =
     "(The loaded data changed; the listing above replaces the earlier one.)";
 inline constexpr std::string_view kResumedConversationNote =
     "(Resumed conversation. The tabs you composed earlier may no longer exist; plot_tab with action list reports the "
     "ones that do. The listing above is the data loaded now.)";
+inline constexpr std::string_view kFeaturesChangedNote = "(The PlotJuggler features listing changed.)";
+
+// The header line of every features block: the host's
+// (featuresHostHeader, used by features_digest.cpp) and the built-in
+// reference's (kFallbackFeaturesHeader, fallback_features.hpp).
+// stripCatalogPrefix recognizes a features block by this whole first line,
+// so user text that merely starts with "PlotJuggler features" is never taken
+// for one.
+inline constexpr std::string_view kFeaturesHostHeaderUnversioned = "PlotJuggler features (from the host):";
+inline constexpr std::string_view kFeaturesHeaderVersionOpening = "PlotJuggler features (PlotJuggler ";
+inline constexpr std::string_view kFeaturesHostHeaderClosing = ", from the host):";
+inline constexpr std::string_view kFeaturesFallbackHeaderClosing = ", built into this assistant):";
+inline constexpr std::string_view kFallbackFeaturesHeader =
+    "PlotJuggler features (PlotJuggler 4.1, built into this assistant):";
+
+// "PlotJuggler features (PlotJuggler <version>, from the host):", or the
+// unversioned header when the host does not report its version.
+[[nodiscard]] inline std::string featuresHostHeader(std::string_view host_version) {
+  if (host_version.empty()) {
+    return std::string(kFeaturesHostHeaderUnversioned);
+  }
+  std::string out(kFeaturesHeaderVersionOpening);
+  out += host_version;
+  out += kFeaturesHostHeaderClosing;
+  return out;
+}
+
+// Whether `line` is a header featuresHostHeader or kFallbackFeaturesHeader
+// produces. Any version is accepted, so sessions written by a build with
+// another fallback version, or against another host, still strip.
+[[nodiscard]] constexpr bool isFeaturesHeader(std::string_view line) {
+  if (line == kFeaturesHostHeaderUnversioned) {
+    return true;
+  }
+  if (!line.starts_with(kFeaturesHeaderVersionOpening)) {
+    return false;
+  }
+  const std::string_view rest = line.substr(kFeaturesHeaderVersionOpening.size());
+  for (const std::string_view closing : {kFeaturesHostHeaderClosing, kFeaturesFallbackHeaderClosing}) {
+    if (rest.size() > closing.size() && rest.ends_with(closing)) {  // a non-empty version
+      return true;
+    }
+  }
+  return false;
+}
+static_assert(isFeaturesHeader(kFallbackFeaturesHeader));
+static_assert(!isFeaturesHeader("PlotJuggler features I need:"));
 
 namespace detail {
 
 constexpr std::string_view kCatalogChangedNoteOpening = "(The loaded data changed";
 constexpr std::string_view kResumedConversationNoteOpening = "(Resumed conversation";
+constexpr std::string_view kFeaturesChangedNoteOpening = "(The PlotJuggler features listing changed";
 static_assert(kCatalogChangedNote.substr(0, kCatalogChangedNoteOpening.size()) == kCatalogChangedNoteOpening);
 static_assert(
     kResumedConversationNote.substr(0, kResumedConversationNoteOpening.size()) == kResumedConversationNoteOpening);
+static_assert(kFeaturesChangedNote.substr(0, kFeaturesChangedNoteOpening.size()) == kFeaturesChangedNoteOpening);
 
 // Skip past a block that ends with a blank line (a run of consecutive '\n'),
 // landing on the first character of whatever follows `from`. `std::npos` when
 // no blank line exists past `from`. See stripCatalogPrefix: composePayload
 // (harness_memory.hpp) always shapes its output as `catalog\n\n[note\n\n]text`,
 // so this is the one primitive both strips need.
-inline std::size_t skipPastBlankLine(const std::string& s, std::size_t from) {
+inline std::size_t skipPastBlankLine(std::string_view s, std::size_t from) {
   const std::size_t nl = s.find("\n\n", from);
   if (nl == std::string::npos) {
     return std::string::npos;
@@ -86,25 +137,41 @@ inline std::string truncateTitle(std::string text) {
   return text;
 }
 
-// Undo composePayload's catalog prepend (harness_memory.hpp) on a user
-// message loaded back from disk: `catalog + "\n" + [note] + "\n" + text`. Text
-// not starting with "Loaded data" (every turn after the first one that saw a
-// given catalog) is returned unchanged.
+// Undo composePayload's prepends (harness_memory.hpp) on a user message
+// loaded back from disk: `[features\n\n[note\n\n]][catalog\n\n[note\n\n]]text`
+// (sessions written before the features block existed carry
+// `catalog\n[note]\ntext`, which strips the same way). A leading features
+// block is recognized by its whole header line (isFeaturesHeader), a catalog
+// by "Loaded data"; text starting with neither (every turn after the first
+// one that saw a given listing) is returned unchanged.
 inline std::string stripCatalogPrefix(const std::string& text) {
-  if (text.rfind("Loaded data", 0) != 0) {
+  std::string_view rest = text;
+  const auto starts = [&](std::string_view prefix) { return rest.substr(0, prefix.size()) == prefix; };
+  // Drops the block `rest` starts with (through its blank line) and, when the
+  // text after it opens with one of `notes`, that note too. False when the
+  // block has no blank line: truncated/malformed, leave it, don't guess.
+  const auto skipBlock = [&](std::initializer_list<std::string_view> notes) {
+    const std::size_t after = detail::skipPastBlankLine(rest, 0);
+    if (after == std::string::npos) {
+      return false;
+    }
+    rest.remove_prefix(after);
+    for (const std::string_view note : notes) {
+      if (starts(note)) {
+        const std::size_t after_note = detail::skipPastBlankLine(rest, 0);
+        rest = after_note == std::string::npos ? std::string_view{} : rest.substr(after_note);
+        break;
+      }
+    }
+    return true;
+  };
+  if (isFeaturesHeader(rest.substr(0, rest.find('\n'))) && !skipBlock({detail::kFeaturesChangedNoteOpening})) {
     return text;
   }
-  const std::size_t after_catalog = detail::skipPastBlankLine(text, 0);
-  if (after_catalog == std::string::npos) {
-    return text;  // truncated/malformed catalog block -- leave it, don't guess
+  if (starts("Loaded data")) {
+    skipBlock({detail::kCatalogChangedNoteOpening, detail::kResumedConversationNoteOpening});
   }
-  std::string rest = text.substr(after_catalog);
-  if (rest.rfind(detail::kCatalogChangedNoteOpening, 0) == 0 ||
-      rest.rfind(detail::kResumedConversationNoteOpening, 0) == 0) {
-    const std::size_t after_note = detail::skipPastBlankLine(rest, 0);
-    rest = after_note == std::string::npos ? std::string{} : rest.substr(after_note);
-  }
-  return rest;
+  return std::string(rest);
 }
 
 }  // namespace assistant_agent
