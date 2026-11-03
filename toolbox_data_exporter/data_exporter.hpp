@@ -17,12 +17,15 @@ class DataExporterDialog : public PJ::DialogPluginTyped {
   using AddAllCallback = std::function<std::vector<std::string>()>;
   using ExportSingleCallback = std::function<void(bool, const std::string&)>;
   using ExportMultiCallback = std::function<void(bool, const std::string&, const std::string&)>;
+  /// The table rows for one drop; what it leaves out it refused, and it says why.
+  using DropRowsCallback = std::function<std::vector<std::string>(const std::vector<DroppedItem>&)>;
 
   std::string manifest() const override;
   std::string ui_content() const override;
   std::string widget_data() override;
 
   bool onItemsDropped(std::string_view widget_name, const std::vector<std::string>& items) override;
+  bool onDroppedItems(std::string_view widget_name, const std::vector<DroppedItem>& items) override;
   bool onClicked(std::string_view widget_name) override;
   bool onItemDeleteRequested(std::string_view widget_name, int index) override;
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override;
@@ -40,6 +43,9 @@ class DataExporterDialog : public PJ::DialogPluginTyped {
 
   void setOnRecomputeRange(std::function<void()> callback);
   void setOnAddAll(AddAllCallback callback);
+  void setOnDropRows(DropRowsCallback callback) {
+    on_drop_rows_ = std::move(callback);
+  }
   void setOnExportSingle(ExportSingleCallback callback);
   void setOnExportMulti(ExportMultiCallback callback);
 
@@ -86,6 +92,7 @@ class DataExporterDialog : public PJ::DialogPluginTyped {
 
   std::function<void()> on_recompute_range_;
   AddAllCallback on_add_all_;
+  DropRowsCallback on_drop_rows_;
   ExportSingleCallback on_export_single_;
   ExportMultiCallback on_export_multi_;
 };
@@ -109,14 +116,21 @@ class DataExporterToolbox : public PJ::ToolboxPluginBase {
   void wireCallbacks();
   void refreshCatalog();
   [[nodiscard]] std::vector<std::string> allCatalogFields();
+  [[nodiscard]] std::vector<std::string> rowsForDrop(const std::vector<DataExporterDialog::DroppedItem>& items);
+  /// Warns about table rows no loaded series answers and returns true when there are any: a file must not silently
+  /// lack a column the table shows.
+  bool reportUnresolvedRows();
   void recomputeRange();
   void exportSingle(bool is_csv, const std::string& path);
   void exportMulti(bool is_csv, const std::string& directory, const std::string& prefix);
   void report(PJ::ToolboxMessageLevel level, const std::string& message);
 
   DataExporterDialog dialog_;
+  /// By row name: a series' bare name when one source carries it, and "source:name" when that names one source.
   std::map<std::string, PJ::sdk::FieldHandle> field_index_;
   std::map<std::string, std::string> field_topic_;
+  /// Bare series name to the (id, name) of each data source carrying it.
+  std::map<std::string, std::vector<std::pair<uint32_t, std::string>>> series_sources_;
   std::map<std::string, PJ::PrimitiveType> field_type_;
   std::set<std::string> reported_duplicate_paths_;
   bool callbacks_wired_ = false;

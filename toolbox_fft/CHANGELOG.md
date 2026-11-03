@@ -3,4 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_fft/`.
 
+## [1.0.2] - 2026-11-01
+
+### Fixed
+- With two recordings carrying the same series name, a drop reads the one the user dragged; it could read the other,
+  with no warning. The panel names the recording, and exports to a source named after it. On a PlotJuggler that does
+  not say which one was dragged, the drop is refused with that reason.
+
 ## [1.0.1] - 2026-08-04

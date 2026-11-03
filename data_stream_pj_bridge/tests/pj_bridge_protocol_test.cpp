@@ -19,7 +19,9 @@
 #include <gtest/gtest.h>
 #include <zstd.h>
 
+#include <algorithm>
 #include <cstring>
+#include <optional>
 #include <vector>
 
 namespace {
@@ -168,6 +170,54 @@ TEST(PjBridgeProtocolTest, ParseBinaryFrameEmptyMessages) {
   std::vector<uint8_t> decompress_buffer;
   ASSERT_TRUE(parseBinaryFrame(frame.data(), frame.size(), messages, decompress_buffer));
   EXPECT_TRUE(messages.empty());
+}
+
+/// The 16-byte PJRB header in front of `payload`.
+std::vector<uint8_t> frameWithPayload(const std::vector<uint8_t>& payload) {
+  // Sized once and copied into: GCC 11 reports a false -Wstringop-overread on vector::insert here.
+  std::vector<uint8_t> frame(16 + payload.size(), 0);
+  const uint32_t magic = kMagic;
+  const uint32_t msg_count = 1;
+  std::memcpy(frame.data(), &magic, 4);
+  std::memcpy(frame.data() + 4, &msg_count, 4);
+  std::copy(payload.begin(), payload.end(), frame.begin() + 16);
+  return frame;
+}
+
+TEST(PjBridgeProtocolTest, DecompressedSizeRejectsSentinelsAndSizesPastTheLimit) {
+  EXPECT_FALSE(checkedDecompressedSize(ZSTD_CONTENTSIZE_ERROR));
+  EXPECT_FALSE(checkedDecompressedSize(ZSTD_CONTENTSIZE_UNKNOWN));
+  EXPECT_FALSE(checkedDecompressedSize(kMaxDecompressedSize + 1));
+  // Wider than 32 bits: narrowed to a 32-bit size_t (wasm32) this would read as 16 bytes.
+  EXPECT_FALSE(checkedDecompressedSize((uint64_t{1} << 32) + 16));
+  EXPECT_EQ(checkedDecompressedSize(1024), std::optional<size_t>(1024));
+  EXPECT_EQ(checkedDecompressedSize(kMaxDecompressedSize), std::optional<size_t>(kMaxDecompressedSize));
+}
+
+TEST(PjBridgeProtocolTest, ParseBinaryFrameWithoutDeclaredContentSize) {
+  const std::vector<uint8_t> body(64, 0x5A);
+  ZSTD_CCtx* context = ZSTD_createCCtx();
+  ASSERT_NE(context, nullptr);
+  ASSERT_FALSE(ZSTD_isError(ZSTD_CCtx_setParameter(context, ZSTD_c_contentSizeFlag, 0)));
+  std::vector<uint8_t> compressed(ZSTD_compressBound(body.size()));
+  ZSTD_inBuffer input{body.data(), body.size(), 0};
+  ZSTD_outBuffer output{compressed.data(), compressed.size(), 0};
+  // A streaming compress with no pledged size leaves the frame's content size unknown.
+  ASSERT_EQ(ZSTD_compressStream2(context, &output, &input, ZSTD_e_end), 0U);
+  ZSTD_freeCCtx(context);
+  compressed.resize(output.pos);
+
+  std::vector<RawMessage> messages;
+  std::vector<uint8_t> decompress_buffer;
+  const auto frame = frameWithPayload(compressed);
+  EXPECT_FALSE(parseBinaryFrame(frame.data(), frame.size(), messages, decompress_buffer));
+}
+
+TEST(PjBridgeProtocolTest, ParseBinaryFrameGarbagePayload) {
+  std::vector<RawMessage> messages;
+  std::vector<uint8_t> decompress_buffer;
+  const auto frame = frameWithPayload({0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33});
+  EXPECT_FALSE(parseBinaryFrame(frame.data(), frame.size(), messages, decompress_buffer));
 }
 
 // --- buildRequest ---

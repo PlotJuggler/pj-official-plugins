@@ -25,6 +25,7 @@
     PJ_get_message_parser_vtable;
     PJ_get_toolbox_vtable;
     PJ_get_dialog_vtable;
+    PJ_get_widget_vtable;
     pj_plugin_descriptor_*;
 @PJ_EXTRA_EXPORT_LINES@  local:
     *;

@@ -23,9 +23,18 @@ class SdkMinimumTests(unittest.TestCase):
         self.assertEqual(validate_sdk_minimum({"min_sdk_required": "0.9.0"}, "0.10.0"), [])
         self.assertTrue(validate_sdk_minimum({"min_sdk_required": "0.10.0"}, "0.9.0"))
 
+    def test_dev_pre_release_sorts_before_its_release(self):
+        self.assertEqual(validate_sdk_minimum({"min_sdk_required": "0.28.0"}, "0.29.0-dev.1"), [])
+        self.assertEqual(validate_sdk_minimum({"min_sdk_required": "0.29.0-dev.1"}, "0.29.0-dev.1"), [])
+        self.assertEqual(validate_sdk_minimum({"min_sdk_required": "0.29.0-dev.2"}, "0.29.0-dev.10"), [])
+        self.assertEqual(validate_sdk_minimum({"min_sdk_required": "0.29.0-dev.1"}, "0.29.0"), [])
+        self.assertTrue(validate_sdk_minimum({"min_sdk_required": "0.29.0"}, "0.29.0-dev.1"))
+        self.assertTrue(validate_sdk_minimum({"min_sdk_required": "0.29.0-dev.2"}, "0.29.0-dev.1"))
+        self.assertTrue(validate_sdk_minimum({"min_sdk_required": "0.30.0-dev.1"}, "0.29.0"))
+
     def test_missing_or_invalid_stable_versions_are_rejected(self):
         self.assertTrue(validate_sdk_minimum({}, "0.28.0"))
-        for value in (None, 28, "", "0.28", "^0.28.0", "00.28.0", "0.28.0-rc.1", "0.28.0\n"):
+        for value in (None, 28, "", "0.28", "^0.28.0", "00.28.0", "0.28.0-rc.1", "0.28.0-dev", "0.28.0-dev.01", "0.28.0\n"):
             with self.subTest(value=value):
                 self.assertTrue(validate_sdk_minimum({"min_sdk_required": value}, "0.28.0"))
                 self.assertTrue(validate_sdk_minimum({"min_sdk_required": "0.28.0"}, value))

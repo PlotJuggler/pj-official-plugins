@@ -2,7 +2,9 @@
 #include <cmath>
 #include <exception>
 #include <libdbc/dbc.hpp>
+#include <libdbc/exceptions/error.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
+#include <pj_can_dbc/dictionary_paths.hpp>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -201,9 +203,23 @@ PJ::Status CanDecoder::loadDbcString(const std::string& dbc_text) {
 }
 
 PJ::Status CanDecoder::loadDbcFile(const std::string& path) {
+  // Libdbc's parse_file(path) accepts only a case-sensitive ".dbc" suffix (text after the last '.'); keep that
+  // gate and its message, then read the file once ourselves.
+  if (const auto dot = path.find_last_of('.');
+      dot == std::string::npos || path.compare(dot, std::string::npos, ".dbc") != 0) {
+    const std::string extension = dot == std::string::npos ? std::string() : path.substr(dot);
+    return PJ::unexpected(
+        std::string("can_dbc: DBC parse error (") + path +
+        "): " + Libdbc::NonDbcFileFormatError(path, extension).what());
+  }
+  auto text = readAuxFile(path, "DBC");
+  if (!text) {
+    return PJ::unexpected(text.error());
+  }
   Libdbc::DbcParser parser;
+  std::istringstream stream(*text);
   try {
-    parser.parse_file(path);
+    parser.parse_file(stream);
   } catch (const std::exception& err) {
     return PJ::unexpected(std::string("can_dbc: DBC parse error (") + path + "): " + err.what());
   }

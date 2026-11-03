@@ -54,7 +54,10 @@ class CanDecoder {
   CanDecoder(const CanDecoder&) = delete;
   CanDecoder& operator=(const CanDecoder&) = delete;
 
-  /// Load and accumulate a DBC database from a file. Multiple calls merge.
+  /// Load and accumulate a DBC database from a file. Multiple calls merge. Only a ".dbc" suffix is accepted
+  /// (case-sensitive, as Libdbc). A missing or unreadable file fails with "DBC file not found: <path>" /
+  /// "cannot read DBC file: <path>"; a wrong suffix or malformed content with "DBC parse error". The file is opened
+  /// once, from the UTF-8 path.
   PJ::Status loadDbcFile(const std::string& path);
   /// Load and accumulate a DBC database from an in-memory string.
   PJ::Status loadDbcString(const std::string& dbc_text);

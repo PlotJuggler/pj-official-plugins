@@ -2,6 +2,13 @@
 
 One entry per released version (newest first).
 
+## [0.1.1] - 2026-10-19
+
+### Fixed
+
+- Dictionaries beside the data are saved relative to it, so a moved or copied layout folder keeps decoding with the dictionary (.dbc or .csv) next to its data (absolute paths anywhere under the folder that moved, such as a `dbc/` folder next to `data/`, are rebased on replay).
+- A missing or unreadable dictionary is reported as "DBC file not found" / "cannot read DBC file" (`.dbc`) or "dictionary file not found" / "cannot read dictionary file" (`.csv`) instead of a parse error.
+
 ## [0.1.0] - 2026-09-21
 
 ### Added

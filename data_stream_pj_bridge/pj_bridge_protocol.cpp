@@ -38,15 +38,11 @@ bool parseBinaryFrame(
   size_t compressed_size = size - 16;
 
   // Decompress with ZSTD
-  size_t decompressed_size = ZSTD_getFrameContentSize(compressed, compressed_size);
-  if (decompressed_size == ZSTD_CONTENTSIZE_ERROR || decompressed_size == ZSTD_CONTENTSIZE_UNKNOWN) {
+  const auto checked_size = checkedDecompressedSize(ZSTD_getFrameContentSize(compressed, compressed_size));
+  if (!checked_size) {
     return false;
   }
-
-  constexpr size_t kMaxDecompressedSize = 256 * 1024 * 1024;  // 256 MB
-  if (decompressed_size > kMaxDecompressedSize) {
-    return false;
-  }
+  const size_t decompressed_size = *checked_size;
 
   decompress_buffer.resize(decompressed_size);
   size_t result = ZSTD_decompress(decompress_buffer.data(), decompressed_size, compressed, compressed_size);
@@ -99,6 +95,15 @@ bool parseBinaryFrame(
   }
 
   return true;
+}
+
+std::optional<size_t> checkedDecompressedSize(uint64_t content_size) {
+  // ZSTD_CONTENTSIZE_ERROR and ZSTD_CONTENTSIZE_UNKNOWN sit just below 2^64, so the limit rejects
+  // them too.
+  if (content_size > kMaxDecompressedSize) {
+    return std::nullopt;
+  }
+  return static_cast<size_t>(content_size);
 }
 
 std::string buildRequest(const std::string& command, const std::string& uuid) {
