@@ -53,6 +53,26 @@ Source layout in this repository:
       manifest.json             ← marketplace manifest
       CMakeLists.txt            ← proxy always; inner only with PJ_BUILD_ROS2_DISTRO=ON
 
+## Optional ROS runtime at startup
+
+Installing this extension does not require ROS. When no ROS distribution is
+detected, the subscriber remains listed without a startup plugin error. Starting
+it reports that ROS must be installed and its `setup.bash` sourced before launching
+PlotJuggler. The proxy caches its runtime selection for the process lifetime, so
+close PlotJuggler before restarting it from the sourced terminal.
+
+A native ROS installation whose libraries are missing from the launch search path
+gets the same behavior only when the loader names a missing library that actually
+exists in the selected `/opt/ros/<distro>/lib` directory or one of its immediate
+subdirectories. This narrow check does not cover libraries elsewhere in vendor or
+workspace overlays. Missing payloads, unsupported distros, missing installed
+dependencies, corrupt libraries, symbol/version errors and RoboStack loader faults
+remain startup errors.
+
+The unavailable subscriber uses the existing DataSource lifecycle: capability
+probing succeeds, and an explicit Start fails at `bind()` with the setup instruction.
+No host-side diagnostic filtering or SDK ABI extension is needed.
+
 ## Building
 
 The proxy and the per-distro inner are different CMake targets, gated on

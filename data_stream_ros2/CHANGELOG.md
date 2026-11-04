@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_ros2/`.
 
+## [Unreleased]
+
+### Fixed
+- Missing optional ROS installations and verified unsourced native ROS library
+  paths no longer produce a plugin error at every startup. Starting the subscriber
+  reports the setup instruction; broken packages and incompatible runtimes still
+  report errors.
+
 ## [1.1.2] - 2026-10-01
 
 ### Fixed
