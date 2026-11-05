@@ -17,9 +17,9 @@
  * This separation is deliberate: the proxy *is* the plugin (discoverable,
  * installable, manifest-bearing); the per-distro inner is an internal
  * implementation component pulled in on demand. If no ROS distro is present
- * the proxy still loads and lists cleanly, and instantiation fails with a
- * clear message (see PJ_get_proxy_last_error) instead of a dynamic-linker
- * error at install/scan time.
+ * the proxy still loads and lists cleanly. An unavailable-runtime instance
+ * reports the setup instruction through bind() when the user starts it,
+ * without treating an optional ROS installation as a startup plugin error.
  *
  * The packaged inner DSO uses the private `.pjros2` suffix and deliberately
  * does NOT export the standard
@@ -68,6 +68,104 @@ void* g_inner_handle = nullptr;
 const PJ_data_source_vtable_t* g_data_source_vtable = nullptr;
 const PJ_dialog_vtable_t* g_dialog_vtable = nullptr;
 std::string g_last_error;
+
+// The unavailable source has no mutable per-instance state. All handles may
+// share this token; none reaches the ROS implementation or owns a resource.
+char g_unavailable_token;
+
+void fillProxyError(PJ_error_t* out_error);
+
+void* unavailableCreate() noexcept {
+  return &g_unavailable_token;
+}
+
+void unavailableDestroy(void*) noexcept {}
+
+uint64_t unavailableCapabilities(void*) noexcept {
+  return PJ_DATA_SOURCE_CAPABILITY_CONTINUOUS_STREAM;
+}
+
+bool unavailableBind(void*, PJ_service_registry_t, PJ_error_t* error) noexcept {
+  fillProxyError(error);
+  return false;
+}
+
+bool unavailableSaveConfig(void*, PJ_string_view_t*, PJ_error_t* error) noexcept {
+  fillProxyError(error);
+  return false;
+}
+
+bool unavailableLoadConfig(void*, PJ_string_view_t, PJ_error_t* error) noexcept {
+  fillProxyError(error);
+  return false;
+}
+
+bool unavailableOperation(void*, PJ_error_t* error) noexcept {
+  fillProxyError(error);
+  return false;
+}
+
+void unavailableStop(void*) noexcept {}
+
+PJ_data_source_state_t unavailableState(void*) noexcept {
+  return PJ_DATA_SOURCE_STATE_FAILED;
+}
+
+PJ_borrowed_dialog_t unavailableDialog(void*) noexcept {
+  return {nullptr, nullptr};
+}
+
+const void* unavailableExtension(void*, PJ_string_view_t) noexcept {
+  return nullptr;
+}
+
+// Uses the existing DataSource contract: discovery/probing succeeds, while an
+// explicit attempt to use this source fails at bind() with the setup guidance.
+constexpr PJ_data_source_vtable_t kUnavailableVtable = {
+    PJ_DATA_SOURCE_PROTOCOL_VERSION,
+    sizeof(PJ_data_source_vtable_t),
+    &unavailableCreate,
+    &unavailableDestroy,
+    kRos2ProxyManifest,
+    &unavailableCapabilities,
+    &unavailableBind,
+    &unavailableSaveConfig,
+    &unavailableLoadConfig,
+    &unavailableOperation,
+    &unavailableStop,
+    &unavailableOperation,
+    &unavailableOperation,
+    &unavailableOperation,
+    &unavailableState,
+    &unavailableDialog,
+    &unavailableExtension,
+};
+
+// A missing dependency is an environment issue only when that exact library
+// exists in the selected ROS installation. Wrong symbol versions, corrupt
+// payloads, missing installed libraries and arbitrary linker errors stay fatal.
+bool missingRosSearchPath(std::string_view loader_error, const std::filesystem::path& ros_prefix) {
+  constexpr std::string_view suffix = ": cannot open shared object file: No such file or directory";
+  if (!loader_error.ends_with(suffix)) {
+    return false;
+  }
+  const auto name = loader_error.substr(0, loader_error.size() - suffix.size());
+  if (name.empty() || name.find_first_of("/\\:") != std::string_view::npos || name == "." || name == "..") {
+    return false;
+  }
+  std::error_code ec;
+  const auto lib_dir = ros_prefix / "lib";
+  if (std::filesystem::is_regular_file(lib_dir / name, ec)) {
+    return true;
+  }
+  // Some distros place runtime libraries in lib/<architecture>-linux-gnu.
+  for (const auto& entry : std::filesystem::directory_iterator(lib_dir, ec)) {
+    if (entry.is_directory(ec) && std::filesystem::is_regular_file(entry.path() / name, ec)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 // Returns the directory that contains this .so. Used as anchor to
 // locate the sibling `dist/` folder with per-distro binaries.
@@ -153,17 +251,18 @@ std::string supportedDistrosList() {
   return out;
 }
 
-// Resolves the distro, loads the inner library, captures its data-source and
-// dialog vtables. On failure populates g_last_error and leaves the cached
-// vtables null. Run exactly once via loadInnerOnce().
-void loadInnerImpl() {
-  auto distro = detectRosDistro();
+// Captures the selected inner's vtables. Expected runtime absence selects the
+// unavailable source; a broken payload leaves the source vtable null instead.
+// The caller supplies resolved paths so loader failures can be tested in isolation.
+void loadInnerImpl(
+    const std::optional<std::string>& distro, const std::filesystem::path& dir, bool robostack,
+    const std::filesystem::path& ros_prefix) {
   if (!distro.has_value()) {
     g_last_error = "ROS 2 not detected; source /opt/ros/<distro>/setup.bash before starting PlotJuggler.";
+    g_data_source_vtable = &kUnavailableVtable;
     return;
   }
 
-  auto dir = proxyDirectory();
   if (dir.empty()) {
     g_last_error = "Unable to locate proxy shared library directory (dladdr failed).";
     return;
@@ -171,7 +270,6 @@ void loadInnerImpl() {
 
   // RoboStack's rclcpp is a different build from /opt/ros's, so it gets its
   // own payload (dist/<distro>-robostack/).
-  const bool robostack = roboStackEnvironment().has_value();
   const auto inner_path = dir / "dist" / (*distro + (robostack ? "-robostack" : "")) /
                           ("libros2_stream_plugin-" + *distro + std::string(kInnerLibrarySuffix));
   if (!std::filesystem::exists(inner_path)) {
@@ -188,6 +286,11 @@ void loadInnerImpl() {
   if (g_inner_handle == nullptr) {
     const char* err = dlerror();
     g_last_error = "dlopen failed for " + inner_path.string() + ": " + (err != nullptr ? err : "unknown");
+    if (!robostack && err != nullptr && missingRosSearchPath(err, ros_prefix)) {
+      g_last_error = "ROS 2 runtime libraries are not on the library search path; source " +
+                     (ros_prefix / "setup.bash").string() + " before starting PlotJuggler.";
+      g_data_source_vtable = &kUnavailableVtable;
+    }
     return;
   }
 
@@ -237,15 +340,17 @@ void loadInnerImpl() {
 // but a host that doesn't know it would otherwise see a failed load as complete
 // silence — so always log it once here.
 void loadInnerOnce() {
-  loadInnerImpl();
+  const auto distro = detectRosDistro();
+  loadInnerImpl(
+      distro, proxyDirectory(), roboStackEnvironment().has_value(),
+      distro ? std::filesystem::path("/opt/ros") / *distro : std::filesystem::path{});
   if (g_data_source_vtable == nullptr && !g_last_error.empty()) {
     std::fprintf(stderr, "[ros2.proxy] %s\n", g_last_error.c_str());
   }
 }
 
-// Ensure the inner library is resolved (once), then hand back its data-source
-// vtable. Returns null when no ROS distro / inner binary is available; the
-// reason is in g_last_error (surfaced via PJ_get_proxy_last_error).
+// Resolve once, returning either the inner or unavailable source vtable. Null
+// denotes a broken payload; g_last_error retains the reason in either case.
 const PJ_data_source_vtable_t* innerDataSource() {
   std::call_once(g_load_once, loadInnerOnce);
   return g_data_source_vtable;
@@ -268,11 +373,10 @@ void fillProxyError(PJ_error_t* out_error) {
 
 // ---------------------------------------------------------------------------
 // Trampolines. Each forwards verbatim to the inner vtable once it is resolved.
-// Before the inner is available they degrade gracefully: create() returns null
-// (so the host never reaches the lifecycle slots), and the fallible slots
-// report g_last_error. The proxy holds no per-instance state of its own — the
-// ctx pointer it returns from create() is the inner's, threaded straight back
-// through every other slot.
+// Expected runtime absence forwards to kUnavailableVtable instead. Payload
+// faults return null from create(), keeping normal host error reporting. The
+// proxy holds no per-instance state of its own — the context belongs to the
+// selected implementation and is forwarded unchanged through every slot.
 // ---------------------------------------------------------------------------
 
 void* proxyCreate() noexcept {
