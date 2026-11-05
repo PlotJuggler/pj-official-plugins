@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_ros2/`.
 
-## [Unreleased]
+## [1.1.3] - 2026-11-05
 
 ### Fixed
 - Missing optional ROS installations and verified unsourced native ROS library
