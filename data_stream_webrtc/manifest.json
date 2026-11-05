@@ -1,7 +1,7 @@
 {
   "id": "webrtc-client",
   "name": "WebRTC Video Client",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Watch live H.264 camera video from a WebRTC (WHEP) server such as mediamtx, go2rtc, LiveKit or Cloudflare Stream, next to your plots. Each camera reconnects on its own, and the cameras on a mediamtx server can be discovered automatically.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

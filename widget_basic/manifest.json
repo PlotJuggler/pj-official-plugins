@@ -1,7 +1,7 @@
 {
   "id": "basic-widgets",
   "name": "Basic Widgets",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Gauge, numeric indicator, traffic light and value table dock widgets for live values.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
