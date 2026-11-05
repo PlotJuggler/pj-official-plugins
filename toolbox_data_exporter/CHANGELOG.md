@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_data_exporter/`.
 
+## [0.114.3] - 2026-11-05
+
+### Fixed
+- Fix Windows ARM64 release builds by using only the Boost headers required by CSV/Parquet export dependencies.
+
 ## [0.114.2] - 2026-11-01
 
 ### Fixed
