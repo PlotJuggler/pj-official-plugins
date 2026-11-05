@@ -213,11 +213,11 @@ version. Releases are **not** created manually on GitHub — pushing a tag creat
 - **Cut a release:** `python3 scripts/release_extension.py <source_dir|extension_id> [--bump patch|minor|major | --version X.Y.Z] [--submit-to-registry]`.
   It reads/updates `manifest.json`, commits the bump (`chore(<dir>): bump version to X.Y.Z`),
   creates an **annotated** tag `<source_dir>/vX.Y.Z` whose message is JSON metadata
-  (`{"extension_id", "version", "auto_submit_to_registry"}`), and pushes both the commit and the tag.
-  The manifest-bump commit and the tag push are two separate git operations — if only the tag lands
-  upstream (e.g. a rejected/reverted commit push), the in-tree manifest silently drifts behind the
-  already-released version. Always confirm the bump commit is actually on the target branch, not
-  just the tag.
+  (`{"extension_id", "version", "auto_submit_to_registry"}`), and pushes the tag. **It does not push
+  the branch commit.** Prepare the manifest version and matching changelog entry, commit and push
+  them to the target branch first, then invoke the script without `--bump` / `--version` to tag
+  that published commit. Otherwise the in-tree manifest can silently drift behind the already
+  released version. Always confirm the bump commit is on the target branch, not just the tag.
 - **What pushing the tag does:** any tag matching `*/v*` triggers `.github/workflows/build-release.yml`,
   which resolves the specific plugin from the tag name (`scripts/release_tools.py resolve-build-scope`),
   builds+tests just that plugin across linux/macos/windows (x86_64 + arm), verifies the built
