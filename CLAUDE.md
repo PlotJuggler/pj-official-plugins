@@ -224,6 +224,11 @@ version. Releases are **not** created manually on GitHub — pushing a tag creat
   artifact's version against the tag (`verify-version-consistency`), packages a zip + sha256, and
   uploads them via `softprops/action-gh-release@v2` — **this step is what creates the GitHub Release**;
   there is no separate manual release-creation step.
+- **Recover a missing platform:** dispatch `build-release.yml` on the current `main` with
+  `release_tag=<source_dir>/vX.Y.Z` and one canonical `platform` (for example `windows-arm64`).
+  It checks out the original tag, builds only that platform, and refuses to replace an existing
+  ZIP or checksum. Use this when runner/toolchain infrastructure needs repairing without changing
+  released source. An empty `release_tag` retains the build-only cache-warming behavior.
 - **Registry submission:** if the tag's annotation has `"auto_submit_to_registry": true`, a follow-up
   `submit-to-registry` job runs `scripts/submit_to_registry.py` to open a PR against the extension
   registry with the built artifact's checksums.
