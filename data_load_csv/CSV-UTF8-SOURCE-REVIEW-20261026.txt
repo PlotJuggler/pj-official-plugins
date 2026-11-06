@@ -1,0 +1,88 @@
+Independent CSV UTF-8 path review — 2026-10-26
+
+Decision
+No blocking source defect found in the reviewed four-file patch. Independent
+Linux compilation and focused tests PASS. This is approval of this patch's
+source/focused regression scope, not a complete application, Windows/MSVC build,
+release, or fork-packaging approval. Fork integration and full native package
+acceptance are separate verification stages.
+
+Identity
+Upstream: PlotJuggler/pj-official-plugins
+Baseline: ba6ee417d91a01aae778a0ec3a4443a024671123 (CSV 1.0.7)
+Patch SHA-256: 00ecc1514fde0b6d8b97750a1cac1d2a251c0aa955c884e1dde7fa995f95c02c
+SDK: 0.34.1, 4d59e7de81455afe73a77051075e8fb4b9f6b0fd
+Public source dependencies: GTest 1.17.0, JSON 3.12.0, date 3.0.4,
+fmt 12.1.0, fast_float 8.1.0. Versions match the respective Conan recipes.
+The patch applied cleanly to the exact baseline. Apply-check also passed against
+upstream main 37e1bde18b8a425b9b64d7fe54c165464942b5eb; that newer base was NOT rebuilt.
+
+Source and ABI review
+- Both actual file-open sites are fixed: CsvDialog::analyzeFile and
+  CsvSource::importData. Owning std::u8string explicitly preserves incoming
+  UTF-8 code units before std::filesystem::path performs native conversion.
+  This avoids Windows' narrow stream ANSI interpretation without changing
+  CSV content decoding, timestamps, numeric locale, or stored config strings.
+- The path temporary lives through stream construction; no borrowed pointer,
+  new exported interface, vtable/layout change, allocator boundary, or host
+  capability requirement is introduced. The minimum SDK remains unchanged.
+- Missing-file is_open handling and empty-import handling remain in place.
+  SDK 0.34.1 source and dialog trampolines catch exceptions inside noexcept ABI
+  boundaries, including conversion errors. Incoming malformed UTF-8 JSON is
+  rejected by JSON parsing; this change does not add an invalid-UTF-8 recovery
+  contract or broader native-filename support.
+- Existing numeric synthetic samples are checked exactly, not merely nonempty.
+  Tests dynamically load the real plugin and exercise both preview and import.
+- No APBIN/FFT changes, private records, private paths, field names, screenshots,
+  runtime logs, or credentials occur in the patch. All fixture data is synthetic.
+
+Independent cloud execution
+Environment: Linux, GCC 14.2.0, C++20, Release (-O3). A small review-only CMake
+harness builds the unmodified pinned SDK and the candidate's own data_load_csv
+CMakeLists.txt; this is a focused build, not the full application/Conan release.
+- Original parser: 49/49 PASS.
+- Candidate plugin ABI path tests: 12/12 PASS.
+- Candidate path tests repeated 20 times: 240/240 PASS.
+- Independent auxiliary executable: 30/30 PASS. This includes the original 12
+  cases repeated, plus 18 additional cases; do not count all 30 as new coverage.
+  Added checks: missing path clears a populated preview and a valid reload
+  restores it; empty path fails without data writes; relative path retains exact
+  synthetic values/time axis; a space-plus-combining-character path across all
+  original and supplemental behaviors.
+- ELF export gate: PASS; required exports present and zero GNU UNIQUE symbols.
+- SDK version pin check: PASS. CSV host feature-floor check: PASS.
+- Python scripts suite: 46 PASS, 1 SKIPPED.
+- git diff --check: PASS.
+Linux review plugin SHA-256:
+3a667473d1b740728d4f6b1e51abb6e13a64c03f651c8fe7b52212e62f05b235
+
+Build caveat
+The unchanged SDK initially failed under GCC 14 Release with
+-Werror=free-nonheap-object in parser_module_abi.cpp (inlined vector allocation).
+The supported PJ_WARNINGS_AS_ERRORS=OFF option was used for the SDK only;
+CSV parser/plugin/tests and the auxiliary tests retained their full -Werror
+flags. No SDK code or candidate source was modified to obtain this result.
+This warning is not attributed to the CSV path patch. No sanitizers or native
+MSVC compilation were performed in this independent cloud review.
+
+Windows evidence boundary
+The originating task reports Windows parser 49/49 PASS, the official 1.0.7 DLL
+failing six non-ASCII preview/import checks out of 12, and the fixed DLL passing
+12/12 over 20 runs (240). It also reports official-host synthetic path success.
+Those Windows executions were NOT independently rerun by this reviewer, and
+private inputs/raw evidence were neither copied nor inspected here. Linux
+UTF-8 success alone does not reproduce the Windows ANSI-path defect.
+All reproducible regression fixtures are synthetic; private inputs are not
+required to reproduce the defect or validate this source repair.
+
+Initial integration snapshot (before the separate integration patch)
+At the independently checked fork heads:
+  development 9f38ffd4bd625723ef96c8a49ad320846b98bc2b
+  stable      057f707e017c4e296da93efc1272e932eb672738
+CSV remains the official 1.0.7 payload. The source patch lock and replacement
+allowlist do not yet include csv-loader. A patch file alone does not change the
+shipped plugin. The existing pinned plugin rebuild chain must actually consume
+this patch and verify resulting identity, provenance, replacement, migration,
+licenses, exact payload hashes, and CSV tests. Preserve official download hashes
+as official-input identity, never substitute a rebuilt binary under those hashes.
+Fork packaging/CI tests must be reviewed after those integration edits.
