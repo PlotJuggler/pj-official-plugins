@@ -121,6 +121,20 @@ foreach(_name image_serialize object_serialize image_real_fixture)
   target_link_libraries(mosaico_${_name}_test PRIVATE parser_arrow_core GTest::gtest_main)
   add_test(NAME mosaico_${_name}_test COMMAND mosaico_${_name}_test)
 endforeach()
+# Video topics: needs the real plugin (bindSchema -> classifySchema -> parseObject) and Arrow to author the IPC bytes.
+add_executable(mosaico_video_test tests/mosaico_video_test.cpp)
+target_compile_features(mosaico_video_test PRIVATE cxx_std_20)
+target_compile_options(mosaico_video_test PRIVATE ${PJ_WARNING_FLAGS})
+target_compile_definitions(mosaico_video_test PRIVATE
+  PJ_ARROW_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_arrow_plugin>"
+)
+target_link_libraries(mosaico_video_test PRIVATE
+  parser_arrow_core
+  plotjuggler_sdk::plugin_host
+  GTest::gtest_main
+)
+add_dependencies(mosaico_video_test parser_arrow_plugin)
+add_test(NAME mosaico_video_test COMMAND mosaico_video_test)
 if(MSVC)
   target_compile_options(parser_arrow_core PRIVATE /bigobj)
 endif()
