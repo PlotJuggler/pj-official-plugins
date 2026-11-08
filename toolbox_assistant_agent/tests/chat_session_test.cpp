@@ -101,8 +101,6 @@ TEST(ChatSession, BusyReflectsNonIdleStates) {
   EXPECT_FALSE(s.busy());
   s.setState(TurnState::WaitingForLlm);
   EXPECT_TRUE(s.busy());
-  s.setState(TurnState::ExecutingTool);
-  EXPECT_TRUE(s.busy());
   s.setState(TurnState::Idle);
   EXPECT_FALSE(s.busy());
 }
@@ -112,8 +110,6 @@ TEST(ChatSession, StatusTextTracksState) {
   EXPECT_EQ(s.statusText(), "Ready");
   s.setState(TurnState::WaitingForLlm);
   EXPECT_EQ(s.statusText(), "Thinking…");
-  s.setState(TurnState::ExecutingTool);
-  EXPECT_EQ(s.statusText(), "Running a tool…");
 }
 
 TEST(ChatSession, ClearResetsEverything) {

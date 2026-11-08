@@ -1,11 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// AssistantAgent — an LLM assistant delivered as a PJ4 Toolbox plugin. Behind
-// the plugin ABI the model is "just a user of the SDK": it can only reach the
-// services the host wires into bind() (read catalog/series, create derived
-// timeseries + markers, persist settings). No delete/destroy service exists in
-// the ABI, so the assistant is non-destructive by construction, not by policy.
+// AssistantAgent — an LLM assistant delivered as a PJ4 Toolbox plugin. It
+// drives the user's own agent CLI and hands it a private endpoint on
+// PlotJuggler's MCP server; PlotJuggler serves the tools there and runs them
+// with this plugin as owner, so the model can reach only what those tools
+// allow (read data, create derived series/objects and markers, compose tabs
+// and scene views of its own) and nothing on the machine outside them.
 
 #include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
@@ -27,38 +28,21 @@ class AssistantToolbox : public PJ::ToolboxPluginBase {
     if (!status) {
       return status;
     }
-    // Read path (catalog + series) and notifyDataChanged. Captured lazily so the
-    // tool layer obtains a fresh view per call (on the GUI thread, in onTick).
-    dialog_.setHostProvider([this]() { return toolboxHost(); });
-    dialog_.setRuntimeHostProvider([this]() { return runtimeHost(); });
-    // Write path: pj.data_processors.v1 backs create_derived_series (transform)
-    // and create_markers. Optional — if the host omits it, those tools return a
-    // clean "service unavailable" to the model instead of failing to bind.
-    dp_view_ = services.get<PJ::sdk::DataProcessorsHostService>().value_or(PJ::sdk::DataProcessorsHostView{});
-    dialog_.setDataProcessorsProvider([this]() { return dp_view_; });
-    // Read-back path for what we create: markers land in the ObjectStore, and
-    // this is the only way to learn how many. Without it the model is told
-    // "created" and nothing else, which is how a wall of thousands of markers
-    // gets reported as a success. Optional service — the base returns nullptr
-    // when the host omits it, and the tools then answer without a count rather
-    // than failing.
-    dialog_.setObjectReadProvider([this]() {
-      const auto* view = objectReadHost();
-      return view != nullptr ? *view : PJ::sdk::ToolboxObjectReadHostView{};
-    });
-    // App-control path: pj.playback.v1 (play/pause/seek/rate/state) and
-    // pj.viewport.v1 (zoom). Optional on the same terms — the transport/zoom
-    // tools degrade to a clean "host did not expose" failure the model reads.
-    playback_view_ = services.get<PJ::sdk::PlaybackHostService>().value_or(PJ::sdk::PlaybackHostView{});
-    dialog_.setPlaybackProvider([this]() { return playback_view_; });
-    viewport_view_ = services.get<PJ::sdk::ViewportHostService>().value_or(PJ::sdk::ViewportHostView{});
-    dialog_.setViewportProvider([this]() { return viewport_view_; });
-    plot_tabs_view_ = services.get<PJ::sdk::PlotTabHostService>().value_or(PJ::sdk::PlotTabHostView{});
-    dialog_.setPlotTabsProvider([this]() { return plot_tabs_view_; });
+    // Read path for the catalog digest every turn carries (catalog_digest.hpp):
+    // the catalog itself, and playback for an object topic's display-time range.
+    dialog_.setCatalogHosts(
+        toolboxHost(), services.get<PJ::sdk::PlaybackHostService>().value_or(PJ::sdk::PlaybackHostView{}));
+    // The tools: this plugin's private endpoint on PlotJuggler's MCP server
+    // (pj.mcp_endpoint.v1). PlotJuggler runs every tool the model calls, with
+    // this plugin as their owner. Optional at bind, so a compatible host that
+    // omits the service still loads the plugin; every turn then fails with a
+    // message that says why.
+    dialog_.setMcpEndpointHost(
+        services.get<PJ::sdk::McpEndpointHostService>().value_or(PJ::sdk::McpEndpointHostView{}));
     // What the host offers (pj.feature_catalog.v1): built-in features, the
-    // plugins loaded, installed or installable. Optional — a host without it
-    // (SDK < 0.39.0) leaves the view unbound and every turn carries the
-    // reference built into this plugin instead (fallback_features.hpp).
+    // plugins loaded, installed or installable. Optional — a host that omits it
+    // leaves the view unbound and every turn carries the reference built into
+    // this plugin instead (fallback_features.hpp).
     feature_catalog_view_ = services.get<PJ::sdk::FeatureCatalogService>().value_or(PJ::sdk::FeatureCatalogView{});
     dialog_.setFeatureCatalogProvider([this]() { return feature_catalog_view_; });
     // Optional pj.settings.v1 store (QSettings-like persistence). An unbound
@@ -73,10 +57,6 @@ class AssistantToolbox : public PJ::ToolboxPluginBase {
 
  private:
   AssistantDialog dialog_;
-  PJ::sdk::DataProcessorsHostView dp_view_;
-  PJ::sdk::PlaybackHostView playback_view_;
-  PJ::sdk::ViewportHostView viewport_view_;
-  PJ::sdk::PlotTabHostView plot_tabs_view_;
   PJ::sdk::FeatureCatalogView feature_catalog_view_;
 };
 

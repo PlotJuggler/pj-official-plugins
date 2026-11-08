@@ -3,6 +3,18 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## [0.5.0] - 2026-11-08
+
+### Changed
+- The assistant's tools now run in PlotJuggler itself: the panel connects
+  its agent CLI to PlotJuggler's own MCP server, on an endpoint private to
+  the panel, instead of serving the tools from the plugin. What the tools can
+  do now follows your PlotJuggler version.
+- Requires PlotJuggler 4.2 or newer (host SDK 0.40.0): an older PlotJuggler
+  cannot load this release. On a PlotJuggler that meets that but does not
+  provide the assistant's MCP endpoint, or whose MCP server cannot start, the
+  panel still opens and each message ends with a note saying why.
+
 ## [0.4.0] - 2026-10-26
 
 ### Added

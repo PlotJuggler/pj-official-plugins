@@ -224,7 +224,7 @@ else()
   add_subdirectory(common/toolbox_preview)
 endif()
 
-# Shared derived-recipe helpers (path/input resolution, typed outputs, Luau chunk) and the header-only
+# Shared derived-recipe helpers (path/input resolution, Luau chunk) and the header-only
 # fake hosts of their unit tests: consumed by the assistant and the Transform Editor.
 set(PJ_DERIVED_RECIPES_CONSUMERS toolbox_assistant_agent toolbox_transform_editor)
 if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_DERIVED_RECIPES_CONSUMERS)

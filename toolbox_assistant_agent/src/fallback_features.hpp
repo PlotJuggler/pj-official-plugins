@@ -9,9 +9,9 @@
 
 namespace assistant_agent {
 
-// The "PlotJuggler features" block used when the host has no
-// pj.feature_catalog.v1 service (a host older than SDK 0.39.0) or its
-// document cannot be used (featuresDigest, features_digest.hpp). Without it
+// The "PlotJuggler features" block used when the host omits the optional
+// pj.feature_catalog.v1 service or its document cannot be read or used
+// (featuresBlock / featuresDigest, features_digest.hpp). Without it
 // the model answers product questions from its PlotJuggler 3 training.
 //
 // Two rules shape the text. It never says what is installed: this build

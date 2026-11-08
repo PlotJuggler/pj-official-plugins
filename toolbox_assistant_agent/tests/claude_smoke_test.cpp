@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 //
 // Live smoke for the Claude Code backend: spawns the real `claude` CLI wired to
-// the in-plugin MCP server and checks it can call a tool and answer. Opt-in —
-// runs only with ASSISTANT_CLAUDE_SMOKE=1 (needs a logged-in Claude CLI; it
-// consumes the user's subscription). Skipped otherwise, so CI stays offline.
+// a running PlotJuggler's MCP server and checks it can call a tool and answer.
+// Opt-in — runs only with ASSISTANT_CLAUDE_SMOKE=1 plus ASSISTANT_MCP_URL /
+// ASSISTANT_MCP_TOKEN (needs a logged-in Claude CLI; it consumes the user's
+// subscription). Skipped otherwise, so CI stays offline.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -22,13 +23,11 @@
 #include "support/backend_test_helpers.hpp"
 #include "support/file_io.hpp"
 #include "system_prompt.hpp"
-#include "tool_registry.hpp"
 
 namespace {
 
 using assistant_agent::BackendEvent;
 using assistant_agent::ClaudeBackend;
-using assistant_agent::ToolRegistry;
 using assistant_agent::testing::runListTopicsSmoke;
 
 // Guarded like the fake-CLI cases further down: it spawns the real
@@ -39,9 +38,13 @@ TEST(ClaudeSmoke, ListTopicsThroughMcp) {
   if (!enabled) {
     GTEST_SKIP() << "set ASSISTANT_CLAUDE_SMOKE=1 (needs a logged-in `claude` CLI) to run";
   }
+  const auto endpoint = assistant_agent::testing::liveEndpoint();
+  if (!endpoint) {
+    GTEST_SKIP() << assistant_agent::testing::kNoLiveEndpoint;
+  }
   const std::optional<std::string> cli = PJ::sdk::getEnv("ASSISTANT_CLAUDE_CLI");
   ClaudeBackend backend(cli.value_or("claude"), "");
-  runListTopicsSmoke(backend, "Claude");
+  runListTopicsSmoke(backend, *endpoint, "Claude");
 }
 #endif
 
@@ -60,9 +63,8 @@ TEST(ClaudeSmoke, ListTopicsThroughMcp) {
 // a genuinely useful feature. It still does not go here. A bounded MCP tool of
 // ours can hand over one image; `Read` hands over the filesystem.
 TEST(ClaudeBackendCommandLine, WithholdsEveryBuiltInTool) {
-  ToolRegistry registry;
-  const std::vector<std::string> argv = assistant_agent::buildClaudeArgv(
-      "/usr/bin/claude", "/tmp/mcp.json", assistant_agent::allowedToolsArg(registry), "system", "sonnet", "");
+  const std::vector<std::string> argv =
+      assistant_agent::buildClaudeArgv("/usr/bin/claude", "/tmp/mcp.json", "system", "sonnet", "");
 
   const auto at = std::find(argv.begin(), argv.end(), "--tools");
   ASSERT_NE(at, argv.end()) << "--tools is gone: every built-in tool is now available to the model";
@@ -82,27 +84,21 @@ TEST(ClaudeBackendCommandLine, WithholdsEveryBuiltInTool) {
 }
 
 // Whitelisting is the other half: --tools decides what EXISTS, --allowedTools
-// what may be called. Every entry has to be one of ours, so a built-in cannot be
-// let back in through this door.
-TEST(ClaudeBackendCommandLine, AllowsOnlyThisPluginsOwnTools) {
-  ToolRegistry registry;
-  const std::string allowed = assistant_agent::allowedToolsArg(registry);
-  ASSERT_FALSE(allowed.empty()) << "the registry advertised no tools at all";
+// what may be called. The one entry names our MCP server, whose tools
+// PlotJuggler decides, so a built-in cannot be let back in through this door.
+TEST(ClaudeBackendCommandLine, AllowsOnlyTheToolsOfPlotJugglersEndpoint) {
+  const std::vector<std::string> argv =
+      assistant_agent::buildClaudeArgv("/usr/bin/claude", "/tmp/mcp.json", "system", "sonnet", "");
 
-  std::size_t start = 0;
-  int counted = 0;
-  while (start <= allowed.size()) {
-    const std::size_t comma = allowed.find(',', start);
-    const std::string entry = allowed.substr(start, comma - start);
-    EXPECT_EQ(entry.rfind("mcp__pj__", 0), 0u)
-        << "'" << entry << "' is not one of this plugin's MCP tools; a built-in must never be whitelisted";
-    ++counted;
-    if (comma == std::string::npos) {
-      break;
-    }
-    start = comma + 1;
-  }
-  EXPECT_EQ(counted, static_cast<int>(registry.tools().size())) << "the whitelist and the registry disagree";
+  const auto at = std::find(argv.begin(), argv.end(), "--allowedTools");
+  ASSERT_NE(at, argv.end());
+  ASSERT_NE(std::next(at), argv.end());
+  EXPECT_EQ(*std::next(at), "mcp__pj") << "every tool of the \"pj\" MCP server, and nothing else";
+
+  const auto config = std::find(argv.begin(), argv.end(), "--mcp-config");
+  ASSERT_NE(config, argv.end());
+  ASSERT_NE(std::next(config), argv.end());
+  EXPECT_EQ(*std::next(config), "/tmp/mcp.json") << "the endpoint and its token come from the file, never argv";
 }
 
 // A persisted conversation resumes on its very FIRST turn after a restart: the
@@ -110,10 +106,8 @@ TEST(ClaudeBackendCommandLine, AllowsOnlyThisPluginsOwnTools) {
 // argv builder turns any non-empty id into --resume — turn number is not part
 // of the contract.
 TEST(ClaudeBackendCommandLine, PersistedSessionIdResumesOnTheFirstTurn) {
-  ToolRegistry registry;
-  const std::vector<std::string> argv = assistant_agent::buildClaudeArgv(
-      "/usr/bin/claude", "/tmp/mcp.json", assistant_agent::allowedToolsArg(registry), "system", "sonnet",
-      "persisted-session-id");
+  const std::vector<std::string> argv =
+      assistant_agent::buildClaudeArgv("/usr/bin/claude", "/tmp/mcp.json", "system", "sonnet", "persisted-session-id");
 
   const auto at = std::find(argv.begin(), argv.end(), "--resume");
   ASSERT_NE(at, argv.end());
@@ -275,6 +269,20 @@ TEST(ClaudeBackend, ConversationMemorySurvivesARebuild) {
   EXPECT_EQ(assistant_agent::composePayload("again", "", "CATALOG v1", *memory), "again");
 }
 
+// A PlotJuggler that cannot serve the tools fails the turn before any CLI is
+// looked up, with the reason the dialog got when it acquired the endpoint.
+TEST(ClaudeBackend, ATurnWithoutAnEndpointFailsWithItsReasonAndRunsNoCli) {
+  assistant_agent::TurnTools tools;
+  tools.mcp = PJ::unexpected("This PlotJuggler cannot serve the Assistant's tools: test");
+  ClaudeBackend backend("claude-never-spawned", "");
+  std::vector<BackendEvent> events;
+  backend.sendUserMessage("hi", tools, [&](BackendEvent e) { events.push_back(std::move(e)); });
+  ASSERT_EQ(events.size(), 2u);
+  EXPECT_EQ(events[0].kind, BackendEvent::Kind::Error);
+  EXPECT_EQ(events[0].text, "This PlotJuggler cannot serve the Assistant's tools: test");
+  EXPECT_EQ(events[1].kind, BackendEvent::Kind::TurnComplete);
+}
+
 #if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 #include <memory>
 
@@ -298,12 +306,7 @@ std::vector<assistant_agent::BackendEvent> runOneTurnAgainst(
     const std::string& result_line, bool resuming, const std::string& model = "") {
   const std::string cli = writeFakeCli(result_line);
   EXPECT_FALSE(cli.empty()) << "could not create the fake CLI script";
-  assistant_agent::ToolRegistry reg;
-  assistant_agent::TurnTools tools;
-  tools.registry = &reg;
-  tools.invoke = [](const std::string&, const nlohmann::json&) {
-    return assistant_agent::ToolResult::failure("no tool runs in this test");
-  };
+  const assistant_agent::TurnTools tools = assistant_agent::testing::toolsFor();
   auto memory = std::make_shared<assistant_agent::HarnessMemory>();
   if (resuming) {
     memory->session_id = "sess-gone";
@@ -379,6 +382,53 @@ TEST(ClaudeBackendApiError, NamesCliDefaultWhenNoModelIsConfiguredAndSuppressesT
   EXPECT_EQ(error_count, 1) << "the generic 'exited N' fallback must not ALSO fire (fake CLI exits 1)";
 }
 
+// A tool call and its answer come back as a tool_use block and, in a later user record, the tool_result that
+// names its id: the backend reports the pair as a ToolActivity followed by a ToolResult naming the same tool.
+TEST(ClaudeBackendToolResult, AnAnsweredCallIsAToolResultNamingTheTool) {
+  for (const bool failed : {false, true}) {
+    const std::string cli = writeFakeCliScript(
+        {R"({"type":"system","subtype":"init","session_id":"sess-tool"})",
+         R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"mcp__pj__list_topics","input":{}}]}})",
+         std::string(R"({"type":"user","message":{"content":[{"tool_use_id":"toolu_01","type":"tool_result",)") +
+             (failed ? R"("is_error":true,)" : "") + R"("content":[{"type":"text","text":"{}"}]}]}})",
+         R"({"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"done","session_id":"sess-tool"})"},
+        /*exit_code=*/0);
+    ASSERT_FALSE(cli.empty());
+    const assistant_agent::TurnTools tools = assistant_agent::testing::toolsFor();
+    assistant_agent::ClaudeBackend backend(cli, "", std::make_shared<assistant_agent::HarnessMemory>());
+    std::vector<assistant_agent::BackendEvent> events;
+    backend.sendUserMessage("hi", tools, [&](assistant_agent::BackendEvent e) { events.push_back(std::move(e)); });
+    removeFakeCli(cli);
+
+    using Kind = assistant_agent::BackendEvent::Kind;
+    const auto activity =
+        std::find_if(events.begin(), events.end(), [](const auto& e) { return e.kind == Kind::ToolActivity; });
+    const auto result =
+        std::find_if(events.begin(), events.end(), [](const auto& e) { return e.kind == Kind::ToolResult; });
+    ASSERT_NE(activity, events.end());
+    ASSERT_NE(result, events.end());
+    EXPECT_LT(activity, result);
+    EXPECT_EQ(activity->text, "list_topics");
+    EXPECT_EQ(result->text, "list_topics");
+    EXPECT_EQ(result->tool_failed, failed);
+    EXPECT_EQ(firstError(events), nullptr);
+  }
+}
+
+// The live smoke's own verdict, against the stream a CLI that got an answer prints: it passes.
+TEST(ClaudeBackendToolResult, TheSmokeVerdictAcceptsAnAnsweredListTopicsCall) {
+  const std::string cli = writeFakeCliScript(
+      {R"({"type":"system","subtype":"init","session_id":"sess-tool"})",
+       R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"mcp__pj__list_topics","input":{}}]}})",
+       R"({"type":"user","message":{"content":[{"tool_use_id":"toolu_01","type":"tool_result","content":[{"type":"text","text":"{}"}]}]}})",
+       R"({"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"none","session_id":"sess-tool"})"},
+      /*exit_code=*/0);
+  ASSERT_FALSE(cli.empty());
+  assistant_agent::ClaudeBackend backend(cli, "", std::make_shared<assistant_agent::HarnessMemory>());
+  runListTopicsSmoke(backend, assistant_agent::testing::kTestEndpoint, "Claude");
+  removeFakeCli(cli);
+}
+
 TEST(ClaudeBackendApiError, NamesTheConfiguredModel) {
   const auto events = runOneTurnAgainst(kApiErrorZeroTokens, /*resuming=*/false, /*model=*/"opus");
   const assistant_agent::BackendEvent* err = firstError(events);
@@ -393,6 +443,11 @@ TEST(ClaudeBackendApiError, NamesTheConfiguredModel) {
 // new) and the instructions in --append-system-prompt (the system prompt plus
 // the product policy, unless a caller measures without it).
 #if defined(__unix__) || defined(__APPLE__)
+#include <sys/stat.h>
+
+#include <filesystem>
+#include <nlohmann/json.hpp>
+
 namespace {
 
 using assistant_agent::TurnTools;
@@ -409,17 +464,17 @@ TEST(ClaudeBackendPayload, TheCliReceivesTheFeaturesBlockAheadOfTheCatalogAndThe
       0, record);
   const RecordingCliCleanup cleanup({cli}, record);
   ASSERT_FALSE(cli.empty());
-  ToolRegistry reg;
-  const TurnTools tools = payloadTestTools(reg);
+  const TurnTools tools = payloadTestTools();
 
   ClaudeBackend backend(cli, "");
   backend.sendUserMessage("hi", tools, [](BackendEvent) {});
   EXPECT_EQ(
       assistant_agent::testing::readFileToString(record + ".stdin"),
       std::string(kTestFeatures) + "\n\n" + kTestCatalog + "\n\nhi");
-  EXPECT_NE(
-      assistant_agent::testing::readFileToString(record + ".argv").find(assistant_agent::kProductPolicy),
-      std::string::npos);
+  const std::string first_argv = assistant_agent::testing::readFileToString(record + ".argv");
+  EXPECT_NE(first_argv.find(assistant_agent::kProductPolicy), std::string::npos);
+  EXPECT_EQ(first_argv.find(assistant_agent::testing::kTestEndpoint.bearer_token), std::string::npos)
+      << "the token travels in the --mcp-config file, never argv";
 
   backend.sendUserMessage("again", tools, [](BackendEvent) {});
   EXPECT_EQ(assistant_agent::testing::readFileToString(record + ".stdin"), "again") << "neither listing changed";
@@ -444,8 +499,7 @@ TEST(ClaudeBackendPayload, AFailedTurnThatProducedNoAnswerLeavesTheListingsUnsen
   const RecordingCliCleanup cleanup({failing, working}, record);
   ASSERT_FALSE(failing.empty());
   ASSERT_FALSE(working.empty());
-  ToolRegistry reg;
-  const TurnTools tools = payloadTestTools(reg);
+  const TurnTools tools = payloadTestTools();
   const std::string both = std::string(kTestFeatures) + "\n\n" + kTestCatalog + "\n\n";
   auto memory = std::make_shared<assistant_agent::HarnessMemory>();
   memory->resumed_pending = true;
@@ -469,6 +523,62 @@ TEST(ClaudeBackendPayload, AFailedTurnThatProducedNoAnswerLeavesTheListingsUnsen
   // A successful turn is never rolled back, even one with no assistant text.
   backend.sendUserMessage("third", tools, [](BackendEvent) {});
   EXPECT_EQ(assistant_agent::testing::readFileToString(record + ".stdin"), "third");
+}
+
+// The --mcp-config path a recorded argv (one entry per line) names.
+std::string mcpConfigPathFrom(const std::string& argv) {
+  const std::string key = "--mcp-config\n";
+  const std::size_t at = argv.find(key);
+  if (at == std::string::npos) {
+    return {};
+  }
+  const std::size_t begin = at + key.size();
+  return argv.substr(begin, argv.find('\n', begin) - begin);
+}
+
+// The token reaches the CLI only through the --mcp-config file: owner-only,
+// reused while the endpoint is unchanged, replaced when it changes, and
+// removed with the backend.
+TEST(ClaudeBackendPayload, TheMcpConfigFileIsPrivateCarriesTheTokenAndGoesWithTheBackend) {
+  const std::string record = assistant_agent::testing::makeRecordPrefix("claude_mcp");
+  const std::string cli = assistant_agent::testing::writeRecordingCliScript(
+      {R"({"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"sess-1"})"},
+      0, record);
+  const RecordingCliCleanup cleanup({cli}, record);
+  ASSERT_FALSE(cli.empty());
+  const PJ::sdk::McpEndpoint& endpoint = assistant_agent::testing::kTestEndpoint;
+  const auto config_path = [&record] {
+    return mcpConfigPathFrom(assistant_agent::testing::readFileToString(record + ".argv"));
+  };
+
+  std::string first;
+  std::string second;
+  {
+    ClaudeBackend backend(cli, "");
+    backend.sendUserMessage("hi", payloadTestTools(), [](BackendEvent) {});
+    first = config_path();
+    ASSERT_FALSE(first.empty());
+    const nlohmann::json cfg = nlohmann::json::parse(assistant_agent::testing::readFileToString(first));
+    const nlohmann::json& pj = cfg.at("mcpServers").at("pj");
+    EXPECT_EQ(pj.at("type"), "http");
+    EXPECT_EQ(pj.at("url"), endpoint.url);
+    EXPECT_EQ(pj.at("headers").at("Authorization"), "Bearer " + endpoint.bearer_token);
+    struct stat st{};
+    ASSERT_EQ(stat(first.c_str(), &st), 0);
+    EXPECT_EQ(st.st_mode & 0777, 0600) << "the token is a credential: owner-only";
+
+    backend.sendUserMessage("again", payloadTestTools(), [](BackendEvent) {});
+    EXPECT_EQ(config_path(), first) << "the same endpoint reuses its file";
+
+    backend.sendUserMessage(
+        "re-acquired", assistant_agent::testing::toolsFor({endpoint.url, "token-2"}), [](BackendEvent) {});
+    second = config_path();
+    ASSERT_FALSE(second.empty());
+    EXPECT_NE(second, first);
+    EXPECT_FALSE(std::filesystem::exists(first)) << "the replaced file is unlinked";
+    EXPECT_NE(assistant_agent::testing::readFileToString(second).find("Bearer token-2"), std::string::npos);
+  }
+  EXPECT_FALSE(std::filesystem::exists(second)) << "the destructor unlinks the file";
 }
 
 }  // namespace

@@ -11,7 +11,7 @@
 
 namespace toolbox_testing {
 
-// A catalog-only toolbox host with optionally named object datasets and field COUNT
+// A catalog-only toolbox host with optionally named datasets and field COUNT
 // and TYPE the test controls. Neither existing fake covers this:
 // ToolboxTestStore stamps every field float64 with real timestamps/values
 // (it exists for the read path), and FakeMultiDatasetHost fixes one float64
@@ -24,19 +24,22 @@ namespace toolbox_testing {
 // zeros.
 class FakeCatalogHost {
  public:
-  FakeCatalogHost& addTopic(const std::string& name) {
-    topics_.push_back({name, {}});
+  // Adds a scalar topic. With `dataset`, the topic belongs to that data source (created on first use);
+  // a dataset's topics must be added contiguously, mirroring the ABI's first_topic/topic_count layout.
+  FakeCatalogHost& addTopic(const std::string& name, const std::string& dataset = {}) {
+    topics_.push_back({name, dataset, {}});
+    registerDataset(dataset);
     return *this;
   }
 
-  // Adds a field to the most recently added topic that matches `topic_name`.
-  // No-op if that topic was never added.
+  // Adds a field to the most recently added topic that matches `topic_name`, so two datasets that share a
+  // topic name each get the fields added after their own addTopic. No-op if that topic was never added.
   FakeCatalogHost& addField(
       const std::string& topic_name, const std::string& field_name,
       PJ_primitive_type_t type = PJ_PRIMITIVE_TYPE_FLOAT64) {
-    for (auto& t : topics_) {
-      if (t.name == topic_name) {
-        t.fields.push_back({field_name, type});
+    for (auto it = topics_.rbegin(); it != topics_.rend(); ++it) {
+      if (it->name == topic_name) {
+        it->fields.push_back({field_name, type});
         return *this;
       }
     }
@@ -53,9 +56,7 @@ class FakeCatalogHost {
       std::int64_t t_max_ns, const std::string& metadata_json = R"({"builtin_object_type":"kPointCloud"})",
       const std::string& dataset = {}) {
     object_topics_.push_back({name, type_name, entries, t_min_ns, t_max_ns, metadata_json, dataset});
-    if (!dataset.empty() && std::find(datasets_.begin(), datasets_.end(), dataset) == datasets_.end()) {
-      datasets_.push_back(dataset);
-    }
+    registerDataset(dataset);
     return *this;
   }
 
@@ -95,6 +96,7 @@ class FakeCatalogHost {
   };
   struct TopicSpec {
     std::string name;
+    std::string dataset;
     std::vector<FieldSpec> fields;
   };
   struct ObjectTopicSpec {
@@ -111,6 +113,12 @@ class FakeCatalogHost {
     return PJ_string_view_t{s.data(), s.size()};
   }
 
+  void registerDataset(const std::string& dataset) {
+    if (!dataset.empty() && std::find(datasets_.begin(), datasets_.end(), dataset) == datasets_.end()) {
+      datasets_.push_back(dataset);
+    }
+  }
+
   // Rebuilds topic_abi_/field_abi_ from topics_ -- shared by tAcquire and
   // tAcquireV2 so the scalar half of a v2 snapshot is byte-for-byte what v1
   // would have reported.
@@ -120,6 +128,16 @@ class FakeCatalogHost {
       PJ_data_source_info_t info{};
       info.handle = PJ_data_source_handle_t{static_cast<std::uint32_t>(i + 1)};
       info.name = sv(datasets_[i]);
+      bool first = true;
+      for (std::size_t ti = 0; ti < topics_.size(); ++ti) {
+        if (topics_[ti].dataset == datasets_[i]) {
+          if (first) {
+            info.first_topic = static_cast<std::uint32_t>(ti);
+            first = false;
+          }
+          ++info.topic_count;
+        }
+      }
       source_abi_.push_back(info);
     }
     topic_abi_.clear();
@@ -130,6 +148,11 @@ class FakeCatalogHost {
       PJ_topic_info_t tinfo{};
       tinfo.handle = PJ_topic_handle_t{static_cast<std::uint32_t>(ti + 1)};
       tinfo.name = sv(t.name);
+      for (const auto& source : source_abi_) {
+        if (!t.dataset.empty() && PJ::sdk::toStringView(source.name) == t.dataset) {
+          tinfo.source = source.handle;
+        }
+      }
       tinfo.first_field = field_cursor;
       tinfo.field_count = static_cast<std::uint32_t>(t.fields.size());
       topic_abi_.push_back(tinfo);

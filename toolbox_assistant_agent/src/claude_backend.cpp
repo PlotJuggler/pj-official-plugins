@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 #include "claude_backend.hpp"
 
+#include <map>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
 #include <vector>
@@ -10,26 +12,16 @@
 #include "cli_locator.hpp"      // locateCli, childEnvFor
 #include "cli_probe.hpp"        // probeCliVersion, cannotFindCliMessage
 #include "harness_workdir.hpp"  // ensureWorkDir
+#include "private_file.hpp"     // writePrivateTempFile / removePrivateTempFile
 #include "stream_json.hpp"
 #include "subprocess.hpp"
 #include "system_prompt.hpp"
 
 namespace assistant_agent {
 
-std::string allowedToolsArg(const ToolRegistry& registry) {
-  std::string out;
-  for (const auto& spec : registry.tools()) {
-    if (!out.empty()) {
-      out += ",";
-    }
-    out += "mcp__pj__" + spec.name;
-  }
-  return out;
-}
-
 std::vector<std::string> buildClaudeArgv(
-    const std::string& cli_path, const std::string& mcp_config_path, const std::string& allowed_tools,
-    const std::string& system_prompt, const std::string& model, const std::string& session_id) {
+    const std::string& cli_path, const std::string& mcp_config_path, const std::string& system_prompt,
+    const std::string& model, const std::string& session_id) {
   std::vector<std::string> argv = {
       cli_path,
       "-p",
@@ -60,8 +52,12 @@ std::vector<std::string> buildClaudeArgv(
       "--mcp-config",
       mcp_config_path,
       "--strict-mcp-config",
+      // Every tool of our one MCP server ("pj", the --mcp-config above), and
+      // nothing else: PlotJuggler decides which tools that endpoint serves.
+      // The name is a server, never a built-in, so this door cannot let one
+      // back in.
       "--allowedTools",
-      allowed_tools,
+      "mcp__pj",
       "--append-system-prompt",
       system_prompt,
   };
@@ -82,13 +78,35 @@ ClaudeBackend::ClaudeBackend(std::string cli_path, std::string model, std::share
       instructions_(assistantInstructions()),
       memory_(memory ? std::move(memory) : std::make_shared<HarnessMemory>()) {}
 
-ClaudeBackend::~ClaudeBackend() = default;
-// mcp_'s destructor (McpLoopback) unlinks the --mcp-config temp file. work_dir_
-// is deliberately left in place: it holds the CLI's session state, which is
-// exactly what a persisted conversation resumes into.
+ClaudeBackend::~ClaudeBackend() {
+  removePrivateTempFile(mcp_config_path_);
+  // work_dir_ is deliberately left in place: it holds the CLI's session state,
+  // which is exactly what a persisted conversation resumes into.
+}
 
 bool ClaudeBackend::ensureWorkDir(std::string& error) {
   return assistant_agent::ensureWorkDir(work_dir_, error);
+}
+
+std::string ClaudeBackend::mcpConfigFile(const PJ::sdk::McpEndpoint& endpoint) {
+  if (!mcp_config_path_.empty() && endpoint.url == mcp_config_endpoint_.url &&
+      endpoint.bearer_token == mcp_config_endpoint_.bearer_token) {
+    return mcp_config_path_;
+  }
+  const nlohmann::json cfg = {
+      {"mcpServers",
+       {{"pj",
+         {{"type", "http"},
+          {"url", endpoint.url},
+          {"headers", {{"Authorization", "Bearer " + endpoint.bearer_token}}}}}}}};
+  std::string path;
+  if (!writePrivateTempFile("pj_assistant_mcp_", cfg.dump(), path)) {
+    return {};
+  }
+  removePrivateTempFile(mcp_config_path_);
+  mcp_config_path_ = std::move(path);
+  mcp_config_endpoint_ = endpoint;
+  return mcp_config_path_;
 }
 
 std::string ClaudeBackend::name() const {
@@ -146,24 +164,24 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
   cancel_.store(false);
   last_metrics_ = TurnMetrics{};  // per-turn, so a failed turn cannot report the previous one's cost
 
-  std::string mcp_error;
-  if (!mcp_.ensure(tools, mcp_error) || !ensureWorkDir(mcp_error)) {
-    sink({BackendEvent::Kind::Error, mcp_error});
+  const auto fail = [&sink](std::string why) {
+    sink({BackendEvent::Kind::Error, std::move(why)});
     sink({BackendEvent::Kind::TurnComplete, {}});
-    return;
+  };
+  if (!tools.mcp) {
+    return fail(tools.mcp.error());
   }
-  const std::string mcp_config_path = mcp_.configFilePath();
+  std::string error;
+  if (!ensureWorkDir(error)) {
+    return fail(error);
+  }
+  const std::string mcp_config_path = mcpConfigFile(*tools.mcp);
   if (mcp_config_path.empty()) {
-    sink({BackendEvent::Kind::Error, "could not write the MCP config file"});
-    sink({BackendEvent::Kind::TurnComplete, {}});
-    return;
+    return fail("could not write the MCP config file");
   }
-
   const CliLocation loc = locateCli(cli_path_);
   if (loc.path.empty()) {
-    sink({BackendEvent::Kind::Error, cannotFindCliMessage(cli_path_, loc)});
-    sink({BackendEvent::Kind::TurnComplete, {}});
-    return;
+    return fail(cannotFindCliMessage(cli_path_, loc));
   }
 
   // Whether this turn carries --resume, captured before the stream's init
@@ -173,10 +191,11 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
   ListingsTurn listings_turn(*memory_);
   const std::string payload = composePayload(text, tools.features, tools.catalog, *memory_);
 
-  const std::vector<std::string> argv = buildClaudeArgv(
-      loc.path, mcp_config_path, allowedToolsArg(*tools.registry), instructions_, model_, memory_->session_id);
+  const std::vector<std::string> argv =
+      buildClaudeArgv(loc.path, mcp_config_path, instructions_, model_, memory_->session_id);
 
   NdjsonSplitter splitter;
+  std::map<std::string, std::string> tool_names;  // tool_use id -> name, to label the result that answers it
   bool emitted_text = false;
   bool errored = false;
   bool rate_limited = false;  // this turn's; rate_limited_ stays set across turns
@@ -195,9 +214,16 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
           listings_turn.answered();
           break;
         case ClaudeEvent::Kind::ToolUse:
+          tool_names[ev.tool_id] = prettyToolName(ev.tool_name);
           sink({BackendEvent::Kind::ToolActivity, prettyToolName(ev.tool_name)});
           listings_turn.answered();
           break;
+        case ClaudeEvent::Kind::ToolResult: {
+          BackendEvent result{BackendEvent::Kind::ToolResult, tool_names[ev.tool_id]};
+          result.tool_failed = ev.is_error;
+          sink(std::move(result));
+          break;
+        }
         case ClaudeEvent::Kind::RateLimit:
           if (ev.is_error) {
             rate_limited_ = true;

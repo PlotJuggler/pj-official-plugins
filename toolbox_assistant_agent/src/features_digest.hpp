@@ -42,9 +42,9 @@ inline constexpr std::size_t kMinFeaturesBudgetChars = 5000;
 [[nodiscard]] std::string featuresDigest(std::string_view json, std::size_t budget_chars = kDefaultFeaturesBudgetChars);
 
 // The block for one turn: the host's document when the service is bound and
-// answers, the built-in reference otherwise (an unbound view is a host older
-// than SDK 0.39.0, which is the floor case manifest.json's floor_test covers).
-// GUI thread only, like every host view.
+// answers, the built-in reference otherwise (a host that omits the optional
+// service leaves the view unbound; one whose document cannot be read gets the
+// reference with a note). GUI thread only, like every host view.
 [[nodiscard]] std::string featuresBlock(const PJ::sdk::FeatureCatalogView& view, std::size_t budget_chars);
 
 }  // namespace assistant_agent

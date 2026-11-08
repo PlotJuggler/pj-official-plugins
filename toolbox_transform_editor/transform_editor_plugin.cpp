@@ -2715,8 +2715,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
         raw.push_back(derived_recipes::canonicalSeriesPath(source));
       }
       PJ::sdk::ToolboxHostView host = catalogHost();
-      const auto resolved =
-          derived_recipes::resolveEvalInputs(host, *catalog_v2_, raw, derived_recipes::Audience::kUser);
+      const auto resolved = derived_recipes::resolveEvalInputs(host, *catalog_v2_, raw);
       if (!resolved.error.empty()) {
         build.error = resolved.error;
       } else {

@@ -12,7 +12,6 @@
 #include "claude_sessions.hpp"  // ConversationSummary, for listConversations()
 #include "harness_memory.hpp"   // HarnessMemory + composePayload
 #include "llm_backend.hpp"
-#include "mcp_loopback.hpp"
 #include "stream_json.hpp"  // TurnMetrics, reported by the CLI in its result record
 
 namespace assistant_agent {
@@ -24,16 +23,10 @@ namespace assistant_agent {
 // stopped a well-meant change from removing them. `ClaudeBackendCommandLineIsLocked`
 // asserts them; that property is not negotiable.
 //
-// `allowed_tools` is the comma-separated `mcp__pj__*` list; an empty `model` or
-// `session_id` simply omits its flag.
+// An empty `model` or `session_id` simply omits its flag.
 [[nodiscard]] std::vector<std::string> buildClaudeArgv(
-    const std::string& cli_path, const std::string& mcp_config_path, const std::string& allowed_tools,
-    const std::string& system_prompt, const std::string& model, const std::string& session_id);
-
-// The `mcp__pj__<name>` list the CLI is allowed to call, one entry per registered
-// tool. Every entry carries that prefix by construction, which is what keeps a
-// built-in tool from being whitelisted by accident.
-[[nodiscard]] std::string allowedToolsArg(const ToolRegistry& registry);
+    const std::string& cli_path, const std::string& mcp_config_path, const std::string& system_prompt,
+    const std::string& model, const std::string& session_id);
 
 // composePayload now lives in harness_memory.hpp (backend-agnostic, shared
 // with CodexBackend) and is pulled in transitively via the #include above.
@@ -41,19 +34,20 @@ namespace assistant_agent {
 // Remote backend driving the user's Claude Code CLI subscription headlessly —
 // NO Anthropic API key, no per-token billing. Per turn it spawns
 // `claude -p --output-format stream-json ... "<message>"` and parses the
-// streamed events for the transcript. Because headless Claude accepts external
-// tools ONLY via MCP, the assistant's tools are exposed through an in-plugin
-// localhost MCP server (started lazily on the first turn); Claude calls it over
-// HTTP and those calls run through the same GuiExecutor as every other backend.
-// Conversation context is preserved across turns via the CLI's --resume with the
-// session id Claude reports — held in a caller-owned HarnessMemory so that
-// rebuilding this object (a settings change) does not silently start over.
+// streamed events for the transcript. Headless Claude accepts external tools
+// ONLY via MCP, so it is pointed at this plugin's endpoint on PlotJuggler's own
+// MCP server (TurnTools::mcp, wrapped in a --mcp-config file); PlotJuggler runs
+// the tools. Conversation context is preserved across turns via the CLI's
+// --resume with the session id Claude reports — held in a caller-owned
+// HarnessMemory so that rebuilding this object (a settings change) does not
+// silently start over.
 class ClaudeBackend : public LlmBackend {
  public:
   // `memory` must outlive the backend; the dialog owns one per conversation and
   // lends the same one to every backend it builds. A null pointer is treated as
   // a fresh private memory, so tests can construct without one.
   ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<HarnessMemory> memory = nullptr);
+  // Unlinks the --mcp-config file, if one was written.
   ~ClaudeBackend() override;
 
   void sendUserMessage(const std::string& text, const TurnTools& tools, const EventSink& sink) override;
@@ -110,6 +104,12 @@ class ClaudeBackend : public LlmBackend {
   // conversation (--resume after a plugin restart) only works when every
   // instance runs in the same place.
   bool ensureWorkDir(std::string& error);
+  // The --mcp-config file for `endpoint` (one "pj" http server, the token in
+  // an Authorization header): a private 0600 temp file, since argv is
+  // world-readable via /proc/<pid>/cmdline. Memoized while the endpoint is
+  // unchanged; a new endpoint's file replaces (and unlinks) the old one. ""
+  // when it could not be written.
+  std::string mcpConfigFile(const PJ::sdk::McpEndpoint& endpoint);
 
   std::string cli_path_;
   std::string model_;
@@ -117,12 +117,11 @@ class ClaudeBackend : public LlmBackend {
   std::shared_ptr<HarnessMemory> memory_;  // never null after construction
   TurnMetrics last_metrics_;
   bool rate_limited_ = false;
-  // The loopback MCP server plus (Claude-only) the --mcp-config file wrapping
-  // its token (mcp_loopback.hpp).
-  McpLoopback mcp_;
   // 0700 stable directory the CLI runs in (see ensureWorkDir). Never removed:
   // it holds the CLI's session state, which is what --resume comes back to.
   std::string work_dir_;
+  std::string mcp_config_path_;
+  PJ::sdk::McpEndpoint mcp_config_endpoint_;  // what mcp_config_path_ holds
   std::atomic<bool> cancel_{false};
 };
 
