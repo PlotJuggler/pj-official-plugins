@@ -10,6 +10,9 @@ below; for earlier releases see the git history of `data_load_mcap/`.
   allocated that size before decompressing, so a crafted lz4 or zstd chunk
   made the import or the serial fallback scan attempt an arbitrary
   allocation and fail with an out-of-memory error.
+- Open MCAP files larger than 2 GiB on 32-bit builds (WebAssembly): the file
+  reader measured and sought the file with a 32-bit `long`, so opening one
+  failed before the loader started.
 
 ## [1.3.0] - 2026-09-22
 

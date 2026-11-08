@@ -26,6 +26,10 @@
 #include <sstream>
 #include <vector>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace {
 
 using namespace PJ::McapHelpers;
@@ -667,6 +671,45 @@ TEST(Rosbag2Metadata, RejectsNonMcapBags) {
   EXPECT_EQ(ok.paths, (std::vector<std::string>{(dir / "b_1.mcap").string(), (dir / "b_0.mcap").string()}));
 
   fs::remove_all(dir);
+}
+
+// A file past 2 GiB: FileReader must report its full size and seek past 2^31 both ways.
+// On a 64-bit host this passes either way; it fails on 32-bit-long targets (wasm32) without
+// the 64-bit offset patch, which the offset_type static_assert also enforces at compile time.
+TEST(McapFileReader, ReadsPastTwoGiB) {
+#ifdef _WIN32
+  GTEST_SKIP() << "NTFS files are not sparse by default; this would write 3 GiB";
+#else
+  namespace fs = std::filesystem;
+  const fs::path path = fs::temp_directory_path() / ("pj_mcap_3gib_" + std::to_string(::getpid()) + ".bin");
+  constexpr uint64_t kOffset = uint64_t{3} << 30;
+  const char marker[8] = {'P', 'J', '4', '-', '3', 'G', 'i', 'B'};
+  {
+    std::ofstream out(path, std::ios::binary);
+    out.write("head", 4);
+    out.seekp(static_cast<std::streamoff>(kOffset));
+    out.write(marker, sizeof(marker));
+    if (!out) {
+      fs::remove(path);
+      GTEST_SKIP() << "file system cannot hold a sparse 3 GiB file";
+    }
+  }
+  std::FILE* file = std::fopen(path.string().c_str(), "rb");
+  ASSERT_NE(file, nullptr);
+  {
+    mcap::FileReader reader(file);
+    EXPECT_EQ(reader.size(), kOffset + sizeof(marker));
+
+    std::byte* data = nullptr;
+    ASSERT_EQ(reader.read(&data, kOffset, sizeof(marker)), sizeof(marker));
+    EXPECT_EQ(std::memcmp(data, marker, sizeof(marker)), 0);
+
+    ASSERT_EQ(reader.read(&data, 0, 4), 4u);
+    EXPECT_EQ(std::memcmp(data, "head", 4), 0);
+  }
+  std::fclose(file);
+  fs::remove(path);
+#endif
 }
 
 }  // namespace
