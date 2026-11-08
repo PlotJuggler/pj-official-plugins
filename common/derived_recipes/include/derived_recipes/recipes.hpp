@@ -4,15 +4,14 @@
 
 // Shared, UI-free helpers for creating persisted derived recipes (kind="transform" /
 // "on_demand") through pj.data_processors.v1: catalog path resolution (scalar series and
-// object topics, dataset qualifiers), input/output resolution, the generated Luau chunk, and
-// the display<->raw time conversion. Used by the assistant's tools.
+// object topics, dataset qualifiers), input resolution, the generated Luau chunk, and the
+// display<->raw time conversion. Used by the Transform Editor and the assistant's catalog digest.
 //
 // Nothing here owns host state: every function takes the host views it needs explicitly.
 
 #include <cstddef>
 #include <cstdint>
 #include <map>
-#include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <set>
@@ -67,8 +66,8 @@ struct BuiltScript {
 
 // --- catalog helpers -------------------------------------------------------
 
-// Cap on how many near misses an error names (the text is fed back to a model and re-sent on
-// every later round trip, so an unbounded list would be paid for repeatedly).
+// Cap on how many near misses an error names, so a wide catalog does not turn one error into a
+// wall of paths.
 inline constexpr std::size_t kMaxCandidates = 10;
 
 // Dataset name for each topic INDEX, or empty when fewer than two data sources are loaded
@@ -129,13 +128,8 @@ struct SeriesLookup {
     const PJ::sdk::CatalogSnapshot& catalog, const std::string& series, const TopicDatasetMap& topic_dataset);
 [[nodiscard]] SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const std::string& series);
 
-// Who reads an error message: the assistant's model (told which of its tools to call next) or
-// a person in a dialog (told what to do in the UI).
-enum class Audience { kModel, kUser };
-
-// The error a failed lookup should produce.
-[[nodiscard]] std::string seriesLookupError(
-    const std::string& series, const SeriesLookup& lookup, Audience audience = Audience::kModel);
+// The error a failed lookup should produce, worded for a person picking from a list.
+[[nodiscard]] std::string seriesLookupError(const std::string& series, const SeriesLookup& lookup);
 
 // The DataSourceHandle a resolved series' dataset qualifies to. An empty name with exactly one
 // loaded source is that source.
@@ -202,8 +196,7 @@ struct ResolvedEvalInputs {
 };
 
 [[nodiscard]] ResolvedEvalInputs resolveEvalInputs(
-    PJ::sdk::ToolboxHostView& host, const PJ::sdk::CatalogSnapshotV2& v2, const std::vector<std::string>& raw_inputs,
-    Audience audience = Audience::kModel);
+    PJ::sdk::ToolboxHostView& host, const PJ::sdk::CatalogSnapshotV2& v2, const std::vector<std::string>& raw_inputs);
 
 // Build the on-demand chunk for resolved inputs: keeps both the requested and the historical
 // bare script aliases without textual substitution in user code. `layout` says where `body` starts
@@ -215,13 +208,6 @@ struct ResolvedEvalInputs {
 // python_object_script.h). The same alias table is rebuilt first, then `body` follows, indented
 // one level.
 [[nodiscard]] BuiltScript buildOnDemandChunkPython(const std::string& body, const ResolvedEvalInputs& resolved);
-
-// Declared outputs ("name:type" strings) split for DataProcessorRequest.outputs.
-struct ParsedOutputs {
-  std::vector<PJ::sdk::DataProcessorOutput> outputs;
-  std::string error;
-};
-[[nodiscard]] ParsedOutputs parseTypedOutputs(const nlohmann::json& arr);
 
 // Inverse of toDisplaySeconds: DISPLAY seconds -> raw dataset ns, from one forward conversion
 // of raw 0. Empty when no playback view is bound or per-source conversion is unsupported.

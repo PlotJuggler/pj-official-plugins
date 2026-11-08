@@ -50,7 +50,8 @@ struct ClaudeEvent {
   enum class Kind {
     Init,           // session started; session_id set
     AssistantText,  // a text block from the assistant
-    ToolUse,        // the model invoked a tool; tool_name set
+    ToolUse,        // the model invoked a tool; tool_name and tool_id set
+    ToolResult,     // a tool call finished; tool_id names the ToolUse it answers, is_error set
     Result,         // the turn finished; text = final result, is_error set, metrics filled
     RateLimit,      // usage-window notice; text = status ("allowed", …)
     Ignored,        // a record we don't surface
@@ -58,6 +59,7 @@ struct ClaudeEvent {
   Kind kind = Kind::Ignored;
   std::string text;
   std::string tool_name;
+  std::string tool_id;  // ToolUse / ToolResult: pairs a result with the call it answers
   std::string session_id;
   bool is_error = false;
   // Result only: how many model turns ran. 0 on an error means the CLI never
@@ -116,9 +118,31 @@ struct ClaudeEvent {
           ClaudeEvent e;
           e.kind = ClaudeEvent::Kind::ToolUse;
           e.tool_name = block.value("name", std::string{});
+          e.tool_id = block.value("id", std::string{});
           e.session_id = session_id;
           out.push_back(std::move(e));
         }
+      }
+    }
+    return out;
+  }
+
+  // A tool's result comes back as a user record made of tool_result blocks; is_error is present on failures
+  // (an MCP result with isError set) and may be absent otherwise.
+  if (type == "user" && j.contains("message") && j["message"].is_object()) {
+    const auto& content = j["message"].value("content", nlohmann::json::array());
+    if (content.is_array()) {
+      for (const auto& block : content) {
+        if (!block.is_object() || block.value("type", std::string{}) != "tool_result") {
+          continue;
+        }
+        ClaudeEvent e;
+        e.kind = ClaudeEvent::Kind::ToolResult;
+        e.tool_id = block.value("tool_use_id", std::string{});
+        const auto failed = block.find("is_error");
+        e.is_error = failed != block.end() && failed->is_boolean() && failed->get<bool>();
+        e.session_id = session_id;
+        out.push_back(std::move(e));
       }
     }
     return out;

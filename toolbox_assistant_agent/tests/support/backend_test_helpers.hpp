@@ -9,8 +9,6 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
-#include <nlohmann/json.hpp>
-#include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -18,7 +16,7 @@
 
 #include "llm_backend.hpp"    // BackendEvent, LlmBackend, TurnTools
 #include "platform_util.hpp"  // pathToUtf8, utf8ToPath
-#include "tool_registry.hpp"  // ToolRegistry, ToolContext
+#include "test_endpoint.hpp"  // kTestEndpoint, toolsFor (same directory)
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>  // mkstemp/close/chmod for the fake CLI script
@@ -133,14 +131,9 @@ inline void removeFakeCli(const std::string& cli_path) {
 inline constexpr const char* kTestFeatures = "PlotJuggler features (test):\n- one";
 inline constexpr const char* kTestCatalog = "Loaded data: nothing is loaded yet.";
 
-// The TurnTools of a payload test: `reg` (which must outlive the result), an
-// invoke that refuses every call, and kTestFeatures/kTestCatalog.
-inline TurnTools payloadTestTools(const ToolRegistry& reg) {
-  TurnTools tools;
-  tools.registry = &reg;
-  tools.invoke = [](const std::string&, const nlohmann::json&) {
-    return ToolResult::failure("no tool runs in this test");
-  };
+// The TurnTools of a payload test: kTestEndpoint and kTestFeatures/kTestCatalog.
+inline TurnTools payloadTestTools() {
+  TurnTools tools = toolsFor();
   tools.features = kTestFeatures;
   tools.catalog = kTestCatalog;
   return tools;
@@ -244,36 +237,27 @@ inline void removeFakeCli(const std::string& cli_path) {
 
 // The shared body of ClaudeSmoke.ListTopicsThroughMcp and
 // CodexSmoke.ListTopicsThroughMcp: drive one live turn asking the model to
-// call list_topics, against a fake host with exactly one topic, and check it
-// did. Each call site keeps its own ASSISTANT_*_SMOKE env-var gate and
-// backend construction (the CLI path override differs per backend) and hands
-// the already-built backend here. `label` names the backend in the failure
+// call list_topics on the PlotJuggler `endpoint` points at, and check the
+// call ran and PlotJuggler answered it without an error (a ToolResult that is
+// not tool_failed; the ToolActivity row is emitted before the call executes).
+// Each call site keeps its own ASSISTANT_*_SMOKE env-var gate and backend
+// construction (the CLI path override differs per backend) and hands the
+// already-built backend here. `label` names the backend in the failure
 // message only ("Claude"/"Codex").
-inline void runListTopicsSmoke(LlmBackend& backend, const char* label) {
-  ToolRegistry reg;
-  PJ::testing::ToolboxTestStore store;
-  store.addTopic("/imu/accel");
-  store.addField("/imu/accel", "x", {0}, {1.0});
-  ToolContext ctx;
-  ctx.host = PJ::sdk::ToolboxHostView(store.makeHost());
-
-  TurnTools tools;
-  tools.registry = &reg;
-  // Direct execution (no GuiExecutor): the MCP server thread runs the tool.
-  tools.invoke = [&](const std::string& n, const nlohmann::json& a) { return reg.execute(n, a, ctx); };
-
+inline void runListTopicsSmoke(LlmBackend& backend, const PJ::sdk::McpEndpoint& endpoint, const char* label) {
   std::vector<BackendEvent> events;
   std::mutex mu;
   backend.sendUserMessage(
-      "Call the list_topics tool and tell me the exact topic name it returns.", tools, [&](BackendEvent e) {
+      "Call the list_topics tool and tell me how many topics it reports.", toolsFor(endpoint), [&](BackendEvent e) {
         std::lock_guard<std::mutex> lk(mu);
         std::cerr << "[event " << static_cast<int>(e.kind) << "] " << e.text << "\n";
         events.push_back(std::move(e));
       });
 
   bool complete = false;
-  bool mentioned_topic = false;
   bool called_tool = false;
+  bool tool_succeeded = false;
+  bool tool_failed = false;
   for (const auto& e : events) {
     if (e.kind == BackendEvent::Kind::TurnComplete) {
       complete = true;
@@ -281,13 +265,17 @@ inline void runListTopicsSmoke(LlmBackend& backend, const char* label) {
     if (e.kind == BackendEvent::Kind::ToolActivity && e.text.find("list_topics") != std::string::npos) {
       called_tool = true;
     }
-    if (e.text.find("/imu/accel") != std::string::npos) {
-      mentioned_topic = true;
+    if (e.kind == BackendEvent::Kind::ToolResult && e.text.find("list_topics") != std::string::npos) {
+      (e.tool_failed ? tool_failed : tool_succeeded) = true;
     }
   }
   EXPECT_TRUE(complete) << "backend never signalled TurnComplete";
-  EXPECT_TRUE(called_tool) << label << " did not call list_topics via MCP";
-  EXPECT_TRUE(mentioned_topic) << "answer did not mention the topic the tool returned";
+  EXPECT_TRUE(called_tool) << label << " did not call list_topics on PlotJuggler's MCP server";
+  EXPECT_FALSE(tool_failed) << label << "'s list_topics call came back as an error";
+  EXPECT_TRUE(tool_succeeded) << label << " got no successful list_topics result from PlotJuggler's MCP server";
+  if (const BackendEvent* err = firstError(events)) {
+    ADD_FAILURE() << label << " turn failed: " << err->text;
+  }
 }
 
 }  // namespace assistant_agent::testing

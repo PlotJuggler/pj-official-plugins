@@ -132,11 +132,8 @@ CodexBackend::~CodexBackend() {
   if (!instructions_path_.empty()) {
     removePrivateTempFile(instructions_path_);
   }
-  // mcp_'s own destructor (McpLoopback) tears down the loopback server; it
-  // never wrote a config FILE for Codex (url()/token() go straight into argv
-  // and env), so there is nothing of its own to unlink here. work_dir_ is
-  // deliberately left in place -- it holds Codex's session state, which is
-  // exactly what `codex exec resume` comes back to.
+  // work_dir_ is deliberately left in place -- it holds Codex's session
+  // state, which is exactly what `codex exec resume` comes back to.
 }
 
 bool CodexBackend::ensureWorkDir(std::string& error) {
@@ -200,18 +197,20 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
   cancel_.store(false);
   last_metrics_ = TurnMetrics{};  // per-turn, so a failed turn cannot report the previous one's cost
 
-  std::string error;
-  if (!mcp_.ensure(tools, error) || !ensureWorkDir(error) || !ensureInstructionsFile(error)) {
-    sink({BackendEvent::Kind::Error, error});
+  const auto fail = [&sink](std::string why) {
+    sink({BackendEvent::Kind::Error, std::move(why)});
     sink({BackendEvent::Kind::TurnComplete, {}});
-    return;
+  };
+  if (!tools.mcp) {
+    return fail(tools.mcp.error());
   }
-
+  std::string error;
+  if (!ensureWorkDir(error) || !ensureInstructionsFile(error)) {
+    return fail(error);
+  }
   const CliLocation loc = locateCli(cli_path_);
   if (loc.path.empty()) {
-    sink({BackendEvent::Kind::Error, cannotFindCliMessage(cli_path_, loc)});
-    sink({BackendEvent::Kind::TurnComplete, {}});
-    return;
+    return fail(cannotFindCliMessage(cli_path_, loc));
   }
 
   // Whether this turn carries `resume`, captured before the stream's
@@ -223,13 +222,13 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
   const std::string payload = composePayload(text, tools.features, tools.catalog, *memory_);
 
   const std::vector<std::string> argv = buildCodexArgv(
-      loc.path, work_dir_, mcp_.url(), kCodexMcpTokenEnvVar, instructions_path_, model_, memory_->session_id);
+      loc.path, work_dir_, tools.mcp->url, kCodexMcpTokenEnvVar, instructions_path_, model_, memory_->session_id);
   // The bearer token travels only through the child's environment, never
   // argv (/proc/<pid>/cmdline is world-readable) — the same reason
   // ClaudeBackend keeps its own token inside a private --mcp-config file.
   // childEnvFor(loc) rides along on top of it so a `codex` resolved through
   // nvm (its shebang is `#!/usr/bin/env node`) finds its own node binary too.
-  std::vector<std::pair<std::string, std::string>> extra_env = {{kCodexMcpTokenEnvVar, mcp_.token()}};
+  std::vector<std::pair<std::string, std::string>> extra_env = {{kCodexMcpTokenEnvVar, tools.mcp->bearer_token}};
   for (auto& entry : childEnvFor(loc)) {
     extra_env.push_back(std::move(entry));
   }
@@ -259,9 +258,16 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
         sink({BackendEvent::Kind::ToolActivity, prettyToolName(ev.tool_name)});
         listings_turn.answered();
         break;
-      case CodexEvent::Kind::ToolCallFailed:
-        sink({BackendEvent::Kind::ToolActivity, ev.tool_name + ": " + ev.text});
+      case CodexEvent::Kind::ToolCallCompleted:
+        sink({BackendEvent::Kind::ToolResult, prettyToolName(ev.tool_name)});
         break;
+      case CodexEvent::Kind::ToolCallFailed: {
+        sink({BackendEvent::Kind::ToolActivity, ev.tool_name + ": " + ev.text});
+        BackendEvent result{BackendEvent::Kind::ToolResult, prettyToolName(ev.tool_name)};
+        result.tool_failed = true;
+        sink(std::move(result));
+        break;
+      }
       case CodexEvent::Kind::ErrorItem:
         // Codex emits the same item.completed/error shape for a startup
         // notice ("Code Mode is unavailable...", printed before

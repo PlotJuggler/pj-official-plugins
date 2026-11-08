@@ -4,16 +4,15 @@
 
 #include <algorithm>
 #include <cctype>
-#include <pj_base/sdk/platform.hpp>
 #include <utility>
 
 #include "assistant_panel_manifest.hpp"
 #include "assistant_panel_ui.hpp"
 #include "assistant_settings_ui.hpp"
+#include "catalog_digest.hpp"
 #include "claude_backend.hpp"
 #include "codex_backend.hpp"
 #include "conversation_state.hpp"
-#include "fake_backend.hpp"
 #include "features_digest.hpp"
 #include "model_picker.hpp"
 #include "rename_conversation_ui.hpp"
@@ -26,7 +25,7 @@ namespace {
 // with another toolbox's keys in the shared store.
 constexpr const char* kKeyBackend = "assistant.backend";  // "claude" or "codex"
 // Character budget for the catalog digest handed to the model at the top of
-// every turn (catalogDigest, tool_registry.hpp). Same default as
+// every turn (catalogDigest, catalog_digest.hpp). Same default as
 // catalogDigest's own parameter default, so an absent key is byte-identical
 // to the pre-existing behaviour; clamped in resolveCatalogBudgetChars so a
 // stray value in the settings store cannot blow the digest up unbounded or
@@ -170,9 +169,6 @@ AssistantDialog::~AssistantDialog() {
   if (backend_) {
     backend_->cancel();
   }
-  // Unblock any tool call waiting on the GUI thread, so the worker can
-  // finish its turn and the join below doesn't deadlock.
-  gui_executor_.shutdown();
   {
     std::lock_guard<std::mutex> lock(cmd_mu_);
     worker_stop_ = true;
@@ -211,26 +207,20 @@ bool AssistantDialog::rebuildBackend() {
 
   const std::string previous_key = active_backend_key_;
 
-  // The scripted FakeBackend is an explicit opt-in for driving the tool path
-  // without an LLM (unit tests + manual E2E). Otherwise the persisted
-  // 'assistant.backend' choice selects the backend: "claude" or "codex" each
-  // get their own conversation memory (memoryFor), so switching between them
-  // never touches the other's; a choice this build has never heard of falls
-  // back to the harmless echo backend, visibly labeled. (A store still saying
-  // "ollama" was migrated when the settings view was bound — see setSettings.)
-  if (PJ::sdk::getEnv("ASSISTANT_FAKE_BACKEND") == "1") {
-    backend_ = std::make_shared<FakeBackend>();
-    active_backend_key_ = "echo";  // FakeBackend keeps no memory of its own
+  // The persisted 'assistant.backend' choice selects the backend: "claude" or
+  // "codex" each get their own conversation memory (memoryFor), so switching
+  // between them never touches the other's; a choice this build has never
+  // heard of falls back to the harmless echo backend, visibly labeled. (A
+  // store still saying "ollama" was migrated when the settings view was bound
+  // — see setSettings.)
+  SettingsStore store(settings_);
+  active_backend_key_ = resolveBackendKey(store);
+  if (const BackendSpec* spec = backendByKey(active_backend_key_)) {
+    backend_ = spec->make(
+        store.getString(spec->cli_key, spec->default_cli), store.getString(spec->model_key, spec->default_model),
+        memoryFor(spec->key));
   } else {
-    SettingsStore store(settings_);
-    active_backend_key_ = resolveBackendKey(store);
-    if (const BackendSpec* spec = backendByKey(active_backend_key_)) {
-      backend_ = spec->make(
-          store.getString(spec->cli_key, spec->default_cli), store.getString(spec->model_key, spec->default_model),
-          memoryFor(spec->key));
-    } else {
-      backend_ = std::make_shared<EchoBackend>();
-    }
+    backend_ = std::make_shared<EchoBackend>();
   }
   std::lock_guard<std::mutex> lock(state_.mu);
   state_.backend_name = backend_->name();
@@ -385,32 +375,13 @@ std::string AssistantDialog::ui_content() const {
   return kAssistantPanelUi;
 }
 
-void AssistantDialog::setHostProvider(std::function<PJ::sdk::ToolboxHostView()> provider) {
-  host_provider_ = std::move(provider);
+void AssistantDialog::setCatalogHosts(PJ::sdk::ToolboxHostView host, PJ::sdk::PlaybackHostView playback) {
+  toolbox_host_ = host;
+  playback_host_ = playback;
 }
 
-void AssistantDialog::setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostView()> provider) {
-  runtime_host_provider_ = std::move(provider);
-}
-
-void AssistantDialog::setDataProcessorsProvider(std::function<PJ::sdk::DataProcessorsHostView()> provider) {
-  dp_provider_ = std::move(provider);
-}
-
-void AssistantDialog::setObjectReadProvider(std::function<PJ::sdk::ToolboxObjectReadHostView()> provider) {
-  object_read_provider_ = std::move(provider);
-}
-
-void AssistantDialog::setPlaybackProvider(std::function<PJ::sdk::PlaybackHostView()> provider) {
-  playback_provider_ = std::move(provider);
-}
-
-void AssistantDialog::setViewportProvider(std::function<PJ::sdk::ViewportHostView()> provider) {
-  viewport_provider_ = std::move(provider);
-}
-
-void AssistantDialog::setPlotTabsProvider(std::function<PJ::sdk::PlotTabHostView()> provider) {
-  plot_tabs_provider_ = std::move(provider);
+void AssistantDialog::setMcpEndpointHost(PJ::sdk::McpEndpointHostView host) {
+  mcp_host_ = host;
 }
 
 void AssistantDialog::setFeatureCatalogProvider(std::function<PJ::sdk::FeatureCatalogView()> provider) {
@@ -447,33 +418,6 @@ void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
     return;
   }
   rebuildBackend();
-}
-
-ToolContext AssistantDialog::makeToolContext() {
-  ToolContext ctx;
-  if (host_provider_) {
-    ctx.host = host_provider_();
-  }
-  if (dp_provider_) {
-    ctx.dp = dp_provider_();
-  }
-  if (object_read_provider_) {
-    ctx.objects = object_read_provider_();
-  }
-  if (playback_provider_) {
-    ctx.playback = playback_provider_();
-  }
-  if (viewport_provider_) {
-    ctx.viewport = viewport_provider_();
-  }
-  if (plot_tabs_provider_) {
-    ctx.plot_tabs = plot_tabs_provider_();
-  }
-  if (runtime_host_provider_) {
-    const PJ::ToolboxRuntimeHostView rt = runtime_host_provider_();
-    ctx.notify_data_changed = [rt]() { rt.notifyDataChanged(); };
-  }
-  return ctx;
 }
 
 std::string AssistantDialog::widget_data() {
@@ -655,10 +599,11 @@ bool AssistantDialog::onClicked(std::string_view widget_name) {
     return true;
   }
   if (widget_name == "cancelButton") {
+    // Stops the CLI. A tool call it had in flight runs in PlotJuggler, whose
+    // MCP server decides what becomes of it once the client is gone.
     if (backend_) {
       backend_->cancel();
     }
-    gui_executor_.cancelPending();
     return false;
   }
   if (widget_name == "settingsButton") {
@@ -766,20 +711,8 @@ bool AssistantDialog::onItemContextAction(std::string_view widget_name, int inde
 }
 
 bool AssistantDialog::onTick() {
-  // Two GUI-thread drains per tick:
-  //  1. Tool calls the worker submitted — execute them here (host services are
-  //     only legal on this thread) and unblock the waiting worker.
-  //  2. Worker-posted event closures — each mutates state_ and sets dirty flags.
-  // Both must run on this thread; ordering tools first lets a just-unblocked
-  // worker's follow-up events be picked up as early as the next tick.
-  std::size_t tools_ran = 0;
-  if (!gui_executor_.empty()) {
-    // Tool calls are rare (user-driven); don't pay the provider calls + the
-    // notify closure allocation on every idle 20 Hz tick.
-    ToolContext ctx = makeToolContext();
-    tools_ran = gui_executor_.drain(registry_, ctx);
-  }
-
+  // Worker-posted event closures — each mutates state_ and sets dirty flags,
+  // so they run here, on the GUI thread.
   std::deque<std::function<void()>> batch;
   {
     std::lock_guard<std::mutex> lock(evt_mu_);
@@ -807,7 +740,7 @@ bool AssistantDialog::onTick() {
     }
   }
 
-  return tools_ran > 0 || !batch.empty() || rebuild;
+  return !batch.empty() || rebuild;
 }
 
 void AssistantDialog::sendCurrentInput() {
@@ -830,11 +763,10 @@ void AssistantDialog::sendCurrentInput() {
   }
 
   // Hand the turn to the worker thread. The sink marshals every backend event
-  // back to the GUI thread via the event queue; tools.invoke marshals tool
-  // calls to the GUI thread via the GuiExecutor (blocking the worker until
-  // onTick runs them). The lambda captures its OWN backend reference (still on
-  // the GUI thread here): a mid-turn Settings commit may swap backend_, and the
-  // captured reference keeps the in-flight object alive for the whole turn.
+  // back to the GUI thread via the event queue. The lambda captures its OWN
+  // backend reference (still on the GUI thread here): a mid-turn Settings
+  // commit may swap backend_, and the captured reference keeps the in-flight
+  // object alive for the whole turn.
   // Snapshot what is loaded here, on the GUI thread, where the host view is
   // legal to touch — the worker cannot call host services itself. Rebuilt every
   // turn rather than cached, so that loading another file or starting a stream
@@ -842,27 +774,29 @@ void AssistantDialog::sendCurrentInput() {
   // decides whether this turn actually needs to carry it. The budget is read
   // from settings fresh every turn too (not cached), so a value written to the
   // conf before the app starts takes effect without a rebuild.
-  std::string catalog;
-  if (host_provider_) {
+  TurnTools tools;
+  if (toolbox_host_.valid()) {
     const SettingsStore store(settings_);
-    catalog = catalogDigest(
-        host_provider_(), static_cast<std::size_t>(resolveCatalogBudgetChars(store)),
-        playback_provider_ ? playback_provider_() : PJ::sdk::PlaybackHostView{});
+    tools.catalog =
+        catalogDigest(toolbox_host_, static_cast<std::size_t>(resolveCatalogBudgetChars(store)), playback_host_);
   }
   // What PlotJuggler offers, from the same GUI-thread snapshot point and for
   // the same reason; rebuilt every turn too, so enabling or installing a
   // plugin shows up (its own hash decides whether it is re-sent).
-  std::string features = featuresForTurn();
+  tools.features = featuresForTurn();
+  // Acquired here because the host service is main-thread only; while held,
+  // the host hands back the same endpoint. A failure is not ours to report:
+  // the backend fails the turn with it, in the chat.
+  tools.mcp = PJ::unexpected("it offers no MCP endpoint to plugins.");
+  if (mcp_host_.valid()) {
+    tools.mcp = mcp_host_.acquire();
+  }
+  if (!tools.mcp) {
+    tools.mcp = PJ::unexpected("This PlotJuggler cannot serve the Assistant's tools: " + tools.mcp.error());
+  }
 
-  postCommand([this, text, catalog, features = std::move(features), backend = backend_]() {
+  postCommand([this, text, tools = std::move(tools), backend = backend_]() {
     LlmBackend::EventSink sink = [this](BackendEvent ev) { postEvent([this, ev]() { applyBackendEvent(ev); }); };
-    TurnTools tools;
-    tools.registry = &registry_;
-    tools.catalog = catalog;
-    tools.features = features;
-    tools.invoke = [this](const std::string& name, const nlohmann::json& args) {
-      return gui_executor_.call(name, args);
-    };
     if (backend) {
       backend->sendUserMessage(text, tools, sink);
     } else {
@@ -886,6 +820,8 @@ void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
       state_.session.addTool(ev.text);
       state_.transcript_dirty = true;
       break;
+    case BackendEvent::Kind::ToolResult:
+      break;  // not rendered: the call already has its ToolActivity row
     case BackendEvent::Kind::Error:
       state_.session.addSystem("Error: " + ev.text);
       if (ev.resume_failed) {

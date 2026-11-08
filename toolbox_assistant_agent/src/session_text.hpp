@@ -103,10 +103,10 @@ inline std::size_t skipPastBlankLine(std::string_view s, std::size_t from) {
 
 }  // namespace detail
 
-// "mcp__pj__read_series" -> "read_series": the MCP namespace this plugin
-// chose for its tools (claude_backend.cpp's allowedToolsArg), stripped for a
-// transcript line — the live ToolActivity row and a replayed one go through
-// this one function.
+// "mcp__pj__read_series" -> "read_series": "pj" is the server name this plugin
+// gives PlotJuggler's MCP endpoint (ClaudeBackend::mcpConfigFile, buildCodexArgv),
+// stripped for a transcript line — the live ToolActivity row and a replayed
+// one go through this one function.
 inline std::string prettyToolName(const std::string& name) {
   const std::string prefix = "mcp__pj__";
   return name.rfind(prefix, 0) == 0 ? name.substr(prefix.size()) : name;

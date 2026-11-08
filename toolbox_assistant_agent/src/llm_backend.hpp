@@ -4,13 +4,14 @@
 
 #include <atomic>
 #include <functional>
+#include <pj_base/expected.hpp>
+#include <pj_base/sdk/plugin_data_api.hpp>  // McpEndpoint
 #include <string>
 #include <vector>
 
 #include "chat_session.hpp"     // ChatMessage
 #include "claude_sessions.hpp"  // ConversationSummary
 #include "model_choice.hpp"     // ModelChoice
-#include "tool_registry.hpp"
 #include "turn_metrics.hpp"
 
 namespace assistant_agent {
@@ -21,6 +22,7 @@ struct BackendEvent {
   enum class Kind {
     AssistantText,  // a chunk of assistant prose to append
     ToolActivity,   // a human-readable note about a tool the model invoked
+    ToolResult,     // a tool the model invoked finished; `text` names it, `tool_failed` says how
     Error,          // the turn failed; `text` is the reason
     Metrics,        // what the turn cost; `metrics` is filled, `text` unused
     TurnComplete,   // the backend is done; return the panel to Idle
@@ -38,14 +40,22 @@ struct BackendEvent {
   // panel tells the user retrying is pointless; every other error stays
   // exactly what it says.
   bool resume_failed = false;
+  // ToolResult only: PlotJuggler's server (or the CLI) reported the call as an error. The panel does not
+  // render the event; it is how a caller learns a call succeeded (ToolActivity is emitted before it runs).
+  bool tool_failed = false;
 };
 
-// The tool surface a backend gets for the duration of one turn: the catalog to
-// advertise to the model, and an invoker that runs a chosen tool (blocking the
-// worker thread until the GUI thread executes it — see GuiExecutor).
+// What a backend gets for the duration of one turn: where the CLI finds its
+// tools, and the listings that ride ahead of the user's message.
 struct TurnTools {
-  const ToolRegistry* registry = nullptr;
-  ToolInvoker invoke;
+  // This plugin's endpoint on PlotJuggler's MCP server, acquired by the dialog
+  // on the GUI thread before the turn (pj.mcp_endpoint.v1 is main-thread
+  // only). The CLI calls the tools there directly; PlotJuggler runs them. An
+  // error when this PlotJuggler cannot serve them: the backend then fails the
+  // turn with that text, as is, before looking up its CLI. A copy, so the
+  // worker shares nothing with the GUI thread. The token is a credential: it
+  // reaches the CLI through a 0600 file or the child's environment, never argv.
+  PJ::Expected<PJ::sdk::McpEndpoint> mcp = PJ::unexpected("no MCP endpoint was provided for this turn");
 
   // What data is currently loaded, in plain text (see catalogDigest). Handing
   // this over up front is what lets the model act without first spending
@@ -70,10 +80,10 @@ struct BackendTestResult {
 };
 
 // The backend seam. Implementations run entirely on the dialog's worker thread:
-// they must NOT call host services directly. To run a tool they go through
-// `tools.invoke`, which marshals to the GUI thread. The sink is invoked from the
-// worker thread; the dialog's sink is the only place that crosses back to the
-// GUI thread.
+// they must NOT call host services directly. Tools are not theirs to run: the
+// CLI they spawn calls PlotJuggler's MCP server (TurnTools::mcp). The sink is
+// invoked from the worker thread; the dialog's sink is the only place that
+// crosses back to the GUI thread.
 class LlmBackend {
  public:
   virtual ~LlmBackend() = default;
@@ -101,8 +111,8 @@ class LlmBackend {
 
   // The models worth offering in the settings combo, beyond "CLI default" and
   // "Custom...", which every backend gets for free (assistant_dialog.cpp adds
-  // them). Empty by default: a backend with nothing better to say (Echo,
-  // Fake) just offers those two.
+  // them). Empty by default: a backend with nothing better to say (Echo) just
+  // offers those two.
   [[nodiscard]] virtual std::vector<ModelChoice> availableModels() const {
     return {};
   }
@@ -110,7 +120,7 @@ class LlmBackend {
   // Conversations this backend can list/resume/discard, newest first. A
   // conversation belongs to the backend that owns its store (ClaudeBackend
   // reads the Claude Code harness's own session files — claude_sessions.hpp);
-  // a backend with no such store (Echo, Fake) simply has none, which is what
+  // a backend with no such store (Echo) simply has none, which is what
   // the empty defaults below say. Called on the GUI thread (opening the
   // conversations drawer, or resuming one), never mid-turn.
   [[nodiscard]] virtual std::vector<ConversationSummary> listConversations() {
@@ -124,8 +134,9 @@ class LlmBackend {
   }
 };
 
-// M1 backend: echoes the user's message straight back. Ignores tools. Exercises
-// the worker-thread -> event-queue -> transcript plumbing.
+// Echoes the user's message straight back, for a backend key this build does
+// not know. Needs no tools. Exercises the worker-thread -> event-queue ->
+// transcript plumbing.
 class EchoBackend : public LlmBackend {
  public:
   void sendUserMessage(const std::string& text, const TurnTools& /*tools*/, const EventSink& sink) override {

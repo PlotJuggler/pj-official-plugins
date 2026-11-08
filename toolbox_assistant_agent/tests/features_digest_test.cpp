@@ -411,9 +411,9 @@ TEST(FeaturesDigest, WhatIsNeverDroppedIsCutVisiblyWhenItAloneExceedsTheBudget) 
 
 // --- featuresBlock: which source the turn uses ------------------------------
 
-// The floor case (manifest.json's floor_test is the dialog-level twin in
-// assistant_dialog_test.cpp): a host without pj.feature_catalog.v1 leaves the
-// view unbound, and the turn carries the built-in reference with no note.
+// A host that omits pj.feature_catalog.v1 leaves the view unbound, and the
+// turn carries the built-in reference with no note (the dialog-level twin is
+// in assistant_dialog_test.cpp).
 TEST(FeaturesBlock, AnUnboundServiceUsesTheBuiltInReference) {
   EXPECT_EQ(
       featuresBlock(PJ::sdk::FeatureCatalogView{}, assistant_agent::kDefaultFeaturesBudgetChars), fallbackFeatures());

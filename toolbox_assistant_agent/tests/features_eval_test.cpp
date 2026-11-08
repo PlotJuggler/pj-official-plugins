@@ -4,9 +4,12 @@
 // Feature-awareness benchmark runner. Asks the real CLI the product questions
 // in docs/benchmarks/features/questions.json, once per fixture the question
 // names, and writes one JSONL line per reply for score.py in the same
-// directory. Opt-in, like ClaudeSmoke/CodexSmoke: it needs a logged-in CLI and
-// spends the user's subscription, so it is skipped unless
-// ASSISTANT_FEATURES_EVAL is set, and CI never runs it.
+// directory. Opt-in, like ClaudeSmoke/CodexSmoke: it needs a logged-in CLI,
+// spends the user's subscription, and needs a running scratch PlotJuggler
+// with nothing loaded to serve the tools (the public endpoint, see
+// support/test_endpoint.hpp), so it is skipped unless
+// ASSISTANT_FEATURES_EVAL and the endpoint variables are set, and CI never
+// runs it.
 //
 //   ASSISTANT_FEATURES_EVAL=claude|codex   backend to drive (required)
 //   ASSISTANT_FEATURES_EVAL_MODEL=<model>  default: sonnet for Claude, the CLI's own for Codex
@@ -15,6 +18,9 @@
 //   ASSISTANT_FEATURES_EVAL_BASELINE=1     no product policy and no features block: today's behaviour
 //   ASSISTANT_FEATURES_EVAL_ONLY=<ids>     comma-separated question ids
 //   ASSISTANT_CLAUDE_CLI / ASSISTANT_CODEX_CLI   CLI path override, as in the smoke tests
+//   ASSISTANT_MCP_URL / ASSISTANT_MCP_TOKEN      the PlotJuggler endpoint the tools run on (required;
+//                                                PlotJuggler started with --mcp writes both to
+//                                                <AppLocalData>/mcp-instances/<pid>.json)
 //
 // Each conversation is what the panel would send: the real backend (same
 // argv, so the same built-in tools withheld), the fixture rendered by the
@@ -36,7 +42,6 @@
 #include <optional>
 #include <pj_base/number_parse.hpp>
 #include <pj_base/sdk/platform.hpp>
-#include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <set>
 #include <sstream>
 #include <string>
@@ -46,8 +51,8 @@
 #include "codex_backend.hpp"
 #include "features_digest.hpp"
 #include "support/file_io.hpp"
+#include "support/test_endpoint.hpp"
 #include "system_prompt.hpp"
-#include "tool_registry.hpp"
 
 #ifndef ASSISTANT_FEATURES_BENCH_DIR
 #error "ASSISTANT_FEATURES_BENCH_DIR must be defined by CMake"
@@ -57,8 +62,6 @@ namespace {
 
 using assistant_agent::BackendEvent;
 using assistant_agent::HarnessMemory;
-using assistant_agent::ToolContext;
-using assistant_agent::ToolRegistry;
 using assistant_agent::TurnTools;
 using nlohmann::json;
 
@@ -125,7 +128,7 @@ struct Settings {
 };
 
 template <class Backend>
-void runEval(const Settings& settings) {
+void runEval(const Settings& settings, const PJ::sdk::McpEndpoint& endpoint) {
   const std::string bench = ASSISTANT_FEATURES_BENCH_DIR;
   const json questions =
       json::parse(assistant_agent::testing::readFileToString(bench + "/questions.json"))["questions"];
@@ -143,10 +146,6 @@ void runEval(const Settings& settings) {
   std::ofstream out(settings.out_path, std::ios::binary | std::ios::trunc);
   ASSERT_TRUE(out) << "cannot write " << settings.out_path;
 
-  ToolRegistry registry;
-  PJ::testing::ToolboxTestStore store;  // nothing loaded
-  ToolContext ctx;
-  ctx.host = PJ::sdk::ToolboxHostView(store.makeHost());
   const std::string model_label = settings.model.empty() ? "default" : settings.model;
 
   const auto write = [&](const json& q, const std::string& fixture, int rep, const Turn& turn) {
@@ -197,9 +196,7 @@ void runEval(const Settings& settings) {
       for (int rep = 1; rep <= settings.repeat; ++rep) {
         auto memory = std::make_shared<HarnessMemory>();
         Backend backend(settings.cli, settings.model, memory);
-        TurnTools tools;
-        tools.registry = &registry;
-        tools.invoke = [&](const std::string& n, const json& a) { return registry.execute(n, a, ctx); };
+        TurnTools tools = assistant_agent::testing::toolsFor(endpoint);
         tools.catalog = kEmptyCatalog;
         if (settings.baseline) {
           backend.setInstructions(assistant_agent::assistantInstructions(/*with_product_policy=*/false));
@@ -240,6 +237,10 @@ TEST(FeaturesEval, AnswersTheProductQuestions) {
   if (!backend) {
     GTEST_SKIP() << "set ASSISTANT_FEATURES_EVAL=claude|codex (needs a logged-in CLI; spends your subscription)";
   }
+  const auto endpoint = assistant_agent::testing::liveEndpoint();
+  if (!endpoint) {
+    GTEST_SKIP() << assistant_agent::testing::kNoLiveEndpoint;
+  }
   Settings settings;
   settings.backend = *backend;
   const std::optional<std::string> model = PJ::sdk::getEnv("ASSISTANT_FEATURES_EVAL_MODEL");
@@ -254,11 +255,11 @@ TEST(FeaturesEval, AnswersTheProductQuestions) {
   if (settings.backend == "claude") {
     settings.cli = PJ::sdk::getEnv("ASSISTANT_CLAUDE_CLI").value_or("claude");
     settings.model = model.value_or("sonnet");  // the panel's own default (assistant_dialog.cpp)
-    runEval<assistant_agent::ClaudeBackend>(settings);
+    runEval<assistant_agent::ClaudeBackend>(settings, *endpoint);
   } else if (settings.backend == "codex") {
     settings.cli = PJ::sdk::getEnv("ASSISTANT_CODEX_CLI").value_or("codex");
     settings.model = model.value_or("");
-    runEval<assistant_agent::CodexBackend>(settings);
+    runEval<assistant_agent::CodexBackend>(settings, *endpoint);
   } else {
     FAIL() << "ASSISTANT_FEATURES_EVAL must be claude or codex, got '" << settings.backend << "'";
   }

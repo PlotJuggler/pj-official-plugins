@@ -55,6 +55,33 @@ TEST(ParseClaudeLine, AssistantTextAndToolUse) {
   EXPECT_EQ(evs[1].tool_name, "mcp__pj__list_topics");
 }
 
+TEST(ParseClaudeLine, ToolUseCarriesItsId) {
+  auto evs = parseClaudeLine(
+      R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"mcp__pj__list_topics","input":{}}]}})");
+  ASSERT_EQ(evs.size(), 1u);
+  EXPECT_EQ(evs[0].kind, ClaudeEvent::Kind::ToolUse);
+  EXPECT_EQ(evs[0].tool_id, "toolu_01");
+}
+
+TEST(ParseClaudeLine, ToolResultNamesTheCallItAnswersAndFlagsAnError) {
+  auto ok = parseClaudeLine(
+      R"({"type":"user","session_id":"s","message":{"role":"user","content":[{"tool_use_id":"toolu_01","type":"tool_result",)"
+      R"("content":[{"type":"text","text":"{\"count\":2}"}]}]}})");
+  ASSERT_EQ(ok.size(), 1u);
+  EXPECT_EQ(ok[0].kind, ClaudeEvent::Kind::ToolResult);
+  EXPECT_EQ(ok[0].tool_id, "toolu_01");
+  EXPECT_FALSE(ok[0].is_error) << "is_error is absent on success";
+
+  auto failed = parseClaudeLine(
+      R"({"type":"user","message":{"content":[{"tool_use_id":"toolu_02","type":"tool_result","is_error":true,)"
+      R"("content":"unknown series"},{"type":"text","text":"not a result"}]}})");
+  ASSERT_EQ(failed.size(), 1u);
+  EXPECT_EQ(failed[0].tool_id, "toolu_02");
+  EXPECT_TRUE(failed[0].is_error);
+
+  EXPECT_TRUE(parseClaudeLine(R"({"type":"user","message":{"content":"plain text"}})").empty());
+}
+
 TEST(ParseClaudeLine, ResultSuccess) {
   auto evs =
       parseClaudeLine(R"({"type":"result","subtype":"success","result":"Done.","session_id":"s","is_error":false})");

@@ -11,7 +11,7 @@ namespace assistant_agent {
 // "pj_assistant_mcp_" -> POSIX "/tmp/pj_assistant_mcp_XXXXXX"), and sets
 // `out_path` to the file actually created. A short write unlinks the file and
 // returns false, leaving `out_path` untouched. Shared by
-// McpLoopback::configFilePath (the --mcp-config file, bearer token inside)
+// ClaudeBackend::mcpConfigFile (the --mcp-config file, bearer token inside)
 // and CodexBackend::ensureInstructionsFile (the model_instructions_file) —
 // both want a private file that never lands its sensitive contents on argv,
 // which /proc/<pid>/cmdline exposes to every local user.

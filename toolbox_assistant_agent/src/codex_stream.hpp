@@ -15,15 +15,17 @@ namespace assistant_agent {
 // CodexEvent rather than a vector (see stream_json.hpp for the Claude shape).
 struct CodexEvent {
   enum class Kind {
-    ThreadStarted,    // "thread.started"; session_id set
-    TurnStarted,      // "turn.started"
-    AssistantText,    // item.completed, item.type == "agent_message"; text set
-    ToolCallStarted,  // item.started, item.type == "mcp_tool_call"; tool_name set
-    ToolCallFailed,   // item.completed, item.type == "mcp_tool_call" with a non-null error; tool_name + text set
-    ErrorItem,        // item.completed item.type == "error", OR a top-level {"type":"error",...}; text set
-    TurnCompleted,    // "turn.completed"; metrics filled
-    TurnFailed,       // "turn.failed"; text set
-    Ignored,          // a record we don't surface (including a completed tool call with no error)
+    ThreadStarted,      // "thread.started"; session_id set
+    TurnStarted,        // "turn.started"
+    AssistantText,      // item.completed, item.type == "agent_message"; text set
+    ToolCallStarted,    // item.started, item.type == "mcp_tool_call"; tool_name set
+    ToolCallCompleted,  // item.completed, item.type == "mcp_tool_call", status "completed", no error; tool_name set
+    ToolCallFailed,  // item.completed, item.type == "mcp_tool_call" with an error or status "failed"; tool_name + text
+                     // set
+    ErrorItem,       // item.completed item.type == "error", OR a top-level {"type":"error",...}; text set
+    TurnCompleted,   // "turn.completed"; metrics filled
+    TurnFailed,      // "turn.failed"; text set
+    Ignored,         // a record we don't surface
   };
   Kind kind = Kind::Ignored;
   std::string text;        // AssistantText / ErrorItem / TurnFailed
@@ -31,6 +33,20 @@ struct CodexEvent {
   std::string session_id;  // ThreadStarted only
   TurnMetrics metrics;     // TurnCompleted only
 };
+
+// The first text block of an mcp_tool_call item's `result` (an MCP CallToolResult), or a
+// generic reason when it has none.
+[[nodiscard]] inline std::string firstResultText(const nlohmann::json& item) {
+  const auto& result = item.value("result", nlohmann::json{});
+  if (result.is_object()) {
+    for (const auto& block : result.value("content", nlohmann::json::array())) {
+      if (block.is_object() && block.value("type", std::string{}) == "text") {
+        return block.value("text", std::string{});
+      }
+    }
+  }
+  return "the tool reported an error";
+}
 
 // Parse one `codex exec --json` stdout line. Malformed JSON, or a shape this
 // build has never heard of, yields Kind::Ignored — never throws. Whether an
@@ -71,16 +87,18 @@ struct CodexEvent {
     }
     const std::string item_type = item.value("type", std::string{});
     if (item_type == "mcp_tool_call") {
+      // Two failure shapes: a transport/approval `error`, or the server's own isError reply
+      // (status "failed", error null, the reason in `result`).
       const auto& error = item.value("error", nlohmann::json{});
-      if (error.is_object()) {
+      const std::string status = item.value("status", std::string{});
+      if (error.is_object() || status == "failed") {
         out.kind = CodexEvent::Kind::ToolCallFailed;
         out.tool_name = item.value("tool", std::string{});
-        out.text = error.value("message", std::string{});
+        out.text = error.is_object() ? error.value("message", std::string{}) : firstResultText(item);
+      } else if (status == "completed") {
+        out.kind = CodexEvent::Kind::ToolCallCompleted;
+        out.tool_name = item.value("tool", std::string{});
       }
-      // A completed call with no error carries no event of its own: the
-      // model's next turn sees the result as part of its own context, exactly
-      // like Claude's tool_result blocks (claude_backend.cpp never surfaces
-      // those either — only the ToolUse that started the call).
       return out;
     }
     if (item_type == "error") {

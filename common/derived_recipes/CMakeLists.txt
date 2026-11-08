@@ -1,6 +1,7 @@
 # Shared, UI-free helpers for creating persisted derived recipes (transform / on_demand)
-# through pj.data_processors.v1: path and input resolution, typed outputs, the generated Luau
-# chunk and the display<->raw time conversion. Consumer: toolbox_assistant_agent. Internal target — not exported, not installed.
+# through pj.data_processors.v1: path and input resolution, the generated Luau chunk and the
+# display<->raw time conversion. Consumers: toolbox_transform_editor, toolbox_assistant_agent
+# (its catalog digest). Internal target — not exported, not installed.
 
 find_package(nlohmann_json REQUIRED)
 
@@ -27,6 +28,6 @@ if(TARGET GTest::gtest_main)
   if(DEFINED PJ_WARNING_FLAGS)
     target_compile_options(derived_recipes_test PRIVATE ${PJ_WARNING_FLAGS})
   endif()
-  target_link_libraries(derived_recipes_test PRIVATE pj_derived_recipes GTest::gtest_main)
+  target_link_libraries(derived_recipes_test PRIVATE pj_derived_recipes pj_test_support GTest::gtest_main)
   add_test(NAME derived_recipes_test COMMAND derived_recipes_test)
 endif()
