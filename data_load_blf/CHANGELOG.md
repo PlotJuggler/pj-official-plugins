@@ -3,6 +3,12 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_blf/`.
 
+## [0.1.5] - 2026-11-08
+
+### Fixed
+
+- Read BLF files of 4 GiB or more to the end: the reader kept the file length in 32 bits, so it stopped at the size modulo 4 GiB and silently dropped the rest of the frames.
+
 ## [0.1.4] - 2026-10-19
 
 ### Fixed
