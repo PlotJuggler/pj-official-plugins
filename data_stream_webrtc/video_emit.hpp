@@ -12,7 +12,10 @@
 //   * isH264Keyframe(): an IDR slice (NAL type 5) is present.
 //   * extractH264SpsPps(): SPS(7)+PPS(8) MUST physically precede the IDR slice
 //     in the same buffer, or the decoder gets empty extradata.
-//   * No B-frames (encoder is configured low-latency upstream).
+//   * No B-frames, so VideoFrame.timestamp_ns equals the store time. This is a
+//     property of the low-latency WebRTC encoder upstream, not a consumer
+//     requirement: the consumer supports B-frames (DTS store time, PTS in
+//     timestamp_ns).
 #pragma once
 
 #include <cstddef>
