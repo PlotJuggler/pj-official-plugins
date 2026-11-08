@@ -57,7 +57,8 @@ FileReader::FileReader(std::FILE* file)
 #if defined _WIN32 || defined __CYGWIN__
   offset_type s = _ftelli64(file_);
 #else
-  offset_type s = std::ftell(file_);
+  // PJ4 local patch: 64-bit offsets (see FileReader::offset_type).
+  offset_type s = ftello(file_);
 #endif
   if (s < 0) {
     throw std::system_error(errno, std::generic_category());
@@ -89,7 +90,8 @@ uint64_t FileReader::read(std::byte** output, uint64_t offset, uint64_t size) {
 #if defined _WIN32 || defined __CYGWIN__
     int status = _fseeki64(file_, (offset_type)offset, SEEK_SET);
 #else
-    int status = std::fseek(file_, (offset_type)offset, SEEK_SET);
+    // PJ4 local patch: 64-bit offsets (see FileReader::offset_type).
+    int status = fseeko(file_, (offset_type)offset, SEEK_SET);
 #endif
     if (status < 0) {
       throw std::system_error(errno, std::generic_category());

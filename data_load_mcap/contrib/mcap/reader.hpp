@@ -5,6 +5,9 @@
 #include "types.hpp"
 #include "visibility.hpp"
 #include <cstdio>
+#if !defined _WIN32 && !defined __CYGWIN__
+#  include <sys/types.h>  // off_t
+#endif
 #include <fstream>
 #include <map>
 #include <memory>
@@ -92,14 +95,18 @@ public:
   uint64_t read(std::byte** output, uint64_t offset, uint64_t size) override;
 
 private:
-  // Numeric type returned by the tell/seek operations. Necessary because long on Windows is 32
-  // bits so the standard C library interfaces don't work for files larger than 2GiB.
+  // PJ4 local patch (not upstream): 64-bit offsets on 32-bit POSIX targets such as wasm32, also in
+  // FileReader's ftello/fseeko calls in reader.inl. (Re-apply on any mcap re-vendor.)
+  // Numeric type returned by the tell/seek operations. Not `long`: it is 32 bits on Windows and on
+  // 32-bit targets such as WebAssembly, where std::ftell/std::fseek cannot address past 2 GiB. POSIX
+  // uses the off_t of ftello/fseeko instead.
 #if defined _WIN32 || defined __CYGWIN__
   typedef __int64 offset_type;
 #else
-  typedef long offset_type;
+  typedef off_t offset_type;
 #endif
 
+  static_assert(sizeof(offset_type) >= 8, "offset_type must address files larger than 2 GiB");
   static_assert((offset_type)(uint64_t)std::numeric_limits<offset_type>::max() ==
                   std::numeric_limits<offset_type>::max(),
                 "offset_type should fit in uint64_t");
