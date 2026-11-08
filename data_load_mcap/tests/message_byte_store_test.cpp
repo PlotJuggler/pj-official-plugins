@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <mcap/message_byte_store.hpp>
 #include <mcap/parallel_reader.hpp>
 #include <mcap/unchunked_payload_store.hpp>
@@ -39,6 +40,13 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include <process.h>
+#define getpid _getpid
+#endif
 
 namespace {
 
@@ -577,6 +585,109 @@ TEST(MessageByteStoreInit, NonReadablePathReportsOnce) {
   mcap::MessageByteStore store;
   store.init("/definitely/does/not/exist/pj_mbs_missing.mcap", {}, {}, [&count](const mcap::Status&) { ++count; });
   EXPECT_EQ(count, 1);
+}
+
+// A compressed chunk whose record declares an enormous uncompressed_size must be rejected before any reader allocates
+// it: lz4 and zstd readers size their output buffer from that field. The summary's ChunkIndex keeps the true size, as a
+// crafted file would, so the parallel reader's index-based cap alone does not catch it, and the serial file-order scan
+// (the plugin's retry path) has no index to check against.
+struct RemoveOnExit {
+  std::string path;
+  ~RemoveOnExit() {
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+  }
+};
+
+std::string writeChunkWithHugeDeclaredSize(mcap::Compression compression, const std::string& tag) {
+  const std::string path =
+      (std::filesystem::temp_directory_path() / ("pj_huge_chunk_" + tag + "_" + std::to_string(::getpid()) + ".mcap"))
+          .string();
+  {
+    mcap::McapWriter writer;
+    mcap::McapWriterOptions options("");
+    options.compression = compression;
+    options.forceCompression = true;  // the writer stores chunks under 1 KiB uncompressed
+    EXPECT_TRUE(writer.open(path, options).ok());
+    mcap::Schema schema("test/Raw", "raw", mcap::ByteArray{});
+    writer.addSchema(schema);
+    mcap::Channel channel("/topic/raw", "raw", schema.id);
+    writer.addChannel(channel);
+    const std::vector<uint8_t> payload = makePayload(1, 1);
+    for (uint64_t i = 0; i < 3; ++i) {
+      mcap::Message message;
+      message.channelId = channel.id;
+      message.sequence = static_cast<uint32_t>(i);
+      message.logTime = (i + 1) * 1'000;
+      message.publishTime = message.logTime;
+      message.dataSize = payload.size();
+      message.data = reinterpret_cast<const std::byte*>(payload.data());
+      EXPECT_TRUE(writer.write(message).ok());
+    }
+    writer.close();
+  }
+  // Chunk record: opcode u8, length u64, message_start_time u64, message_end_time u64, uncompressed_size u64.
+  std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
+  uint64_t offset = 8;  // magic
+  for (;;) {
+    file.seekg(static_cast<std::streamoff>(offset));
+    uint8_t opcode = 0;
+    uint64_t length = 0;
+    file.read(reinterpret_cast<char*>(&opcode), 1);
+    file.read(reinterpret_cast<char*>(&length), 8);
+    if (!file) {
+      ADD_FAILURE() << "no Chunk record in the fixture";
+      return path;
+    }
+    if (opcode == static_cast<uint8_t>(mcap::OpCode::Chunk)) {
+      const uint64_t huge = uint64_t{1} << 46;  // 64 TiB: no allocator can satisfy it
+      file.seekp(static_cast<std::streamoff>(offset + 1 + 8 + 8 + 8));
+      file.write(reinterpret_cast<const char*>(&huge), 8);
+      EXPECT_TRUE(file);
+      return path;
+    }
+    offset += 1 + 8 + length;
+  }
+}
+
+TEST(HugeDeclaredChunkSize, ParallelReaderRejectsAZstdChunk) {
+  const std::string path = writeChunkWithHugeDeclaredSize(mcap::Compression::Zstd, "zstd");
+  const RemoveOnExit cleanup{path};
+  size_t messages = 0;
+  std::vector<mcap::Status> problems;
+  {
+    mcap::ParallelReader reader;
+    ASSERT_TRUE(reader.open(path).ok());
+    for (const auto& view : reader.readMessages([&](const mcap::Status& s) { problems.push_back(s); }, {})) {
+      (void)view;
+      ++messages;
+    }
+  }
+  EXPECT_EQ(messages, 0u);
+  ASSERT_FALSE(problems.empty());
+  EXPECT_EQ(problems.front().code, mcap::StatusCode::InvalidRecord) << problems.front().message;
+}
+
+TEST(HugeDeclaredChunkSize, SerialFileOrderScanRejectsAnLz4Chunk) {
+  const std::string path = writeChunkWithHugeDeclaredSize(mcap::Compression::Lz4, "lz4");
+  const RemoveOnExit cleanup{path};
+  size_t messages = 0;
+  std::vector<mcap::Status> problems;
+  {
+    mcap::McapReader reader;
+    ASSERT_TRUE(reader.open(path).ok());
+    mcap::ReadMessageOptions options;
+    options.readOrder = mcap::ReadMessageOptions::ReadOrder::FileOrder;
+    for (const auto& view : reader.readMessages([&](const mcap::Status& s) { problems.push_back(s); }, options)) {
+      (void)view;
+      ++messages;
+    }
+    reader.close();
+  }
+
+  EXPECT_EQ(messages, 0u);
+  ASSERT_FALSE(problems.empty());
+  EXPECT_EQ(problems.front().code, mcap::StatusCode::InvalidRecord) << problems.front().message;
 }
 
 }  // namespace
