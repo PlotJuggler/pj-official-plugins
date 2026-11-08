@@ -938,6 +938,14 @@ Status McapReader::ParseChunk(const Record& record, Chunk* chunk) {
     const auto msg = internal::StrCat("invalid Chunk.records length: ", chunk->compressedSize);
     return Status{StatusCode::InvalidRecord, msg};
   }
+  // PJ4 local patch (not upstream; re-apply on any mcap re-vendor).
+  // Uncompressed records ARE the decompressed chunk: readers copy uncompressedSize bytes from them, so a larger
+  // declared size would read past the record.
+  if (chunk->compression.empty() && chunk->uncompressedSize != chunk->compressedSize) {
+    const auto msg = internal::StrCat("invalid uncompressed Chunk: uncompressed_size ", chunk->uncompressedSize,
+                                      " != records length ", chunk->compressedSize);
+    return Status{StatusCode::InvalidRecord, msg};
+  }
   // records
   chunk->records = record.data + offset;
 
