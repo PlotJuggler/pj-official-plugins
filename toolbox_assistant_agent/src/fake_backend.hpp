@@ -104,7 +104,7 @@ class FakeBackend : public LlmBackend {
       if (path.empty() || !at_s) {
         sink({BackendEvent::Kind::AssistantText, "Say: crop <topic> at <t>"});
       } else {
-        // The crop_box body/outputs shape object_ops_catalog.hpp advertises
+        // The crop_box body/outputs shape the SDK's object_ops_catalog.hpp advertises
         // for kPointCloud: a cropped cloud plus its point count, so the
         // result reads as more than just "created".
         run("evaluate", {{"inputs", nlohmann::json::array({path})},

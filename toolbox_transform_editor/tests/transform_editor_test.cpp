@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: MPL-2.0
-// The Transform Editor through the real toolbox and dialog, against the recording and fake hosts the
-// assistant's tests use. The plugin source is compiled in ONCE, for this one executable: the trial run,
+// The Transform Editor through the real toolbox and dialog, against the recording and fake hosts the SDK
+// ships under pj_plugins/testing. The plugin source is compiled in ONCE, for this one executable: the trial run,
 // Create / Modify / load of on-demand recipes, the asynchronous preview with its teardown, and the floor
 // host (manifest.json floor_test) that predates the typed requests and catalog snapshot v2. Nothing here
 // runs a script: the recording host proves WHAT the editor asked the host to run or install.
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <pj_plugins/testing/fake_catalog_host.hpp>
+#include <pj_plugins/testing/fake_playback_viewport_hosts.hpp>
+#include <pj_plugins/testing/recording_dp_host.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 
 #include "../transform_editor_plugin.cpp"
-#include "test_support/fake_catalog_host.hpp"
-#include "test_support/fake_playback_viewport_hosts.hpp"
-#include "test_support/recording_dp_host.hpp"
 
 namespace {
 
-using toolbox_testing::FakeCatalogHost;
-using toolbox_testing::FakePlaybackHost;
-using toolbox_testing::RecordingDpHost;
+using PJ::testing::FakeCatalogHost;
+using PJ::testing::FakePlaybackHost;
+using PJ::testing::RecordingDpHost;
 
 class TransformEditorPreviewTestPeer {
  public:
@@ -97,7 +97,7 @@ class TransformEditorPreviewTestPeer {
   }
   // The form resolves inputs against the catalog (object topics first), so a config-driven
   // preview needs one that knows "/cloud".
-  static void bindCatalog(TransformEditorToolbox& editor, toolbox_testing::FakeCatalogHost& catalog) {
+  static void bindCatalog(TransformEditorToolbox& editor, FakeCatalogHost& catalog) {
     editor.test_catalog_host_ = PJ::sdk::ToolboxHostView(catalog.makeHost());
   }
   static void submitPreview(TransformEditorToolbox& editor, std::string script = "return {count=1}") {
@@ -1803,7 +1803,7 @@ TEST(TransformEditorPreview, ClearingBodyOrInputClearsCompletedAndPendingReports
   for (bool clear_source : {false, true}) {
     Host host;
     host.canned_report_json = kTrialReport;
-    toolbox_testing::FakeCatalogHost catalog;
+    FakeCatalogHost catalog;
     catalog.addObjectTopic("/cloud", "kPointCloud", 1, 0, 1);
     TransformEditorToolbox editor;
     TransformEditorPreviewTestPeer::bind(editor, host.view());

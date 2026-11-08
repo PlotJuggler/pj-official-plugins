@@ -21,12 +21,14 @@
 
 namespace assistant_agent {
 
+using PJ::sdk::agent_tools::catalogDigest;
+
 namespace {
 // Persisted settings keys (pj.settings.v1). Namespaced so they never collide
 // with another toolbox's keys in the shared store.
 constexpr const char* kKeyBackend = "assistant.backend";  // "claude" or "codex"
 // Character budget for the catalog digest handed to the model at the top of
-// every turn (catalogDigest, tool_registry.hpp). Same default as
+// every turn (catalogDigest, pj_base/agent_tools/tool_registry.hpp). Same default as
 // catalogDigest's own parameter default, so an absent key is byte-identical
 // to the pre-existing behaviour; clamped in resolveCatalogBudgetChars so a
 // stray value in the settings store cannot blow the digest up unbounded or

@@ -20,10 +20,10 @@
 #include <vector>
 
 #include "codex_stream.hpp"
+#include "pj_base/agent_tools/tool_registry.hpp"
 #include "support/backend_test_helpers.hpp"
 #include "support/file_io.hpp"
 #include "system_prompt.hpp"
-#include "tool_registry.hpp"
 
 namespace {
 
@@ -32,9 +32,9 @@ using assistant_agent::CodexBackend;
 using assistant_agent::CodexEvent;
 using assistant_agent::HarnessMemory;
 using assistant_agent::parseCodexLine;
-using assistant_agent::ToolRegistry;
 using assistant_agent::TurnTools;
 using assistant_agent::testing::runListTopicsSmoke;
+using PJ::sdk::agent_tools::ToolRegistry;
 
 // The one thing about this backend that is not a preference.
 //
@@ -255,7 +255,7 @@ std::vector<BackendEvent> runOneCodexTurnAgainst(const std::vector<std::string>&
   TurnTools tools;
   tools.registry = &reg;
   tools.invoke = [](const std::string&, const nlohmann::json&) {
-    return assistant_agent::ToolResult::failure("no tool runs in this test");
+    return PJ::sdk::agent_tools::ToolResult::failure("no tool runs in this test");
   };
   auto memory = std::make_shared<HarnessMemory>();
   if (resuming) {
@@ -320,7 +320,7 @@ TEST(CodexBackendSuccess, ACleanTurnEmitsToolActivityAssistantTextMetricsThenCom
     TurnTools tools;
     tools.registry = &reg;
     tools.invoke = [](const std::string&, const nlohmann::json&) {
-      return assistant_agent::ToolResult::failure("no tool runs in this test");
+      return PJ::sdk::agent_tools::ToolResult::failure("no tool runs in this test");
     };
     CodexBackend backend(cli, "", memory);
     std::vector<BackendEvent> out;

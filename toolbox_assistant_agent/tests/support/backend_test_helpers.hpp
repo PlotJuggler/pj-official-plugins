@@ -16,9 +16,9 @@
 #include <utility>
 #include <vector>
 
-#include "llm_backend.hpp"    // BackendEvent, LlmBackend, TurnTools
-#include "platform_util.hpp"  // pathToUtf8, utf8ToPath
-#include "tool_registry.hpp"  // ToolRegistry, ToolContext
+#include "llm_backend.hpp"                        // BackendEvent, LlmBackend, TurnTools
+#include "pj_base/agent_tools/tool_registry.hpp"  // ToolRegistry, ToolContext
+#include "platform_util.hpp"                      // pathToUtf8, utf8ToPath
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>  // mkstemp/close/chmod for the fake CLI script
@@ -32,6 +32,8 @@
 #endif
 
 namespace assistant_agent::testing {
+
+using PJ::sdk::agent_tools::ToolContext;
 
 // The first Error event, or nullptr — every fake-CLI resume/translation test
 // (claude_smoke_test.cpp, codex_backend_test.cpp) asks this same question.

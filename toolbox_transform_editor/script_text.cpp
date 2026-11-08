@@ -10,7 +10,8 @@
 
 namespace transform_editor::text {
 
-using derived_recipes::luaStringEscape;
+using PJ::sdk::agent_tools::luaStringEscape;
+namespace agent_tools = PJ::sdk::agent_tools;
 
 std::string buildVariablePrologue(std::string_view language, const std::vector<InputBinding>& bindings) {
   const bool python = language == "python";
@@ -344,19 +345,19 @@ BuiltScript buildOnDemandScript(
   const std::string prologue = buildVariablePrologue(language, bindings);
   const std::string user = globals.empty() ? body : globals + "\n" + body;
   const std::string chunk_body = prologue + user;
-  BuiltScript out = python ? derived_recipes::buildOnDemandChunkPython(chunk_body, resolved)
-                           : derived_recipes::buildResolvedOnDemandChunk(chunk_body, resolved);
+  BuiltScript out = python ? agent_tools::buildOnDemandChunkPython(chunk_body, resolved)
+                           : agent_tools::buildResolvedOnDemandChunk(chunk_body, resolved);
   // The user's text follows the variable prologue, one line per line break; the layout the builder
   // reports is that of the whole chunk_body.
   int line = out.layout.body_first_line + static_cast<int>(std::count(prologue.begin(), prologue.end(), '\n'));
   out.layout = {};
   if (!globals.empty()) {
     out.layout.globals_first_line = line;
-    out.layout.globals_lines = derived_recipes::physicalLines(globals);
+    out.layout.globals_lines = agent_tools::physicalLines(globals);
     line += out.layout.globals_lines;
   }
   out.layout.body_first_line = line;
-  out.layout.body_lines = derived_recipes::physicalLines(body);
+  out.layout.body_lines = agent_tools::physicalLines(body);
   return out;
 }
 

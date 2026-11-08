@@ -24,7 +24,6 @@ set(ASSISTANT_AGENT_COMMON_SOURCES
   src/mcp_http_server.cpp
   src/mcp_loopback.cpp
   src/harness_workdir.cpp
-  src/tools.cpp
   src/features_digest.cpp
   src/claude_sessions.cpp
   src/codex_sessions.cpp
@@ -45,7 +44,7 @@ target_compile_features(toolbox_assistant_agent_plugin PRIVATE cxx_std_20)
 target_compile_options(toolbox_assistant_agent_plugin PRIVATE ${PJ_WARNING_FLAGS})
 
 target_link_libraries(toolbox_assistant_agent_plugin PRIVATE
-  pj_derived_recipes
+  plotjuggler_sdk::agent_tools
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
   ixwebsocket::ixwebsocket
@@ -175,31 +174,19 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_model_picker_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentModelPickerTest COMMAND toolbox_assistant_agent_model_picker_test)
 
-  # SeriesStats: stats + min/max-preserving bucket decimation. Pure, std-only.
-  add_executable(toolbox_assistant_agent_series_stats_test
-    tests/series_stats_test.cpp
+  # GuiExecutor: pending evaluations are released on the GUI thread (shutdown, abandonment, cancel)
+  # and resumed across ticks, driven against the SDK's ToolRegistry and its fake hosts.
+  add_executable(toolbox_assistant_agent_gui_executor_test
+    tests/gui_executor_test.cpp
   )
-  target_link_libraries(toolbox_assistant_agent_series_stats_test PRIVATE GTest::gtest_main)
-  target_include_directories(toolbox_assistant_agent_series_stats_test PRIVATE
+  target_link_libraries(toolbox_assistant_agent_gui_executor_test PRIVATE
+    plotjuggler_sdk::agent_tools plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_gui_executor_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
-  target_compile_features(toolbox_assistant_agent_series_stats_test PRIVATE cxx_std_20)
-  add_test(NAME ToolboxAssistantAgentSeriesStatsTest COMMAND toolbox_assistant_agent_series_stats_test)
-
-  # ToolRegistry executors against a fake C-ABI toolbox host (read tools) and a
-  # recording fake data-processors host (write tools).
-  add_executable(toolbox_assistant_agent_tool_registry_test
-    tests/tool_registry_test.cpp
-    src/tools.cpp
-  )
-  target_link_libraries(toolbox_assistant_agent_tool_registry_test PRIVATE
-    pj_derived_recipes pj_test_support plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
-  )
-  target_include_directories(toolbox_assistant_agent_tool_registry_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  target_compile_features(toolbox_assistant_agent_tool_registry_test PRIVATE cxx_std_20)
-  add_test(NAME ToolboxAssistantAgentToolRegistryTest COMMAND toolbox_assistant_agent_tool_registry_test)
+  target_compile_features(toolbox_assistant_agent_gui_executor_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentGuiExecutorTest COMMAND toolbox_assistant_agent_gui_executor_test)
 
   # featuresDigest / featuresBlock and the built-in reference, rendered
   # against the feature-catalog benchmark fixtures.
@@ -237,10 +224,9 @@ if(TARGET GTest::gtest_main)
   add_executable(toolbox_assistant_agent_mcp_server_test
     tests/mcp_server_test.cpp
     src/mcp_http_server.cpp
-    src/tools.cpp
   )
   target_link_libraries(toolbox_assistant_agent_mcp_server_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    plotjuggler_sdk::agent_tools plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_mcp_server_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -263,7 +249,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_assistant_dialog_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    plotjuggler_sdk::agent_tools plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_assistant_dialog_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -304,7 +290,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_claude_smoke_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    plotjuggler_sdk::agent_tools plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_claude_smoke_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -328,7 +314,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_codex_backend_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    plotjuggler_sdk::agent_tools plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_codex_backend_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -352,7 +338,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_features_eval_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    plotjuggler_sdk::agent_tools plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_features_eval_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -391,14 +377,14 @@ if(TARGET GTest::gtest_main)
   # `#!/usr/bin/env node` shebang needs to find its own interpreter, and
   # cannotFindCliMessage's npm_shim wording (cli_probe.hpp). cli_locator.hpp
   # itself is header-only, so there is no extra source to list here.
-  # plotjuggler_sdk::plugin_sdk (not just ::base) and nlohmann_json are
-  # needed transitively through cli_probe.hpp -> llm_backend.hpp ->
-  # tool_registry.hpp/tool_context.hpp, same as tool_registry_test below.
+  # plotjuggler_sdk::agent_tools, plugin_sdk (not just ::base) and nlohmann_json
+  # are needed transitively through cli_probe.hpp -> llm_backend.hpp ->
+  # pj_base/agent_tools/tool_registry.hpp.
   add_executable(toolbox_assistant_agent_cli_locator_test
     tests/cli_locator_test.cpp
   )
   target_link_libraries(toolbox_assistant_agent_cli_locator_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::agent_tools plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_cli_locator_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src

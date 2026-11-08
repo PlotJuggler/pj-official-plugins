@@ -9,7 +9,7 @@ work by calling the same plugin SDK a human-written plugin would.
           │
           ▼
    ┌──────────────┐   tool calls    ┌──────────────────┐   SDK services   ┌────────────┐
-   │  chat panel  │ ──────────────▶ │ tool layer (14)  │ ───────────────▶ │ PlotJuggler│
+   │  chat panel  │ ──────────────▶ │ tool layer (SDK) │ ───────────────▶ │ PlotJuggler│
    │  (floating)  │ ◀────────────── │   over MCP       │ ◀─────────────── │    host    │
    └──────────────┘   results       └──────────────────┘                  └────────────┘
 ```

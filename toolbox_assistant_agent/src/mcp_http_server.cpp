@@ -19,6 +19,8 @@
 #include <utility>
 
 namespace assistant_agent {
+
+using PJ::sdk::agent_tools::ToolResult;
 namespace {
 
 using nlohmann::json;

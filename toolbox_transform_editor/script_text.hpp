@@ -5,7 +5,7 @@
 // Text helpers of the Transform Editor's script editing: variable names, a small tokenizer
 // that tells code from strings and comments, identifier renaming, the layout of the generated
 // on-demand chunk and the mapping of host error lines back to the user's code. Only the editor
-// needs them; the shared recipe library (common/derived_recipes) keeps what the assistant also uses.
+// needs them; the SDK's agent_tools recipe helpers keep what the assistant also uses.
 
 #include <cstddef>
 #include <map>
@@ -14,13 +14,13 @@
 #include <string_view>
 #include <vector>
 
-#include "derived_recipes/recipes.hpp"
+#include "pj_base/agent_tools/derived_recipes.hpp"
 
 namespace transform_editor::text {
 
-using derived_recipes::BuiltScript;
-using derived_recipes::ResolvedEvalInputs;
-using derived_recipes::ScriptLayout;
+using PJ::sdk::agent_tools::BuiltScript;
+using PJ::sdk::agent_tools::ResolvedEvalInputs;
+using PJ::sdk::agent_tools::ScriptLayout;
 
 // One local of an on-demand body: the variable the script reads and the `inputs[...]` key it
 // is bound from.

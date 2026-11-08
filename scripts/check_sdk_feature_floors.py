@@ -25,7 +25,9 @@ Known, deliberate boundaries: the scan set is the LINK closure's directories —
 include-only dependencies, sources added via ``target_sources()`` from outside
 those directories, and generated code are not covered (linking is the repo's
 dependency contract; a Clang compile-command-based extractor is the upgrade
-path). And only RUNTIME host-contract surfaces are visible: compile-time SDK
+path). Surfaces the SDK's static ``agent_tools`` library calls on a plugin's
+behalf are matched through the table's ``ToolRegistry`` alias (the SDK's own
+check keeps that alias complete). And only RUNTIME host-contract surfaces are visible: compile-time SDK
 library APIs (``parseIso8601Utc``, ``sliderToWindow``, ...) never appear here,
 so "no host surfaces matched" or an over-declared-floor WARNING is NEVER by
 itself justification to lower ``min_sdk_required`` — toolbox_mosaico and

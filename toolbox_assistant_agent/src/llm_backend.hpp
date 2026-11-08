@@ -10,10 +10,14 @@
 #include "chat_session.hpp"     // ChatMessage
 #include "claude_sessions.hpp"  // ConversationSummary
 #include "model_choice.hpp"     // ModelChoice
-#include "tool_registry.hpp"
+#include "pj_base/agent_tools/tool_registry.hpp"
 #include "turn_metrics.hpp"
 
 namespace assistant_agent {
+
+using PJ::sdk::agent_tools::ToolInvoker;
+using PJ::sdk::agent_tools::ToolRegistry;
+using PJ::sdk::agent_tools::ToolResult;
 
 // One thing that happens during a turn, emitted by a backend and relayed to the
 // GUI thread (via the dialog's event queue) where it mutates the ChatSession.

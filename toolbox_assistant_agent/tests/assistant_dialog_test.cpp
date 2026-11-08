@@ -69,7 +69,6 @@ namespace {
 
 using assistant_agent::AssistantDialog;
 using assistant_agent::AssistantDialogTestPeer;
-using assistant_agent::catalogDigest;
 using assistant_agent::claudeSessionsDir;
 using assistant_agent::loadActiveSessionId;
 using assistant_agent::loadConversationTitles;
@@ -77,6 +76,7 @@ using assistant_agent::resolveCatalogBudgetChars;
 using assistant_agent::resolveFeaturesBudgetChars;
 using assistant_agent::SettingsStore;
 using nlohmann::json;
+using PJ::sdk::agent_tools::catalogDigest;
 
 using assistant_agent::testing::makeTempDir;
 using assistant_agent::testing::refreshTimezone;
@@ -1150,7 +1150,7 @@ TEST(AssistantDialogCatalogBudget, FeedsCatalogDigestWithATighterBudget) {
   SettingsStore settings{PJ::sdk::SettingsView{host.view()}};
   settings.setString("assistant.catalog_budget_chars", "1000");
 
-  // Mirrors CatalogDigest.SaysSoWhenTruncated (tool_registry_test.cpp): the
+  // Mirrors the SDK's CatalogDigest.SaysSoWhenTruncated (agent_tools_tool_registry_test.cpp): the
   // body is kept within budget_chars, but the header/footer sentences that
   // explain the truncation are added on top of it, so the total stays well
   // under a small multiple of the budget rather than under the budget itself.

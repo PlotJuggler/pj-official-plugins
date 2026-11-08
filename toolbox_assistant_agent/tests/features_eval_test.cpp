@@ -45,9 +45,9 @@
 #include "claude_backend.hpp"
 #include "codex_backend.hpp"
 #include "features_digest.hpp"
+#include "pj_base/agent_tools/tool_registry.hpp"
 #include "support/file_io.hpp"
 #include "system_prompt.hpp"
-#include "tool_registry.hpp"
 
 #ifndef ASSISTANT_FEATURES_BENCH_DIR
 #error "ASSISTANT_FEATURES_BENCH_DIR must be defined by CMake"
@@ -57,10 +57,10 @@ namespace {
 
 using assistant_agent::BackendEvent;
 using assistant_agent::HarnessMemory;
-using assistant_agent::ToolContext;
-using assistant_agent::ToolRegistry;
 using assistant_agent::TurnTools;
 using nlohmann::json;
+using PJ::sdk::agent_tools::ToolContext;
+using PJ::sdk::agent_tools::ToolRegistry;
 
 // What catalogDigest says with nothing loaded: product questions are asked
 // before any data is opened.

@@ -9,6 +9,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/host/service_registry_builder.hpp>
+#include <pj_plugins/testing/fake_multi_dataset_host.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <sstream>
 #include <string>
@@ -20,7 +21,6 @@
 #include <unistd.h>
 #endif
 
-#include "../toolbox_assistant_agent/tests/support/fake_multi_dataset_host.hpp"
 #include "data_exporter.hpp"
 #include "export_core.hpp"
 
@@ -418,7 +418,7 @@ TEST(DataExporterHostTest, EmptyMultiFileGroupIsSkippedWhilePopulatedGroupSuccee
 // string/null integration coverage (including sliced arrays and embedded NULs),
 // while this bound-host test covers the production toolbox orchestration.
 
-using assistant_agent::testing::FakeMultiDatasetHost;
+using PJ::testing::FakeMultiDatasetHost;
 using DroppedItem = DataExporterDialog::DroppedItem;
 
 // The fake numbers its data sources from 1, in addDataset order.

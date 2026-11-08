@@ -22,7 +22,7 @@
 #include "conversation_state.hpp"  // ConversationTitles
 #include "gui_executor.hpp"
 #include "llm_backend.hpp"
-#include "tool_registry.hpp"
+#include "pj_base/agent_tools/tool_registry.hpp"
 #include "usage_ledger.hpp"
 
 namespace assistant_agent {
@@ -31,7 +31,7 @@ class AssistantDialogTestPeer;
 class SettingsStore;
 
 // Character budget for the catalog digest handed to the model at the top of
-// every turn (catalogDigest, tool_registry.hpp), read from the settings key
+// every turn (catalogDigest, pj_base/agent_tools/tool_registry.hpp), read from the settings key
 // "assistant.catalog_budget_chars" and clamped to [1000, 200000]. An absent
 // or unparsable value falls back to catalogDigest's own default (10000) via
 // SettingsStore::getInt, so an install that never touched the key sees

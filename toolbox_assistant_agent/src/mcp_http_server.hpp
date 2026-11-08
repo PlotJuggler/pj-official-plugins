@@ -6,13 +6,16 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
-#include "tool_registry.hpp"
+#include "pj_base/agent_tools/tool_registry.hpp"
 
 namespace ix {
 class HttpServer;
 }
 
 namespace assistant_agent {
+
+using PJ::sdk::agent_tools::ToolInvoker;
+using PJ::sdk::agent_tools::ToolRegistry;
 
 // A minimal MCP server over localhost HTTP, used to expose the assistant's
 // ToolRegistry to the headless Claude Code CLI (which accepts external tools

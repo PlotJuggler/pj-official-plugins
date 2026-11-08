@@ -13,10 +13,14 @@
 #include <string>
 #include <utility>
 
-#include "tool_context.hpp"
-#include "tool_registry.hpp"
+#include "pj_base/agent_tools/tool_context.hpp"
+#include "pj_base/agent_tools/tool_registry.hpp"
 
 namespace assistant_agent {
+
+using PJ::sdk::agent_tools::ToolContext;
+using PJ::sdk::agent_tools::ToolRegistry;
+using PJ::sdk::agent_tools::ToolResult;
 
 // Marshals tool execution from any worker/MCP thread onto the GUI (host-callback)
 // thread, where the host service views are legal to call. A caller submits a

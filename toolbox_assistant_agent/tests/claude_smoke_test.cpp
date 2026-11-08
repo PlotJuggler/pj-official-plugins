@@ -19,17 +19,17 @@
 
 #include "claude_backend.hpp"
 #include "conversation_state.hpp"  // fnv1aHex, asserted against the stored hash
+#include "pj_base/agent_tools/tool_registry.hpp"
 #include "support/backend_test_helpers.hpp"
 #include "support/file_io.hpp"
 #include "system_prompt.hpp"
-#include "tool_registry.hpp"
 
 namespace {
 
 using assistant_agent::BackendEvent;
 using assistant_agent::ClaudeBackend;
-using assistant_agent::ToolRegistry;
 using assistant_agent::testing::runListTopicsSmoke;
+using PJ::sdk::agent_tools::ToolRegistry;
 
 // Guarded like the fake-CLI cases further down: it spawns the real
 // `claude`, and runProcess() spawns only on POSIX and Windows.
@@ -298,11 +298,11 @@ std::vector<assistant_agent::BackendEvent> runOneTurnAgainst(
     const std::string& result_line, bool resuming, const std::string& model = "") {
   const std::string cli = writeFakeCli(result_line);
   EXPECT_FALSE(cli.empty()) << "could not create the fake CLI script";
-  assistant_agent::ToolRegistry reg;
+  ToolRegistry reg;
   assistant_agent::TurnTools tools;
   tools.registry = &reg;
   tools.invoke = [](const std::string&, const nlohmann::json&) {
-    return assistant_agent::ToolResult::failure("no tool runs in this test");
+    return PJ::sdk::agent_tools::ToolResult::failure("no tool runs in this test");
   };
   auto memory = std::make_shared<assistant_agent::HarnessMemory>();
   if (resuming) {

@@ -37,6 +37,12 @@ must be destroyed while the settings backend it writes through is still alive.
 
 ## The tool layer
 
+The tool layer is not part of this plugin: `ToolRegistry`, the executors, the series statistics, the
+object-operation catalog and the derived-recipe helpers live in the SDK component
+`plotjuggler_sdk::agent_tools` (headers `pj_base/agent_tools/`, namespace `PJ::sdk::agent_tools`), shared
+with the Transform Editor. The plugin supplies what is specific to it:
+`GuiExecutor` (the thread marshalling below), the dialog, the backends and the prompts.
+
 `ToolRegistry` is the single source of truth for the tool set. It serializes to MCP's
 `tools/list` *and* to OpenAI-style function specs (`toFunctionSpecs`, kept for the harness
 backends to come) from the same definitions, so the backends and the unit tests can never
@@ -74,7 +80,7 @@ that saw them in `list_topics` could never do anything useful with the entry.
 `sdk::describe(BuiltinObjectType)`, the same compile-time registry `pj_scripting`'s Luau binder
 reads from in PJ4 — into a bounded JSON tree (depth capped at 3; a raw record buffer, e.g.
 `PointCloud::data`, states only its name and kind), and lists the operations a script may call on
-it from a static table in `object_ops_catalog.hpp` that mirrors PJ4's `object_binder.cpp` by hand.
+it from a static table in the SDK's `object_ops_catalog.hpp` that mirrors PJ4's `object_binder.cpp` by hand.
 Keeping that table hand-written rather than derived is deliberate: the SDK's field table describes
 *data shape*, not the native methods a Luau binder layers on top of it, so there is no single source
 to generate operations from — the mirror has to be maintained, and object_ops_catalog.hpp's own
@@ -341,7 +347,7 @@ never repeats the persistent installation or its notification.
 
 The script itself is a different shape too: not a per-sample `T:calculate` closure
 (`buildTransformScript`) but a single chunk evaluated once per requested instant
-(`buildOnDemandChunk`, in `common/derived_recipes`, shared with the Transform Editor; `luau_transform.hpp` re-exports it) — `local inputs, params = ...` bound at the top, the
+(`buildOnDemandChunk`, in the SDK's `derived_recipes.hpp`, shared with the Transform Editor) — `local inputs, params = ...` bound at the top, the
 model's `body` reading `inputs["<topic>"]` by its literal name and returning a table of the
 declared, TYPED `outputs`.
 

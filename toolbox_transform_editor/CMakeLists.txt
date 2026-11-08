@@ -10,7 +10,7 @@ target_compile_features(toolbox_transform_editor_script_text PUBLIC cxx_std_20)
 target_compile_options(toolbox_transform_editor_script_text PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(toolbox_transform_editor_script_text PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(toolbox_transform_editor_script_text PUBLIC
-  pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json)
+  plotjuggler_sdk::agent_tools plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json)
 
 add_library(toolbox_transform_editor_plugin SHARED transform_editor_plugin.cpp)
 
@@ -19,7 +19,7 @@ target_compile_options(toolbox_transform_editor_plugin PRIVATE ${PJ_WARNING_FLAG
 
 target_link_libraries(toolbox_transform_editor_plugin PRIVATE
   toolbox_transform_editor_script_text
-  pj_derived_recipes
+  plotjuggler_sdk::agent_tools
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
 )
@@ -94,7 +94,7 @@ if(TARGET GTest::gtest_main)
   target_compile_options(toolbox_transform_editor_test PRIVATE ${PJ_WARNING_FLAGS})
   target_include_directories(toolbox_transform_editor_test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(toolbox_transform_editor_test PRIVATE
-    toolbox_transform_editor_script_text pj_derived_recipes pj_test_support plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main)
+    toolbox_transform_editor_script_text plotjuggler_sdk::agent_tools plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main)
   add_dependencies(toolbox_transform_editor_test toolbox_transform_editor_plugin)
   add_test(NAME toolbox_transform_editor_test COMMAND toolbox_transform_editor_test)
 
@@ -104,6 +104,6 @@ if(TARGET GTest::gtest_main)
   target_compile_options(toolbox_transform_editor_script_text_test PRIVATE ${PJ_WARNING_FLAGS})
   target_include_directories(toolbox_transform_editor_script_text_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(toolbox_transform_editor_script_text_test PRIVATE
-    toolbox_transform_editor_script_text pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main)
+    toolbox_transform_editor_script_text plotjuggler_sdk::agent_tools plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main)
   add_test(NAME toolbox_transform_editor_script_text_test COMMAND toolbox_transform_editor_script_text_test)
 endif()

@@ -22,14 +22,14 @@
 #include <string>
 
 #include "mcp_http_server.hpp"
-#include "tool_registry.hpp"
+#include "pj_base/agent_tools/tool_registry.hpp"
 
 namespace {
 
 using assistant_agent::McpHttpServer;
-using assistant_agent::ToolContext;
-using assistant_agent::ToolRegistry;
 using nlohmann::json;
+using PJ::sdk::agent_tools::ToolContext;
+using PJ::sdk::agent_tools::ToolRegistry;
 
 // POST a JSON-RPC body with the given bearer token; returns (statusCode, parsed body).
 std::pair<int, json> rpc(const std::string& url, const std::string& token, const json& body) {

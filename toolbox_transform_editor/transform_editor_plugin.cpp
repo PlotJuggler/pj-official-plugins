@@ -32,7 +32,7 @@
 #include <utility>
 #include <vector>
 
-#include "derived_recipes/recipes.hpp"
+#include "pj_base/agent_tools/derived_recipes.hpp"
 #include "script_text.hpp"
 #include "transform_editor_dialog_ui.hpp"
 #include "transform_editor_manifest.hpp"
@@ -51,6 +51,8 @@
 #include "transform_editor_help_ui.hpp"
 
 namespace {
+
+namespace agent_tools = PJ::sdk::agent_tools;
 
 // ---------------------------------------------------------------------------
 // Snippet
@@ -1952,7 +1954,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     std::vector<transform_editor::text::InputBinding> bindings;
     const std::vector<std::string> names = variableNames();
     for (std::size_t i = 0; i < sources_.size(); ++i) {
-      bindings.push_back({names[i], derived_recipes::canonicalSeriesPath(sources_[i])});
+      bindings.push_back({names[i], agent_tools::canonicalSeriesPath(sources_[i])});
     }
     return bindings;
   }
@@ -2514,8 +2516,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // survives the plugin/panel closing.
     const std::string id = output_names.front();  // host namespaces it under the plugin id
     const std::string script =
-        derived_recipes::buildTransformScript(id, output_names.front(), global, body, num_extra, dialog_.language())
-            .script;
+        agent_tools::buildTransformScript(id, output_names.front(), global, body, num_extra, dialog_.language()).script;
 
     std::vector<std::string_view> inputs(input_topics.begin(), input_topics.end());
     std::vector<std::string_view> outputs(output_names.begin(), output_names.end());
@@ -2629,7 +2630,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (!catalog) {
       return false;
     }
-    const std::string path = derived_recipes::canonicalSeriesPath(source);
+    const std::string path = agent_tools::canonicalSeriesPath(source);
     bool found = false;
     forEachScalarPath(*catalog, [&](const std::string& topic, const std::string& full, const PJ_field_info_t*) {
       found = topic == path || full == path || topic == source || full == source;
@@ -2651,7 +2652,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       }
       return "number";
     }
-    const auto lookup = derived_recipes::resolveObjectTopic(*catalog_v2_, derived_recipes::canonicalSeriesPath(source));
+    const auto lookup = agent_tools::resolveObjectTopic(*catalog_v2_, agent_tools::canonicalSeriesPath(source));
     if (lookup.ambiguous) {
       return "ambiguous";
     }
@@ -2676,7 +2677,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   struct OnDemandBuild {
     PJ::sdk::DataProcessorRequest request;
     PJ::sdk::DataProcessorRequest trial_request;
-    derived_recipes::ScriptLayout layout;  // where the user's code sits in request.script
+    agent_tools::ScriptLayout layout;  // where the user's code sits in request.script
     std::string form_key;
     std::optional<PJ::sdk::DataSourceHandle> anchor;
     std::optional<FirstEntry> first_entry;
@@ -2712,11 +2713,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     } else {
       std::vector<std::string> raw;
       for (const std::string& source : dialog_.sources()) {
-        raw.push_back(derived_recipes::canonicalSeriesPath(source));
+        raw.push_back(agent_tools::canonicalSeriesPath(source));
       }
       PJ::sdk::ToolboxHostView host = catalogHost();
-      const auto resolved =
-          derived_recipes::resolveEvalInputs(host, *catalog_v2_, raw, derived_recipes::Audience::kUser);
+      const auto resolved = agent_tools::resolveEvalInputs(host, *catalog_v2_, raw, agent_tools::Audience::kUser);
       if (!resolved.error.empty()) {
         build.error = resolved.error;
       } else {
@@ -2786,7 +2786,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       std::optional<std::int64_t> pinned;
       if (build.anchor) {
         if (auto state = playback_view_.state()) {
-          pinned = derived_recipes::toRawNs(playback_view_, *build.anchor, state->current_time_s);
+          pinned = agent_tools::toRawNs(playback_view_, *build.anchor, state->current_time_s);
         }
       }
       if (!pinned) {
@@ -2838,7 +2838,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (!v2) {
       return targets;
     }
-    const auto listed = derived_recipes::listObjectTopics(*v2);
+    const auto listed = agent_tools::listObjectTopics(*v2);
     bool all_2d = true;
     bool returns_overlay = false;
     bool returns_image = false;
@@ -2851,7 +2851,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       if (it != listed.end()) {
         dataset = it->dataset;
       } else if (anchor) {
-        dataset = derived_recipes::objectTopicDatasetName(v2->dataSources(), *anchor);
+        dataset = agent_tools::objectTopicDatasetName(v2->dataSources(), *anchor);
       }
       targets.topics.push_back({created[i], std::move(dataset)});
       all_2d = all_2d && sceneKindForOutputType(outputs[i].type) == "2d";
@@ -2867,11 +2867,11 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // none, so its image input goes in first as the view's image.
     if (all_2d && returns_overlay && !returns_image) {
       for (const std::string& input : inputs) {
-        const auto lookup = derived_recipes::resolveObjectTopic(*v2, input);
+        const auto lookup = agent_tools::resolveObjectTopic(*v2, input);
         if (lookup.resolved && !isOverlayType(lookup.resolved->object_type) &&
             sceneKindForOutputType(lookup.resolved->object_type) == "2d") {
           targets.topics.insert(
-              targets.topics.begin(), {lookup.resolved->host_path, derived_recipes::objectTopicDatasetName(
+              targets.topics.begin(), {lookup.resolved->host_path, agent_tools::objectTopicDatasetName(
                                                                        v2->dataSources(), lookup.resolved->source)});
           break;
         }
@@ -2914,7 +2914,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       }
       // Pass the FULL field path; the host resolves topic + selected leaf column.
       const std::string script =
-          derived_recipes::buildTransformScript(name, name, global, body, 0, dialog_.batchLanguage()).script;
+          agent_tools::buildTransformScript(name, name, global, body, 0, dialog_.batchLanguage()).script;
       std::vector<std::string_view> ins{source_display};
       std::vector<std::string_view> outs{name};
       // Persist this series' editor state (single-tab shape) so the Edit (pencil)
@@ -3303,8 +3303,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     std::optional<std::string> error;
     std::string unchecked;  // uncheckedNote(), empty when the host decided
   };
-  ScriptVerdict checkScript(
-      std::string_view kind, const std::string& language, const derived_recipes::BuiltScript& built) {
+  ScriptVerdict checkScript(std::string_view kind, const std::string& language, const agent_tools::BuiltScript& built) {
     auto check = dp_view_.checkScript(kind, language, built.script);
     if (!check) {
       return {transform_editor::text::remapScriptLines(std::string(check.error()), built.layout), {}};
@@ -3338,7 +3337,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   // Returns false when the host rejected the script (the error is on the dialog).
   bool previewOnDemand(const OnDemandBuild& build) {
     const ScriptVerdict& verdict = scriptVerdict("on_demand", build.request.language, [&] {
-      return derived_recipes::BuiltScript{build.request.script, build.layout};
+      return agent_tools::BuiltScript{build.request.script, build.layout};
     });
     dialog_.setScriptNote(verdict.unchecked);
     if (verdict.error) {
@@ -3355,7 +3354,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     std::string note = "no playback service: evaluating at 0 s";
     if (anchor) {
       if (auto state = playback_view_.state()) {
-        if (auto raw = derived_recipes::toRawNs(playback_view_, *anchor, state->current_time_s)) {
+        if (auto raw = agent_tools::toRawNs(playback_view_, *anchor, state->current_time_s)) {
           instant_ns = *raw;
           note.clear();
         }
@@ -3599,8 +3598,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     for (std::size_t k = 0; k < num_outputs; ++k) {
       preview_outputs.push_back(preview_id + "_" + std::to_string(k));
     }
-    const derived_recipes::BuiltScript built =
-        derived_recipes::buildTransformScript(preview_id, preview_id, global, body, num_extra, dialog_.language());
+    const agent_tools::BuiltScript built =
+        agent_tools::buildTransformScript(preview_id, preview_id, global, body, num_extra, dialog_.language());
     const std::string& script = built.script;
 
     // Evaluate the code FIRST via the SDK (cheap: compile + one test point, no node).
@@ -3610,7 +3609,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // preview/create script keeps preview_id for the upsert).
     // An unchecked script goes on: installing the preview compiles it, and its refusal is the verdict.
     const ScriptVerdict& verdict = scriptVerdict("transform", dialog_.language(), [&] {
-      return derived_recipes::buildTransformScript(
+      return agent_tools::buildTransformScript(
           "__validate__", "__validate__", global, body, num_extra, dialog_.language());
     });
     const auto& invalid = verdict.error;
@@ -3710,7 +3709,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       dialog_.setBatchScriptNote("");
       return;
     }
-    const derived_recipes::BuiltScript built = derived_recipes::buildTransformScript(
+    const agent_tools::BuiltScript built = agent_tools::buildTransformScript(
         "__validate__", "__validate__", dialog_.batchGlobalCode(), body, 0, dialog_.batchLanguage());
     ScriptVerdict verdict = checkScript("transform", dialog_.batchLanguage(), built);
     dialog_.setBatchValidationError(verdict.error.value_or(""));

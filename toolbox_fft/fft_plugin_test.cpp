@@ -11,7 +11,6 @@
 #include <utility>
 #include <vector>
 
-#include "../toolbox_assistant_agent/tests/support/fake_multi_dataset_host.hpp"
 #include "fft_algorithm.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/toolbox_plugin_base.hpp"
@@ -19,6 +18,7 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_plugins/host/toolbox_library.hpp"
 #include "pj_plugins/host/widget_event_builder.hpp"
+#include "pj_plugins/testing/fake_multi_dataset_host.hpp"
 #include "pj_plugins/testing/toolbox_test_store.hpp"
 
 #ifndef PJ_FFT_PLUGIN_PATH
@@ -318,7 +318,7 @@ TEST(FftPluginTest, DataChangeInvalidatesAComputedResult) {
   EXPECT_NE(data.at("status_label").at("text").get<std::string>().find("Input data changed"), std::string::npos);
 }
 
-using assistant_agent::testing::FakeMultiDatasetHost;
+using PJ::testing::FakeMultiDatasetHost;
 
 // The fake numbers its data sources from 1, in addDataset order.
 constexpr uint32_t kRunA = 1;
