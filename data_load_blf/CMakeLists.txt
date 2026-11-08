@@ -91,8 +91,37 @@ set(_lblf_data_fixed [==[    if (logcontainer_que.size() < size_of_data)
     result.payload.reserve(size_of_data);]==])
 pj_apply_vendored_patch(_lblf_reader_cc _lblf_data_anchor _lblf_data_fixed "data_load_blf: lblf inner-object size")
 
+# 64-bit file positions: the pinned lblf keeps the file length and read position in 32 bits, so a file of 4 GiB or
+# more ends its read at the size modulo 4 GiB (silently dropping the rest), and skipping a top-level object over
+# 2 GiB seeks backwards. The length member lives in the header, so the patched header shadows the original for
+# every consumer (blf_reader.cc finds it beside itself; the include path puts it first).
+set(_lblf_length_fn_anchor [==[    auto getfileLength(std::fstream &fileStream) -> int32_t
+    {
+        fileStream.seekg(0, std::fstream::end);
+        const auto length = static_cast<int32_t>(fileStream.tellg());]==])
+set(_lblf_length_fn_fixed [==[    auto getfileLength(std::fstream &fileStream) -> int64_t
+    {
+        fileStream.seekg(0, std::fstream::end);
+        const auto length = static_cast<int64_t>(fileStream.tellg());]==])
+pj_apply_vendored_patch(_lblf_reader_cc _lblf_length_fn_anchor _lblf_length_fn_fixed "data_load_blf: lblf 64-bit file length")
+set(_lblf_length_anchor [==[            fileLength = static_cast<uint32_t>(getfileLength(fileStream));]==])
+set(_lblf_length_fixed [==[            fileLength = static_cast<uint64_t>(getfileLength(fileStream));]==])
+pj_apply_vendored_patch(_lblf_reader_cc _lblf_length_anchor _lblf_length_fixed "data_load_blf: lblf 64-bit file length member")
+set(_lblf_position_anchor [==[    auto current_position = static_cast<uint32_t>(fileStream.tellg());]==])
+set(_lblf_position_fixed [==[    auto current_position = static_cast<uint64_t>(fileStream.tellg());]==])
+pj_apply_vendored_patch(_lblf_reader_cc _lblf_position_anchor _lblf_position_fixed "data_load_blf: lblf 64-bit read position")
+set(_lblf_jump_anchor [==[            const auto bytes_to_jump = static_cast<int32_t>(ohb.objSize - ohb.headerSize + (ohb.objSize % 4));]==])
+set(_lblf_jump_fixed [==[            const auto bytes_to_jump = static_cast<std::streamoff>(ohb.objSize) - ohb.headerSize + (ohb.objSize % 4);]==])
+pj_apply_vendored_patch(_lblf_reader_cc _lblf_jump_anchor _lblf_jump_fixed "data_load_blf: lblf 64-bit object skip")
+
+file(READ ${lblf_SOURCE_DIR}/blf_reader.hh _lblf_reader_hh)
+set(_lblf_member_anchor [==[    uint32_t fileLength {0};]==])
+set(_lblf_member_fixed [==[    uint64_t fileLength {0};]==])
+pj_apply_vendored_patch(_lblf_reader_hh _lblf_member_anchor _lblf_member_fixed "data_load_blf: lblf 64-bit file length header")
+
 set(_lblf_patched_dir ${CMAKE_CURRENT_BINARY_DIR}/lblf_patched)
 file(CONFIGURE OUTPUT ${_lblf_patched_dir}/blf_reader.cc CONTENT "${_lblf_reader_cc}" @ONLY)
+file(CONFIGURE OUTPUT ${_lblf_patched_dir}/blf_reader.hh CONTENT "${_lblf_reader_hh}" @ONLY)
 
 add_library(blf STATIC
   ${_lblf_patched_dir}/blf_reader.cc
@@ -101,7 +130,7 @@ add_library(blf STATIC
 set_target_properties(blf PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(blf PRIVATE cxx_std_20)
 # SYSTEM so lblf's headers don't trip the plugin's -Werror.
-target_include_directories(blf SYSTEM PUBLIC ${lblf_SOURCE_DIR})
+target_include_directories(blf SYSTEM BEFORE PUBLIC ${_lblf_patched_dir} ${lblf_SOURCE_DIR})
 target_link_libraries(blf PRIVATE ZLIB::ZLIB)
 
 # ---------------------------------------------------------------------------
