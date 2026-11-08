@@ -909,6 +909,12 @@ Status McapReader::ParseChunk(const Record& record, Chunk* chunk) {
   chunk->messageEndTime = internal::ParseUint64(record.data + 8);
   chunk->uncompressedSize = internal::ParseUint64(record.data + 8 + 8);
   chunk->uncompressedCrc = internal::ParseUint32(record.data + 8 + 8 + 8);
+  // PJ4 local patch: see McapReader::MaxChunkUncompressedSize.
+  if (chunk->uncompressedSize > MaxChunkUncompressedSize) {
+    const auto msg = internal::StrCat("invalid Chunk.uncompressed_size: ", chunk->uncompressedSize, " exceeds ",
+                                      MaxChunkUncompressedSize);
+    return Status{StatusCode::InvalidRecord, msg};
+  }
 
   size_t offset = 8 + 8 + 8 + 4;
 

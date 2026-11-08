@@ -482,6 +482,10 @@ public:
   static Status ParseSchema(const Record& record, Schema* schema);
   static Status ParseChannel(const Record& record, Channel* channel);
   static Status ParseMessage(const Record& record, Message* message);
+  // PJ4 local patch (not upstream; re-apply on any mcap re-vendor): ParseChunk rejects a chunk declaring a larger
+  // uncompressed size than this. Every lz4/zstd reader sizes its output buffer from that field before decompressing,
+  // so without the bound a crafted chunk makes any reader attempt an arbitrary allocation.
+  static constexpr uint64_t MaxChunkUncompressedSize = uint64_t{2} << 30;
   static Status ParseChunk(const Record& record, Chunk* chunk);
   static Status ParseMessageIndex(const Record& record, MessageIndex* messageIndex);
   static Status ParseChunkIndex(const Record& record, ChunkIndex* chunkIndex);

@@ -63,8 +63,9 @@ struct ParallelReadOptions {
   MemoryCapPolicy capPolicy =
     MemoryCapPolicy::Adapt;  // sub-floor behavior: exceed the cap rather than deadlock
   // Reject a chunk whose declared uncompressed size exceeds this (corruption /
-  // decompression-bomb guard). 0 disables the check. Default 2 GiB.
-  uint64_t maxChunkUncompressedSize = 2ull << 30;
+  // decompression-bomb guard), checked against the summary's ChunkIndex before scheduling. 0 disables
+  // this check; McapReader::ParseChunk still bounds every chunk header by the same default.
+  uint64_t maxChunkUncompressedSize = McapReader::MaxChunkUncompressedSize;
 };
 
 namespace internal {
