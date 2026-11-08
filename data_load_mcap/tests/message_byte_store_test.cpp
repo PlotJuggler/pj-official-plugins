@@ -332,6 +332,106 @@ TEST(ParallelReaderTest, ChunkedSummaryWithoutChunkIndexesExposesChunkOffsets) {
       << "the indexless source path must eagerly copy payloads owned by a decompressed chunk";
 }
 
+// An uncompressed chunk whose record declares a larger uncompressedSize than the bytes it carries must be rejected:
+// copying uncompressedSize bytes from `records` reads past the record into the heap. Every chunk reader parses the
+// record through McapReader::ParseChunk, so the parallel reader and the upstream indexed reader must both refuse it.
+class OversizedUncompressedChunkTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    static std::atomic<int> counter{0};
+    path_ = (std::filesystem::temp_directory_path() /
+             ("pj_oversized_uncompressed_chunk_" + std::to_string(counter.fetch_add(1)) + ".mcap"))
+                .string();
+    {
+      mcap::McapWriter writer;
+      mcap::McapWriterOptions options("");
+      options.compression = mcap::Compression::None;
+      ASSERT_TRUE(writer.open(path_, options).ok());
+      mcap::Schema schema("test/Raw", "raw", mcap::ByteArray{});
+      writer.addSchema(schema);
+      mcap::Channel channel("/topic/raw", "raw", schema.id);
+      writer.addChannel(channel);
+      const std::vector<uint8_t> payload = {'p', 'a', 'y', 'l', 'o', 'a', 'd'};
+      for (uint64_t i = 0; i < 3; ++i) {
+        mcap::Message message;
+        message.channelId = channel.id;
+        message.sequence = static_cast<uint32_t>(i);
+        message.logTime = (i + 1) * 1'000;
+        message.publishTime = message.logTime;
+        message.dataSize = payload.size();
+        message.data = reinterpret_cast<const std::byte*>(payload.data());
+        ASSERT_TRUE(writer.write(message).ok());
+      }
+      writer.close();
+    }
+
+    // Walk the data section to the first Chunk record and grow its uncompressed_size (opcode u8, length u64,
+    // message_start_time u64, message_end_time u64, uncompressed_size u64). The summary's ChunkIndex keeps the
+    // true size, as a crafted file would.
+    std::fstream file(path_, std::ios::in | std::ios::out | std::ios::binary);
+    ASSERT_TRUE(file);
+    uint64_t offset = 8;  // magic
+    for (;;) {
+      file.seekg(static_cast<std::streamoff>(offset));
+      uint8_t opcode = 0;
+      uint64_t length = 0;
+      file.read(reinterpret_cast<char*>(&opcode), 1);
+      file.read(reinterpret_cast<char*>(&length), 8);
+      ASSERT_TRUE(file) << "no Chunk record in the fixture";
+      if (opcode == static_cast<uint8_t>(mcap::OpCode::Chunk)) {
+        const auto field = static_cast<std::streamoff>(offset + 1 + 8 + 8 + 8);
+        uint64_t uncompressed = 0;
+        file.seekg(field);
+        file.read(reinterpret_cast<char*>(&uncompressed), 8);
+        uncompressed += 64 * 1024;
+        file.seekp(field);
+        file.write(reinterpret_cast<const char*>(&uncompressed), 8);
+        ASSERT_TRUE(file);
+        break;
+      }
+      offset += 1 + 8 + length;
+    }
+  }
+
+  void TearDown() override {
+    std::error_code ec;
+    std::filesystem::remove(path_, ec);
+  }
+
+  std::string path_;
+};
+
+TEST_F(OversizedUncompressedChunkTest, ParallelReaderRejectsTheChunk) {
+  mcap::ParallelReader reader;
+  ASSERT_TRUE(reader.open(path_).ok());
+  std::vector<mcap::Status> problems;
+  size_t messages = 0;
+  for (const auto& view : reader.readMessages([&](const mcap::Status& s) { problems.push_back(s); }, {})) {
+    (void)view;
+    ++messages;
+  }
+  EXPECT_EQ(messages, 0u);
+  ASSERT_FALSE(problems.empty());
+  EXPECT_EQ(problems.front().code, mcap::StatusCode::InvalidRecord) << problems.front().message;
+}
+
+TEST_F(OversizedUncompressedChunkTest, IndexedReaderRejectsTheChunk) {
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(path_).ok());
+  std::vector<mcap::Status> problems;
+  size_t messages = 0;
+  mcap::ReadMessageOptions options;
+  options.readOrder = mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
+  for (const auto& view : reader.readMessages([&](const mcap::Status& s) { problems.push_back(s); }, options)) {
+    (void)view;
+    ++messages;
+  }
+  reader.close();
+  EXPECT_EQ(messages, 0u);
+  ASSERT_FALSE(problems.empty());
+  EXPECT_EQ(problems.front().code, mcap::StatusCode::InvalidRecord) << problems.front().message;
+}
+
 // Regression: a retained hot ByteView must NOT keep its source chunk resident.
 // One MCAP chunk backs ~100 messages, so if the hot anchor pinned the chunk, a
 // per-message object topic present in every chunk (e.g. /tf) would pin the whole
