@@ -3,6 +3,15 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_ulog/`.
 
+## [1.1.3] - 2026-11-09
+
+### Fixed
+- The progress bar now covers the whole import. It used to track only the file
+  read, which is the first few percent of the time, then sat at 100% while the
+  records were written (about a minute for a 1 GB log).
+- Stop now works while the records are being written, and keeps the data
+  written so far. Before, it was only honoured while the file was being read.
+
 ## [1.1.2] - 2026-09-28
 
 ### Changed

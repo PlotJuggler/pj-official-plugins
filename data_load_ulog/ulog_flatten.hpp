@@ -7,6 +7,7 @@
 // SDK. The SDK-coupled pieces (ValueRef construction, PrimitiveType mapping)
 // stay in ulog_source.cpp.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -175,6 +176,22 @@ inline std::string_view stringLeafView(const uint8_t* data, size_t offset, size_
   std::string_view full(reinterpret_cast<const char*>(data + offset), size);
   const auto nul = full.find('\0');
   return nul == std::string_view::npos ? full : full.substr(0, nul);
+}
+
+/// Import progress runs on one fixed scale: the file read takes the first
+/// kReadProgressSteps, appending the records takes the rest. The split follows
+/// the measured cost (reading and parsing is a few percent of an import).
+inline constexpr uint64_t kProgressSteps = 1000;
+inline constexpr uint64_t kReadProgressSteps = 50;
+
+inline uint64_t readProgressStep(uint64_t bytes_read, uint64_t file_size) {
+  return file_size == 0 ? kReadProgressSteps : std::min(bytes_read, file_size) * kReadProgressSteps / file_size;
+}
+
+inline uint64_t writeProgressStep(uint64_t records_done, uint64_t total_records) {
+  const uint64_t span = kProgressSteps - kReadProgressSteps;
+  return kReadProgressSteps +
+         (total_records == 0 ? span : std::min(records_done, total_records) * span / total_records);
 }
 
 }  // namespace ulog_flatten

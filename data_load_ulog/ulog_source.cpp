@@ -170,7 +170,9 @@ class ULogSource : public PJ::FileSourceBase {
     auto file_size = static_cast<uint64_t>(file.tellg());
     file.seekg(0);
 
-    (void)runtimeHost().progressStart("Importing ULog", file_size, true);
+    // One bar for both phases. Reading the file is the short one (a few percent
+    // of the import); appending the records to the host is where the time goes.
+    (void)runtimeHost().progressStart("Importing ULog", ulog_flatten::kProgressSteps, true);
 
     // Parse via ulog_cpp (ULogContainer adds the data-message clock for parameter changes).
     auto data_container = std::make_shared<ulog_container::ULogContainer>();
@@ -179,6 +181,7 @@ class ULogSource : public PJ::FileSourceBase {
     static constexpr size_t kChunkSize = 65536;
     std::vector<uint8_t> buffer(kChunkSize);
     uint64_t bytes_read = 0;
+    bool stopped_while_reading = false;
 
     while (file) {
       file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(kChunkSize));
@@ -195,9 +198,10 @@ class ULogSource : public PJ::FileSourceBase {
         // path so the messages decoded so far are committed. The host's "Stop and Keep"
         // then flushes them (Discard evicts the dataset host-side). Returning here would
         // leave the dataset empty — the bug this fixes.
+        stopped_while_reading = true;
         break;
       }
-      (void)runtimeHost().progressUpdate(bytes_read);
+      (void)runtimeHost().progressUpdate(ulog_flatten::readProgressStep(bytes_read, file_size));
     }
 
     if (data_container->hadFatalError()) {
@@ -239,6 +243,18 @@ class ULogSource : public PJ::FileSourceBase {
 
     size_t total_series_count = 0;
 
+    // Progress and Stop for the write phase, checked every kProgressStride
+    // records. A stop here keeps the records already appended, like a stop
+    // while reading keeps the messages already parsed; that earlier stop is
+    // not re-honoured here, or it would discard what it promised to keep.
+    uint64_t total_records = 0;
+    for (const auto& [key, sub] : subs_map) {
+      total_records += sub ? sub->size() : 0;
+    }
+    static constexpr uint64_t kProgressStride = 4096;
+    uint64_t records_done = 0;
+    bool stopped_while_writing = false;
+
     // Diagnostics are aggregated and reported once: a malformed log can define
     // thousands of subscriptions, and one message per problem would flood the
     // host (whose dedup is by exact text).
@@ -247,6 +263,9 @@ class ULogSource : public PJ::FileSourceBase {
     std::string first_short_record_topic;
 
     for (const auto& [key, sub] : subs_map) {
+      if (stopped_while_writing) {
+        break;
+      }
       if (!sub || sub->size() == 0) {
         continue;
       }
@@ -314,6 +333,15 @@ class ULogSource : public PJ::FileSourceBase {
       const auto& raw_samples = sub->rawSamples();
       for (size_t i = 0; i < raw_samples.size(); ++i) {
         const auto& raw = raw_samples[i].data();
+
+        if (++records_done % kProgressStride == 0) {
+          const bool keep_going =
+              runtimeHost().progressUpdate(ulog_flatten::writeProgressStep(records_done, total_records));
+          if (!stopped_while_reading && (!keep_going || runtimeHost().isStopRequested())) {
+            stopped_while_writing = true;
+            break;
+          }
+        }
 
         // ulog_cpp validates the message FRAME, not the payload against the
         // format. A record shorter than its format is corrupt: skip it rather

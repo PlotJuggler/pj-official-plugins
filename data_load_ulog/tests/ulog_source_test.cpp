@@ -1013,6 +1013,24 @@ TEST(ULogContainerTest, TruncatedTailKeepsEverythingBeforeTheCut) {
   EXPECT_EQ(sub->size(), 2u);
 }
 
+// --- Import progress scale ---
+
+TEST(ULogFlattenTest, ProgressIsMonotonicAcrossReadAndWritePhases) {
+  using namespace ulog_flatten;
+  EXPECT_EQ(readProgressStep(0, 1000), 0u);
+  EXPECT_EQ(readProgressStep(1000, 1000), kReadProgressSteps);
+  EXPECT_EQ(writeProgressStep(0, 10), kReadProgressSteps);  // write phase starts where the read ended
+  EXPECT_LT(writeProgressStep(5, 10), writeProgressStep(6, 10));
+  EXPECT_EQ(writeProgressStep(10, 10), kProgressSteps);
+  // Degenerate inputs stay in range instead of dividing by zero or overshooting.
+  EXPECT_EQ(readProgressStep(0, 0), kReadProgressSteps);
+  EXPECT_EQ(readProgressStep(2000, 1000), kReadProgressSteps);
+  EXPECT_EQ(writeProgressStep(0, 0), kProgressSteps);
+  EXPECT_EQ(writeProgressStep(20, 10), kProgressSteps);
+  // A multi-GB file must not overflow the intermediate product.
+  EXPECT_EQ(readProgressStep(1ull << 40, 1ull << 40), kReadProgressSteps);
+}
+
 // --- Real PX4 log (committed fixture) ---
 //
 // Drives the new code paths over a genuine flight log, fed in 64 KiB chunks
