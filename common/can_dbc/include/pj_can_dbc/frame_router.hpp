@@ -36,8 +36,16 @@ class CanFrameRouter {
   /// `raw_fallback`: also publish frames that were not decoded as raw byte topics.
   explicit CanFrameRouter(bool raw_fallback);
 
+  // Pinned in place: `current_` points into this object's own `buses_`, so a copy or move would leave it pointing
+  // into the source. Construct it where it will live (e.g. std::optional::emplace).
+  CanFrameRouter(const CanFrameRouter&) = delete;
+  CanFrameRouter& operator=(const CanFrameRouter&) = delete;
+  CanFrameRouter(CanFrameRouter&&) = delete;
+  CanFrameRouter& operator=(CanFrameRouter&&) = delete;
+
   /// Dictionary for `bus`; nullptr = no dictionary on that bus. Not owned: it must outlive the router. May be
-  /// called at any time, but only affects frames routed afterwards.
+  /// called at any time, but only affects frames routed afterwards. Replacing a bus's decoder forgets its
+  /// decoded-message topics (the new dictionary may name an id differently); its raw topics are kept.
   void setDecoder(std::string bus, const CanDecoder* decoder);
 
   /// Routes one frame. Rows go to `host` with timestamp `ts_ns` (absolute nanoseconds). A topic the host

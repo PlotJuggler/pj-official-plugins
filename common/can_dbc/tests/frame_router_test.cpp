@@ -6,6 +6,7 @@
 #include <pj_can_dbc/dictionary_loader.hpp>
 #include <pj_can_dbc/frame_router.hpp>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "source_import_harness.hpp"
@@ -16,6 +17,10 @@ using pj_can_dbc::CanDecoder;
 using pj_can_dbc::CanFrameRouter;
 using pj_can_dbc::testing::ScratchDir;
 using pj_can_dbc::testing::detail::CaptureHost;
+
+// The router caches a pointer into its own bus map, so it must stay where it was constructed.
+static_assert(!std::is_copy_constructible_v<CanFrameRouter> && !std::is_copy_assignable_v<CanFrameRouter>);
+static_assert(!std::is_move_constructible_v<CanFrameRouter> && !std::is_move_assignable_v<CanFrameRouter>);
 
 constexpr std::uint32_t kEngineId = 256;  // writeEngineDbc(): BO_ 256 Engine, 16-bit Speed
 constexpr int kEngineDlc = 8;
@@ -89,6 +94,29 @@ TEST_F(FrameRouterTest, RawOffPublishesNothingForUnmatched) {
 
   EXPECT_EQ(router.counts().unmatched, 1u);
   EXPECT_TRUE(host_.topic_names.empty());
+}
+
+TEST_F(FrameRouterTest, ReplacingDecoderRenamesDecodedTopic) {
+  const auto dbc_text = [](const char* name) {
+    return std::string("VERSION \"1.0.0\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\nBO_ 256 ") + name +
+           ": 8 ECU\n SG_ Speed : 0|16@1+ (0.1,0) [0|6553.5] \"km/h\" ECU\n";
+  };
+  CanDecoder old_dictionary;
+  CanDecoder new_dictionary;
+  ASSERT_TRUE(old_dictionary.loadDbcString(dbc_text("OldEngine")));
+  ASSERT_TRUE(new_dictionary.loadDbcString(dbc_text("NewEngine")));
+
+  CanFrameRouter router(true);
+  router.setDecoder("can0", &old_dictionary);
+  route(router, "can0", kEngineId, kEngineDlc);
+  EXPECT_EQ(host_.rows["CAN/can0/OldEngine"], 1u);
+
+  router.setDecoder("can0", &new_dictionary);
+  route(router, "can0", kEngineId, kEngineDlc);
+  EXPECT_EQ(host_.rows["CAN/can0/NewEngine"], 1u);
+  EXPECT_EQ(host_.rows["CAN/can0/OldEngine"], 1u);
+  EXPECT_EQ(router.counts().decoded, 2u);
+  EXPECT_EQ(router.counts().decoded_topics, 2u);
 }
 
 TEST_F(FrameRouterTest, DecoderIsResolvedPerBusWhenBusChanges) {

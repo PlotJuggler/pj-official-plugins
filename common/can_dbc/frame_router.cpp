@@ -20,7 +20,9 @@ CanFrameRouter::CanFrameRouter(bool raw_fallback) : raw_fallback_(raw_fallback) 
 }
 
 void CanFrameRouter::setDecoder(std::string bus, const CanDecoder* decoder) {
-  buses_[std::move(bus)].decoder = decoder;
+  BusState& state = buses_[std::move(bus)];
+  state.decoder = decoder;
+  state.decoded.clear();
 }
 
 void CanFrameRouter::route(
