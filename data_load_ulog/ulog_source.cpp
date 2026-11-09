@@ -272,7 +272,7 @@ class StreamingContainer : public ulog_container::ULogContainer {
   }
 
   /// First host error; once set, no further record is written.
-  const std::string& error() const {
+  const std::string& writeError() const {
     return error_;
   }
   size_t seriesCount() const {
@@ -433,14 +433,14 @@ class ULogSource : public PJ::FileSourceBase {
     // ("Stop and Keep" flushes it, Discard evicts the dataset host-side).
     auto data_container = std::make_shared<StreamingContainer>(writeHost(), std::move(max_multi_id));
     readLog(filepath_, data_container, [&](uint64_t bytes_read) {
-      if (!data_container->error().empty() || runtimeHost().isStopRequested()) {
+      if (!data_container->writeError().empty() || runtimeHost().isStopRequested()) {
         return false;
       }
       (void)runtimeHost().progressUpdate(bytes_read);
       return true;
     });
-    if (!data_container->error().empty()) {
-      return PJ::unexpected(data_container->error());
+    if (!data_container->writeError().empty()) {
+      return PJ::unexpected(data_container->writeError());
     }
 
     if (data_container->hadFatalError()) {
