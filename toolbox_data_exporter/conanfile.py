@@ -18,7 +18,7 @@ class ToolboxDataExporterConan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
-        "arrow/23.0.1",
+        "arrow/26.0.1",
     )
     default_options = {
         "*:shared": False,

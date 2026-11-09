@@ -205,10 +205,10 @@ Triggered by tags matching `*/v*` pattern.
 | Windows ARM64 | windows-11-arm | arm64 |
 
 > **Note:** Windows x64 is pinned to `windows-2022` (not `windows-latest`). The newer
-> `windows-latest` (VS18 / MSVC 14.5x) image breaks the `libsodium/1.0.20` build with
+> `windows-latest` (VS18 / MSVC 14.5x) image broke the `libsodium/1.0.20` build with
 > `MSB8052` (default toolset 14.44 vs the v145 platform toolset its bundled solution
-> selects). Revert to `windows-latest` once libsodium's recipe supports v145 or the
-> 1.0.20 pin is lifted.
+> selects). Not re-tested since the move to `libsodium/1.0.22`: revert to
+> `windows-latest` once that is confirmed to build there.
 
 **Per-platform steps:**
 

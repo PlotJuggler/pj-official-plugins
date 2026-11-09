@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_mqtt/`.
 
+## [0.10.1] - 2026-11-09
+
+### Changed
+- Updated the bundled Eclipse Paho MQTT C++ from 1.5.3 to 1.6.0 (Paho C 1.3.16), picking up upstream bug and security fixes.
+
 ## [0.10.0] - 2026-09-22
 
 ### Added

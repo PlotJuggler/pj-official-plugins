@@ -1,7 +1,7 @@
 {
   "id": "mp4-loader",
   "name": "MP4 Loader",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Open .mp4 video files and play them in sync with your plots. When a file records its creation time, the video is placed at that wall-clock time; several files can be opened at once.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

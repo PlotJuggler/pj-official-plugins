@@ -19,7 +19,7 @@ class DataLoadMp4Conan(ConanFile):
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "fmt/12.1.0",
-        "ffmpeg/8.1",
+        "ffmpeg/8.1.2",
     )
     default_options = {
         "*:shared": False,
