@@ -395,7 +395,9 @@ TEST(FeaturesDigest, ThenMarketplaceEntriesAreDroppedFromTheEndAndCounted) {
       << none_left;
   EXPECT_EQ(none_left.find("Install:"), std::string::npos);
   EXPECT_EQ(none_left.find("(list truncated)"), std::string::npos);
-  for (const auto& e : fixture("host_bundled")["loaded"]) {
+  // Not fixture(...)["loaded"]: a range-for keeps only the subscript's result
+  // alive, so it would iterate the destroyed fixture.
+  for (const auto& e : no_available["loaded"]) {
     EXPECT_FALSE(pluginLine(none_left, e["name"].get<std::string>()).empty()) << e["name"];
   }
 }
