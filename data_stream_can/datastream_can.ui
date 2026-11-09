@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DataStreamCan</class>
+ <widget class="QDialog" name="DataStreamCan">
+  <property name="minimumSize">
+   <size>
+    <width>480</width>
+    <height>460</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>CAN Bus Streamer</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="spacing"><number>0</number></property>
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
+   <item>
+    <widget class="SectionHeaderBand" name="headerBus">
+     <property name="text">
+      <string>CAN interface</string>
+     </property>
+     <widget class="QPushButton" name="buttonRefresh">
+      <property name="text">
+       <string>Refresh</string>
+      </property>
+      <property name="toolTip">
+       <string>List the backends and interfaces again (after plugging in an adapter)</string>
+      </property>
+      <property name="styleSheet">
+       <string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string>
+      </property>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <layout class="QGridLayout" name="busGrid" columnstretch="0,1">
+     <property name="leftMargin"><number>9</number></property>
+     <property name="topMargin"><number>6</number></property>
+     <property name="rightMargin"><number>9</number></property>
+     <property name="bottomMargin"><number>6</number></property>
+     <property name="spacing"><number>6</number></property>
+     <item row="0" column="0">
+      <widget class="QLabel" name="labelBackend">
+       <property name="text"><string>Backend</string></property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QComboBox" name="comboBackend">
+       <property name="toolTip"><string>QtSerialBus plugin: socketcan (Linux), peakcan, vectorcan, systeccan, passthrucan, virtualcan, ...</string></property>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="labelInterface">
+       <property name="text"><string>Interface</string></property>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QComboBox" name="comboInterface">
+       <property name="editable"><bool>true</bool></property>
+       <property name="toolTip"><string>Detected interfaces, or type a name (can0, usb0, ...)</string></property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QLabel" name="labelStatus">
+       <property name="wordWrap"><bool>true</bool></property>
+      </widget>
+     </item>
+     <item row="3" column="0">
+      <widget class="QLabel" name="labelBitrate">
+       <property name="text"><string>Bitrate</string></property>
+      </widget>
+     </item>
+     <item row="3" column="1">
+      <widget class="QComboBox" name="comboBitrate"/>
+     </item>
+     <item row="4" column="1">
+      <widget class="QCheckBox" name="checkCanFd">
+       <property name="text"><string>CAN FD</string></property>
+      </widget>
+     </item>
+     <item row="5" column="0">
+      <widget class="QLabel" name="labelDataBitrate">
+       <property name="text"><string>Data bitrate</string></property>
+      </widget>
+     </item>
+     <item row="5" column="1">
+      <widget class="QComboBox" name="comboDataBitrate">
+       <property name="toolTip"><string>CAN FD data-phase bitrate</string></property>
+      </widget>
+     </item>
+     <item row="6" column="0">
+      <widget class="QLabel" name="labelTimestamps">
+       <property name="text"><string>Timestamps</string></property>
+      </widget>
+     </item>
+     <item row="6" column="1">
+      <widget class="QComboBox" name="comboTimestamps">
+       <property name="toolTip"><string>Adapter clock: the adapter's own frame time, anchored to wall-clock time. Arrival time: when PlotJuggler received the frame (for adapters whose clock drifts).</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="SectionHeaderBand" name="headerDictionaries">
+     <property name="text">
+      <string>Dictionaries</string>
+     </property>
+     <widget class="QPushButton" name="buttonAddDictionary">
+      <property name="text">
+       <string>Add .dbc / .csv...</string>
+      </property>
+      <property name="styleSheet">
+       <string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="buttonRemoveDictionary">
+      <property name="text">
+       <string>Remove</string>
+      </property>
+      <property name="styleSheet">
+       <string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string>
+      </property>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <widget class="QListWidget" name="listDictionaries">
+     <property name="frameShape">
+      <enum>QFrame::Shape::NoFrame</enum>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QVBoxLayout" name="optionsLayout">
+     <property name="leftMargin"><number>9</number></property>
+     <property name="topMargin"><number>6</number></property>
+     <property name="rightMargin"><number>9</number></property>
+     <property name="bottomMargin"><number>6</number></property>
+     <item>
+      <widget class="QCheckBox" name="checkRawUnassigned">
+       <property name="text">
+        <string>Publish frames not decoded as raw bytes (CAN/&lt;interface&gt;/0x&lt;ID&gt;)</string>
+       </property>
+       <property name="checked"><bool>true</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="bottomBar">
+     <property name="leftMargin"><number>9</number></property>
+     <property name="topMargin"><number>0</number></property>
+     <property name="rightMargin"><number>9</number></property>
+     <property name="bottomMargin"><number>9</number></property>
+     <item>
+      <widget class="QDialogButtonBox" name="buttonBox">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="standardButtons">
+        <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
