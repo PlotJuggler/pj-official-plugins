@@ -124,23 +124,10 @@ void ULogParamsDialog::parseFile() {
     return;
   }
 
-  std::ifstream file(filepath_, std::ios::binary);
-  if (!file.is_open()) {
+  // The dialog shows info, parameters and log lines only: don't keep the samples.
+  auto data_container = std::make_shared<ulog_container::ULogContainer>(false);
+  if (!ulog_container::readLog(filepath_, data_container, [](uint64_t) { return true; })) {
     return;
-  }
-
-  auto data_container = std::make_shared<ulog_container::ULogContainer>();
-  ulog_cpp::Reader reader{data_container};
-
-  static constexpr size_t kChunkSize = 65536;
-  std::vector<uint8_t> buffer(kChunkSize);
-  while (file) {
-    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(kChunkSize));
-    auto count = static_cast<size_t>(file.gcount());
-    if (count == 0) {
-      break;
-    }
-    reader.readChunk(buffer.data(), static_cast<int>(count));
   }
 
   // Info tab: messageInfo() — sys_*, ver_*, etc.

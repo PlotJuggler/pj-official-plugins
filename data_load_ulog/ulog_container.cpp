@@ -8,7 +8,13 @@
 
 namespace ulog_container {
 
-ULogContainer::ULogContainer() : ulog_cpp::DataContainer(StorageConfig::FullLog) {}
+namespace {
+constexpr int64_t kUnknownOffset = -2;
+constexpr int64_t kNoTimestamp = -1;
+}  // namespace
+
+ULogContainer::ULogContainer(bool keep_samples)
+    : ulog_cpp::DataContainer(StorageConfig::FullLog), keep_samples_(keep_samples) {}
 
 void ULogContainer::fileHeader(const ulog_cpp::FileHeader& header) {
   ulog_cpp::DataContainer::fileHeader(header);
@@ -19,25 +25,37 @@ void ULogContainer::fileHeader(const ulog_cpp::FileHeader& header) {
 }
 
 void ULogContainer::data(const ulog_cpp::Data& data_msg) {
-  // Base stores the sample (and throws on an unknown subscription, which the
-  // reader treats as corruption) — let that happen before touching the clock.
-  ulog_cpp::DataContainer::data(data_msg);
+  if (keep_samples_) {
+    // Base stores the sample (and throws on an unknown subscription, which the
+    // reader treats as corruption) — let that happen before touching the clock.
+    ulog_cpp::DataContainer::data(data_msg);
+  }
 
-  auto it = timestamp_offsets_.find(data_msg.msgId());
-  if (it == timestamp_offsets_.end()) {
-    std::optional<size_t> offset;
+  // One subscription lookup per msg_id, not per record: ulog_cpp never removes
+  // a subscription, so a resolved slot stays valid.
+  const size_t id = data_msg.msgId();
+  if (id >= timestamp_offsets_.size()) {
+    timestamp_offsets_.resize(id + 1, kUnknownOffset);
+  }
+  int64_t& offset = timestamp_offsets_[id];
+  if (offset == kUnknownOffset) {
     const auto& subs = subscriptionsByMessageId();
-    auto sub_it = subs.find(data_msg.msgId());
-    if (sub_it != subs.end() && sub_it->second && sub_it->second->format()) {
-      offset = ulog_flatten::findTimestampOffset(*sub_it->second->format());
+    const auto sub_it = subs.find(data_msg.msgId());
+    if (sub_it == subs.end()) {
+      throw ulog_cpp::ParsingException("Invalid subscription");  // same verdict as the base
     }
-    it = timestamp_offsets_.emplace(data_msg.msgId(), offset).first;
+    offset = kNoTimestamp;
+    if (sub_it->second && sub_it->second->format()) {
+      if (auto found = ulog_flatten::findTimestampOffset(*sub_it->second->format())) {
+        offset = static_cast<int64_t>(*found);
+      }
+    }
   }
 
   const auto& raw = data_msg.data();
-  if (it->second && *it->second + sizeof(uint64_t) <= raw.size()) {
+  if (offset >= 0 && static_cast<size_t>(offset) + sizeof(uint64_t) <= raw.size()) {
     uint64_t ts = 0;
-    std::memcpy(&ts, raw.data() + *it->second, sizeof(ts));
+    std::memcpy(&ts, raw.data() + offset, sizeof(ts));
     if (ts >= file_start_us_) {
       clock_us_ = ts;
     }

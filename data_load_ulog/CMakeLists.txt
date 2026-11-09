@@ -55,9 +55,26 @@ target_compile_options(ulog_source_test PRIVATE ${PJ_WARNING_FLAGS})
 if(MSVC)
   target_compile_options(ulog_source_test PRIVATE /wd4702)
 endif()
-target_compile_definitions(ulog_source_test PRIVATE ULOG_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
-target_link_libraries(ulog_source_test PRIVATE ulog_cpp::ulog_cpp GTest::gtest_main)
+target_compile_definitions(ulog_source_test PRIVATE
+  ULOG_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data"
+  ULOG_SOURCE_PLUGIN_PATH="$<TARGET_FILE:ulog_source_plugin>"
+)
+# plugin_host: the import tests load the built plugin and drive it end to end.
+target_link_libraries(ulog_source_test PRIVATE
+  ulog_cpp::ulog_cpp plotjuggler_sdk::plugin_host GTest::gtest_main)
+add_dependencies(ulog_source_test ulog_source_plugin)
 add_test(NAME ulog_source_test COMMAND ulog_source_test)
+
+# --- Import benchmark (not a test: run it by hand, see README) ---
+add_executable(ulog_import_bench benchmarks/ulog_import_bench.cpp)
+target_compile_features(ulog_import_bench PRIVATE cxx_std_20)
+target_compile_options(ulog_import_bench PRIVATE ${PJ_WARNING_FLAGS})
+target_compile_definitions(ulog_import_bench PRIVATE
+  ULOG_SOURCE_PLUGIN_PATH="$<TARGET_FILE:ulog_source_plugin>"
+  ULOG_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data"
+)
+target_link_libraries(ulog_import_bench PRIVATE plotjuggler_sdk::plugin_host)
+add_dependencies(ulog_import_bench ulog_source_plugin)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(ulog_source_plugin
