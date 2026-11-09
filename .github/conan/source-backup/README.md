@@ -9,4 +9,3 @@ Each source is two files: `<sha256>` (the tarball) and `<sha256>.json` (Conan's 
 
 | sha256 | Source | Why |
 |---|---|---|
-| `15417edc8e12…` | `mpdecimal-2.5.0.tar.gz` | bytereef.org removed it, and cpython requires exactly this version on macOS (its recipe: "mpdecimal > 2.5.0 on MacOS causes the _decimal module to not be importable") |

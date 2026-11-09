@@ -223,7 +223,7 @@ jobs:
         # platform fetches them prebuilt. This matrix is the ONLY producer of
         # linux-aarch64, windows-x64/arm64 and macos-arm64 release binaries: the
         # CI workflows prime JFrog for linux-x86_64 and macos only, so without
-        # this step every cold release leg recompiled Arrow/gRPC/cpython from
+        # this step every cold release leg recompiled Arrow/gRPC from
         # source (40 min on ubuntu-22.04-arm, 77 min on windows-2022). Idempotent:
         # Conan skips revisions already on the remote, and the script is a no-op
         # when the remote was not configured (fork, missing secrets, outage).

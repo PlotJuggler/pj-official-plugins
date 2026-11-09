@@ -152,8 +152,7 @@ jobs:
           # covers the host context.
           conan install . --output-folder=build --build=missing -s build_type=Release \
             -s compiler.cppstd=20 -s:b compiler.cppstd=20 \
-            -c tools.cmake.cmaketoolchain:generator=Ninja \
-            -o "cpython/*:shared=True"
+            -c tools.cmake.cmaketoolchain:generator=Ninja
 
           # Route the plugin compile through sccache only when its install
           # succeeded; otherwise degrade to an uncached (but correct) build.

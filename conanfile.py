@@ -61,8 +61,6 @@ class PjOfficialPluginsConan(ConanFile):
         # Pin libsodium to 1.0.20: 1.0.21 has broken ARM NEON code that fails with
         # GCC on aarch64.
         "libsodium/1.0.20",
-        "pybind11/2.13.6",
-        "cpython/3.12.7",
         # data_load_mf4: mdflib (vendored via CPM) links zlib + expat, provided
         # here from Conan. zlib/1.3.1 matches arrow/23.0.1's pin (no conflict).
         "zlib/1.3.1",
@@ -88,14 +86,6 @@ class PjOfficialPluginsConan(ConanFile):
         "boost/*:without_test": True,
         "boost/*:without_cobalt": True,
         "lua/*:compile_as_cpp": True,
-        # cpython built static on Linux/macOS: libpython3.12.a links into the plugin
-        # .so directly. Windows/MSVC disables static cpython >=3.10, so ci-windows.yml
-        # overrides to shared=True via -o flag; the CMakeLists.txt then copies
-        # python3XX.dll.
-        "cpython/*:shared": False,
-        # Tkinter requires X11 system libs (libx11-dev, libxcb-*-dev) which are not
-        # available on CI runners. We do not need Tkinter for scripting.
-        "cpython/*:with_tkinter": False,
         # WebRTC streaming client (data_stream_webrtc): media/SRTP/WebSocket on,
         # libnice off (use the bundled libjuice ICE agent).
         "libdatachannel/*:with_websocket": True,
