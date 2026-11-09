@@ -53,6 +53,34 @@ std::int64_t hostNowNs() {
       .count();
 }
 
+// VirtualCAN's server is one process-wide Qt object that lives in the thread that FIRST opens a
+// virtualcan device, and serves only while that thread runs an event loop. Left to a reader thread
+// it would die with that session, and every later session would connect but receive nothing. So it
+// is started on the application thread, the one thread with an event loop that outlives every reader:
+// opening a device there starts the server synchronously (VirtualCanBackend::open()), and the device
+// itself is dropped at once, before its socket registers on a channel (kept, it would buffer that
+// channel's traffic forever, unread). Run for every virtualcan session, not once: starting a running
+// server is a no-op, and this also retries a listen() that failed earlier (port briefly taken).
+void startVirtualCanServerOnAppThread(const QString& interface_name) {
+  auto open_and_drop = [interface_name] {
+    std::unique_ptr<QCanBusDevice> device;
+    {
+      std::lock_guard lock(g_can_bus_mutex);
+      device.reset(canBus()->createDevice(QStringLiteral("virtualcan"), interface_name));
+    }
+    if (device) {
+      device->connectDevice();
+    }
+  };
+  QCoreApplication* app = QCoreApplication::instance();
+  if (QThread::currentThread() == app->thread()) {
+    open_and_drop();
+  } else {
+    // The caller is not the application thread, so blocking on it cannot deadlock on ourselves.
+    QMetaObject::invokeMethod(app, open_and_drop, Qt::BlockingQueuedConnection);
+  }
+}
+
 }  // namespace
 
 std::vector<std::string> availableBackends() {
@@ -97,7 +125,7 @@ struct CanBusReader::Impl {
 // The reader thread's body. Every QObject it touches (the device and the callbacks' context) is
 // created, used and destroyed here; only the thread-safe members above are shared.
 void CanBusReader::Impl::run(const BusSettings& settings) {
-  const QString prefix = QString::fromStdString(settings.backend + "/" + settings.interface + ": ");
+  const QString prefix = QString::fromStdString(settings.backend + "/" + settings.interface_name + ": ");
   bool handshake_done = false;
   bool was_connected = false;
   bool fatal_reported = false;
@@ -118,24 +146,28 @@ void CanBusReader::Impl::run(const BusSettings& settings) {
     std::lock_guard lock(g_can_bus_mutex);
     device.reset(
         canBus()->createDevice(
-            QString::fromStdString(settings.backend), QString::fromStdString(settings.interface), &error));
+            QString::fromStdString(settings.backend), QString::fromStdString(settings.interface_name), &error));
   }
   if (!device) {
     report(prefix + error);
     return;
   }
-  if (device->error() == QCanBusDevice::ConnectionError) {  // e.g. a malformed interface name
-    report(prefix + device->errorString());
-    return;
+  // CanFdKey first: PEAK validates the bitrate against it (nominal vs. classic bitrate table).
+  if (settings.can_fd) {
+    device->setConfigurationParameter(QCanBusDevice::CanFdKey, QVariant(true));
   }
   if (settings.bitrate > 0) {
     device->setConfigurationParameter(QCanBusDevice::BitRateKey, QVariant(settings.bitrate));
   }
-  if (settings.can_fd) {
-    device->setConfigurationParameter(QCanBusDevice::CanFdKey, QVariant(true));
-    if (settings.data_bitrate > 0) {
-      device->setConfigurationParameter(QCanBusDevice::DataBitRateKey, QVariant(settings.data_bitrate));
-    }
+  if (settings.can_fd && settings.data_bitrate > 0) {
+    device->setConfigurationParameter(QCanBusDevice::DataBitRateKey, QVariant(settings.data_bitrate));
+  }
+  // A rejected setting (ConfigurationError, e.g. a bitrate the adapter does not support) or a device
+  // the backend refused to set up (e.g. a malformed interface name) must not stream with other
+  // settings than the user asked for.
+  if (device->error() != QCanBusDevice::NoError) {
+    report(prefix + device->errorString());
+    return;
   }
 
   // Receiver of every callback below. Declared after `device`, so it is destroyed first and no
@@ -173,7 +205,10 @@ void CanBusReader::Impl::run(const BusSettings& settings) {
     }
   });
   QObject::connect(device.get(), &QCanBusDevice::errorOccurred, &context, [&](QCanBusDevice::CanBusError code) {
-    if (code == QCanBusDevice::ConnectionError) {
+    // Fatal: the link is gone (PEAK reports an unplug as a failed CAN_Read, ReadError, without
+    // any state change). Other errors (WriteError, ConfigurationError at runtime, ...) are not.
+    const bool fatal = code == QCanBusDevice::ConnectionError || code == QCanBusDevice::ReadError;
+    if (fatal) {
       report(prefix + device->errorString());
     }
   });
@@ -226,6 +261,9 @@ PJ::Status CanBusReader::start(const BusSettings& settings) {
   impl_->remote_frames = 0;
   impl_->handshake = {};
   auto handshake = impl_->handshake.get_future();
+  if (settings.backend == "virtualcan") {
+    startVirtualCanServerOnAppThread(QString::fromStdString(settings.interface_name));
+  }
 
   // The QThread object belongs to this (controlling) thread; everything created inside run() lives
   // on the new thread.
@@ -236,7 +274,7 @@ PJ::Status CanBusReader::start(const BusSettings& settings) {
   if (handshake.wait_for(kConnectTimeout) != std::future_status::ready) {
     stop();
     return PJ::unexpected(
-        settings.backend + "/" + settings.interface + ": timed out waiting for the device to connect");
+        settings.backend + "/" + settings.interface_name + ": timed out waiting for the device to connect");
   }
   if (auto error = handshake.get()) {
     stop();

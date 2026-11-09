@@ -29,12 +29,13 @@ if(TARGET GTest::gtest AND BUILD_TESTING)
   target_link_libraries(timestamp_anchor_test PRIVATE GTest::gtest_main)
   add_test(NAME timestamp_anchor_test COMMAND timestamp_anchor_test)
 
-  # Own main(): the reader needs a QCoreApplication. VirtualCAN listens on the fixed TCP port
-  # 35468 (the server-loss test also uses 35469), so the test must not run beside another one.
+  # Own main(): the reader needs a QCoreApplication. One process per test: VirtualCAN's server is a
+  # process-wide Qt global, and each test must meet it as a fresh process does. It listens on the
+  # fixed TCP ports 35468 (and 35469 for the server-loss test), so the tests must not run in parallel.
   add_executable(can_bus_reader_test tests/can_bus_reader_test.cpp)
   target_compile_features(can_bus_reader_test PRIVATE cxx_std_20)
   target_compile_options(can_bus_reader_test PRIVATE ${PJ_WARNING_FLAGS})
   target_link_libraries(can_bus_reader_test PRIVATE can_stream_core Qt6::Core Qt6::SerialBus GTest::gtest)
-  add_test(NAME can_bus_reader_test COMMAND can_bus_reader_test)
-  set_tests_properties(can_bus_reader_test PROPERTIES RUN_SERIAL TRUE)
+  include(GoogleTest)
+  gtest_discover_tests(can_bus_reader_test PROPERTIES RUN_SERIAL TRUE)
 endif()

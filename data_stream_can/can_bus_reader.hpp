@@ -16,9 +16,9 @@ namespace can_stream {
 enum class TimestampSource { kDevice, kHost };
 
 struct BusSettings {
-  std::string backend;    // QCanBus plugin key: "socketcan", "peakcan", "virtualcan", ...
-  std::string interface;  // backend-specific interface name: "can0", "usb0", ...
-  int bitrate = 0;        // 0 = keep the device's setting
+  std::string backend;         // QCanBus plugin key: "socketcan", "peakcan", "virtualcan", ...
+  std::string interface_name;  // backend-specific interface: "can0", "usb0", ... (UI/JSON key: "interface")
+  int bitrate = 0;             // 0 = keep the device's setting
   bool can_fd = false;
   int data_bitrate = 0;  // 0 = keep the device's setting; only applied when can_fd
   TimestampSource timestamps = TimestampSource::kDevice;
@@ -52,13 +52,18 @@ class CanBusReader {
   CanBusReader(const CanBusReader&) = delete;
   CanBusReader& operator=(const CanBusReader&) = delete;
 
-  /// Opens the device and waits up to 5 s for it to connect. Stops a previous session first.
+  /// Opens the device and waits for it to connect: up to 5 s for a backend that connects
+  /// asynchronously, but a vendor driver that blocks inside its open call holds start() (and a
+  /// stop() it triggers) for as long as that call takes. Stops a previous session first.
+  /// For "virtualcan" it also hops onto the QCoreApplication thread (blocking until that thread
+  /// runs it) to keep the VirtualCAN server there.
   PJ::Status start(const BusSettings& settings);
-  /// Idempotent. Quits and joins the reader thread; no Qt callback runs after it returns.
+  /// Idempotent. Quits and joins the reader thread; no Qt callback runs after it returns. Unbounded:
+  /// it waits for a blocking driver call to return.
   void stop();
 
   std::queue<RawCanFrame> drainFrames();
-  /// Set once per session: on a ConnectionError, or when the device leaves ConnectedState.
+  /// Set once per session: on a ConnectionError or ReadError, or when the device leaves ConnectedState.
   std::optional<std::string> takeFatalError();
   ReaderCounts counts() const;
 

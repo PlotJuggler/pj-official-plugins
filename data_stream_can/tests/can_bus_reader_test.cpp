@@ -9,6 +9,7 @@
 #include <QtSerialBus/QCanBusDevice>
 #include <QtSerialBus/QCanBusFrame>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -16,19 +17,23 @@
 #include <thread>
 #include <vector>
 
+// Every test runs in its own process (gtest_discover_tests): VirtualCAN's server is a process-wide
+// Qt global, and a test must see it the way a fresh PlotJuggler process does. The test thread is the
+// QCoreApplication thread, where CanBusReader starts that server; waitFor() pumps it.
+
 namespace {
 
-using can_stream::BusSettings;
 using can_stream::CanBusReader;
 using can_stream::RawCanFrame;
 using namespace std::chrono_literals;
 
 constexpr const char* kServerFlag = "--virtualcan-server";
-// The server-loss test hosts its VirtualCAN server in a child process on this port (the in-process
-// server, on the default 35468, can never go away: see main()).
+// The server-loss test hosts its VirtualCAN server in a child process on this port: the in-process
+// server can never go away.
 constexpr const char* kChildServerInterface = "tcp://127.0.0.1:35469/can0";
+constexpr std::uint32_t kProbeId = 0x7FF;
 
-// Pumps this thread's events (the in-process VirtualCAN server lives here) until pred() holds.
+// Pumps this thread's events until pred() holds.
 template <typename Pred>
 bool waitFor(Pred pred, std::chrono::milliseconds timeout = 5s) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -56,15 +61,37 @@ std::unique_ptr<QCanBusDevice> connectedWriter(const QString& interface_name) {
   return device;
 }
 
+// The server forwards a frame only to clients whose "connect:canN" it has already processed: send
+// probes until one reaches the reader, so the frames after it cannot be dropped.
+bool waitForLink(QCanBusDevice& writer, CanBusReader& reader) {
+  const QCanBusFrame probe(kProbeId, QByteArray(1, '\0'));
+  return waitFor([&] {
+    writer.writeFrame(probe);
+    return !reader.drainFrames().empty();
+  });
+}
+
+// The next `count` non-probe frames (probes still in flight are skipped).
+std::vector<RawCanFrame> receive(CanBusReader& reader, std::size_t count) {
+  std::vector<RawCanFrame> frames;
+  waitFor([&] {
+    for (auto batch = reader.drainFrames(); !batch.empty(); batch.pop()) {
+      if (batch.front().can_id != kProbeId) {
+        frames.push_back(std::move(batch.front()));
+      }
+    }
+    return frames.size() >= count;
+  });
+  return frames;
+}
+
 TEST(CanBusReader, ReceivesFramesOverVirtualCan) {
   CanBusReader reader;
-  ASSERT_TRUE(reader.start({.backend = "virtualcan", .interface = "can0", .can_fd = true}));
+  ASSERT_TRUE(reader.start({.backend = "virtualcan", .interface_name = "can0", .can_fd = true}));
 
   auto writer = connectedWriter(QStringLiteral("can0"));
   ASSERT_NE(writer, nullptr);
-  // Let the server register both clients' "connect:can0" before the first frame goes through:
-  // it forwards a frame only to clients already registered on that channel.
-  waitFor([] { return false; }, 200ms);
+  ASSERT_TRUE(waitForLink(*writer, reader));
 
   QCanBusFrame standard(0x123, QByteArray("\x01\x02\x03", 3));
   QCanBusFrame extended(0x18FF50E5, QByteArray(8, '\x5A'));
@@ -75,17 +102,8 @@ TEST(CanBusReader, ReceivesFramesOverVirtualCan) {
   ASSERT_TRUE(writer->writeFrame(extended));
   ASSERT_TRUE(writer->writeFrame(fd));
 
-  std::vector<RawCanFrame> frames;
-  ASSERT_TRUE(waitFor([&] {
-    auto batch = reader.drainFrames();
-    for (; !batch.empty(); batch.pop()) {
-      frames.push_back(std::move(batch.front()));
-    }
-    return frames.size() >= 3;
-  })) << "received "
-      << frames.size() << " frames";
+  const auto frames = receive(reader, 3);
   ASSERT_EQ(frames.size(), 3U);
-
   EXPECT_EQ(frames[0].can_id, 0x123U);
   EXPECT_FALSE(frames[0].extended);
   EXPECT_EQ(frames[0].data, (std::vector<std::uint8_t>{1, 2, 3}));
@@ -101,9 +119,49 @@ TEST(CanBusReader, ReceivesFramesOverVirtualCan) {
   EXPECT_FALSE(reader.takeFatalError().has_value());
 }
 
+// The first virtualcan session is started from another thread, as the host does, and the VirtualCAN
+// server must still outlive it: a server born in that session's reader thread would stop forwarding
+// when the session stops.
+TEST(CanBusReader, VirtualCanSurvivesReaderRestart) {
+  CanBusReader first;
+  std::atomic<int> phase{0};  // 1: start() returned, 2: stop requested, 3: stopped
+  bool first_started = false;
+  std::thread controller([&] {
+    first_started = static_cast<bool>(first.start({.backend = "virtualcan", .interface_name = "can0"}));
+    phase = 1;
+    while (phase != 2) {
+      std::this_thread::sleep_for(1ms);
+    }
+    first.stop();
+    phase = 3;
+  });
+  EXPECT_TRUE(waitFor([&] { return phase >= 1; }));  // start() hops onto this thread: keep pumping
+  EXPECT_TRUE(first_started);
+
+  auto writer = connectedWriter(QStringLiteral("can0"));
+  const QCanBusFrame frame(0x321, QByteArray(2, '\x07'));
+  if (first_started && writer) {
+    EXPECT_TRUE(waitForLink(*writer, first));
+    writer->writeFrame(frame);
+    EXPECT_EQ(receive(first, 1).size(), 1U);
+  }
+  phase = 2;
+  EXPECT_TRUE(waitFor([&] { return phase == 3; }));
+  controller.join();
+  ASSERT_NE(writer, nullptr);
+
+  CanBusReader second;
+  ASSERT_TRUE(second.start({.backend = "virtualcan", .interface_name = "can0"}));
+  ASSERT_TRUE(waitForLink(*writer, second)) << "the VirtualCAN server died with the first session";
+  writer->writeFrame(frame);
+  const auto frames = receive(second, 1);
+  ASSERT_EQ(frames.size(), 1U);
+  EXPECT_EQ(frames[0].can_id, 0x321U);
+}
+
 TEST(CanBusReader, UnknownBackendFailsCleanly) {
   CanBusReader reader;
-  auto status = reader.start({.backend = "nosuchbackend", .interface = "can0"});
+  auto status = reader.start({.backend = "nosuchbackend", .interface_name = "can0"});
   ASSERT_FALSE(status);
   EXPECT_NE(status.error().find("nosuchbackend"), std::string::npos) << status.error();
   reader.stop();
@@ -115,7 +173,7 @@ TEST(CanBusReader, MissingVendorDriverFailsCleanly) {
     GTEST_SKIP() << "the peakcan backend is not installed";
   }
   CanBusReader reader;
-  auto status = reader.start({.backend = "peakcan", .interface = "usb0"});
+  auto status = reader.start({.backend = "peakcan", .interface_name = "usb0"});
   if (status) {
     GTEST_SKIP() << "a PEAK adapter is attached";
   }
@@ -137,7 +195,7 @@ TEST(CanBusReader, ServerLossIsReported) {
   })) << "the VirtualCAN server process did not come up";
 
   CanBusReader reader;
-  ASSERT_TRUE(reader.start({.backend = "virtualcan", .interface = kChildServerInterface}));
+  ASSERT_TRUE(reader.start({.backend = "virtualcan", .interface_name = kChildServerInterface}));
   EXPECT_FALSE(reader.takeFatalError().has_value());
 
   server.kill();
@@ -157,7 +215,7 @@ TEST(CanBusReader, ServerLossIsReported) {
 TEST(CanBusReader, StopIsIdempotent) {
   { CanBusReader never_started; }
   CanBusReader reader;
-  ASSERT_TRUE(reader.start({.backend = "virtualcan", .interface = "can0"}));
+  ASSERT_TRUE(reader.start({.backend = "virtualcan", .interface_name = "can0"}));
   reader.stop();
   reader.stop();
   EXPECT_TRUE(reader.drainFrames().empty());
@@ -168,7 +226,7 @@ int runVirtualCanServer(int argc, char** argv) {
   QCoreApplication app(argc, argv);
   std::unique_ptr<QCanBusDevice> device(
       QCanBus::instance()->createDevice(QStringLiteral("virtualcan"), QString::fromLatin1(kChildServerInterface)));
-  if (!device || !device->connectDevice()) {
+  if (!device) {
     return 1;
   }
   QObject::connect(device.get(), &QCanBusDevice::stateChanged, [](QCanBusDevice::CanBusDeviceState state) {
@@ -177,6 +235,9 @@ int runVirtualCanServer(int argc, char** argv) {
       std::fflush(stdout);
     }
   });
+  if (!device->connectDevice()) {
+    return 1;
+  }
   return QCoreApplication::exec();
 }
 
@@ -187,18 +248,6 @@ int main(int argc, char** argv) {
     return runVirtualCanServer(argc, argv);
   }
   QCoreApplication app(argc, argv);
-  // VirtualCAN's server is one process-wide object living in the thread that FIRST opened a
-  // virtualcan device, and it never goes away. Open one here so it lives in this (test) thread,
-  // whose wait loops pump it: a server born in a reader thread would stop forwarding once that
-  // reader stops.
-  {
-    std::unique_ptr<QCanBusDevice> primer(
-        QCanBus::instance()->createDevice(QStringLiteral("virtualcan"), QStringLiteral("can9")));
-    if (!primer || !primer->connectDevice()) {
-      std::fputs("cannot start the VirtualCAN server\n", stderr);
-      return 1;
-    }
-  }
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
