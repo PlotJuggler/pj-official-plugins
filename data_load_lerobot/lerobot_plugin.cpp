@@ -398,24 +398,11 @@ class LeRobotSource : public PJ::FileSourceBase {
       plan_idx[k] = idx_of(plan[k].arrow_name);
     }
 
-    std::shared_ptr<arrow::RecordBatchReader> batches;
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-    if (!reader.GetRecordBatchReader(&batches).ok()) {
+    auto batches_result = reader.GetRecordBatchReader();
+    if (!batches_result.ok()) {
       return PJ::unexpected("failed to create batch reader: " + path);
     }
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
+    std::shared_ptr<arrow::RecordBatchReader> batches = std::move(batches_result).ValueUnsafe();
 
     // Resolve the row range to emit. v2.x → [0, length) (whole file is the
     // episode); v3.0 → [dataset_from_index, dataset_to_index) from the shard

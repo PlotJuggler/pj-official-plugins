@@ -1,7 +1,7 @@
 {
   "id": "lerobot-loader",
   "name": "LeRobot Loader",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Open LeRobot datasets (v2.x and v3.0) by choosing the dataset's meta/info.json, then pick which episodes to load. The numeric series (state, action, ...) are plotted and each camera's video plays on the same timeline.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

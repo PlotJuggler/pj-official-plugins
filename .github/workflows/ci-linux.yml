@@ -115,7 +115,7 @@ jobs:
           path: ${{ github.workspace }}/.conan-arrow/p
           # Bump the trailing -vN whenever an Arrow option set below changes, so a
           # stale immutable entry can't pin an old binary.
-          key: conan-arrow-23.0.1-cppstd20-parquet-flight-${{ runner.os }}-v3
+          key: conan-arrow-26.0.1-cppstd20-parquet-flight-${{ runner.os }}-v3
 
       - name: Configure PlotJuggler JFrog Conan remote
         if: github.repository == 'PlotJuggler/pj-official-plugins'
@@ -134,7 +134,7 @@ jobs:
         run: |
           conan profile detect --force
           # Variant 1 — parquet/snappy (data_load_parquet, data_load_lerobot).
-          conan install --requires=arrow/23.0.1 \
+          conan install --requires=arrow/26.0.1 \
             -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" -o "arrow/*:with_mimalloc=False" \
             -o "*:shared=False" \
             -o "boost/*:without_test=True" -o "boost/*:without_cobalt=True" \
@@ -142,7 +142,7 @@ jobs:
             -c tools.cmake.cmaketoolchain:generator=Ninja \
             --build=missing -of "$(mktemp -d)"
           # Variant 2 — IPC decoding (parser_arrow): parquet with LZ4/ZSTD.
-          conan install --requires=arrow/23.0.1 \
+          conan install --requires=arrow/26.0.1 \
             -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" -o "arrow/*:with_mimalloc=False" \
             -o "arrow/*:with_lz4=True" -o "arrow/*:with_zstd=True" \
             -o "*:shared=False" \
@@ -152,7 +152,7 @@ jobs:
             --build=missing -of "$(mktemp -d)"
           # Variant 3 — Arrow Flight (toolbox_mosaico). Pulls grpc + protobuf + re2 +
           # thrift; lz4/zstd are needed because the Mosaico server sends LZ4/ZSTD batches.
-          conan install --requires=arrow/23.0.1 \
+          conan install --requires=arrow/26.0.1 \
             -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" -o "arrow/*:with_mimalloc=False" \
             -o "arrow/*:with_flight_rpc=True" -o "arrow/*:with_grpc=True" \
             -o "arrow/*:with_protobuf=True" -o "arrow/*:with_re2=True" \

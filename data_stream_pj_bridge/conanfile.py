@@ -19,6 +19,6 @@ class DataStreamPjBridgeConan(ConanFile):
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "zstd/1.5.7",
-        "ixwebsocket/11.4.6",
+        "ixwebsocket/12.0.0",
     )
     default_options = {"*:shared": False}

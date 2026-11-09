@@ -367,9 +367,9 @@ TEST(SerializeParquet, RoundTripsSchemaNullsSpecialValuesAndDefaultCompression) 
   ASSERT_TRUE(reader_result.ok()) << reader_result.status().ToString();
   std::unique_ptr<parquet::arrow::FileReader> reader = std::move(*reader_result);
 
-  std::shared_ptr<arrow::Table> result;
-  const arrow::Status read_status = reader->ReadTable(&result);
-  ASSERT_TRUE(read_status.ok()) << read_status.ToString();
+  auto table_result = reader->ReadTable();
+  ASSERT_TRUE(table_result.ok()) << table_result.status().ToString();
+  std::shared_ptr<arrow::Table> result = std::move(table_result).ValueUnsafe();
   ASSERT_NE(result, nullptr);
 
   ASSERT_EQ(result->num_columns(), 3);
@@ -440,9 +440,9 @@ TEST(SerializeParquet, MoreThanChunkSizeRowsProduceMultipleRowGroups) {
   auto reader_result = parquet::arrow::OpenFile(*input_result, arrow::default_memory_pool());
   ASSERT_TRUE(reader_result.ok()) << reader_result.status().ToString();
   std::unique_ptr<parquet::arrow::FileReader> reader = std::move(*reader_result);
-  std::shared_ptr<arrow::Table> result;
-  const arrow::Status read_status = reader->ReadTable(&result);
-  ASSERT_TRUE(read_status.ok()) << read_status.ToString();
+  auto table_result = reader->ReadTable();
+  ASSERT_TRUE(table_result.ok()) << table_result.status().ToString();
+  std::shared_ptr<arrow::Table> result = std::move(table_result).ValueUnsafe();
 
   ASSERT_NE(result, nullptr);
   EXPECT_EQ(result->num_rows(), static_cast<int64_t>(row_count));

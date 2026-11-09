@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_blf/`.
 
+## [0.1.6] - 2026-11-09
+
+### Changed
+- Updated the bundled zlib from 1.3.1 to 1.3.2, picking up upstream bug and security fixes.
+
 ## [0.1.5] - 2026-11-08
 
 ### Fixed

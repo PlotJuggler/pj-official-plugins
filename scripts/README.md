@@ -205,10 +205,10 @@ Triggered by tags matching `*/v*` pattern.
 | Windows ARM64 | windows-11-arm | arm64 |
 
 > **Note:** Windows x64 is pinned to `windows-2022` (not `windows-latest`). The newer
-> `windows-latest` (VS18 / MSVC 14.5x) image breaks the `libsodium/1.0.20` build with
+> `windows-latest` (VS18 / MSVC 14.5x) image broke the `libsodium/1.0.20` build with
 > `MSB8052` (default toolset 14.44 vs the v145 platform toolset its bundled solution
-> selects). Revert to `windows-latest` once libsodium's recipe supports v145 or the
-> 1.0.20 pin is lifted.
+> selects). Not re-tested since the move to `libsodium/1.0.22`: revert to
+> `windows-latest` once that is confirmed to build there.
 
 **Per-platform steps:**
 
@@ -236,7 +236,7 @@ Triggered by tags matching `*/v*` pattern.
 
 Release notes are intentionally generated from non-merge commits touching only the tagged plugin directory, with release bookkeeping commits omitted. This keeps a CSV release from inheriting a ROS, MQTT, or toolbox changelog entry just because both live in the same repository. Shared build, packaging, or runtime commits can be included manually with `--include-shared` when they are genuinely useful for a specific release.
 
-Tagged releases keep the existing one-tag-per-plugin strategy. The source directory before `/v` selects both the dependency graph and the CMake target scope. For example, `data_load_csv/v1.2.0` runs `./build.sh data_load_csv`, which installs `data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so Arrow, MQTT, CPython, and other unrelated plugin dependencies are not installed for that release.
+Tagged releases keep the existing one-tag-per-plugin strategy. The source directory before `/v` selects both the dependency graph and the CMake target scope. For example, `data_load_csv/v1.2.0` runs `./build.sh data_load_csv`, which installs `data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so Arrow, MQTT, and other unrelated plugin dependencies are not installed for that release.
 
 ---
 

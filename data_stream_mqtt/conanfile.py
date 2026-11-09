@@ -18,6 +18,6 @@ class DataStreamMqttConan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
-        "paho-mqtt-cpp/1.5.3",
+        "paho-mqtt-cpp/1.6.0",
     )
     default_options = {"*:shared": False}
