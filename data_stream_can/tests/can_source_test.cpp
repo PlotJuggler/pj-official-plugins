@@ -263,10 +263,10 @@ TEST(CanSource, FatalReaderErrorStopsStream) {
   }
   ASSERT_FALSE(polled) << "poll() never reported the lost bus";
   EXPECT_FALSE(polled.error().empty());
-  EXPECT_TRUE(session->handle->poll());  // the error is reported once, not on every later poll
-  EXPECT_EQ(countMessages(session->host, PJ_DATA_SOURCE_MESSAGE_ERROR, ""), 1);
+  EXPECT_TRUE(session->handle->poll());  // the error is returned once, not on every later poll
   session->handle->stop();
-  EXPECT_EQ(countMessages(session->host, PJ_DATA_SOURCE_MESSAGE_ERROR, ""), 1);
+  // Only returned: the host shows a failed poll() itself, a reportMessage(kError) would show it twice.
+  EXPECT_EQ(countMessages(session->host, PJ_DATA_SOURCE_MESSAGE_ERROR, ""), 0);
 }
 
 // Child-process mode for FatalReaderErrorStopsStream: host a VirtualCAN server until killed.

@@ -198,6 +198,18 @@ TEST(CanBusReader, UnknownBackendFailsCleanly) {
   reader.stop();
 }
 
+// Qt's socketcan backend cannot set a rate on a running interface and only logs the failure: asking
+// for one must fail the start, not stream at the interface's own rate. Rejected before any socket opens.
+TEST(CanBusReader, SocketCanBitrateFailsTheStart) {
+  CanBusReader reader;
+  auto status = reader.start({.backend = "socketcan", .interface_name = "can0", .bitrate = 500000});
+  ASSERT_FALSE(status);
+  EXPECT_NE(status.error().find("socketcan/can0: "), std::string::npos) << status.error();
+  EXPECT_NE(status.error().find("ip link set can0 type can bitrate"), std::string::npos) << status.error();
+  status = reader.start({.backend = "socketcan", .interface_name = "can0", .can_fd = true, .data_bitrate = 2000000});
+  EXPECT_FALSE(status);
+}
+
 TEST(CanBusReader, MissingVendorDriverFailsCleanly) {
   const auto backends = can_stream::availableBackends();
   if (std::find(backends.begin(), backends.end(), "peakcan") == backends.end()) {

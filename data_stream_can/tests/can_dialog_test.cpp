@@ -97,7 +97,7 @@ TEST(CanDialog, WidgetEditsReachBusSettings) {
   EXPECT_EQ(settings.interface_name, "vcan0");
   EXPECT_EQ(settings.bitrate, 500000);
   EXPECT_TRUE(settings.can_fd);
-  EXPECT_EQ(settings.data_bitrate, 5000000);
+  EXPECT_EQ(settings.data_bitrate, 4000000);  // index 2: the 4 Mbit/s preset
   EXPECT_EQ(settings.timestamps, TimestampSource::kHost);
 }
 

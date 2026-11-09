@@ -102,7 +102,8 @@ endif()
 
 if(TARGET GTest::gtest AND BUILD_TESTING)
   # The Qt-free helpers.
-  add_executable(can_stream_helpers_test tests/timestamp_anchor_test.cpp tests/read_error_streak_test.cpp)
+  add_executable(can_stream_helpers_test
+    tests/timestamp_anchor_test.cpp tests/read_error_streak_test.cpp tests/socketcan_link_test.cpp)
   target_compile_features(can_stream_helpers_test PRIVATE cxx_std_20)
   target_compile_options(can_stream_helpers_test PRIVATE ${PJ_WARNING_FLAGS})
   target_include_directories(can_stream_helpers_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -29,9 +29,10 @@ constexpr std::array<Preset, 5> kBitrates{{
     {1000000, "1 Mbit/s"},
 }};
 
-constexpr std::array<Preset, 4> kDataBitrates{{
+constexpr std::array<Preset, 5> kDataBitrates{{
     {0, "Keep device setting"},
     {2000000, "2 Mbit/s"},
+    {4000000, "4 Mbit/s"},
     {5000000, "5 Mbit/s"},
     {8000000, "8 Mbit/s"},
 }};

@@ -66,7 +66,8 @@ class CanBusReader {
 
   std::queue<RawCanFrame> drainFrames();
   /// Set once per session: on a ConnectionError, on 10 consecutive ReadErrors with no data frame in
-  /// between, or when the device leaves ConnectedState.
+  /// between, when the device leaves ConnectedState, or (socketcan, Linux) when the interface goes
+  /// down or disappears. Pushed after every frame received before it, on the same thread.
   std::optional<std::string> takeFatalError();
   ReaderCounts counts() const;
 

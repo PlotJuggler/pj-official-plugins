@@ -10,6 +10,7 @@
 #include "pj_base/sdk/platform.hpp"
 #include "pj_plugins/sdk/streaming_source.hpp"
 #include "read_error_streak.hpp"
+#include "socketcan_link.hpp"
 #include "timestamp_anchor.hpp"
 
 // Qt after the SDK headers (and QT_NO_KEYWORDS, see CMakeLists.txt): Qt's keyword macros must not
@@ -18,6 +19,7 @@
 #include <QtCore/QEventLoop>
 #include <QtCore/QString>
 #include <QtCore/QThread>
+#include <QtCore/QTimer>
 #include <QtCore/QVariant>
 #include <QtSerialBus/QCanBus>
 #include <QtSerialBus/QCanBusDevice>
@@ -28,6 +30,7 @@ namespace can_stream {
 namespace {
 
 constexpr auto kConnectTimeout = std::chrono::seconds(5);
+constexpr auto kLinkCheckPeriod = std::chrono::milliseconds(500);
 
 // QCanBus is not thread-safe (unsynchronized lazy singleton and plugin map), and it is reached from
 // the dialog's thread (availableBackends / availableInterfaces) and from reader threads
@@ -43,6 +46,8 @@ QCanBus* canBus() {
     // Before QCanBus scans for backends: the bundled canbus/ plugin dir sits next to this module.
     const auto dir = PJ::sdk::getSharedLibDir(&kModuleAnchor);
     if (!dir.empty()) {
+      // Process-wide: Qt searches this dir for EVERY plugin category, so the dist tree must never ship
+      // a Qt plugin-category subfolder other than canbus/.
       QCoreApplication::addLibraryPath(QString::fromStdWString(dir.wstring()));
     }
   });
@@ -84,7 +89,9 @@ PJ::Status startVirtualCanServerOnAppThread(const QString& interface_name) {
     return PJ::okStatus();
   }
   // Bounded: an application thread that is busy (or blocked on this one) fails the start instead of
-  // hanging it. Everything is captured by value, so a late run after the timeout is harmless.
+  // hanging it. Everything is captured by value, so a late run after the timeout is harmless, as long
+  // as this plugin is still loaded: it must not be unloaded while such a run is pending (its code
+  // would be gone).
   QMetaObject::invokeMethod(app, open_and_drop, Qt::QueuedConnection);
   if (done->get_future().wait_for(kConnectTimeout) != std::future_status::ready) {
     return PJ::unexpected(
@@ -153,6 +160,17 @@ void CanBusReader::Impl::run(const BusSettings& settings) {
     }
   };
 
+  // Qt's socketcan backend applies a bitrate through libsocketcan, which the kernel refuses on an
+  // interface that is up (and without CAP_NET_ADMIN); Qt then only logs a warning and streams at the
+  // interface's own rate. It has no data-bitrate key at all. So the rates are the interface's.
+  if (settings.backend == "socketcan" && (settings.bitrate > 0 || (settings.can_fd && settings.data_bitrate > 0))) {
+    report(
+        prefix + QStringLiteral("a SocketCAN interface keeps its own bitrate: set it with `ip link set ") +
+        QString::fromStdString(settings.interface_name) +
+        QStringLiteral(" type can bitrate ...` and choose \"Keep device setting\""));
+    return;
+  }
+
   QString error;
   std::unique_ptr<QCanBusDevice> device;
   {
@@ -219,10 +237,13 @@ void CanBusReader::Impl::run(const BusSettings& settings) {
     }
   });
   QObject::connect(device.get(), &QCanBusDevice::errorOccurred, &context, [&](QCanBusDevice::CanBusError code) {
-    // Fatal: a ConnectionError at once; ReadErrors only as an unbroken streak (one bad frame is not
-    // an unplug, see ReadErrorStreak). Other errors (WriteError, a runtime ConfigurationError) never.
-    const bool fatal =
-        code == QCanBusDevice::ConnectionError || (code == QCanBusDevice::ReadError && read_errors.onReadError());
+    // Fatal: a ConnectionError at once; a ConfigurationError while connecting (a backend that applies
+    // its settings inside connectDevice() and connects anyway); ReadErrors only as an unbroken streak
+    // (one bad frame is not an unplug, see ReadErrorStreak). Other errors (WriteError, a runtime
+    // ConfigurationError) never.
+    const bool fatal = code == QCanBusDevice::ConnectionError ||
+                       (code == QCanBusDevice::ConfigurationError && !handshake_done) ||
+                       (code == QCanBusDevice::ReadError && read_errors.onReadError());
     if (fatal) {
       report(prefix + device->errorString());
     }
@@ -247,6 +268,21 @@ void CanBusReader::Impl::run(const BusSettings& settings) {
     report(prefix + device->errorString());  // no-op if stateChanged already reported
     return;
   }
+
+  // Qt's socketcan backend reports no link loss (an interface set down or removed, e.g. an unplugged
+  // USB adapter): its reads just stop. Watch the interface's sysfs flags instead.
+#ifdef __linux__
+  QTimer link_check;
+  if (settings.backend == "socketcan") {
+    QObject::connect(&link_check, &QTimer::timeout, &context, [&] {
+      if (auto problem = socketCanLinkProblem("/sys/class/net", settings.interface_name)) {
+        link_check.stop();
+        report(prefix + QString::fromStdString(*problem));
+      }
+    });
+    link_check.start(kLinkCheckPeriod);
+  }
+#endif
 
   // Until stop() quits this thread. A quit() that lands before exec() makes it return at once.
   QEventLoop loop;

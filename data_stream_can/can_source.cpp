@@ -72,13 +72,14 @@ class CanSource : public PJ::StreamSourceBase {
     if (!router_) {
       return PJ::okStatus();
     }
-    // Frames that arrived before a fatal error are still published.
-    for (auto frames = reader_.drainFrames(); !frames.empty(); frames.pop()) {
-      const auto& frame = frames.front();
-      router_->route(writeHost(), bus_, frame.can_id, frame.extended, frame.data, frame.ts_ns);
-    }
+    routeFrames();
     if (auto error = reader_.takeFatalError()) {
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *error);
+      // Frames that arrived before the fatal error are still published. The reader thread pushes a
+      // frame before it sets the error, so every frame it pushed before the error is in the queue by
+      // the time take() sees it: one more drain catches those that landed after the drain above.
+      routeFrames();
+      // Returned only: the host turns a failed poll() into its own stream-error dialog, so a
+      // reportMessage(kError) here would show the same error twice.
       return PJ::unexpected(std::move(*error));
     }
     return PJ::okStatus();
@@ -102,6 +103,13 @@ class CanSource : public PJ::StreamSourceBase {
   }
 
  private:
+  void routeFrames() {
+    for (auto frames = reader_.drainFrames(); !frames.empty(); frames.pop()) {
+      const auto& frame = frames.front();
+      router_->route(writeHost(), bus_, frame.can_id, frame.extended, frame.data, frame.ts_ns);
+    }
+  }
+
   can_stream::CanDialog dialog_;
   can_stream::CanBusReader reader_;
   // Declared before the router, which points at it: destroyed after it.
