@@ -79,6 +79,10 @@ VALID_PLATFORMS = [
 
 VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox", "widget"]
 
+# Non-widget plugins that link Qt on purpose (they pass ALLOW_QT to pj_harden_plugin_exports). They
+# build like a widget library: against the official Qt, only where CI installs it.
+QT_LINKED_PLUGINS = {"data_stream_can"}
+
 # Semantic versioning regex (simplified: major.minor.patch with optional pre-release)
 import sys as _sys
 
@@ -1360,10 +1364,11 @@ def cmd_resolve_build_scope(args) -> int:
     Notices and errors go to stderr where Actions still parses them as
     `::notice::` / `::error::` annotations.
 
-    A plugin whose manifest category is "widget" links Qt: it reports needs_qt=true so the workflow
-    installs the official Qt on that leg only. The host loads a widget library only when it was
-    built against the same Qt major.minor, so a widget manifest limits supported_platforms to where
-    CI installs the official Qt (linux-x86_64 and windows-x86_64).
+    A plugin whose manifest category is "widget", or that is listed in QT_LINKED_PLUGINS, links Qt:
+    it reports needs_qt=true so the workflow installs the official Qt on that leg only. The host
+    loads a widget library only when it was built against the same Qt major.minor, so such a
+    manifest limits supported_platforms to where CI installs the official Qt (linux-x86_64 and
+    windows-x86_64).
 
     Optional per-plugin manifest fields honoured for plugin tags:
       supported_platforms  list of canonical "os-arch" strings (see
@@ -1402,7 +1407,7 @@ def cmd_resolve_build_scope(args) -> int:
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text())
             platforms = manifest.get("supported_platforms")
-            needs_qt = manifest.get("category") == "widget"
+            needs_qt = manifest.get("category") == "widget" or plugin_name in QT_LINKED_PLUGINS
             if platforms is not None and canonical_platform not in platforms:
                 skip = True
                 print(

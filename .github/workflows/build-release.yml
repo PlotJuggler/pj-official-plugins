@@ -153,8 +153,8 @@ jobs:
           # installed VS2022-compatible compiler used by dependency projects.
           toolset: ${{ matrix.arch == 'arm64' && '14.44' || '' }}
 
-      # Widget-family libraries (needs_qt) are built against the official Qt that matches the host's
-      # major.minor, never a distribution or Conan Qt. Every other leg stays Qt-free.
+      # Widget-family libraries and QT_LINKED_PLUGINS (needs_qt) are built against the official Qt that
+      # matches the host's major.minor, never a distribution or Conan Qt. Every other leg stays Qt-free.
       - name: Install Qt (widget libraries)
         if: steps.build-scope.outputs.needs_qt == 'true'
         uses: ./.github/actions/install-qt

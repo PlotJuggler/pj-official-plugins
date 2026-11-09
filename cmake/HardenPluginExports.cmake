@@ -2,7 +2,8 @@
 #
 # pj_harden_plugin_exports(<target>
 #     REQUIRED_EXPORTS <family getters...>
-#     [EXTRA_EXPORTS <additional symbols...>])
+#     [EXTRA_EXPORTS <additional symbols...>]
+#     [ALLOW_QT])
 #
 # Restricts a plugin DSO's dynamic exports to the shared ABI allowlist
 # (plugin_exports.map.in, configured per target) and wires the post-build gate
@@ -17,6 +18,11 @@
 # proxy's documented PJ_get_proxy_last_error diagnostic hook, or the ros2
 # inner payload's private PJ_ros2_inner_* getters (list them in
 # REQUIRED_EXPORTS too when the gate should enforce their presence).
+#
+# ALLOW_QT switches the Linux gate's FORBID_QT check off for a plugin that links Qt on purpose
+# (data_stream_can), exactly as listing PJ_get_widget_vtable does for the widget family. Without
+# it a plugin may not list libQt6* in DT_NEEDED. Such a plugin must be built through
+# pj_find_host_qt() (cmake/PjHostQt.cmake) so it matches the host's Qt major.minor.
 #
 # A version script — rather than --exclude-libs,ALL — because the boot symbol
 # pj_plugin_abi_version is a weak header-emitted definition that static-archive
@@ -33,7 +39,7 @@
 # exports nothing without dllexport.
 
 function(pj_harden_plugin_exports TARGET)
-  set(_options)
+  set(_options ALLOW_QT)
   set(_oneValueArgs)
   set(_multiValueArgs REQUIRED_EXPORTS EXTRA_EXPORTS)
   cmake_parse_arguments(ARG "${_options}" "${_oneValueArgs}" "${_multiValueArgs}" ${ARGN})
@@ -71,7 +77,7 @@ function(pj_harden_plugin_exports TARGET)
 
   list(PREPEND ARG_REQUIRED_EXPORTS pj_plugin_abi_version)
   list(JOIN ARG_REQUIRED_EXPORTS "," _required)
-  if("PJ_get_widget_vtable" IN_LIST ARG_REQUIRED_EXPORTS)
+  if(ARG_ALLOW_QT OR "PJ_get_widget_vtable" IN_LIST ARG_REQUIRED_EXPORTS)
     set(_forbid_qt OFF)
   else()
     set(_forbid_qt ON)

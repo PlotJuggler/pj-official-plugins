@@ -21,6 +21,10 @@
 #      Only Widget-family plugins may link Qt: the host loads them under a
 #      same-major.minor Qt policy, and any other family has no such contract,
 #      so a Qt dependency there would load against whatever Qt the host has.
+#      The one exception is data_stream_can (QtSerialBus), which opts out with
+#      ALLOW_QT in pj_harden_plugin_exports. It accepts the missing contract
+#      knowingly: it is built against the Qt in the QT_VERSION file, and a host
+#      with another major.minor fails to dlopen it (documented as a limitation).
 
 if(NOT PLUGIN_SO OR NOT REQUIRED_EXPORTS)
   message(FATAL_ERROR "CheckElfPluginExports: PLUGIN_SO and REQUIRED_EXPORTS are required")
