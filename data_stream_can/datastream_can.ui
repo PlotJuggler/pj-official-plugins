@@ -74,7 +74,9 @@
       </widget>
      </item>
      <item row="3" column="1">
-      <widget class="QComboBox" name="comboBitrate"/>
+      <widget class="QComboBox" name="comboBitrate">
+       <property name="toolTip"><string>Keep device setting: SocketCAN keeps the interface's rate (ip link set can0 type can bitrate ...), the only choice there. Vendor backends open with their default rate (PEAK: 500 kbit/s): choose the bus's rate.</string></property>
+      </widget>
      </item>
      <item row="4" column="1">
       <widget class="QCheckBox" name="checkCanFd">

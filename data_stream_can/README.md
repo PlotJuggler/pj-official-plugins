@@ -36,9 +36,17 @@ pcanbasic`), and as the start error of the stream (`<backend>/<interface>: ...`)
 ## Features
 
 - Pick backend, interface (detected, or typed), bitrate and, with CAN FD on, the
-  data-phase bitrate. "Keep device setting" leaves the adapter's configuration
-  alone (SocketCAN interfaces are configured with `ip link`, not by the
-  application).
+  data-phase bitrate (2, 4, 5 or 8 Mbit/s). "Keep device setting" means:
+  - **SocketCAN**: the interface's configured rate. A SocketCAN interface is
+    configured outside PlotJuggler (`ip link set can0 type can bitrate 500000`,
+    with the interface down, as root / `CAP_NET_ADMIN`), so "Keep device
+    setting" is the only choice there: any other bitrate or data bitrate fails
+    the start with that hint. (Qt would only log its failure to apply the rate
+    and stream at the interface's own rate.)
+  - **Vendor backends** (PEAK, Vector, ...): Qt opens the adapter with the
+    backend's default rate (PEAK: 500 kbit/s), not the rate a previous
+    application left. Choose the bus's rate explicitly there. A rate the adapter
+    rejects, while configuring or while connecting, fails the start.
 - **Dictionaries**: any number of `.dbc` files and ARUS-style CSV dictionaries
   (`ID,bitIn,bitFin,Signed,Power,Scale,Offset,Name`, see
   [data_load_candump](../data_load_candump/README.md#arus-csv-dictionary)), all
@@ -48,9 +56,16 @@ pcanbasic`), and as the start error of the stream (`<backend>/<interface>: ...`)
   as raw bytes.
 - Acquisition runs on its own thread; frames are handed over to PlotJuggler's
   poll and appended directly (no message parser in between).
-- A lost adapter or bus (`ConnectionError`, ten consecutive read errors with no
-  frame in between, or the device leaving the connected state) reports an error
-  and stops the stream. Frames received before it are kept.
+- A lost adapter or bus reports an error and stops the stream; frames received
+  before it are kept. How it is detected depends on the backend:
+  - **SocketCAN**: the interface going down or disappearing (`ip link set down`,
+    a USB adapter unplugged), checked every 500 ms. Qt's backend itself reports
+    neither.
+  - **VirtualCAN**: the loss of its TCP connection to the server.
+  - **Vendor backends**: only when the driver raises errors: a `ConnectionError`,
+    ten consecutive read errors with no frame in between, or the device leaving
+    the connected state. A driver that goes silent without an error is not
+    detected.
 - Stopping the stream reports a summary: frames decoded, message topics
   created, unmatched / undecodable / no-dictionary frames, error frames and
   remote frames.
@@ -79,8 +94,8 @@ Identical to the [candump loader](../data_load_candump/README.md):
 
 ```json
 {
-  "backend": "socketcan",
-  "interface": "can0",
+  "backend": "peakcan",
+  "interface": "usb0",
   "bitrate": 500000,
   "can_fd": false,
   "data_bitrate": 0,
@@ -92,7 +107,7 @@ Identical to the [candump loader](../data_load_candump/README.md):
 
 Every key is optional; a missing or wrongly-typed one keeps its default.
 `bitrate` / `data_bitrate`: bit/s, `0` keeps the device's setting
-(`data_bitrate` applies only with `can_fd`). Dictionary paths are stored as
+(`data_bitrate` applies only with `can_fd`; both must be `0` on `socketcan`). Dictionary paths are stored as
 given: a stream has no data file for them to be relative to. A saved backend not
 installed on this machine is kept in the list, so the layout survives a round
 trip through another computer.
@@ -112,7 +127,7 @@ Start the stream on backend `socketcan`, interface `vcan0`, then:
 ```bash
 cansend vcan0 123#DEADBEEF      # one frame -> CAN/vcan0/0x123 (raw) or the DBC message
 cangen vcan0 -g 5               # random frames every 5 ms
-sudo ip link set down vcan0     # while streaming: error message, the stream stops
+sudo ip link set down vcan0     # while streaming: "interface went down" within 0.5 s, the stream stops
 ```
 
 On any OS, the `virtualcan` backend needs no setup: start a stream on it, and
@@ -142,6 +157,9 @@ ports.
   time.
 - One interface per source. Add another source for a second bus.
 - Receive only: nothing is sent on the bus.
+- A standard (11-bit) and an extended (29-bit) frame with the same numeric ID
+  share the raw topic `CAN/<interface>/0x<ID>`, as in the candump loader. A
+  follow-up will tell them apart.
 - Multiplexed signals are not decoded, and neither is a CAN FD payload longer
   than 8 bytes (both `dbc_parser_cpp` limitations, shared with the file
   loaders). Such a CAN FD frame is counted undecodable and still reaches the
