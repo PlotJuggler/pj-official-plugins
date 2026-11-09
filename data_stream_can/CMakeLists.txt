@@ -22,12 +22,13 @@ target_link_libraries(can_stream_core
 )
 
 if(TARGET GTest::gtest AND BUILD_TESTING)
-  add_executable(timestamp_anchor_test tests/timestamp_anchor_test.cpp)
-  target_compile_features(timestamp_anchor_test PRIVATE cxx_std_20)
-  target_compile_options(timestamp_anchor_test PRIVATE ${PJ_WARNING_FLAGS})
-  target_include_directories(timestamp_anchor_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(timestamp_anchor_test PRIVATE GTest::gtest_main)
-  add_test(NAME timestamp_anchor_test COMMAND timestamp_anchor_test)
+  # The Qt-free helpers.
+  add_executable(can_stream_helpers_test tests/timestamp_anchor_test.cpp tests/read_error_streak_test.cpp)
+  target_compile_features(can_stream_helpers_test PRIVATE cxx_std_20)
+  target_compile_options(can_stream_helpers_test PRIVATE ${PJ_WARNING_FLAGS})
+  target_include_directories(can_stream_helpers_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(can_stream_helpers_test PRIVATE GTest::gtest_main)
+  add_test(NAME can_stream_helpers_test COMMAND can_stream_helpers_test)
 
   # Own main(): the reader needs a QCoreApplication. One process per test: VirtualCAN's server is a
   # process-wide Qt global, and each test must meet it as a fresh process does. It listens on the

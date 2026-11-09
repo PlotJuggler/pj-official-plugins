@@ -159,6 +159,37 @@ TEST(CanBusReader, VirtualCanSurvivesReaderRestart) {
   EXPECT_EQ(frames[0].can_id, 0x321U);
 }
 
+// The host's contract: start() on the GUI (QCoreApplication) thread, then stop() and the
+// destruction on its session worker thread.
+TEST(CanBusReader, StopFromAnotherThread) {
+  auto reader = std::make_unique<CanBusReader>();
+  ASSERT_TRUE(reader->start({.backend = "virtualcan", .interface_name = "can0"}));
+  auto writer = connectedWriter(QStringLiteral("can0"));
+  ASSERT_NE(writer, nullptr);
+  ASSERT_TRUE(waitForLink(*writer, *reader));
+  const QCanBusFrame frame(0x222, QByteArray(3, '\x09'));
+  writer->writeFrame(frame);
+  ASSERT_EQ(receive(*reader, 1).size(), 1U);
+
+  std::atomic<bool> done{false};
+  std::thread worker([&] {
+    reader->stop();
+    reader.reset();
+    done = true;
+  });
+  EXPECT_TRUE(waitFor([&] { return done.load(); }));
+  worker.join();
+  QCoreApplication::processEvents();  // anything wrongly left posted for the dead reader runs here
+
+  CanBusReader next;
+  ASSERT_TRUE(next.start({.backend = "virtualcan", .interface_name = "can0"}));
+  ASSERT_TRUE(waitForLink(*writer, next));
+  writer->writeFrame(frame);
+  const auto frames = receive(next, 1);
+  ASSERT_EQ(frames.size(), 1U);
+  EXPECT_EQ(frames[0].can_id, 0x222U);
+}
+
 TEST(CanBusReader, UnknownBackendFailsCleanly) {
   CanBusReader reader;
   auto status = reader.start({.backend = "nosuchbackend", .interface_name = "can0"});

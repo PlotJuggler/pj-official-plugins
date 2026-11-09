@@ -9,6 +9,7 @@
 
 #include "pj_base/sdk/platform.hpp"
 #include "pj_plugins/sdk/streaming_source.hpp"
+#include "read_error_streak.hpp"
 #include "timestamp_anchor.hpp"
 
 // Qt after the SDK headers (and QT_NO_KEYWORDS, see CMakeLists.txt): Qt's keyword macros must not
@@ -61,8 +62,9 @@ std::int64_t hostNowNs() {
 // itself is dropped at once, before its socket registers on a channel (kept, it would buffer that
 // channel's traffic forever, unread). Run for every virtualcan session, not once: starting a running
 // server is a no-op, and this also retries a listen() that failed earlier (port briefly taken).
-void startVirtualCanServerOnAppThread(const QString& interface_name) {
-  auto open_and_drop = [interface_name] {
+PJ::Status startVirtualCanServerOnAppThread(const QString& interface_name) {
+  auto done = std::make_shared<std::promise<void>>();
+  auto open_and_drop = [interface_name, done] {
     std::unique_ptr<QCanBusDevice> device;
     {
       std::lock_guard lock(g_can_bus_mutex);
@@ -71,14 +73,24 @@ void startVirtualCanServerOnAppThread(const QString& interface_name) {
     if (device) {
       device->connectDevice();
     }
+    done->set_value();
   };
   QCoreApplication* app = QCoreApplication::instance();
+  if (app == nullptr) {
+    return PJ::unexpected("virtualcan: no QCoreApplication to host the VirtualCAN server");
+  }
   if (QThread::currentThread() == app->thread()) {
     open_and_drop();
-  } else {
-    // The caller is not the application thread, so blocking on it cannot deadlock on ourselves.
-    QMetaObject::invokeMethod(app, open_and_drop, Qt::BlockingQueuedConnection);
+    return PJ::okStatus();
   }
+  // Bounded: an application thread that is busy (or blocked on this one) fails the start instead of
+  // hanging it. Everything is captured by value, so a late run after the timeout is harmless.
+  QMetaObject::invokeMethod(app, open_and_drop, Qt::QueuedConnection);
+  if (done->get_future().wait_for(kConnectTimeout) != std::future_status::ready) {
+    return PJ::unexpected(
+        "virtualcan: the application thread did not respond within 5 s (the VirtualCAN server must start there)");
+  }
+  return PJ::okStatus();
 }
 
 }  // namespace
@@ -129,6 +141,7 @@ void CanBusReader::Impl::run(const BusSettings& settings) {
   bool handshake_done = false;
   bool was_connected = false;
   bool fatal_reported = false;
+  ReadErrorStreak read_errors;
   // Before the handshake an error fails start(); after it, it is the session's one fatal error.
   auto report = [&](const QString& message) {
     if (!handshake_done) {
@@ -188,6 +201,7 @@ void CanBusReader::Impl::run(const BusSettings& settings) {
       if (type != QCanBusFrame::DataFrame) {
         continue;
       }
+      read_errors.onFrame();
       RawCanFrame raw;
       const std::int64_t now = hostNowNs();
       if (settings.timestamps == TimestampSource::kHost) {
@@ -205,9 +219,10 @@ void CanBusReader::Impl::run(const BusSettings& settings) {
     }
   });
   QObject::connect(device.get(), &QCanBusDevice::errorOccurred, &context, [&](QCanBusDevice::CanBusError code) {
-    // Fatal: the link is gone (PEAK reports an unplug as a failed CAN_Read, ReadError, without
-    // any state change). Other errors (WriteError, ConfigurationError at runtime, ...) are not.
-    const bool fatal = code == QCanBusDevice::ConnectionError || code == QCanBusDevice::ReadError;
+    // Fatal: a ConnectionError at once; ReadErrors only as an unbroken streak (one bad frame is not
+    // an unplug, see ReadErrorStreak). Other errors (WriteError, a runtime ConfigurationError) never.
+    const bool fatal =
+        code == QCanBusDevice::ConnectionError || (code == QCanBusDevice::ReadError && read_errors.onReadError());
     if (fatal) {
       report(prefix + device->errorString());
     }
@@ -262,11 +277,14 @@ PJ::Status CanBusReader::start(const BusSettings& settings) {
   impl_->handshake = {};
   auto handshake = impl_->handshake.get_future();
   if (settings.backend == "virtualcan") {
-    startVirtualCanServerOnAppThread(QString::fromStdString(settings.interface_name));
+    if (auto status = startVirtualCanServerOnAppThread(QString::fromStdString(settings.interface_name)); !status) {
+      return status;
+    }
   }
 
-  // The QThread object belongs to this (controlling) thread; everything created inside run() lives
-  // on the new thread.
+  // The QThread object lives in this (starting) thread but is only start()ed, quit() and wait()ed,
+  // all thread-safe, so stop() may run on another thread; everything created inside run() lives on
+  // the new thread.
   impl_->thread.reset(QThread::create([impl = impl_.get(), settings] { impl->run(settings); }));
   impl_->thread->setObjectName(QStringLiteral("can_reader"));
   impl_->thread->start();
@@ -289,6 +307,9 @@ void CanBusReader::stop() {
   }
   impl_->thread->quit();
   impl_->thread->wait();  // run() has returned: the device is destroyed, no callback is pending
+  // stop() may run on another thread than start() (the host stops on its session worker). Nothing
+  // posts events to the QThread object itself, but drop any before deleting it from here.
+  QCoreApplication::removePostedEvents(impl_->thread.get());
   impl_->thread.reset();
 }
 
