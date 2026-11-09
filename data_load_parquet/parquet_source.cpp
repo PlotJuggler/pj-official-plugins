@@ -181,23 +181,11 @@ class ParquetSource : public PJ::FileSourceBase {
     (void)runtimeHost().progressStart("Importing Parquet", static_cast<uint64_t>(total_rows), true);
 
     // Read via RecordBatchReader
-    std::shared_ptr<arrow::RecordBatchReader> batch_reader;
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#elif defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-    status = reader->GetRecordBatchReader(&batch_reader);
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#elif defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
-    if (!status.ok()) {
+    auto batch_reader_result = reader->GetRecordBatchReader();
+    if (!batch_reader_result.ok()) {
       return PJ::unexpected(std::string("failed to create batch reader"));
     }
+    std::shared_ptr<arrow::RecordBatchReader> batch_reader = std::move(batch_reader_result).ValueUnsafe();
 
     int64_t rows_processed = 0;
     std::shared_ptr<arrow::RecordBatch> batch;

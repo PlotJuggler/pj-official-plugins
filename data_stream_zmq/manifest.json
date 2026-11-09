@@ -1,7 +1,7 @@
 {
   "id": "zmq-subscriber",
   "name": "ZMQ Subscriber",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "Subscribe to a ZeroMQ publisher and plot the incoming data live.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

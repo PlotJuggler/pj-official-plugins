@@ -18,8 +18,8 @@ class DataLoadLerobotConan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
-        "arrow/23.0.1",
-        "ffmpeg/8.1",
+        "arrow/26.0.1",
+        "ffmpeg/8.1.2",
     )
     default_options = {
         "*:shared": False,

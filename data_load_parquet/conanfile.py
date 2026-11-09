@@ -19,7 +19,7 @@ class DataLoadParquetConan(ConanFile):
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "date/3.0.4",
-        "arrow/23.0.1",
+        "arrow/26.0.1",
     )
     default_options = {
         "*:shared": False,

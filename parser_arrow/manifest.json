@@ -1,7 +1,7 @@
 {
   "id": "arrow-parser",
   "name": "Arrow IPC Parser",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Decodes Apache Arrow IPC data, which carries its own schema, into plottable series. Needed by sources that deliver Arrow data, such as the Mosaico Cloud Server.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

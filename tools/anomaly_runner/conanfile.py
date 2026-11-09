@@ -26,7 +26,7 @@ class AnomalyRunnerConan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "pj_scripting_core/0.2.0",
         "nlohmann_json/3.12.0",
-        "libcurl/8.10.1",
+        "libcurl/8.23.0",
         "gtest/1.17.0",
     )
     default_options = {
