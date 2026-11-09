@@ -1,10 +1,11 @@
 name: CI Widgets
 
-# Widget-family libraries (widget_basic) are the only plugins that link Qt. They get their own
-# lane, with the official Qt named in QT_VERSION installed, so that every other CI lane stays
-# Qt-free; the Qt-free lanes skip them (see "List plugins" in ci-linux.yml). The host loads a widget
-# library only when it was built against the same Qt major.minor, which is why Qt comes from the
-# official installer and not from Conan or the distribution.
+# The plugins that link Qt: the widget-family libraries (widget_basic) and data_stream_can, the one
+# non-widget plugin that opts into Qt (ALLOW_QT, for QtSerialBus). They get their own lane, with the
+# official Qt named in QT_VERSION installed, so that every other CI lane stays Qt-free; the Qt-free
+# lanes skip them (see "List plugins" in ci-linux.yml). The host loads a widget library only when it
+# was built against the same Qt major.minor, and a Qt-linking plugin built against another one fails
+# to load, which is why Qt comes from the official installer and not from Conan or the distribution.
 #
 # Two legs only: Ubuntu 22.04 (the host needs GLIBCXX_3.4.30 and no newer) and Windows with MSVC
 # 14.44 (windows-2022, as in ci-windows.yml).
@@ -15,6 +16,8 @@ on:
     branches: [main]
     paths:
       - 'widget_*/**'
+      - 'data_stream_can/**'
+      - 'common/can_dbc/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - 'build.sh'
@@ -29,6 +32,8 @@ on:
     branches: [main]
     paths:
       - 'widget_*/**'
+      - 'data_stream_can/**'
+      - 'common/can_dbc/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - 'build.sh'
@@ -106,3 +111,14 @@ jobs:
       - name: Test widget_basic
         shell: bash
         run: ctest --test-dir build/widget_basic/Release --output-on-failure -V
+
+      - name: Build data_stream_can
+        shell: bash
+        run: ./build.sh data_stream_can
+
+      - name: Test data_stream_can
+        # Serial: VirtualCAN listens on the fixed TCP ports 35468/35469 (the tests are RUN_SERIAL too).
+        # On Windows the test executables find the Qt DLLs, at gtest discovery and here, through the
+        # Qt bin directory install-qt puts on PATH, and the canbus backends through QT_PLUGIN_PATH.
+        shell: bash
+        run: ctest --test-dir build/data_stream_can/Release --output-on-failure -V --parallel 1

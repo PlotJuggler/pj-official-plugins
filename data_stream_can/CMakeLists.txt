@@ -52,6 +52,49 @@ pj_harden_plugin_exports(can_stream_plugin
   REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable
   ALLOW_QT)
 
+# Shipping. PlotJuggler's Qt kit has Core (and Network) but no SerialBus, no SerialPort and no canbus/
+# backends, so the release folder carries them next to the plugin: Linux finds the libraries through
+# RUNPATH $ORIGIN, Windows through the host's LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR lookup, and
+# can_bus_reader.cpp adds the plugin's own directory to Qt's library paths, where canbus/ sits.
+# Exactly $ORIGIN, not the build machine's Qt and Conan directories as well.
+if(UNIX AND NOT APPLE)
+  set_target_properties(can_stream_plugin PROPERTIES
+    BUILD_WITH_INSTALL_RPATH ON
+    INSTALL_RPATH "$ORIGIN")
+endif()
+
+# The release tree, <build>/dist/, which scripts/release_tools.py packages as-is. Only in the
+# single-plugin build: a dist/ in the aggregate build directory would take over the packaging of
+# every other plugin.
+if(PJ_BUILD_PLUGIN STREQUAL "data_stream_can")
+  set(_can_dist "${CMAKE_BINARY_DIR}/dist")
+  set(_qt_canbus_dir "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_PLUGINS}/canbus")
+  if(WIN32)
+    file(GLOB _qt_canbus_backends "${_qt_canbus_dir}/*.dll")
+    list(FILTER _qt_canbus_backends EXCLUDE REGEX "d\\.dll$")  # the debug builds
+    set(_qt_libs $<TARGET_FILE:Qt6::SerialBus> $<TARGET_FILE:Qt6::SerialPort>)
+  else()
+    file(GLOB _qt_canbus_backends "${_qt_canbus_dir}/*.so")
+    # Under the soname, the file name the loader looks for.
+    set(_qt_libs $<TARGET_SONAME_FILE:Qt6::SerialBus> $<TARGET_SONAME_FILE:Qt6::SerialPort>)
+  endif()
+  if(NOT _qt_canbus_backends)
+    message(FATAL_ERROR "data_stream_can: no CAN backend in ${_qt_canbus_dir}")
+  endif()
+  add_custom_command(TARGET can_stream_plugin POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${_can_dist}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_can_dist}/canbus"
+    COMMAND ${CMAKE_COMMAND} -E copy
+      $<TARGET_FILE:can_stream_plugin>
+      "${CMAKE_CURRENT_BINARY_DIR}/can_stream_plugin.pjmanifest.json"
+      ${_qt_libs}
+      "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
+      "${_can_dist}"
+    COMMAND ${CMAKE_COMMAND} -E copy ${_qt_canbus_backends} "${_can_dist}/canbus"
+    COMMENT "Staging the data_stream_can release tree in ${_can_dist}"
+    VERBATIM)
+endif()
+
 if(TARGET GTest::gtest AND BUILD_TESTING)
   # The Qt-free helpers.
   add_executable(can_stream_helpers_test tests/timestamp_anchor_test.cpp tests/read_error_streak_test.cpp)
