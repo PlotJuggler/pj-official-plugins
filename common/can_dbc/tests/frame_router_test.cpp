@@ -47,8 +47,18 @@ TEST_F(FrameRouterTest, RawFallbackCoversCanFdPayload) {
   route(router, "can0", 0x123, 64);
 
   EXPECT_EQ(host_.rows["CAN/can0/0x123"], 1u);
+  EXPECT_EQ(host_.last_field_count["CAN/can0/0x123"], 64u);  // byte0..byte63
   EXPECT_EQ(router.counts().no_dictionary, 1u);
   EXPECT_EQ(router.counts().decoded, 0u);
+}
+
+TEST_F(FrameRouterTest, RawFallbackTruncatesAtKMaxRawBytes) {
+  CanFrameRouter router(true);
+  router.setDecoder("can0", nullptr);
+  route(router, "can0", 0x123, CanFrameRouter::kMaxRawBytes + 1);
+
+  EXPECT_EQ(host_.rows["CAN/can0/0x123"], 1u);
+  EXPECT_EQ(host_.last_field_count["CAN/can0/0x123"], CanFrameRouter::kMaxRawBytes);
 }
 
 TEST_F(FrameRouterTest, CountsDecodedUnmatchedAndUndecodable) {

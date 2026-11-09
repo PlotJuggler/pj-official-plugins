@@ -58,6 +58,7 @@ class CaptureHost {
  public:
   std::map<std::uint32_t, std::string> topic_names;
   std::map<std::string, std::uint64_t> rows;
+  std::map<std::string, std::uint64_t> last_field_count;  ///< topic name -> field count of its latest record
   std::vector<ImportCapture::Message> messages;
 
   PJ_source_write_host_t writeHost() {
@@ -99,9 +100,11 @@ class CaptureHost {
     return view.data == nullptr ? std::string{} : std::string(view.data, view.size);
   }
 
-  void count(PJ_topic_handle_t topic) {
+  void count(PJ_topic_handle_t topic, std::uint64_t field_count) {
     const auto it = topic_names.find(topic.id);
-    ++rows[it == topic_names.end() ? std::string() : it->second];
+    const std::string name = it == topic_names.end() ? std::string() : it->second;
+    ++rows[name];
+    last_field_count[name] = field_count;
   }
 
   static bool ensureTopic(void* ctx, PJ_string_view_t name, PJ_topic_handle_t* out, PJ_error_t*) noexcept {
@@ -124,13 +127,15 @@ class CaptureHost {
     return true;
   }
   static bool appendRecord(
-      void* ctx, PJ_topic_handle_t topic, int64_t, const PJ_named_field_value_t*, uint64_t, PJ_error_t*) noexcept {
-    static_cast<CaptureHost*>(ctx)->count(topic);
+      void* ctx, PJ_topic_handle_t topic, int64_t, const PJ_named_field_value_t*, uint64_t count,
+      PJ_error_t*) noexcept {
+    static_cast<CaptureHost*>(ctx)->count(topic, count);
     return true;
   }
   static bool appendBoundRecord(
-      void* ctx, PJ_topic_handle_t topic, int64_t, const PJ_bound_field_value_t*, uint64_t, PJ_error_t*) noexcept {
-    static_cast<CaptureHost*>(ctx)->count(topic);
+      void* ctx, PJ_topic_handle_t topic, int64_t, const PJ_bound_field_value_t*, uint64_t count,
+      PJ_error_t*) noexcept {
+    static_cast<CaptureHost*>(ctx)->count(topic, count);
     return true;
   }
   static bool appendArrowStream(

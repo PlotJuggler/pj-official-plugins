@@ -57,8 +57,7 @@ namespace candump_detail {
 /// Parses `text` as a hex uint32 (no "0x"/"0X" prefix -- strip that first if
 /// present). Returns false (leaving `out` untouched) on empty input, a
 /// non-hex character, or overflow past 32 bits. The one hex-digit-run parser
-/// shared by this parser's own id/data tokens and csv_dictionary's ARUS-CSV
-/// "ID" column.
+/// shared by this parser's own id/data tokens.
 bool parseHexU32(std::string_view text, std::uint32_t& out);
 
 /// What one non-blank line turned out to be. Every kind other than
