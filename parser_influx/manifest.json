@@ -1,0 +1,25 @@
+{
+  "id": "influx-parser",
+  "name": "InfluxDB Line Protocol Parser",
+  "version": "0.1.0",
+  "description": "Message parser for InfluxDB line protocol, the text format Telegraf and InfluxDB clients send.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "message_parser",
+  "tags": [
+    "influx",
+    "influxdb",
+    "telegraf",
+    "line_protocol",
+    "parser"
+  ],
+  "encoding": [
+    "influx"
+  ],
+  "min_sdk_required": "0.28.0",
+  "min_plotjuggler_version": "4.0.0"
+}
