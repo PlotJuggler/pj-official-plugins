@@ -204,7 +204,7 @@ jobs:
             # Widget libraries, and plugins that opt into Qt (ALLOW_QT), link Qt: they build in
             # ci-widgets.yml, not on this Qt-free lane.
             grep -q '"category": *"widget"' "$plugin/manifest.json" && continue
-            grep -q 'ALLOW_QT' "$plugin/CMakeLists.txt" && continue
+            grep -Eq '^[^#]*\bALLOW_QT\b' "$plugin/CMakeLists.txt" && continue
             grep -q "add_subdirectory($plugin)" CMakeLists.txt && continue
             echo "::group::$plugin"
             ./build.sh "$plugin"

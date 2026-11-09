@@ -65,16 +65,19 @@ endif()
 
 # The release tree, <build>/dist/, which scripts/release_tools.py packages as-is. Only in the
 # single-plugin build: a dist/ in the aggregate build directory would take over the packaging of
-# every other plugin.
-if(PJ_BUILD_PLUGIN STREQUAL "data_stream_can")
+# every other plugin. Release only: the canbus/ glob below takes the release backends, so a Debug
+# tree would mix Debug Qt libraries with release backends.
+if(PJ_BUILD_PLUGIN STREQUAL "data_stream_can" AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+  message(STATUS "data_stream_can: no release tree (dist/) for build type '${CMAKE_BUILD_TYPE}', Release only")
+elseif(PJ_BUILD_PLUGIN STREQUAL "data_stream_can")
   set(_can_dist "${CMAKE_BINARY_DIR}/dist")
   set(_qt_canbus_dir "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_PLUGINS}/canbus")
   if(WIN32)
-    file(GLOB _qt_canbus_backends "${_qt_canbus_dir}/*.dll")
+    file(GLOB _qt_canbus_backends CONFIGURE_DEPENDS "${_qt_canbus_dir}/*.dll")
     list(FILTER _qt_canbus_backends EXCLUDE REGEX "d\\.dll$")  # the debug builds
     set(_qt_libs $<TARGET_FILE:Qt6::SerialBus> $<TARGET_FILE:Qt6::SerialPort>)
   else()
-    file(GLOB _qt_canbus_backends "${_qt_canbus_dir}/*.so")
+    file(GLOB _qt_canbus_backends CONFIGURE_DEPENDS "${_qt_canbus_dir}/*.so")
     # Under the soname, the file name the loader looks for.
     set(_qt_libs $<TARGET_SONAME_FILE:Qt6::SerialBus> $<TARGET_SONAME_FILE:Qt6::SerialPort>)
   endif()
@@ -91,6 +94,8 @@ if(PJ_BUILD_PLUGIN STREQUAL "data_stream_can")
       "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
       "${_can_dist}"
     COMMAND ${CMAKE_COMMAND} -E copy ${_qt_canbus_backends} "${_can_dist}/canbus"
+    # LGPLv3 4(b): the license texts travel with the Qt libraries.
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/licenses" "${_can_dist}/licenses"
     COMMENT "Staging the data_stream_can release tree in ${_can_dist}"
     VERBATIM)
 endif()

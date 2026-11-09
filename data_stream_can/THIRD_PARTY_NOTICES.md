@@ -1,8 +1,12 @@
 # Third-party notices — CAN Bus Streamer
 
 This package ships the following Qt libraries, unmodified, as separate shared libraries next to the
-plugin. They are licensed under the GNU Lesser General Public License version 3 (LGPLv3):
-https://www.gnu.org/licenses/lgpl-3.0.html
+plugin. They are licensed under the GNU Lesser General Public License version 3 (LGPLv3), which
+supplements the GNU General Public License version 3 (GPLv3). Both texts are included in this
+package:
+
+- [`licenses/LGPL-3.0.txt`](licenses/LGPL-3.0.txt) (also at https://www.gnu.org/licenses/lgpl-3.0.txt)
+- [`licenses/GPL-3.0.txt`](licenses/GPL-3.0.txt) (also at https://www.gnu.org/licenses/gpl-3.0.txt)
 
 | Component | Files |
 |-----------|-------|

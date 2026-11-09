@@ -29,8 +29,9 @@ Tiny CAN API, or the adapter's J2534 PassThru DLL.
 | `passthrucan` | SAE J2534 PassThru adapters | yes | yes |
 | `virtualcan` | Qt's software bus over TCP, no hardware (see Limitations) | yes | yes |
 
-A missing vendor driver is reported when the stream starts, as Qt's error
-prefixed with `<backend>/<interface>`, not when the dialog opens.
+A missing vendor driver shows up twice: in the dialog's status line when the
+backend's interfaces are listed (Qt's error, e.g. `peakcan: Cannot load library
+pcanbasic`), and as the start error of the stream (`<backend>/<interface>: ...`).
 
 ## Features
 
@@ -118,6 +119,11 @@ On any OS, the `virtualcan` backend needs no setup: start a stream on it, and
 any other Qt application that opens a `virtualcan` device sends to it.
 
 ## Testing
+
+Load the plugin from `build/data_stream_can/Release/dist/` (or the release zip),
+not from the build tree: the plugin looks for the Qt Serial Bus libraries only
+next to itself (RUNPATH `$ORIGIN` on Linux), so the build-tree copy cannot load
+on its own.
 
 ```bash
 ./build.sh data_stream_can
