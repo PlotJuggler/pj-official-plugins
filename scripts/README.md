@@ -236,7 +236,7 @@ Triggered by tags matching `*/v*` pattern.
 
 Release notes are intentionally generated from non-merge commits touching only the tagged plugin directory, with release bookkeeping commits omitted. This keeps a CSV release from inheriting a ROS, MQTT, or toolbox changelog entry just because both live in the same repository. Shared build, packaging, or runtime commits can be included manually with `--include-shared` when they are genuinely useful for a specific release.
 
-Tagged releases keep the existing one-tag-per-plugin strategy. The source directory before `/v` selects both the dependency graph and the CMake target scope. For example, `data_load_csv/v1.2.0` runs `./build.sh data_load_csv`, which installs `data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so Arrow, MQTT, CPython, and other unrelated plugin dependencies are not installed for that release.
+Tagged releases keep the existing one-tag-per-plugin strategy. The source directory before `/v` selects both the dependency graph and the CMake target scope. For example, `data_load_csv/v1.2.0` runs `./build.sh data_load_csv`, which installs `data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so Arrow, MQTT, and other unrelated plugin dependencies are not installed for that release.
 
 ---
 
