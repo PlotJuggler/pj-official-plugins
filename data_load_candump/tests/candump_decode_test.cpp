@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iterator>
 #include <pj_can_dbc/can_decoder.hpp>
+#include <pj_can_dbc/csv_dictionary.hpp>
 #include <pj_can_dbc/signal_row.hpp>
 #include <sstream>
 #include <string>
@@ -17,7 +18,6 @@
 #include <vector>
 
 #include "../candump_parser.hpp"
-#include "../csv_dictionary.hpp"
 #include "test_support.hpp"
 
 namespace {
@@ -250,7 +250,7 @@ TEST(CandumpDecode, ScreenFormatFixtureDecodesThroughDbc) {
 // worked example verified against the real ARUS CSV (log_plotter semantics).
 TEST(CandumpDecode, ArusRaceFixtureMatchesWorkedExample) {
   std::string dbc_text, warnings;
-  ASSERT_TRUE(candump_detail::arusCsvToDbc(readFile("arus_subset.csv"), dbc_text, warnings).has_value());
+  ASSERT_TRUE(pj_can_dbc::arusCsvToDbc(readFile("arus_subset.csv"), dbc_text, warnings).has_value());
   EXPECT_TRUE(warnings.empty()) << warnings;
 
   CanDecoder dec;

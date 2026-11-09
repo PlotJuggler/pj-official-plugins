@@ -25,7 +25,7 @@
 #include <pj_base/expected.hpp>
 #include <string>
 
-namespace candump_detail {
+namespace pj_can_dbc {
 
 /// Converts `csv_text` (already read into memory) to DBC text ready for
 /// CanDecoder::loadDbcString(). Invalid rows (non-hex ID, bitIn > bitFin,
@@ -44,4 +44,4 @@ PJ::Status arusCsvToDbc(const std::string& csv_text, std::string& out_dbc_text, 
 /// notation, so this does not need to dodge either.
 std::string formatDbcNumber(double value);
 
-}  // namespace candump_detail
+}  // namespace pj_can_dbc

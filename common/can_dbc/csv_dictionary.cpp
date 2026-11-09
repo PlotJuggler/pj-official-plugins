@@ -1,6 +1,5 @@
-#include "csv_dictionary.hpp"
-
 #include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <iomanip>
 #include <locale>
@@ -8,12 +7,11 @@
 #include <pj_base/number_parse.hpp>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_can_dbc/can_topic.hpp>
+#include <pj_can_dbc/csv_dictionary.hpp>
 #include <sstream>
 #include <vector>
 
-#include "candump_parser.hpp"
-
-namespace candump_detail {
+namespace pj_can_dbc {
 
 namespace {
 
@@ -83,15 +81,18 @@ std::vector<std::string> splitLines(const std::string& text) {
   return lines;
 }
 
-/// ARUS-CSV "ID" column: an optional "0x"/"0X" prefix, then plain hex
-/// digits, parsed by the same hex-digit-run parser candump_parser.cpp uses
-/// for the frame id/data tokens.
+/// ARUS-CSV "ID" column: an optional "0x"/"0X" prefix, then 1-8 plain hex
+/// digits (same acceptance as candump_parser.cpp's parseHexU32).
 bool parseHexId(const std::string& text, std::uint32_t& value, std::size_t& hex_digit_count) {
   std::string_view s = text;
   if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
     s = s.substr(2);
   }
-  if (!parseHexU32(s, value)) {
+  if (s.empty() || s.size() > 8) {
+    return false;
+  }
+  const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), value, 16);
+  if (ec != std::errc{} || end != s.data() + s.size()) {
     return false;
   }
   hex_digit_count = s.size();
@@ -292,4 +293,4 @@ PJ::Status arusCsvToDbc(const std::string& csv_text, std::string& out_dbc_text, 
   return PJ::okStatus();
 }
 
-}  // namespace candump_detail
+}  // namespace pj_can_dbc

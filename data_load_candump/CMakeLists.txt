@@ -4,20 +4,18 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
 # ---------------------------------------------------------------------------
-# Internal static lib: candump line parsing (log + screen format) and the
-# ARUS-CSV -> DBC translator, shared by the plugin + tests. No vendored/CPM
-# dependency of its own -- unlike data_load_blf/data_load_mf4 it does not
-# parse a binary container format, so there is nothing to vendor here; CAN
-# decoding itself is the shared pj_can_dbc library.
+# Internal static lib: candump line parsing (log + screen format), shared by
+# the plugin + tests. No vendored/CPM dependency of its own -- unlike
+# data_load_blf/data_load_mf4 it does not parse a binary container format, so
+# there is nothing to vendor here; CAN decoding, the ARUS-CSV -> DBC
+# translator and the per-frame routing are the shared pj_can_dbc library.
 # ---------------------------------------------------------------------------
-add_library(candump_core STATIC candump_parser.cpp csv_dictionary.cpp)
+add_library(candump_core STATIC candump_parser.cpp)
 set_target_properties(candump_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(candump_core PUBLIC cxx_std_20)
 target_compile_options(candump_core PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(candump_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-# pj_can_dbc: csv_dictionary.cpp reuses its hexId() (message-id hex text) --
-# same convention as the plugin's own raw-topic fallback naming.
-target_link_libraries(candump_core PUBLIC plotjuggler_sdk::base PRIVATE pj_can_dbc)
+target_link_libraries(candump_core PUBLIC plotjuggler_sdk::base)
 
 # ---------------------------------------------------------------------------
 # Plugin shared library
@@ -52,7 +50,6 @@ pj_embed_ui(candump_source_plugin
 # ---------------------------------------------------------------------------
 add_executable(candump_source_test
   tests/candump_parser_test.cpp
-  tests/csv_dictionary_test.cpp
   tests/candump_decode_test.cpp
   tests/candump_dialog_test.cpp
   tests/candump_layout_paths_test.cpp

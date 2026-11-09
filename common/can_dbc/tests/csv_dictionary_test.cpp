@@ -1,20 +1,19 @@
-#include "../csv_dictionary.hpp"
-
 #include <gtest/gtest.h>
 
 #include <locale>
 #include <pj_base/number_parse.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
+#include <pj_can_dbc/csv_dictionary.hpp>
 #include <string>
 #include <vector>
 
 namespace {
 
-using candump_detail::arusCsvToDbc;
-using candump_detail::formatDbcNumber;
+using pj_can_dbc::arusCsvToDbc;
 using pj_can_dbc::CanDecoder;
 using pj_can_dbc::DecodedSignal;
 using pj_can_dbc::DecodeResult;
+using pj_can_dbc::formatDbcNumber;
 
 const DecodedSignal* find(const std::vector<DecodedSignal>& sigs, const std::string& name) {
   for (const auto& s : sigs) {
@@ -148,6 +147,22 @@ TEST(ArusCsvToDbc, SkipsInvalidRowsWithWarningButKeepsGoodOnes) {
   EXPECT_EQ(dbc_text.find("BadRange"), std::string::npos);
   EXPECT_EQ(dbc_text.find("TooWide"), std::string::npos);
   EXPECT_EQ(dbc_text.find("BadSigned"), std::string::npos);
+}
+
+TEST(ArusCsvToDbc, IdAcceptsOptionalPrefixAndAtMostEightHexDigits) {
+  const std::string csv =
+      "ID,bitIn,bitFin,Signed,Power,Scale,Offset,Name\n"
+      "0X1F,0,0,True,1,1,0,UpperPrefix\n"
+      "0000000020,0,0,True,1,1,0,TenDigits\n"  // 10 hex digits: rejected
+      "00000021,0,0,True,1,1,0,EightDigits\n";
+  std::string dbc_text, warnings;
+  ASSERT_TRUE(arusCsvToDbc(csv, dbc_text, warnings).has_value());
+
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(dbc_text).has_value()) << dbc_text;
+  EXPECT_EQ(dec.messageCount(), 2u);
+  EXPECT_EQ(dbc_text.find("TenDigits"), std::string::npos);
+  EXPECT_NE(warnings.find("0000000020"), std::string::npos) << warnings;
 }
 
 TEST(ArusCsvToDbc, HandlesBomAndCrlfAndWhitespace) {

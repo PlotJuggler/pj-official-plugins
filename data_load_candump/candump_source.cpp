@@ -1,15 +1,12 @@
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <optional>
 #include <pj_base/sdk/data_source_patterns.hpp>
-#include <pj_base/sdk/text_utils.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
-#include <pj_can_dbc/can_topic.hpp>
-#include <pj_can_dbc/dictionary_paths.hpp>
-#include <pj_can_dbc/signal_row.hpp>
+#include <pj_can_dbc/dictionary_loader.hpp>
+#include <pj_can_dbc/frame_router.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -19,27 +16,8 @@
 #include "candump_dialog.hpp"
 #include "candump_manifest.hpp"
 #include "candump_parser.hpp"
-#include "csv_dictionary.hpp"
 
 namespace {
-
-bool endsWithCsv(const std::string& path) {
-  return PJ::sdk::lowerAscii(std::filesystem::path(path).extension().string()) == ".csv";
-}
-
-/// Per-interface decode/topic state, resolved once per bus-name CHANGE
-/// rather than on every frame (a capture typically stays on the same
-/// interface for long runs). Keyed internally by (id << 1) | extended
-/// instead of a per-frame string concatenation.
-struct InterfaceTopics {
-  pj_can_dbc::CanDecoder* decoder = nullptr;  // nullptr if no dictionary assigned
-  std::unordered_map<std::uint64_t, PJ::sdk::TopicHandle> decoded;
-  std::unordered_map<std::uint64_t, PJ::sdk::TopicHandle> raw;
-};
-
-std::uint64_t frameKey(std::uint32_t can_id, bool extended) {
-  return (static_cast<std::uint64_t>(can_id) << 1) | (extended ? 1u : 0u);
-}
 
 /// Imports candump `-l` log files and interactive screen captures. Frames are
 /// decoded per-interface via a DBC (or an ARUS-style CSV, translated
@@ -116,24 +94,10 @@ class CandumpSource : public PJ::FileSourceBase {
     for (const auto& [iface, paths] : dialog_.interfaceDicts()) {
       auto& decoder = decoders[iface];
       for (const auto& path : paths) {
-        PJ::Status status;
-        if (endsWithCsv(path)) {
-          auto csv_text = pj_can_dbc::readAuxFile(path, "dictionary");
-          if (!csv_text) {
-            status = PJ::unexpected(csv_text.error());
-          } else {
-            std::string dbc_text;
-            std::string warnings;
-            status = candump_detail::arusCsvToDbc(*csv_text, dbc_text, warnings);
-            if (status) {
-              status = decoder.loadDbcString(dbc_text);
-            }
-            if (!warnings.empty()) {
-              runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, path + ": " + warnings);
-            }
-          }
-        } else {
-          status = decoder.loadDbcFile(path);
+        std::string warnings;
+        const PJ::Status status = pj_can_dbc::loadDictionary(decoder, path, warnings);
+        if (!warnings.empty()) {
+          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, warnings);
         }
         if (!status) {
           runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, status.error());
@@ -150,33 +114,18 @@ class CandumpSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("cannot open file: ") + filepath);
     }
 
-    // Precomputed "byte0".."byte7" names for the raw-bytes fallback topics
-    // (classic CAN payload is at most 8 bytes).
-    std::array<std::string, 8> byte_field_names;
-    for (std::size_t i = 0; i < byte_field_names.size(); ++i) {
-      byte_field_names[i] = "byte" + std::to_string(i);
+    // One decoder per interface; the router resolves it (and the topic maps) once per bus-name change.
+    pj_can_dbc::CanFrameRouter router(dialog_.rawUnassigned());
+    for (const auto& [iface, decoder] : decoders) {
+      router.setDecoder(iface, &decoder);
     }
-
-    // Per-interface decode/topic state, resolved once per bus-name change
-    // (see InterfaceTopics) instead of a per-frame decoders/topic lookup.
-    std::unordered_map<std::string, InterfaceTopics> topics_by_interface;
-    std::string last_interface;
-    InterfaceTopics* current_topics = nullptr;
-    std::size_t decoded_topic_count = 0;
-    pj_can_dbc::SignalRowBuilder decoded_row_builder;
-    std::vector<PJ::sdk::NamedFieldValue> row_fields;  // raw-bytes fallback rows only (byte0..byteN)
 
     std::uint64_t seen = 0;
     std::uint64_t line_no = 0;
     std::uint64_t bytes_read = 0;
-    std::uint64_t decoded_frames = 0;
-    std::uint64_t unmatched = 0;
-    std::uint64_t undecodable = 0;
-    std::uint64_t no_dictionary = 0;
     candump_detail::RecognizedCounters counters;
     std::uint64_t malformed_count = 0;
     std::vector<std::uint64_t> first_malformed_lines;
-    const bool raw_unassigned = dialog_.rawUnassigned();
 
     candump_detail::TimelineClock clock(mode);
 
@@ -242,74 +191,7 @@ class CandumpSource : public PJ::FileSourceBase {
       // continues into the body when it does).
       const std::int64_t ts_ns = *timeline_ns;
 
-      // Resolve the interface's decoder/topic-map bucket once per bus-name
-      // CHANGE, not once per frame -- a capture typically stays on the same
-      // interface for long runs.
-      if (current_topics == nullptr || parsed.interface != last_interface) {
-        last_interface = parsed.interface;
-        auto [bucket_it, inserted] = topics_by_interface.try_emplace(last_interface);
-        current_topics = &bucket_it->second;
-        if (inserted) {
-          const auto decoder_it = decoders.find(last_interface);
-          current_topics->decoder = decoder_it != decoders.end() ? &decoder_it->second : nullptr;
-        }
-      }
-      // Built once per frame, reused by whichever of decoded/raw applies.
-      const std::uint64_t key = frameKey(parsed.can_id, parsed.extended);
-
-      pj_can_dbc::DecodeResult result = pj_can_dbc::DecodeResult::kNoMatch;
-      std::vector<pj_can_dbc::DecodedSignal> signals;
-      if (current_topics->decoder != nullptr) {
-        signals = current_topics->decoder->decode(parsed.can_id, parsed.extended, parsed.data, result);
-      }
-
-      if (result == pj_can_dbc::DecodeResult::kDecoded && !signals.empty()) {
-        ++decoded_frames;
-        auto it = current_topics->decoded.find(key);
-        if (it == current_topics->decoded.end()) {
-          const std::string topic_name = pj_can_dbc::canTopicName(
-              std::string_view(parsed.interface), current_topics->decoder->messageName(parsed.can_id, parsed.extended),
-              parsed.can_id);
-          auto topic = writeHost().ensureTopic(topic_name);
-          if (!topic) {
-            continue;  // best-effort within the loop
-          }
-          it = current_topics->decoded.emplace(key, *topic).first;
-          ++decoded_topic_count;
-        }
-        (void)writeHost().appendRecord(it->second, PJ::Timestamp{ts_ns}, decoded_row_builder.build(signals));
-        continue;
-      }
-
-      if (current_topics->decoder == nullptr) {
-        ++no_dictionary;
-      } else if (result == pj_can_dbc::DecodeResult::kUndecodable) {
-        ++undecodable;
-      } else {
-        ++unmatched;
-      }
-
-      if (!raw_unassigned) {
-        continue;
-      }
-      auto it = current_topics->raw.find(key);
-      if (it == current_topics->raw.end()) {
-        const std::string topic_name =
-            pj_can_dbc::canTopicName(std::string_view(parsed.interface), std::string(), parsed.can_id);
-        auto topic = writeHost().ensureTopic(topic_name);
-        if (!topic) {
-          continue;
-        }
-        it = current_topics->raw.emplace(key, *topic).first;
-      }
-      row_fields.clear();
-      row_fields.reserve(parsed.data.size());
-      for (std::size_t i = 0; i < parsed.data.size(); ++i) {
-        row_fields.push_back({.name = byte_field_names[i], .value = static_cast<std::int64_t>(parsed.data[i])});
-      }
-      (void)writeHost().appendRecord(
-          it->second, PJ::Timestamp{ts_ns},
-          PJ::Span<const PJ::sdk::NamedFieldValue>(row_fields.data(), row_fields.size()));
+      router.route(writeHost(), parsed.interface, parsed.can_id, parsed.extended, parsed.data, ts_ns);
     }
 
     if (cancelled || runtimeHost().isStopRequested()) {
@@ -317,16 +199,17 @@ class CandumpSource : public PJ::FileSourceBase {
     }
     (void)runtimeHost().progressUpdate(total_bytes);
 
-    std::string summary = "Decoded " + std::to_string(decoded_frames) + " CAN frame(s) into " +
-                          std::to_string(decoded_topic_count) + " message topic(s)";
-    if (no_dictionary > 0) {
-      summary += "; " + std::to_string(no_dictionary) + " frame(s) on interfaces with no dictionary";
+    const pj_can_dbc::RouterCounts& routed = router.counts();
+    std::string summary = "Decoded " + std::to_string(routed.decoded) + " CAN frame(s) into " +
+                          std::to_string(routed.decoded_topics) + " message topic(s)";
+    if (routed.no_dictionary > 0) {
+      summary += "; " + std::to_string(routed.no_dictionary) + " frame(s) on interfaces with no dictionary";
     }
-    if (unmatched > 0) {
-      summary += "; " + std::to_string(unmatched) + " frame(s) had no dictionary match";
+    if (routed.unmatched > 0) {
+      summary += "; " + std::to_string(routed.unmatched) + " frame(s) had no dictionary match";
     }
-    if (undecodable > 0) {
-      summary += "; " + std::to_string(undecodable) + " matched frame(s) could not be decoded (truncated frame)";
+    if (routed.undecodable > 0) {
+      summary += "; " + std::to_string(routed.undecodable) + " matched frame(s) could not be decoded (truncated frame)";
     }
     if (counters.rtr > 0) {
       summary += "; " + std::to_string(counters.rtr) + " RTR frame(s) (recognized, not decoded)";
