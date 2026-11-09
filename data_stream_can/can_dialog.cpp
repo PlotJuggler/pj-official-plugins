@@ -220,6 +220,10 @@ bool CanDialog::onIndexChanged(std::string_view widget_name, int index) {
     }
     settings_.backend = backends_[static_cast<std::size_t>(index)];
     refreshInterfaces();
+    // The old backend's interface name rarely means anything to the new one: preselect a listed one.
+    if (std::find(interfaces_.begin(), interfaces_.end(), settings_.interface_name) == interfaces_.end()) {
+      settings_.interface_name = interfaces_.empty() ? std::string() : interfaces_.front();
+    }
     return true;
   }
   if (widget_name == "comboBitrate") {

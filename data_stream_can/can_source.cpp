@@ -1,4 +1,3 @@
-#include <cctype>
 #include <optional>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
@@ -7,22 +6,12 @@
 #include <string>
 #include <string_view>
 
+#include "bus_name.hpp"
 #include "can_bus_reader.hpp"
 #include "can_dialog.hpp"
 #include "can_stream_manifest.hpp"
 
 namespace {
-
-/// The topic segment of an interface: "CAN/<bus>/<Message>". '/' and whitespace would split or blur it.
-std::string busName(std::string_view interface_name) {
-  std::string bus(interface_name);
-  for (char& c : bus) {
-    if (c == '/' || std::isspace(static_cast<unsigned char>(c)) != 0) {
-      c = '_';
-    }
-  }
-  return bus;
-}
 
 /// Streams one CAN interface (QtSerialBus, on CanBusReader's thread) and routes every frame through the
 /// shared pj_can_dbc router: decoded to "CAN/<bus>/<Message>", or raw to "CAN/<bus>/0x<ID>".
@@ -68,7 +57,7 @@ class CanSource : public PJ::StreamSourceBase {
     }
 
     const can_stream::BusSettings settings = dialog_.busSettings();
-    bus_ = busName(settings.interface_name);
+    bus_ = can_stream::busName(settings.interface_name);
     router_.emplace(dialog_.rawUnassigned());
     router_->setDecoder(bus_, dictionaries.empty() ? nullptr : &*decoder_);
 

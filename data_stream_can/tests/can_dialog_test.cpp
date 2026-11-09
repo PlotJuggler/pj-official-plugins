@@ -101,4 +101,28 @@ TEST(CanDialog, WidgetEditsReachBusSettings) {
   EXPECT_EQ(settings.timestamps, TimestampSource::kHost);
 }
 
+TEST(CanDialog, BackendChangeReselectsAListedInterface) {
+  CanDialog dialog(
+      [] { return std::vector<std::string>{"socketcan", "virtualcan", "peakcan"}; },
+      [](const std::string& backend) -> PJ::Expected<std::vector<std::string>> {
+        if (backend == "socketcan") {
+          return std::vector<std::string>{"can0", "vcan0"};
+        }
+        if (backend == "virtualcan") {
+          return std::vector<std::string>{"can1", "can0"};
+        }
+        return std::vector<std::string>{};
+      });
+  ASSERT_TRUE(dialog.loadConfig(R"({"backend":"socketcan","interface":"vcan0"})"));
+  (void)dialog.widget_data();
+
+  dialog.onIndexChanged("comboBackend", 1);  // virtualcan: vcan0 not listed -> its first interface
+  EXPECT_EQ(dialog.busSettings().interface_name, "can1");
+  dialog.onTextChanged("comboInterface", "can0");
+  dialog.onIndexChanged("comboBackend", 0);  // socketcan lists can0 too: kept
+  EXPECT_EQ(dialog.busSettings().interface_name, "can0");
+  dialog.onIndexChanged("comboBackend", 2);  // peakcan lists nothing: cleared
+  EXPECT_EQ(dialog.busSettings().interface_name, "");
+}
+
 }  // namespace
