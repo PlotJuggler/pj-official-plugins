@@ -20,7 +20,7 @@ class DataLoadMf4Conan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
-        "zlib/1.3.1",
-        "expat/2.6.4",
+        "zlib/1.3.2",
+        "expat/2.10.0",
     )
     default_options = {"*:shared": False}

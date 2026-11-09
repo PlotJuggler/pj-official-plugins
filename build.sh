@@ -178,9 +178,7 @@ else
   esac
 fi
 
-if [[ "$IS_WINDOWS" == true ]]; then
-  CONAN_ARGS+=("-o" "cpython/*:shared=True")
-else
+if [[ "$IS_WINDOWS" != true ]]; then
   # liblsl 1.16.2 vendors asio 1.20.0, whose detail/type_traits.hpp falls back to
   # `using std::result_of;` unless ASIO_HAS_STD_INVOKE_RESULT is defined -- and its
   # autodetection in detail/config.hpp only implements the MSVC branch, none for
