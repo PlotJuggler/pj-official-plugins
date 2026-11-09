@@ -33,7 +33,10 @@ struct TimedParameter {
 
 class ULogContainer : public ulog_cpp::DataContainer {
  public:
-  ULogContainer();
+  /// `keep_samples = false` parses everything except the data records
+  /// themselves (the parameter clock still follows them): for readers that only
+  /// want the header, parameters and log messages.
+  explicit ULogContainer(bool keep_samples = true);
 
   // Overriding the setter would otherwise hide the base's fileHeader() getter.
   using ulog_cpp::DataContainer::fileHeader;
@@ -57,7 +60,9 @@ class ULogContainer : public ulog_cpp::DataContainer {
  private:
   uint64_t file_start_us_{0};
   uint64_t clock_us_{0};
-  std::map<uint16_t, std::optional<size_t>> timestamp_offsets_;
+  bool keep_samples_;
+  // Indexed by msg_id; kUnknownOffset until first seen, kNoTimestamp if absent.
+  std::vector<int64_t> timestamp_offsets_;
   std::map<std::string, uint64_t> last_stamp_us_;
   std::vector<TimedParameter> timed_changes_;
 };

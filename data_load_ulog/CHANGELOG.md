@@ -3,14 +3,23 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_ulog/`.
 
-## [1.1.3] - 2026-11-09
+## [1.2.0] - 2026-11-09
+
+### Changed
+- Records are decoded and written while the file is read, instead of loading
+  the whole log into memory first. On a 1 GB PX4 log (18.3 M records) the
+  loader's own memory drops from 1.9 GB to a few MB and its share of the import
+  time from 6.2 s to 2.0 s. Imported data is unchanged. Topics now appear in the
+  order they first log data rather than in name order.
+- Opening the parameter dialog on a large log is about four times faster
+  (1.9 s to 0.5 s per GB): it no longer keeps the data records it does not show.
 
 ### Fixed
-- The progress bar now covers the whole import. It used to track only the file
-  read, which is the first few percent of the time, then sat at 100% while the
-  records were written (about a minute for a 1 GB log).
-- Stop now works while the records are being written, and keeps the data
-  written so far. Before, it was only honoured while the file was being read.
+- The progress bar now follows the whole import. It used to track only the file
+  read, then sat at 100% while the records were written (about a minute for a
+  1 GB log).
+- Stop now works during the whole import and keeps the data written so far.
+  Before, it was only honoured while the file was being read.
 
 ## [1.1.2] - 2026-09-28
 

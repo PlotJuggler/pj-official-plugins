@@ -4,8 +4,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
+#include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_base/sdk/service_traits.hpp>
+#include <pj_plugins/host/data_source_library.hpp>
+#include <pj_plugins/host/service_registry_builder.hpp>
 #include <string>
 #include <ulog_cpp/data_container.hpp>
 #include <ulog_cpp/reader.hpp>
@@ -1013,22 +1019,393 @@ TEST(ULogContainerTest, TruncatedTailKeepsEverythingBeforeTheCut) {
   EXPECT_EQ(sub->size(), 2u);
 }
 
-// --- Import progress scale ---
+TEST(ULogContainerTest, SampleFreeContainerDropsRecordsButKeepsTheClock) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("P", 1);
+  builder.writeSubscription(1, 0, "dummy");
+  FieldDataBuilder fields;
+  fields.append<uint64_t>(5000000);
+  fields.append<float>(1.0F);
+  builder.writeData(1, fields.build());
+  builder.writeParameterInt("P", 2);
+  builder.writeData(9, fields.build());  // unknown subscription: still corruption
 
-TEST(ULogFlattenTest, ProgressIsMonotonicAcrossReadAndWritePhases) {
-  using namespace ulog_flatten;
-  EXPECT_EQ(readProgressStep(0, 1000), 0u);
-  EXPECT_EQ(readProgressStep(1000, 1000), kReadProgressSteps);
-  EXPECT_EQ(writeProgressStep(0, 10), kReadProgressSteps);  // write phase starts where the read ended
-  EXPECT_LT(writeProgressStep(5, 10), writeProgressStep(6, 10));
-  EXPECT_EQ(writeProgressStep(10, 10), kProgressSteps);
-  // Degenerate inputs stay in range instead of dividing by zero or overshooting.
-  EXPECT_EQ(readProgressStep(0, 0), kReadProgressSteps);
-  EXPECT_EQ(readProgressStep(2000, 1000), kReadProgressSteps);
-  EXPECT_EQ(writeProgressStep(0, 0), kProgressSteps);
-  EXPECT_EQ(writeProgressStep(20, 10), kProgressSteps);
-  // A multi-GB file must not overflow the intermediate product.
-  EXPECT_EQ(readProgressStep(1ull << 40, 1ull << 40), kReadProgressSteps);
+  auto container = std::make_shared<ulog_container::ULogContainer>(false);
+  ulog_cpp::Reader reader{container};
+  reader.readChunk(builder.data().data(), static_cast<int>(builder.data().size()));
+
+  EXPECT_EQ(container->subscription("dummy")->size(), 0u);
+  ASSERT_EQ(container->timedChangedParameters().size(), 1u);
+  EXPECT_EQ(container->timedChangedParameters()[0].timestamp_us, 5000000u);
+  EXPECT_FALSE(container->parsingErrors().empty());
+}
+
+// --- Whole import, through the BUILT plugin ---
+//
+// The loader decodes and writes each record as the reader hands it over. These
+// tests load the plugin .so and give it a host that records every call, so they
+// cover what the unit tests above cannot: topic naming, the row handed to the
+// host, and the stop and error paths.
+
+struct Cell {
+  bool is_null = false;
+  PJ_primitive_type_t type = PJ_PRIMITIVE_TYPE_UNSPECIFIED;
+  double number = 0.0;
+  std::string text;
+};
+
+struct Row {
+  int64_t timestamp_ns = 0;
+  std::vector<Cell> cells;
+};
+
+struct RecordingHost {
+  std::vector<std::string> topic_names;                    // index = handle id - 1
+  std::map<std::string, std::vector<std::string>> fields;  // topic -> field names, in order
+  std::map<std::string, std::vector<Row>> rows;
+  std::vector<std::string> warnings;
+  uint64_t bound_records = 0;
+  uint64_t stop_after_records = UINT64_MAX;  // is_stop_requested turns true from here on
+  bool fail_appends = false;
+
+  static Cell toCell(bool is_null, const PJ_scalar_value_t& v) {
+    Cell cell;
+    cell.is_null = is_null;
+    cell.type = v.type;
+    if (is_null) {
+      return cell;
+    }
+    switch (v.type) {
+      case PJ_PRIMITIVE_TYPE_FLOAT32:
+        cell.number = static_cast<double>(v.data.as_float32);
+        break;
+      case PJ_PRIMITIVE_TYPE_FLOAT64:
+        cell.number = v.data.as_float64;
+        break;
+      case PJ_PRIMITIVE_TYPE_INT8:
+        cell.number = v.data.as_int8;
+        break;
+      case PJ_PRIMITIVE_TYPE_INT16:
+        cell.number = v.data.as_int16;
+        break;
+      case PJ_PRIMITIVE_TYPE_INT32:
+        cell.number = v.data.as_int32;
+        break;
+      case PJ_PRIMITIVE_TYPE_INT64:
+        cell.number = static_cast<double>(v.data.as_int64);
+        break;
+      case PJ_PRIMITIVE_TYPE_UINT8:
+        cell.number = v.data.as_uint8;
+        break;
+      case PJ_PRIMITIVE_TYPE_UINT16:
+        cell.number = v.data.as_uint16;
+        break;
+      case PJ_PRIMITIVE_TYPE_UINT32:
+        cell.number = v.data.as_uint32;
+        break;
+      case PJ_PRIMITIVE_TYPE_UINT64:
+        cell.number = static_cast<double>(v.data.as_uint64);
+        break;
+      case PJ_PRIMITIVE_TYPE_BOOL:
+        cell.number = v.data.as_bool;
+        break;
+      case PJ_PRIMITIVE_TYPE_STRING:
+        cell.text.assign(v.data.as_string.data, v.data.as_string.size);
+        break;
+      default:
+        break;
+    }
+    return cell;
+  }
+
+  template <typename FieldValue>
+  void record(PJ_topic_handle_t topic, int64_t timestamp, const FieldValue* cells, uint64_t count) {
+    Row row;
+    row.timestamp_ns = timestamp;
+    for (uint64_t i = 0; i < count; ++i) {
+      row.cells.push_back(toCell(cells[i].is_null, cells[i].value));
+    }
+    rows[topic_names.at(topic.id - 1)].push_back(std::move(row));
+  }
+
+  static bool ensureTopic(void* ctx, PJ_string_view_t name, PJ_topic_handle_t* out, PJ_error_t*) noexcept {
+    auto& self = *static_cast<RecordingHost*>(ctx);
+    const std::string topic(name.data, name.size);
+    auto it = std::find(self.topic_names.begin(), self.topic_names.end(), topic);
+    if (it == self.topic_names.end()) {
+      self.topic_names.push_back(topic);
+      it = self.topic_names.end() - 1;
+    }
+    *out = PJ_topic_handle_t{static_cast<uint32_t>(it - self.topic_names.begin()) + 1};
+    return true;
+  }
+
+  static bool ensureField(
+      void* ctx, PJ_topic_handle_t topic, PJ_string_view_t name, PJ_primitive_type_t, PJ_field_handle_t* out,
+      PJ_error_t*) noexcept {
+    auto& self = *static_cast<RecordingHost*>(ctx);
+    auto& names = self.fields[self.topic_names.at(topic.id - 1)];
+    names.emplace_back(name.data, name.size);
+    *out = PJ_field_handle_t{topic, static_cast<uint32_t>(names.size())};
+    return true;
+  }
+
+  static bool appendRecord(
+      void* ctx, PJ_topic_handle_t topic, int64_t timestamp, const PJ_named_field_value_t* cells, uint64_t count,
+      PJ_error_t*) noexcept {
+    static_cast<RecordingHost*>(ctx)->record(topic, timestamp, cells, count);
+    return true;
+  }
+
+  static bool appendBoundRecord(
+      void* ctx, PJ_topic_handle_t topic, int64_t timestamp, const PJ_bound_field_value_t* cells, uint64_t count,
+      PJ_error_t* error) noexcept {
+    auto& self = *static_cast<RecordingHost*>(ctx);
+    if (self.fail_appends) {
+      PJ::sdk::fillError(error, 1, "test", "disk full");
+      return false;
+    }
+    ++self.bound_records;
+    self.record(topic, timestamp, cells, count);
+    return true;
+  }
+};
+
+struct ImportOutcome {
+  bool ok = false;
+  std::string error;
+};
+
+/// Writes `bytes` to a temp .ulg and imports it through the built plugin into `host`.
+ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host) {
+  const auto path =
+      std::filesystem::temp_directory_path() /
+      ("ulog_import_test_" + std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + ".ulg");
+  {
+    std::ofstream out(path, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+
+  static const PJ_source_write_host_vtable_t kWrite = [] {
+    PJ_source_write_host_vtable_t vtable{};
+    vtable.abi_version = PJ_PLUGIN_DATA_API_VERSION;
+    vtable.struct_size = sizeof(vtable);
+    vtable.ensure_topic = &RecordingHost::ensureTopic;
+    vtable.ensure_field = &RecordingHost::ensureField;
+    vtable.append_record = &RecordingHost::appendRecord;
+    vtable.append_bound_record = &RecordingHost::appendBoundRecord;
+    return vtable;
+  }();
+  static const PJ_data_source_runtime_host_vtable_t kRuntime = [] {
+    PJ_data_source_runtime_host_vtable_t vtable{};
+    vtable.protocol_version = 1;
+    vtable.struct_size = sizeof(vtable);
+    vtable.report_message = [](void* ctx, PJ_data_source_message_level_t level, PJ_string_view_t message) noexcept {
+      if (level == PJ_DATA_SOURCE_MESSAGE_WARNING) {
+        static_cast<RecordingHost*>(ctx)->warnings.emplace_back(message.data, message.size);
+      }
+    };
+    vtable.progress_start = [](void*, PJ_string_view_t, uint64_t, bool, PJ_error_t*) noexcept { return true; };
+    vtable.progress_update = [](void*, uint64_t) noexcept { return true; };
+    vtable.progress_finish = [](void*) noexcept {};
+    vtable.is_stop_requested = [](void* ctx) noexcept {
+      const auto& self = *static_cast<RecordingHost*>(ctx);
+      return self.bound_records >= self.stop_after_records;
+    };
+    vtable.notify_state = [](void*, PJ_data_source_state_t) noexcept {};
+    return vtable;
+  }();
+
+  ImportOutcome outcome;
+  auto library = PJ::DataSourceLibrary::load(std::string(ULOG_SOURCE_PLUGIN_PATH));
+  if (!library) {
+    outcome.error = "load: " + library.error();
+    return outcome;
+  }
+  auto handle = library->createHandle();
+  PJ::ServiceRegistryBuilder registry;
+  registry.registerService<PJ::sdk::SourceWriteHostService>(PJ_source_write_host_t{.ctx = &host, .vtable = &kWrite});
+  registry.registerService<PJ::sdk::DataSourceRuntimeHostService>(
+      PJ_data_source_runtime_host_t{.ctx = &host, .vtable = &kRuntime});
+  if (auto status = handle.bind(registry.view()); !status) {
+    outcome.error = "bind: " + status.error();
+  } else if (status = handle.loadConfig(R"({"filepath":")" + path.generic_string() + R"("})"); !status) {
+    outcome.error = "loadConfig: " + status.error();
+  } else if (status = handle.start(); !status) {
+    outcome.error = status.error();
+  } else {
+    outcome.ok = true;
+  }
+  std::filesystem::remove(path);
+  return outcome;
+}
+
+std::vector<uint8_t> dummyRecord(uint64_t timestamp_us, float value) {
+  FieldDataBuilder fields;
+  fields.append<uint64_t>(timestamp_us);
+  fields.append<float>(value);
+  return fields.build();
+}
+
+TEST(ULogImportTest, EveryLeafTypeReachesTheHostWithItsValue) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat(
+      "mix:uint64_t timestamp;int8_t i8;uint16_t u16;int32_t i32;double f64;bool flag;char[4] tag;float[2] arr");
+  builder.writeSubscription(1, 0, "mix");
+  FieldDataBuilder fields;
+  fields.append<uint64_t>(7000000);
+  fields.append<int8_t>(-5);
+  fields.append<uint16_t>(65000);
+  fields.append<int32_t>(-123456);
+  fields.append<double>(2.5);
+  fields.append<uint8_t>(1);
+  fields.append<char>('a');
+  fields.append<char>('b');
+  fields.append<char>('\0');
+  fields.append<char>('\0');
+  fields.append<float>(1.5F);
+  fields.append<float>(-2.5F);
+  builder.writeData(1, fields.build());
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const std::vector<std::string> expected_fields = {"i8", "u16", "i32", "f64", "flag", "tag", "arr.00", "arr.01"};
+  EXPECT_EQ(host.fields["mix"], expected_fields);
+  ASSERT_EQ(host.rows["mix"].size(), 1u);
+  const Row& row = host.rows["mix"][0];
+  EXPECT_EQ(row.timestamp_ns, 7000000LL * 1000);
+  ASSERT_EQ(row.cells.size(), 8u);
+  EXPECT_EQ(row.cells[0].type, PJ_PRIMITIVE_TYPE_INT8);
+  EXPECT_EQ(row.cells[0].number, -5.0);
+  EXPECT_EQ(row.cells[1].type, PJ_PRIMITIVE_TYPE_UINT16);
+  EXPECT_EQ(row.cells[1].number, 65000.0);
+  EXPECT_EQ(row.cells[2].type, PJ_PRIMITIVE_TYPE_INT32);
+  EXPECT_EQ(row.cells[2].number, -123456.0);
+  EXPECT_EQ(row.cells[3].type, PJ_PRIMITIVE_TYPE_FLOAT64);
+  EXPECT_EQ(row.cells[3].number, 2.5);
+  EXPECT_EQ(row.cells[4].type, PJ_PRIMITIVE_TYPE_BOOL);
+  EXPECT_EQ(row.cells[4].number, 1.0);
+  EXPECT_EQ(row.cells[5].type, PJ_PRIMITIVE_TYPE_STRING);
+  EXPECT_EQ(row.cells[5].text, "ab");
+  EXPECT_EQ(row.cells[6].type, PJ_PRIMITIVE_TYPE_FLOAT32);
+  EXPECT_EQ(row.cells[6].number, 1.5);
+  EXPECT_EQ(row.cells[7].number, -2.5);
+  for (const Cell& cell : row.cells) {
+    EXPECT_FALSE(cell.is_null);
+  }
+}
+
+// The `.NN` suffix depends on the whole file: an instance added after the first
+// one has already logged data must still rename both topics.
+TEST(ULogImportTest, InstanceAddedLateStillSuffixesBothTopics) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeFormat("solo:uint64_t timestamp;float val");
+  builder.writeFormat("silent:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeSubscription(3, 0, "solo");
+  builder.writeSubscription(4, 0, "silent");  // never logs anything
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeData(3, dummyRecord(1500000, 9.0F));
+  builder.writeSubscription(2, 1, "dummy");
+  builder.writeData(2, dummyRecord(2000000, 2.0F));
+  builder.writeData(1, dummyRecord(3000000, 3.0F));  // interleaved with the other instance
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  ASSERT_EQ(host.rows["dummy.00"].size(), 2u);
+  EXPECT_EQ(host.rows["dummy.00"][0].cells.at(0).number, 1.0);
+  EXPECT_EQ(host.rows["dummy.00"][1].cells.at(0).number, 3.0);
+  EXPECT_EQ(host.rows["dummy.00"][1].timestamp_ns, 3000000LL * 1000);
+  ASSERT_EQ(host.rows["dummy.01"].size(), 1u);
+  EXPECT_EQ(host.rows["dummy.01"][0].cells.at(0).number, 2.0);
+  EXPECT_EQ(host.rows["solo"].size(), 1u);  // single instance: no suffix
+  EXPECT_EQ(host.rows.count("dummy"), 0u);
+  // A subscription without data leaves no empty topic behind.
+  EXPECT_EQ(std::count(host.topic_names.begin(), host.topic_names.end(), "silent"), 0);
+}
+
+TEST(ULogImportTest, ShortRecordIsSkippedAndMissingTimestampUsesTheSampleIndex) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeFormat("nots:float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeSubscription(2, 0, "nots");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeData(1, {0x01, 0x02, 0x03, 0x04});  // shorter than the format
+  builder.writeData(1, dummyRecord(2000000, 2.0F));
+  for (float v : {10.0F, 11.0F, 12.0F}) {
+    FieldDataBuilder fields;
+    fields.append<float>(v);
+    builder.writeData(2, fields.build());
+  }
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  ASSERT_EQ(host.rows["dummy"].size(), 2u);
+  EXPECT_EQ(host.rows["dummy"][1].cells.at(0).number, 2.0);
+  ASSERT_EQ(host.rows["nots"].size(), 3u);
+  EXPECT_EQ(host.rows["nots"][0].timestamp_ns, 0);
+  EXPECT_EQ(host.rows["nots"][2].timestamp_ns, 2000);  // sample index, in microseconds
+  EXPECT_EQ(host.rows["nots"][2].cells.at(0).number, 12.0);
+
+  const auto warned = [&](const std::string& needle) {
+    return std::any_of(host.warnings.begin(), host.warnings.end(), [&](const std::string& w) {
+      return w.find(needle) != std::string::npos;
+    });
+  };
+  EXPECT_TRUE(warned("skipped 1 data record(s)"));
+  EXPECT_TRUE(warned("no timestamp field"));
+}
+
+std::vector<uint8_t> manyDummyRecords(uint64_t count) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("P", 1);
+  builder.writeSubscription(1, 0, "dummy");
+  for (uint64_t i = 1; i <= count; ++i) {
+    builder.writeData(1, dummyRecord(i * 1000, static_cast<float>(i)));
+  }
+  return builder.data();
+}
+
+// 20000 records span several 64 KiB read chunks; the stop is polled per chunk.
+TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {
+  RecordingHost host;
+  host.stop_after_records = 1;
+  const auto outcome = importBytes(manyDummyRecords(20000), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const size_t written = host.rows["dummy"].size();
+  EXPECT_GT(written, 0u);
+  EXPECT_LT(written, 20000u);
+  EXPECT_EQ(host.rows["dummy"].back().cells.at(0).number, static_cast<double>(written));  // a clean prefix
+  EXPECT_EQ(host.rows["_parameters/P"].size(), 1u);  // the cheap tail is still written
+}
+
+TEST(ULogImportTest, HostWriteErrorFailsTheImport) {
+  RecordingHost host;
+  host.fail_appends = true;
+  const auto outcome = importBytes(manyDummyRecords(10), host);
+  EXPECT_FALSE(outcome.ok);
+  EXPECT_NE(outcome.error.find("disk full"), std::string::npos) << outcome.error;
 }
 
 // --- Real PX4 log (committed fixture) ---

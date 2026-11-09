@@ -129,7 +129,8 @@ void ULogParamsDialog::parseFile() {
     return;
   }
 
-  auto data_container = std::make_shared<ulog_container::ULogContainer>();
+  // The dialog shows info, parameters and log lines only: don't keep the samples.
+  auto data_container = std::make_shared<ulog_container::ULogContainer>(false);
   ulog_cpp::Reader reader{data_container};
 
   static constexpr size_t kChunkSize = 65536;

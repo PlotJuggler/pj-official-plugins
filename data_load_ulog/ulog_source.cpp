@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -109,25 +110,272 @@ PJ::sdk::ValueRef readPrimitiveValue(const uint8_t* data, size_t offset, ulog_cp
   }
 }
 
-/// Extract leaf values from a raw ULog record into `values`, in the same order
-/// as collectFlatFieldNames. `char[N]` leaves become string_views into the
-/// record (the record outlives the appendRecord call that consumes them).
-/// Reads that would fall outside `raw_size` (a truncated or corrupt record)
-/// push a NullValue instead, preserving alignment with the field-name list
-/// rather than reading out of bounds.
-void extractFlatValues(
-    const uint8_t* raw_data, size_t raw_size, const ulog_cpp::MessageFormat& format,
-    std::vector<PJ::sdk::ValueRef>& values) {
-  ulog_flatten::forEachFlatLeaf(format, 0, [&](const ulog_flatten::FlatLeaf& leaf) {
-    if (leaf.offset + leaf.size > raw_size) {
-      values.push_back(PJ::NullValue{});
-    } else if (leaf.is_string) {
-      values.push_back(ulog_flatten::stringLeafView(raw_data, leaf.offset, leaf.size));
-    } else {
-      values.push_back(readPrimitiveValue(raw_data, leaf.offset, leaf.type));
+/// How one leaf of a record becomes one cell of the row handed to the host.
+struct LeafPlan {
+  enum class Kind : uint8_t { kCopy, kBool, kString };
+  size_t offset;
+  size_t size;
+  Kind kind;
+};
+
+/// Everything about a subscription's rows that does not change from record to
+/// record, worked out once: where each leaf sits, and a row whose field handles
+/// and value types are already filled in. Decoding a record is then one pass
+/// that patches the values in place, with no format walk, no intermediate
+/// ValueRef and no per-record allocation.
+struct RowPlan {
+  std::vector<LeafPlan> leaves;
+  std::vector<PJ_bound_field_value_t> row;
+
+  RowPlan() = default;
+
+  RowPlan(const ulog_cpp::MessageFormat& format, const std::vector<PJ::sdk::FieldHandle>& handles) {
+    static constexpr uint8_t kZero[8] = {};
+    ulog_flatten::forEachFlatLeaf(format, 0, [&](const ulog_flatten::FlatLeaf& leaf) {
+      if (leaves.size() == handles.size()) {
+        return;
+      }
+      // The zero value only supplies the ABI type tag; decode() writes the data.
+      const PJ::sdk::ValueRef zero =
+          leaf.is_string ? PJ::sdk::ValueRef{std::string_view{}} : readPrimitiveValue(kZero, 0, leaf.type);
+      const auto kind = leaf.is_string                                  ? LeafPlan::Kind::kString
+                        : leaf.type == ulog_cpp::Field::BasicType::BOOL ? LeafPlan::Kind::kBool
+                                                                        : LeafPlan::Kind::kCopy;
+      row.push_back({.field = handles[leaves.size()], .is_null = false, .value = PJ::sdk::toAbiScalar(zero)});
+      leaves.push_back({leaf.offset, leaf.size, kind});
+    });
+  }
+
+  /// Fill `row` from one raw record. A leaf that falls outside `raw_size` (a
+  /// truncated or corrupt record) becomes null rather than an out-of-bounds read.
+  void decode(const uint8_t* raw, size_t raw_size) {
+    for (size_t i = 0; i < leaves.size(); ++i) {
+      const LeafPlan& leaf = leaves[i];
+      PJ_bound_field_value_t& cell = row[i];
+      cell.is_null = leaf.offset + leaf.size > raw_size;
+      if (cell.is_null) {
+        continue;
+      }
+      switch (leaf.kind) {
+        case LeafPlan::Kind::kCopy:
+          // ULog scalars are little-endian and at most 8 bytes; every member of
+          // the value union starts at its first byte.
+          std::memcpy(&cell.value.data, raw + leaf.offset, leaf.size);
+          break;
+        case LeafPlan::Kind::kBool:
+          cell.value.data.as_bool = raw[leaf.offset] != 0 ? 1 : 0;
+          break;
+        case LeafPlan::Kind::kString:
+          cell.value.data.as_string = PJ::sdk::toAbiString(ulog_flatten::stringLeafView(raw, leaf.offset, leaf.size));
+          break;
+      }
     }
-  });
+  }
+};
+
+/// Joins up to `max_shown` names, then "... (+N more)".
+std::string sampleList(const std::vector<std::string>& names, size_t max_shown) {
+  std::string out;
+  for (size_t i = 0; i < names.size() && i < max_shown; ++i) {
+    out += (i ? ", " : "") + names[i];
+  }
+  if (names.size() > max_shown) {
+    out += ", ... (+" + std::to_string(names.size() - max_shown) + " more)";
+  }
+  return out;
 }
+
+/// Reads `path` through `container` in 64 KiB chunks. `after_chunk(bytes_read)`
+/// returns false to stop early.
+template <typename AfterChunk>
+bool readLog(
+    const std::string& path, const std::shared_ptr<ulog_cpp::DataContainer>& container, AfterChunk&& after_chunk) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file.is_open()) {
+    return false;
+  }
+  ulog_cpp::Reader reader{container};
+  static constexpr size_t kChunkSize = 65536;
+  std::vector<uint8_t> buffer(kChunkSize);
+  uint64_t bytes_read = 0;
+  while (file) {
+    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(kChunkSize));
+    auto count = static_cast<size_t>(file.gcount());
+    if (count == 0) {
+      break;
+    }
+    reader.readChunk(buffer.data(), static_cast<int>(count));
+    bytes_read += count;
+    if (!after_chunk(bytes_read)) {
+      break;
+    }
+  }
+  return true;
+}
+
+/// Writes every data record to the host as the reader hands it over, instead
+/// of keeping the whole log in memory and writing it afterwards. Nothing but
+/// the record being decoded is held, so peak memory no longer grows with the
+/// file, and the bytes are decoded while they are still in cache.
+class StreamingContainer : public ulog_container::ULogContainer {
+ public:
+  /// `max_multi_id` decides which topic names carry a `.NN` instance suffix. It
+  /// has to be known before the first record is written, hence the first pass.
+  StreamingContainer(PJ::sdk::SourceWriteHostView write_host, std::map<std::string, int> max_multi_id)
+      : ULogContainer(false), write_host_(write_host), max_multi_id_(std::move(max_multi_id)) {}
+
+  void data(const ulog_cpp::Data& data_msg) override {
+    // Advances the parameter clock, and throws on an unknown subscription.
+    ULogContainer::data(data_msg);
+    if (!error_.empty()) {
+      return;
+    }
+
+    const size_t id = data_msg.msgId();
+    if (id >= topics_.size()) {
+      topics_.resize(id + 1);
+    }
+    if (!topics_[id]) {
+      topics_[id] = openTopic(data_msg.msgId());
+    }
+    Topic& topic = *topics_[id];
+    const uint64_t sample_index = topic.samples_seen++;
+    if (!topic.usable) {
+      return;
+    }
+
+    // ulog_cpp validates the message FRAME, not the payload against the
+    // format. A record shorter than its format is corrupt: skip it rather
+    // than fabricate a timestamp and null fields for it.
+    const auto& raw = data_msg.data();
+    if (raw.size() < topic.format_size) {
+      if (short_records_++ == 0) {
+        first_short_record_topic_ = topic.name;
+      }
+      return;
+    }
+
+    // Timestamp is uint64_t microseconds; a format without one falls back to
+    // the sample index, exactly as the original DataLoadULog did.
+    uint64_t timestamp_us = sample_index;
+    if (topic.ts_offset) {
+      std::memcpy(&timestamp_us, raw.data() + *topic.ts_offset, sizeof(timestamp_us));
+    }
+    const auto ts_ns = static_cast<int64_t>(timestamp_us) * 1000;
+
+    topic.plan.decode(raw.data(), raw.size());
+    const PJ_source_write_host_t& host = write_host_.raw();
+    if (!host.vtable->append_bound_record(
+            host.ctx, topic.handle, ts_ns, topic.plan.row.data(), topic.plan.row.size(), &host_error_)) {
+      error_ = PJ::sdk::errorToString(host_error_);
+    }
+  }
+
+  /// First host error; once set, no further record is written.
+  const std::string& error() const {
+    return error_;
+  }
+  size_t seriesCount() const {
+    return series_count_;
+  }
+  const std::vector<std::string>& topicsWithoutTimestamp() const {
+    return topics_without_timestamp_;
+  }
+  size_t shortRecords() const {
+    return short_records_;
+  }
+  const std::string& firstShortRecordTopic() const {
+    return first_short_record_topic_;
+  }
+
+ private:
+  struct Topic {
+    bool usable = false;
+    std::string name;
+    PJ::sdk::TopicHandle handle{};
+    RowPlan plan;
+    std::optional<size_t> ts_offset;
+    size_t format_size = 0;
+    uint64_t samples_seen = 0;
+  };
+
+  /// Creates the host topic and its fields on a subscription's first record,
+  /// so a subscription that never logs anything leaves no empty topic behind.
+  std::unique_ptr<Topic> openTopic(uint16_t msg_id) {
+    auto topic = std::make_unique<Topic>();
+    const auto& sub = subscriptionsByMessageId().at(msg_id);
+    const auto& format = *sub->format();
+
+    // Build topic name, adding multi_id suffix when needed.
+    const auto& added = sub->getAddLoggedMessage();
+    topic->name = added.messageName();
+    auto max_it = max_multi_id_.find(topic->name);
+    if (max_it != max_multi_id_.end() && max_it->second > 0) {
+      char buf[16];
+      std::snprintf(buf, sizeof(buf), ".%02d", static_cast<int>(added.multiId()));
+      topic->name += buf;
+    }
+
+    std::vector<std::string> field_names;
+    ulog_flatten::collectFlatFieldNames(format, {}, field_names);
+    if (field_names.empty()) {
+      return topic;
+    }
+
+    auto handle = write_host_.ensureTopic(topic->name);
+    if (!handle) {
+      error_ = handle.error();
+      return topic;
+    }
+    topic->handle = *handle;
+
+    std::vector<PJ::PrimitiveType> field_types;
+    ulog_flatten::forEachFlatLeaf(format, 0, [&](const ulog_flatten::FlatLeaf& leaf) {
+      field_types.push_back(leaf.is_string ? PJ::PrimitiveType::kString : ulogTypeToPrimitive(leaf.type));
+    });
+
+    // Rows are appended by handle: the by-name path copies every field name
+    // into each row and makes the host re-resolve it, per field per record.
+    std::vector<PJ::sdk::FieldHandle> field_handles;
+    field_handles.reserve(field_names.size());
+    for (size_t fi = 0; fi < field_names.size() && fi < field_types.size(); ++fi) {
+      auto field = write_host_.ensureField(*handle, field_names[fi], field_types[fi]);
+      if (!field) {
+        error_ = field.error();
+        return topic;
+      }
+      field_handles.push_back(*field);
+    }
+
+    // The spec mandates a `uint64_t timestamp` field but not its position, so
+    // locate it by name (original plugin issue #1154 for formats without one).
+    topic->ts_offset = ulog_flatten::findTimestampOffset(format);
+    if (!topic->ts_offset) {
+      topics_without_timestamp_.push_back(topic->name);
+    }
+    // A trailing `_padding*` field is not required to be present in the logged
+    // bytes (ULog spec, "Padding"), so the minimum valid payload size excludes
+    // it; padding anywhere else still counts (see ulog_flatten::loggedSizeBytes).
+    topic->format_size = ulog_flatten::loggedSizeBytes(format);
+    topic->plan = RowPlan(format, field_handles);
+    topic->usable = true;
+    series_count_ += field_names.size();
+    return topic;
+  }
+
+  PJ::sdk::SourceWriteHostView write_host_;
+  std::map<std::string, int> max_multi_id_;
+  std::vector<std::unique_ptr<Topic>> topics_;  // indexed by msg_id
+  PJ_error_t host_error_{};
+  std::string error_;
+  size_t series_count_ = 0;
+  // Diagnostics are aggregated and reported once: a malformed log can define
+  // thousands of subscriptions, and one message per problem would flood the
+  // host (whose dedup is by exact text).
+  std::vector<std::string> topics_without_timestamp_;
+  size_t short_records_ = 0;
+  std::string first_short_record_topic_;
+};
 
 class ULogSource : public PJ::FileSourceBase {
  public:
@@ -160,48 +408,39 @@ class ULogSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("no filepath configured"));
     }
 
-    std::ifstream file(filepath_, std::ios::binary);
-    if (!file.is_open()) {
-      return PJ::unexpected(std::string("cannot open file: ") + filepath_);
+    std::error_code size_error;
+    const auto file_size = static_cast<uint64_t>(std::filesystem::file_size(filepath_, size_error));
+
+    (void)runtimeHost().progressStart("Importing ULog", size_error ? 0 : file_size, true);
+
+    // First pass: subscriptions only. A topic name carries a `.NN` suffix when
+    // any instance of it has multi_id > 0, and instances can be added anywhere
+    // in the file, so the names must be settled before the first record is written.
+    std::map<std::string, int> max_multi_id;
+    {
+      auto scan = std::make_shared<ulog_container::ULogContainer>(false);
+      if (!readLog(filepath_, scan, [&](uint64_t) { return !runtimeHost().isStopRequested(); })) {
+        return PJ::unexpected(std::string("cannot open file: ") + filepath_);
+      }
+      for (const auto& [key, sub] : scan->subscriptionsByNameAndMultiId()) {
+        auto [it, inserted] = max_multi_id.try_emplace(key.name, key.multi_id);
+        it->second = std::max(it->second, static_cast<int>(key.multi_id));
+      }
     }
 
-    // Get file size for progress.
-    file.seekg(0, std::ios::end);
-    auto file_size = static_cast<uint64_t>(file.tellg());
-    file.seekg(0);
-
-    // One bar for both phases. Reading the file is the short one (a few percent
-    // of the import); appending the records to the host is where the time goes.
-    (void)runtimeHost().progressStart("Importing ULog", ulog_flatten::kProgressSteps, true);
-
-    // Parse via ulog_cpp (ULogContainer adds the data-message clock for parameter changes).
-    auto data_container = std::make_shared<ulog_container::ULogContainer>();
-    ulog_cpp::Reader reader{data_container};
-
-    static constexpr size_t kChunkSize = 65536;
-    std::vector<uint8_t> buffer(kChunkSize);
-    uint64_t bytes_read = 0;
-    bool stopped_while_reading = false;
-
-    while (file) {
-      file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(kChunkSize));
-      auto count = static_cast<size_t>(file.gcount());
-      if (count == 0) {
-        break;
+    // Second pass: decode and write each record as it is read. A stop request
+    // ends the read; everything written up to there is already with the host
+    // ("Stop and Keep" flushes it, Discard evicts the dataset host-side).
+    auto data_container = std::make_shared<StreamingContainer>(writeHost(), std::move(max_multi_id));
+    readLog(filepath_, data_container, [&](uint64_t bytes_read) {
+      if (!data_container->error().empty() || runtimeHost().isStopRequested()) {
+        return false;
       }
-
-      reader.readChunk(buffer.data(), static_cast<int>(count));
-      bytes_read += count;
-
-      if (runtimeHost().isStopRequested()) {
-        // Stop reading but KEEP what's parsed: break out and fall through to the write
-        // path so the messages decoded so far are committed. The host's "Stop and Keep"
-        // then flushes them (Discard evicts the dataset host-side). Returning here would
-        // leave the dataset empty — the bug this fixes.
-        stopped_while_reading = true;
-        break;
-      }
-      (void)runtimeHost().progressUpdate(ulog_flatten::readProgressStep(bytes_read, file_size));
+      (void)runtimeHost().progressUpdate(bytes_read);
+      return true;
+    });
+    if (!data_container->error().empty()) {
+      return PJ::unexpected(data_container->error());
     }
 
     if (data_container->hadFatalError()) {
@@ -227,172 +466,11 @@ class ULogSource : public PJ::FileSourceBase {
     // Get file start timestamp (microseconds).
     uint64_t file_start_time_us = data_container->fileHeader().header().timestamp;
 
-    // Iterate subscriptions grouped by name and multi_id.
-    const auto& subs_map = data_container->subscriptionsByNameAndMultiId();
-
-    // Detect which names have multiple IDs for suffix generation.
-    std::map<std::string, int> name_max_multi_id;
-    for (const auto& [key, sub] : subs_map) {
-      auto it = name_max_multi_id.find(key.name);
-      if (it == name_max_multi_id.end()) {
-        name_max_multi_id[key.name] = key.multi_id;
-      } else {
-        it->second = std::max(it->second, key.multi_id);
-      }
-    }
-
-    size_t total_series_count = 0;
-
-    // Progress and Stop for the write phase, checked every kProgressStride
-    // records. A stop here keeps the records already appended, like a stop
-    // while reading keeps the messages already parsed; that earlier stop is
-    // not re-honoured here, or it would discard what it promised to keep.
-    uint64_t total_records = 0;
-    for (const auto& [key, sub] : subs_map) {
-      total_records += sub ? sub->size() : 0;
-    }
-    static constexpr uint64_t kProgressStride = 4096;
-    uint64_t records_done = 0;
-    bool stopped_while_writing = false;
-
-    // Diagnostics are aggregated and reported once: a malformed log can define
-    // thousands of subscriptions, and one message per problem would flood the
-    // host (whose dedup is by exact text).
-    std::vector<std::string> topics_without_timestamp;
-    size_t short_records = 0;
-    std::string first_short_record_topic;
-
-    for (const auto& [key, sub] : subs_map) {
-      if (stopped_while_writing) {
-        break;
-      }
-      if (!sub || sub->size() == 0) {
-        continue;
-      }
-
-      // Build topic name, adding multi_id suffix when needed.
-      std::string topic_name = key.name;
-      auto max_it = name_max_multi_id.find(key.name);
-      if (max_it != name_max_multi_id.end() && max_it->second > 0) {
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), ".%02d", key.multi_id);
-        topic_name += buf;
-      }
-
-      // Collect flattened field names.
-      std::vector<std::string> field_names;
-      ulog_flatten::collectFlatFieldNames(*sub->format(), {}, field_names);
-      if (field_names.empty()) {
-        continue;
-      }
-
-      // Ensure topic and pre-register all fields.
-      auto topic = writeHost().ensureTopic(topic_name);
-      if (!topic) {
-        return PJ::unexpected(topic.error());
-      }
-
-      std::vector<PJ::PrimitiveType> field_types;
-      ulog_flatten::forEachFlatLeaf(*sub->format(), 0, [&](const ulog_flatten::FlatLeaf& leaf) {
-        field_types.push_back(leaf.is_string ? PJ::PrimitiveType::kString : ulogTypeToPrimitive(leaf.type));
-      });
-
-      // Rows are appended by handle: the by-name path copies every field name
-      // into each row and makes the host re-resolve it, per field per record.
-      std::vector<PJ::sdk::FieldHandle> field_handles;
-      field_handles.reserve(field_names.size());
-      for (size_t fi = 0; fi < field_names.size() && fi < field_types.size(); ++fi) {
-        auto field = writeHost().ensureField(*topic, field_names[fi], field_types[fi]);
-        if (!field) {
-          return PJ::unexpected(field.error());
-        }
-        field_handles.push_back(*field);
-      }
-
-      // The spec mandates a `uint64_t timestamp` field but not its position, so
-      // locate it by name. A format without one (seen in the wild — original
-      // plugin issue #1154) falls back to the sample index, exactly as the
-      // original DataLoadULog did (`timestamps[i].value_or(i)` microseconds).
-      const auto ts_offset = ulog_flatten::findTimestampOffset(*sub->format());
-      if (!ts_offset) {
-        topics_without_timestamp.push_back(topic_name);
-      }
-      // A trailing `_padding*` field is not required to be present in the
-      // logged bytes (ULog spec, "Padding": trailing padding "may not be
-      // logged, to avoid writing unnecessary data"), so the minimum valid
-      // payload size excludes it; padding anywhere else in the format still
-      // counts (see ulog_flatten::loggedSizeBytes).
-      const auto format_size = ulog_flatten::loggedSizeBytes(*sub->format());
-
-      // Write data records.
-      std::vector<PJ::sdk::BoundFieldValue> row_fields;
-      row_fields.reserve(field_handles.size());
-      std::vector<PJ::sdk::ValueRef> values;
-      values.reserve(field_names.size());
-
-      const auto& raw_samples = sub->rawSamples();
-      for (size_t i = 0; i < raw_samples.size(); ++i) {
-        const auto& raw = raw_samples[i].data();
-
-        if (++records_done % kProgressStride == 0) {
-          const bool keep_going =
-              runtimeHost().progressUpdate(ulog_flatten::writeProgressStep(records_done, total_records));
-          if (!stopped_while_reading && (!keep_going || runtimeHost().isStopRequested())) {
-            stopped_while_writing = true;
-            break;
-          }
-        }
-
-        // ulog_cpp validates the message FRAME, not the payload against the
-        // format. A record shorter than its format is corrupt: skip it rather
-        // than fabricate a timestamp and null fields for it.
-        if (raw.size() < format_size) {
-          if (short_records++ == 0) {
-            first_short_record_topic = topic_name;
-          }
-          continue;
-        }
-
-        // Extract the timestamp (uint64_t microseconds) and convert to nanoseconds.
-        uint64_t timestamp_us = static_cast<uint64_t>(i);
-        if (ts_offset) {
-          std::memcpy(&timestamp_us, raw.data() + *ts_offset, sizeof(timestamp_us));
-        }
-        auto ts_ns = static_cast<int64_t>(timestamp_us) * 1000;
-
-        // Extract all field values from raw bytes.
-        values.clear();
-        extractFlatValues(raw.data(), raw.size(), *sub->format(), values);
-
-        // Build row.
-        row_fields.clear();
-        size_t count = std::min(values.size(), field_handles.size());
-        for (size_t j = 0; j < count; ++j) {
-          row_fields.push_back({.field = field_handles[j], .value = values[j]});
-        }
-
-        auto status = writeHost().appendBoundRecord(
-            *topic, PJ::Timestamp{ts_ns},
-            PJ::Span<const PJ::sdk::BoundFieldValue>(row_fields.data(), row_fields.size()));
-        if (!status) {
-          return status;
-        }
-      }
-
-      total_series_count += field_names.size();
-    }
-
-    // Joins up to `max_shown` names, then "... (+N more)".
-    auto sample_list = [](const std::vector<std::string>& names, size_t max_shown) {
-      std::string out;
-      for (size_t i = 0; i < names.size() && i < max_shown; ++i) {
-        out += (i ? ", " : "") + names[i];
-      }
-      if (names.size() > max_shown) {
-        out += ", ... (+" + std::to_string(names.size() - max_shown) + " more)";
-      }
-      return out;
-    };
+    const size_t total_series_count = data_container->seriesCount();
+    const auto& topics_without_timestamp = data_container->topicsWithoutTimestamp();
+    const size_t short_records = data_container->shortRecords();
+    const auto& first_short_record_topic = data_container->firstShortRecordTopic();
+    auto sample_list = sampleList;
 
     if (!topics_without_timestamp.empty()) {
       runtimeHost().reportMessage(

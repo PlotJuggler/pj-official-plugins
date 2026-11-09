@@ -45,3 +45,34 @@ emitted.
 Data-section parameter changes carry no timestamp of their own; each is stamped
 with the timestamp of the most recent data message before it (or the file
 start when none has been seen yet).
+
+## Benchmark
+
+`ulog_import_bench` loads the built plugin and imports a `.ulg` file into a host
+that discards every record, so it measures the plugin's own cost: file read,
+`ulog_cpp` parse, decode and the calls into the host. The host datastore, which
+dominates a real import, is left out.
+
+```bash
+./build.sh data_load_ulog
+build/data_load_ulog/Release/data_load_ulog/ulog_import_bench /path/to/flight.ulg 3
+```
+
+```
+ulog_import_bench [--values] [--plugin <path.so>] [file.ulg] [iterations]
+```
+
+- `file.ulg`: the log to import. The default is the committed 1 MB sample, good
+  only as a smoke run.
+- `iterations`: default 3. The best run is summarised.
+- `--plugin`: run another build of the plugin (for instance one built from
+  `main`) through the same host, to compare two builds.
+- `--values`: fold every decoded value into the checksum. This costs time in
+  the host, so use it to check two builds produce the same data and leave it
+  off when timing.
+
+Per run it prints the time of `loadConfig` (the parameter dialog parses the file
+too), of the first pass (`parse_s`, which only collects the subscriptions) and
+of the second pass (`decode_s`, which reads, decodes and writes the records).
+Then come throughput for the best run, the peak RSS, and the topic, field,
+record and value counts with a checksum that does not depend on record order.
