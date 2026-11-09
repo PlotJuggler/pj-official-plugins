@@ -9,7 +9,7 @@ below; for earlier releases see the git history of `data_load_ulog/`.
 - Records are decoded and written while the file is read, instead of loading
   the whole log into memory first. On a 1 GB PX4 log (18.3 M records) the
   loader's own memory drops from 1.9 GB to a few MB and its share of the import
-  time from 6.2 s to 2.0 s. Imported data is unchanged. Topics now appear in the
+  time from 6.2 s to 1.5 s. Imported data is unchanged. Topics now appear in the
   order they first log data rather than in name order.
 - Opening the parameter dialog on a large log is about four times faster
   (1.9 s to 0.5 s per GB): it no longer keeps the data records it does not show.
@@ -20,6 +20,9 @@ below; for earlier releases see the git history of `data_load_ulog/`.
   1 GB log).
 - Stop now works during the whole import and keeps the data written so far.
   Before, it was only honoured while the file was being read.
+- A record that ends before its timestamp is skipped and counted with the other
+  short records. It could be read past its end when a malformed format repeats
+  a field name.
 
 ## [1.1.2] - 2026-09-28
 

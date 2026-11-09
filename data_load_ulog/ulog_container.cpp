@@ -25,24 +25,27 @@ void ULogContainer::fileHeader(const ulog_cpp::FileHeader& header) {
 }
 
 void ULogContainer::data(const ulog_cpp::Data& data_msg) {
-  const auto& subs = subscriptionsByMessageId();
   if (keep_samples_) {
     // Base stores the sample (and throws on an unknown subscription, which the
     // reader treats as corruption) — let that happen before touching the clock.
     ulog_cpp::DataContainer::data(data_msg);
-  } else if (subs.find(data_msg.msgId()) == subs.end()) {
-    throw ulog_cpp::ParsingException("Invalid subscription");  // same verdict as the base
   }
 
+  // One subscription lookup per msg_id, not per record: ulog_cpp never removes
+  // a subscription, so a resolved slot stays valid.
   const size_t id = data_msg.msgId();
   if (id >= timestamp_offsets_.size()) {
     timestamp_offsets_.resize(id + 1, kUnknownOffset);
   }
   int64_t& offset = timestamp_offsets_[id];
   if (offset == kUnknownOffset) {
+    const auto& subs = subscriptionsByMessageId();
+    const auto sub_it = subs.find(data_msg.msgId());
+    if (sub_it == subs.end()) {
+      throw ulog_cpp::ParsingException("Invalid subscription");  // same verdict as the base
+    }
     offset = kNoTimestamp;
-    auto sub_it = subs.find(data_msg.msgId());
-    if (sub_it != subs.end() && sub_it->second && sub_it->second->format()) {
+    if (sub_it->second && sub_it->second->format()) {
       if (auto found = ulog_flatten::findTimestampOffset(*sub_it->second->format())) {
         offset = static_cast<int64_t>(*found);
       }

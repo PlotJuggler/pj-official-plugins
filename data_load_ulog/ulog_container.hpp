@@ -18,10 +18,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <map>
-#include <optional>
+#include <memory>
 #include <string>
 #include <ulog_cpp/data_container.hpp>
+#include <ulog_cpp/reader.hpp>
 #include <vector>
 
 namespace ulog_container {
@@ -66,5 +68,33 @@ class ULogContainer : public ulog_cpp::DataContainer {
   std::map<std::string, uint64_t> last_stamp_us_;
   std::vector<TimedParameter> timed_changes_;
 };
+
+/// Reads `path` through `container` in 64 KiB chunks. `after_chunk(bytes_read)`
+/// returns false to stop early. Returns false if the file cannot be opened.
+template <typename AfterChunk>
+bool readLog(
+    const std::string& path, const std::shared_ptr<ulog_cpp::DataContainer>& container, AfterChunk&& after_chunk) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file.is_open()) {
+    return false;
+  }
+  ulog_cpp::Reader reader{container};
+  static constexpr size_t kChunkSize = 65536;
+  std::vector<uint8_t> buffer(kChunkSize);
+  uint64_t bytes_read = 0;
+  while (file) {
+    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(kChunkSize));
+    auto count = static_cast<size_t>(file.gcount());
+    if (count == 0) {
+      break;
+    }
+    reader.readChunk(buffer.data(), static_cast<int>(count));
+    bytes_read += count;
+    if (!after_chunk(bytes_read)) {
+      break;
+    }
+  }
+  return true;
+}
 
 }  // namespace ulog_container

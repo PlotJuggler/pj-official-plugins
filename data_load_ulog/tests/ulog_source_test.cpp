@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -109,8 +110,11 @@ class ULogBuilder {
 
   template <typename T>
   static void appendLe(std::vector<uint8_t>& vec, T value) {
+    // Byte by byte: gcc 15 at -O3 flags a range insert into an empty vector (-Wnonnull).
     const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
-    vec.insert(vec.end(), bytes, bytes + sizeof(T));
+    for (size_t i = 0; i < sizeof(T); ++i) {
+      vec.push_back(bytes[i]);
+    }
   }
 };
 
@@ -120,7 +124,9 @@ class FieldDataBuilder {
   template <typename T>
   void append(T value) {
     const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
-    data_.insert(data_.end(), bytes, bytes + sizeof(T));
+    for (size_t i = 0; i < sizeof(T); ++i) {
+      data_.push_back(bytes[i]);  // see ULogBuilder::appendLe
+    }
   }
 
   std::vector<uint8_t> build() const {
@@ -1183,7 +1189,8 @@ struct ImportOutcome {
 ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host) {
   const auto path =
       std::filesystem::temp_directory_path() /
-      ("ulog_import_test_" + std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + ".ulg");
+      ("ulog_import_test_" + std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + "_" +
+       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".ulg");
   {
     std::ofstream out(path, std::ios::binary);
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -1255,7 +1262,8 @@ TEST(ULogImportTest, EveryLeafTypeReachesTheHostWithItsValue) {
   builder.writeHeader(0);
   builder.writeFlagBits();
   builder.writeFormat(
-      "mix:uint64_t timestamp;int8_t i8;uint16_t u16;int32_t i32;double f64;bool flag;char[4] tag;float[2] arr");
+      "mix:uint64_t timestamp;int8_t i8;uint16_t u16;int32_t i32;double f64;bool flag;char[4] tag;float[2] arr;"
+      "uint8_t u8;int16_t i16;uint32_t u32;int64_t i64;uint64_t u64;float f32;char c");
   builder.writeSubscription(1, 0, "mix");
   FieldDataBuilder fields;
   fields.append<uint64_t>(7000000);
@@ -1270,18 +1278,26 @@ TEST(ULogImportTest, EveryLeafTypeReachesTheHostWithItsValue) {
   fields.append<char>('\0');
   fields.append<float>(1.5F);
   fields.append<float>(-2.5F);
+  fields.append<uint8_t>(200);
+  fields.append<int16_t>(-30000);
+  fields.append<uint32_t>(4000000000U);
+  fields.append<int64_t>(-5000000000LL);
+  fields.append<uint64_t>(6000000000ULL);
+  fields.append<float>(0.25F);
+  fields.append<char>('z');
   builder.writeData(1, fields.build());
 
   RecordingHost host;
   const auto outcome = importBytes(builder.data(), host);
   ASSERT_TRUE(outcome.ok) << outcome.error;
 
-  const std::vector<std::string> expected_fields = {"i8", "u16", "i32", "f64", "flag", "tag", "arr.00", "arr.01"};
+  const std::vector<std::string> expected_fields = {"i8", "u16", "i32", "f64", "flag", "tag", "arr.00", "arr.01",
+                                                    "u8", "i16", "u32", "i64", "u64",  "f32", "c"};
   EXPECT_EQ(host.fields["mix"], expected_fields);
   ASSERT_EQ(host.rows["mix"].size(), 1u);
   const Row& row = host.rows["mix"][0];
   EXPECT_EQ(row.timestamp_ns, 7000000LL * 1000);
-  ASSERT_EQ(row.cells.size(), 8u);
+  ASSERT_EQ(row.cells.size(), 15u);
   EXPECT_EQ(row.cells[0].type, PJ_PRIMITIVE_TYPE_INT8);
   EXPECT_EQ(row.cells[0].number, -5.0);
   EXPECT_EQ(row.cells[1].type, PJ_PRIMITIVE_TYPE_UINT16);
@@ -1297,6 +1313,20 @@ TEST(ULogImportTest, EveryLeafTypeReachesTheHostWithItsValue) {
   EXPECT_EQ(row.cells[6].type, PJ_PRIMITIVE_TYPE_FLOAT32);
   EXPECT_EQ(row.cells[6].number, 1.5);
   EXPECT_EQ(row.cells[7].number, -2.5);
+  EXPECT_EQ(row.cells[8].type, PJ_PRIMITIVE_TYPE_UINT8);
+  EXPECT_EQ(row.cells[8].number, 200.0);
+  EXPECT_EQ(row.cells[9].type, PJ_PRIMITIVE_TYPE_INT16);
+  EXPECT_EQ(row.cells[9].number, -30000.0);
+  EXPECT_EQ(row.cells[10].type, PJ_PRIMITIVE_TYPE_UINT32);
+  EXPECT_EQ(row.cells[10].number, 4000000000.0);
+  EXPECT_EQ(row.cells[11].type, PJ_PRIMITIVE_TYPE_INT64);
+  EXPECT_EQ(row.cells[11].number, -5000000000.0);
+  EXPECT_EQ(row.cells[12].type, PJ_PRIMITIVE_TYPE_UINT64);
+  EXPECT_EQ(row.cells[12].number, 6000000000.0);
+  EXPECT_EQ(row.cells[13].type, PJ_PRIMITIVE_TYPE_FLOAT32);
+  EXPECT_EQ(row.cells[13].number, 0.25);
+  EXPECT_EQ(row.cells[14].type, PJ_PRIMITIVE_TYPE_UINT8);  // a scalar char is a one-byte number
+  EXPECT_EQ(row.cells[14].number, static_cast<double>('z'));
   for (const Cell& cell : row.cells) {
     EXPECT_FALSE(cell.is_null);
   }
@@ -1394,10 +1424,93 @@ TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {
   ASSERT_TRUE(outcome.ok) << outcome.error;
 
   const size_t written = host.rows["dummy"].size();
-  EXPECT_GT(written, 0u);
+  ASSERT_GT(written, 0u);
   EXPECT_LT(written, 20000u);
   EXPECT_EQ(host.rows["dummy"].back().cells.at(0).number, static_cast<double>(written));  // a clean prefix
   EXPECT_EQ(host.rows["_parameters/P"].size(), 1u);  // the cheap tail is still written
+}
+
+// The scan for topic names comes first and writes nothing. A stop that lands
+// there must still keep the part of the file read so far, as it always did.
+TEST(ULogImportTest, StopDuringTheNameScanKeepsThePrefix) {
+  RecordingHost host;
+  host.stop_after_records = 0;  // stop is already requested at the first poll
+  const auto outcome = importBytes(manyDummyRecords(20000), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const size_t written = host.rows["dummy"].size();
+  ASSERT_GT(written, 0u);
+  EXPECT_LT(written, 20000u);
+  EXPECT_EQ(host.rows["dummy"].back().cells.at(0).number, static_cast<double>(written));
+}
+
+// ulog_cpp keeps only the first subscription for a (name, multi_id) pair in its
+// by-name table; the second one's records were never imported and still aren't.
+TEST(ULogImportTest, DuplicateSubscriptionDoesNotMergeIntoTheFirst) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeSubscription(2, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeData(2, dummyRecord(1500000, 99.0F));
+  builder.writeData(1, dummyRecord(2000000, 2.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  ASSERT_EQ(host.rows["dummy"].size(), 2u);
+  EXPECT_EQ(host.rows["dummy"][0].cells.at(0).number, 1.0);
+  EXPECT_EQ(host.rows["dummy"][1].cells.at(0).number, 2.0);
+  EXPECT_EQ(host.fields["dummy"].size(), 1u);
+}
+
+// A format whose nested type is never defined stops ulog_cpp resolving every
+// format after it. Records of such a subscription cannot be decoded: the
+// import fails, it does not pass them off as file corruption.
+TEST(ULogImportTest, UnresolvedFormatFailsTheImport) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("a_bad:uint64_t timestamp;missing_t m");
+  builder.writeFormat("b_ok:uint64_t timestamp;float val");
+  builder.writeFormat("c_ok:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "b_ok");  // lost: it is the message that trips the failed resolve
+  builder.writeSubscription(2, 0, "c_ok");
+  for (uint64_t i = 1; i <= 5000; ++i) {
+    builder.writeData(2, dummyRecord(i * 1000, static_cast<float>(i)));
+  }
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  EXPECT_FALSE(outcome.ok);
+  EXPECT_NE(outcome.error.find("Unresolved"), std::string::npos) << outcome.error;
+  EXPECT_TRUE(host.rows["c_ok"].empty());
+}
+
+// MessageFormat::sizeBytes() under-counts a format with duplicate field names,
+// so a record can pass the size gate and still end before its timestamp.
+TEST(ULogImportTest, RecordEndingBeforeItsTimestampIsSkipped) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dup:uint32_t a;uint32_t a;uint64_t timestamp");
+  builder.writeSubscription(1, 0, "dup");
+  FieldDataBuilder fields;  // 12 bytes: the timestamp would sit at bytes 8..16
+  fields.append<uint32_t>(1);
+  fields.append<uint32_t>(2);
+  fields.append<uint32_t>(3);
+  builder.writeData(1, fields.build());
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+  EXPECT_TRUE(host.rows["dup"].empty());
+  EXPECT_TRUE(std::any_of(host.warnings.begin(), host.warnings.end(), [](const std::string& w) {
+    return w.find("skipped 1 data record(s)") != std::string::npos;
+  }));
 }
 
 TEST(ULogImportTest, HostWriteErrorFailsTheImport) {
