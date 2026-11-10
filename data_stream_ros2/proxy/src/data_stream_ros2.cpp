@@ -366,14 +366,32 @@ void loadInnerImpl(
   g_dialog_vtable = dlg_vt;
 }
 
+// Where the per-distro payloads live. A RoboStack package installs this extension
+// into its environment (<env>/lib/plotjuggler/plugins/ros2-topic-subscriber/), and
+// PlotJuggler copies it from there into the per-user extensions folder, which is
+// shared by every environment on the machine: the copy holds the payloads of
+// whichever environment copied it first. So in a RoboStack environment that ships
+// the extension, load the payload from the environment itself.
+std::filesystem::path payloadDirectory(const std::optional<std::filesystem::path>& robostack_env) {
+  if (robostack_env) {
+    auto dir = *robostack_env / "lib" / "plotjuggler" / "plugins" / "ros2-topic-subscriber";
+    std::error_code ec;
+    if (std::filesystem::is_directory(dir / "dist", ec)) {
+      return dir;
+    }
+  }
+  return proxyDirectory();
+}
+
 // Runs loadInnerImpl exactly once and mirrors any failure reason to stderr. The
 // host may surface g_last_error via the optional PJ_get_proxy_last_error symbol,
 // but a host that doesn't know it would otherwise see a failed load as complete
 // silence — so always log it once here.
 void loadInnerOnce() {
   const auto distro = detectRosDistro();
+  const auto robostack_env = roboStackEnvironment();
   loadInnerImpl(
-      distro, proxyDirectory(), roboStackEnvironment().has_value(),
+      distro, payloadDirectory(robostack_env), robostack_env.has_value(),
       distro ? std::filesystem::path("/opt/ros") / *distro : std::filesystem::path{});
   if (g_data_source_vtable == nullptr && !g_last_error.empty()) {
     std::fprintf(stderr, "[ros2.proxy] %s\n", g_last_error.c_str());

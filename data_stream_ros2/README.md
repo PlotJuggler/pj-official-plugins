@@ -252,5 +252,13 @@ which is exactly when the proxy picks them. Build one with
 `robostack/build.sh <distro>`. The marketplace zip ships Linux payloads only;
 macOS payloads are built by `robostack/build.sh` and CI but not packaged yet.
 
+A RoboStack package can ship the extension itself, installed at
+`<env>/lib/plotjuggler/plugins/ros2-topic-subscriber/` (with its payload under
+`dist/<distro>-robostack/`). PlotJuggler copies bundled plugins from there into the
+per-user extensions folder, which every environment on the machine shares, so the
+proxy loads the payload from the running environment's copy when it exists: a
+Humble and a Jazzy environment each get their own payload, whichever copied the
+extension first.
+
 Windows is a follow-up — Chocolatey-based ROS 2 installs require a
 different bootstrap path and are not covered yet.
