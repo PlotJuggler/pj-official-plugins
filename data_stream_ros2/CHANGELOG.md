@@ -12,8 +12,6 @@ below; for earlier releases see the git history of `data_stream_ros2/`.
   macos-arm64 payloads. The marketplace zip is still Linux-only.
 
 ### Fixed
-- lyrical: the subscriber builds against rclcpp 32, which deprecates the
-  non-const `SerializedMessage` subscription callback.
 - RoboStack: the distro is detected without an activated environment
   (`ROS_DISTRO` unset) also where RoboStack ships `ros2-rclcpp` instead of
   `ros-<distro>-rclcpp` (lyrical; jazzy and kilted on macOS).
