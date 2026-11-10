@@ -194,13 +194,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: [jazzy, kilted]
-        arch: [x86_64, aarch64]
+        distro: [jazzy, kilted, lyrical]
+        arch: [x86_64, aarch64, macos-arm64]
         include:
           - arch: x86_64
             runner: ubuntu-22.04
           - arch: aarch64
             runner: ubuntu-22.04-arm
+          # Built to keep the macOS payloads compiling; not packaged yet.
+          - arch: macos-arm64
+            runner: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4

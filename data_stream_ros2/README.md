@@ -240,15 +240,17 @@ Single source of truth: [`docker/distros.env`](docker/distros.env).
 When PlotJuggler itself is installed from conda into a
 [RoboStack](https://robostack.github.io) environment, the proxy loads
 `dist/<distro>-robostack/` instead: RoboStack's `rclcpp` is a different
-build from `/opt/ros`'s. Supported: **jazzy** and **kilted**, on
-linux-x86_64 and linux-arm64 (the environments in
+build from `/opt/ros`'s. Supported: **jazzy**, **kilted** and **lyrical**, on
+linux-x86_64, linux-arm64 and macos-arm64 (the environments in
 [`robostack/pixi.toml`](robostack/pixi.toml)).
 
-These payloads carry no RPATH: their ROS libraries resolve through the
-conda-installed `plotjuggler4` executable's own (`$ORIGIN/../lib`). So they
+These payloads carry no RPATH of their own: their ROS libraries resolve through
+the conda-installed `plotjuggler4` executable's (`$ORIGIN/../lib`); on macOS their
+only rpath is `@executable_path/../lib`, which names the same directory. So they
 load only when PlotJuggler runs from the environment that holds `rclcpp`,
 which is exactly when the proxy picks them. Build one with
-`robostack/build.sh <distro>`.
+`robostack/build.sh <distro>`. The marketplace zip ships Linux payloads only;
+macOS payloads are built by `robostack/build.sh` and CI but not packaged yet.
 
 Windows is a follow-up — Chocolatey-based ROS 2 installs require a
 different bootstrap path and are not covered yet.
