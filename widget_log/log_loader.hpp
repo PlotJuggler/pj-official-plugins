@@ -88,7 +88,9 @@ class LogLoader {
   };
 
   PJ::Expected<Probe> probe(uint32_t slot, double to, const HistoryQuery& query) const;
-  void fullLoad(uint32_t slot, Wire& wire, const HistoryQuery& query, SyncResult& result);
+  /// @p value_unresolved: the wire's value in this update is NONE, so a failing history read is not reported.
+  void fullLoad(
+      uint32_t slot, Wire& wire, const HistoryQuery& query, SyncResult& result, bool value_unresolved = false);
   void refresh(uint32_t slot, Wire& wire, const HistoryQuery& query, SyncResult& result);
   void warnOnce(Wire& wire, std::string message, SyncResult& result);
   /// Decode one sample into a row; false when it is not a decodable log.

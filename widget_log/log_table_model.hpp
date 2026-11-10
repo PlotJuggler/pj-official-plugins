@@ -54,6 +54,8 @@ class LogTableModel : public QAbstractTableModel {
   [[nodiscard]] int rowOf(size_t index) const;
 
   static QString levelName(Level level);
+  /// The text of the Time column.
+  static QString formatTime(double time);
 
  private:
   int visibleCount() const;

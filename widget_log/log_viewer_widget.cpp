@@ -7,9 +7,12 @@
 #include <QHeaderView>
 #include <QKeyEvent>
 #include <QMenu>
+#include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStringList>
+#include <QStyle>
+#include <QTextDocument>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -93,6 +96,9 @@ LogViewerWidget::LogViewerWidget(
   connect(header, &QHeaderView::sectionResized, this, [this](int column, int /*old*/, int size) {
     if (column >= 0 && column < static_cast<int>(column_widths_.size()) && size > 0) {
       column_widths_[static_cast<size_t>(column)] = size;
+      if (!auto_sizing_) {
+        columns_fixed_ = true;
+      }
     }
   });
 
@@ -158,6 +164,7 @@ void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double 
   }
   if (model_->rowCount() > 0) {
     shown_rows_ = true;
+    autoSizeColumns();
   }
   updateDetail();
 }
@@ -362,9 +369,47 @@ void LogViewerWidget::showEvent(QShowEvent* event) {
     if (pending_splitter_.size() == 2) {
       ui_.splitter->setSizes(QList<int>(pending_splitter_.begin(), pending_splitter_.end()));
     } else {
-      ui_.splitter->setSizes({height(), ui_.detailText->fontMetrics().lineSpacing() * 6});
+      // About 8 lines of the pane's font plus its document margins and frame; the list keeps the rest.
+      const int detail = ui_.detailText->fontMetrics().lineSpacing() * 8 +
+                         static_cast<int>(ui_.detailText->document()->documentMargin() * 2) +
+                         ui_.detailText->frameWidth() * 2 + 8;  // + the pane's 4 px top/bottom margins
+      ui_.splitter->setSizes({std::max(1, height() - detail), detail});
     }
   }
+}
+
+void LogViewerWidget::autoSizeColumns() {
+  if (columns_fixed_ || auto_sizing_ || model_->rowCount() == 0) {
+    return;
+  }
+  const std::optional<size_t> last = model_->storeIndex(model_->rowCount() - 1);
+  if (!last || *last >= store_.size()) {
+    return;
+  }
+  QHeaderView* header = ui_.logView->header();
+  const QFontMetrics body = ui_.logView->fontMetrics();
+  const QFontMetrics head = header->fontMetrics();
+  // Cell text gets the item margins; the header gets its section padding (and a sort/arrow slack).
+  const int cell_pad = ui_.logView->style()->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, ui_.logView) * 2 + 8;
+  const int head_pad = header->style()->pixelMetric(QStyle::PM_HeaderMargin, nullptr, header) * 2 + 8;
+  const auto fit = [&](const QString& text, const QString& title) {
+    return std::max(body.horizontalAdvance(text) + cell_pad, head.horizontalAdvance(title) + head_pad);
+  };
+  int level_width = 0;
+  for (Level level : {Level::kDebug, Level::kInfo, Level::kWarning, Level::kError, Level::kFatal, Level::kUnknown}) {
+    level_width = std::max(level_width, body.horizontalAdvance(LogTableModel::levelName(level)));
+  }
+  const int time_width =
+      fit(LogTableModel::formatTime(store_.row(*last).time),
+          model_->headerData(LogTableModel::kTime, Qt::Horizontal).toString());
+  level_width = std::max(
+      level_width + cell_pad,
+      head.horizontalAdvance(model_->headerData(LogTableModel::kLevel, Qt::Horizontal).toString()) + head_pad);
+  auto_sizing_ = true;
+  header->resizeSection(LogTableModel::kTime, time_width);
+  header->resizeSection(LogTableModel::kLevel, level_width);
+  auto_sizing_ = false;
+  columns_fixed_ = true;  // once: later growth of the times does not move the columns under the user
 }
 
 void LogViewerWidget::onRowClicked(const QModelIndex& index) {
@@ -427,6 +472,7 @@ void LogViewerWidget::applyState(const ViewState& state) {
       if (state.columns[column] > 0) {
         ui_.logView->header()->resizeSection(static_cast<int>(column), state.columns[column]);
         column_widths_[column] = state.columns[column];
+        columns_fixed_ = true;
       }
     }
   }

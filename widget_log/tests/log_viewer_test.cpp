@@ -343,6 +343,7 @@ TEST_F(LogViewerTest, WithoutPlaybackServiceClickDoesNothing) {
   panel->update(20.0);
   QTreeView* view = panel->view();
   EXPECT_TRUE(view->verticalScrollBar()->isEnabled());
+  view->scrollTo(panel->model()->index(3, 4));  // the list is shorter now that the detail pane is taller
   const QRect rect = view->visualRect(panel->model()->index(3, 4));
   QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());
   EXPECT_TRUE(panel->playback.seeks.empty());

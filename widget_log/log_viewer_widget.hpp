@@ -63,6 +63,8 @@ class LogViewerWidget : public QWidget {
   void scrollToTracker(bool to_bottom);
   void setScrollLocked(bool locked);
   void onRowClicked(const QModelIndex& index);
+  /// Fit the Time and Level columns once, when rows first appear and the user has no widths of their own.
+  void autoSizeColumns();
 
   Ui::LogViewerForm ui_{};
   LogStore store_;
@@ -79,6 +81,8 @@ class LogViewerWidget : public QWidget {
   std::vector<int> column_widths_;
   std::vector<int> pending_splitter_;
   bool splitter_sized_ = false;
+  bool columns_fixed_ = false;  ///< saved or user-set widths exist: never auto-size
+  bool auto_sizing_ = false;
 
   bool have_tracker_ = false;
   double tracker_ = 0.0;

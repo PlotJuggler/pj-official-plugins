@@ -279,6 +279,42 @@ TEST_F(LogLoaderTest, NonLogWireWarnsOnceAndShowsNothing) {
   EXPECT_FALSE(loader_.wires()[0].is_log);
 }
 
+TEST_F(LogLoaderTest, UnresolvedWireDoesNotWarnWhileItsValueIsNone) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0});
+  const log_viewer::HistoryQuery failing = [](uint32_t, uint32_t, double, double, uint32_t,
+                                              const log_viewer::HistorySink&) -> PJ::Expected<uint32_t> {
+    return PJ::unexpected(std::string("input 0 slot 0 is not wired"));
+  };
+  // Tracker before the first sample: the wire's value is NONE.
+  const auto none_values = host_.values(0.5);
+  ASSERT_EQ(none_values[0].kind, PJ_WIDGET_VALUE_NONE);
+  const PJ::Span<const PJ_widget_value_t> none_span(none_values.data(), none_values.size());
+  EXPECT_TRUE(loader_.sync(none_span, failing).warnings.empty());
+  EXPECT_TRUE(loader_.sync(none_span, failing).warnings.empty());
+  EXPECT_EQ(store_.size(), 0u);
+  // The wire resolves: the next update loads it.
+  sync();
+  EXPECT_EQ(store_.size(), 2u);
+  EXPECT_TRUE(host_.warnings.empty());
+}
+
+TEST_F(LogLoaderTest, FailingHistoryWithAValueWarnsOnce) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0});
+  const log_viewer::HistoryQuery failing = [](uint32_t, uint32_t, double, double, uint32_t,
+                                              const log_viewer::HistorySink&) -> PJ::Expected<uint32_t> {
+    return PJ::unexpected(std::string("input 0 slot 0 is not wired"));
+  };
+  const auto values = host_.values(1e9);
+  ASSERT_NE(values[0].kind, PJ_WIDGET_VALUE_NONE);
+  const PJ::Span<const PJ_widget_value_t> span(values.data(), values.size());
+  const auto first = loader_.sync(span, failing);
+  ASSERT_EQ(first.warnings.size(), 1u);
+  EXPECT_NE(first.warnings[0].find("cannot read its history"), std::string::npos);
+  EXPECT_TRUE(loader_.sync(span, failing).warnings.empty());
+}
+
 TEST_F(LogLoaderTest, VanishedWireDropsItsRows) {
   host_.wire(0, "/rosout");
   host_.wire(1, "/other/rosout");

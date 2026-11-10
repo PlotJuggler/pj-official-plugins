@@ -61,6 +61,10 @@ QString LogTableModel::levelName(Level level) {
   return QStringLiteral("Unknown");
 }
 
+QString LogTableModel::formatTime(double time) {
+  return QString::number(time, 'f', 3);
+}
+
 int LogTableModel::visibleCount() const {
   return static_cast<int>(future_rows_ == FutureRows::kGrey ? filtered_.size() : revealed_);
 }
@@ -86,7 +90,7 @@ QVariant LogTableModel::data(const QModelIndex& index, int role) const {
     case Qt::DisplayRole:
       switch (index.column()) {
         case kTime:
-          return QString::number(row.time, 'f', 3);
+          return formatTime(row.time);
         case kLevel:
           return levelName(row.level);
         case kNode:

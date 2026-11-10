@@ -56,6 +56,7 @@ SyncResult LogLoader::sync(PJ::Span<const PJ_widget_value_t> values, const Histo
   SyncResult result{StoreChange::none(store_.size()), false, {}};
 
   std::map<uint32_t, std::string> current;
+  std::map<uint32_t, bool> unresolved;  // slot -> its value in this update is NONE
   for (const PJ_widget_value_t& value : values) {
     if (value.input != kInput) {
       continue;
@@ -64,6 +65,7 @@ SyncResult LogLoader::sync(PJ::Span<const PJ_widget_value_t> values, const Histo
     if (label.empty()) {
       label = "Topic " + std::to_string(value.slot + 1);
     }
+    unresolved[value.slot] = value.kind == PJ_WIDGET_VALUE_NONE;
     current.emplace(value.slot, std::move(label));
   }
 
@@ -91,7 +93,8 @@ SyncResult LogLoader::sync(PJ::Span<const PJ_widget_value_t> values, const Histo
       continue;
     }
     if (!wire.loaded) {
-      fullLoad(slot, wire, query, result);
+      const auto none = unresolved.find(slot);
+      fullLoad(slot, wire, query, result, none != unresolved.end() && none->second);
     } else {
       refresh(slot, wire, query, result);
     }
@@ -115,10 +118,14 @@ PJ::Expected<LogLoader::Probe> LogLoader::probe(uint32_t slot, double to, const 
   return out;
 }
 
-void LogLoader::fullLoad(uint32_t slot, Wire& wire, const HistoryQuery& query, SyncResult& result) {
+void LogLoader::fullLoad(
+    uint32_t slot, Wire& wire, const HistoryQuery& query, SyncResult& result, bool value_unresolved) {
   auto counted = probe(slot, kMaxTime, query);
   if (!counted) {
-    warnOnce(wire, wire.label + ": cannot read its history: " + counted.error(), result);
+    // A wire whose value is still NONE may not be resolved yet (layout restore): retry on the next update.
+    if (!value_unresolved) {
+      warnOnce(wire, wire.label + ": cannot read its history: " + counted.error(), result);
+    }
     return;
   }
   wire.loaded = true;
