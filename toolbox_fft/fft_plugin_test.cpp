@@ -154,7 +154,7 @@ TEST(FftAlgorithmTest, RejectsInvalidSamplingAndValues) {
   EXPECT_EQ(computation.error, PJ::fft::FftError::kNonFiniteValue);
 }
 
-TEST(FftAlgorithmTest, PrimeHalfLengthStaysFastAndExact) {
+TEST(FftAlgorithmTest, PrimeHalfLengthStaysFastAndAccurate) {
   // n/2 = 100003 is prime: an O(n*p) backend (the old kissfft) took ~14 s here.
   constexpr std::size_t count = 200006;
   constexpr std::size_t bin = 20001;
@@ -167,7 +167,7 @@ TEST(FftAlgorithmTest, PrimeHalfLengthStaysFastAndExact) {
   const auto elapsed = std::chrono::steady_clock::now() - start;
 
   ASSERT_TRUE(computation) << computation.message;
-  EXPECT_NEAR(computation.result.amplitudes[bin], 10.0, 1e-9);
+  EXPECT_NEAR(computation.result.amplitudes[bin], 10.0, 1e-5);  // float FFT: ~1e-7 relative
   EXPECT_LT(elapsed, std::chrono::seconds(2));
 }
 

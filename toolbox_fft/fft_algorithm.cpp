@@ -86,12 +86,14 @@ FftComputation computeFft(
     average /= static_cast<long double>(n);
   }
 
-  std::vector<double> input(n);
+  // Float, like the kissfft build this replaces: ~1e-7 relative to the peak, and half the
+  // memory of double on pocketfft's Bluestein path (~76 vs ~152 bytes per sample).
+  std::vector<float> input(n);
   long double coherent_sum = 0.0L;
   for (std::size_t i = 0; i < n; ++i) {
     const double weight = windowWeight(window, i, n);
     coherent_sum += static_cast<long double>(weight);
-    input[i] = static_cast<double>((static_cast<long double>(values[i]) - average) * weight);
+    input[i] = static_cast<float>((static_cast<long double>(values[i]) - average) * weight);
   }
   if (!(coherent_sum > std::numeric_limits<long double>::epsilon())) {
     return failure(FftError::kAllocationFailed, "FFT window has zero coherent gain");
@@ -100,7 +102,7 @@ FftComputation computeFft(
   try {
     // pocketfft stays O(n log n) for any n (Bluestein for large prime factors). In place, the
     // output is FFTPACK half-complex: re0, re1, im1, ..., re(n/2-1), im(n/2-1), re(n/2) (n even).
-    pocketfft::detail::pocketfft_r<double>(n).exec(input.data(), 1.0, true);
+    pocketfft::detail::pocketfft_r<float>(n).exec(input.data(), 1.0f, true);
   } catch (const std::bad_alloc&) {
     return failure(FftError::kAllocationFailed, "FFT backend allocation failed");
   }
@@ -118,9 +120,10 @@ FftComputation computeFft(
     result.frequencies_hz.push_back(static_cast<double>(i) * sample_rate_hz / static_cast<double>(n));
     double amplitude = 0.0;
     if (i == 0 || i == n / 2) {
-      amplitude = std::abs(input[i == 0 ? 0 : n - 1]) / coherent_gain;
+      amplitude = std::abs(static_cast<double>(input[i == 0 ? 0 : n - 1])) / coherent_gain;
     } else {
-      amplitude = 2.0 * std::hypot(input[2 * i - 1], input[2 * i]) / coherent_gain;
+      amplitude =
+          2.0 * std::hypot(static_cast<double>(input[2 * i - 1]), static_cast<double>(input[2 * i])) / coherent_gain;
     }
     result.amplitudes.push_back(amplitude);
   }
