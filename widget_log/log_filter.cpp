@@ -1,6 +1,7 @@
 #include "log_filter.hpp"
 
 #include <algorithm>
+#include <pj_base/sdk/text_utils.hpp>
 
 namespace log_viewer {
 
@@ -23,15 +24,11 @@ bool containsCaseInsensitive(const std::string& haystack, const std::string& low
 }
 
 CompiledFilter::CompiledFilter(const LogFilter& filter, const LogStore& store)
-    : levels_(filter.levels), hidden_wires_(filter.hidden_wires) {
+    : levels_(filter.levels), needle_(PJ::sdk::lowerAscii(filter.text)), hidden_wires_(filter.hidden_wires) {
   levels_[static_cast<size_t>(Level::kUnknown)] = true;
   if (!filter.node.empty()) {
     any_node_ = false;
     node_ = store.find(filter.node);
-  }
-  needle_.reserve(filter.text.size());
-  for (char c : filter.text) {
-    needle_.push_back(lowerAscii(c));
   }
   std::sort(hidden_wires_.begin(), hidden_wires_.end());
 }

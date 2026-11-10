@@ -1,14 +1,12 @@
 // Keeps a LogStore in step with the wires of the widget, reading their history from the host. Qt-free.
 #pragma once
 
-#include <pj_plugins/widget_protocol.h>
-
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <map>
 #include <pj_base/expected.hpp>
 #include <pj_base/span.hpp>
+#include <pj_plugins/sdk/widget_plugin_base.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,13 +17,6 @@ namespace log_viewer {
 
 /// Type name of the canonical log object (PJ::sdk::name(BuiltinObjectType::kLog)).
 std::string_view logTypeName();
-
-/// Receives one history sample; return false to stop the delivery.
-using HistorySink = std::function<bool(const PJ_widget_value_t&)>;
-/// query_history of the widget host: (input, slot, from, to, max_samples, sink) -> samples in range before
-/// the cap, or an error.
-using HistoryQuery = std::function<PJ::Expected<uint32_t>(
-    uint32_t input, uint32_t slot, double from, double to, uint32_t max_samples, const HistorySink& sink)>;
 
 struct WireInfo {
   uint32_t id = 0;  ///< the slot; also the wire id in the store
@@ -46,8 +37,9 @@ class LogLoader {
 
   explicit LogLoader(LogStore& store) : store_(store) {}
 
-  /// Bring the store in line with @p values (one entry per wire, as on_update delivers them).
-  SyncResult sync(PJ::Span<const PJ_widget_value_t> values, const HistoryQuery& query);
+  /// Bring the store in line with @p values (one entry per wire, as on_update delivers them), reading the
+  /// history from @p host.
+  SyncResult sync(PJ::Span<const PJ_widget_value_t> values, const PJ::WidgetHostView& host);
 
   /// Wires in slot order.
   [[nodiscard]] std::vector<WireInfo> wires() const;
@@ -72,29 +64,28 @@ class LogLoader {
     bool is_log = true;
     bool loaded = false;        ///< a full load succeeded at least once
     bool warned = false;        ///< a warning about this wire was already reported
-    bool complete = true;       ///< every sample the host counted was delivered
     uint32_t host_total = 0;    ///< samples the host held at the last sync
     double host_first = 0.0;    ///< time of its first sample
     double host_last = 0.0;     ///< time of its last sample
     uint32_t host_at_last = 0;  ///< samples at host_last
-    size_t received = 0;        ///< samples delivered by the host since the last full load
+    size_t missing = 0;         ///< samples the host counted but did not deliver since the last full load
     uint64_t next_seq = 0;
   };
 
   struct Probe {
     uint32_t total = 0;
     double first_time = 0.0;
-    std::string first_type;
+    bool first_is_log = false;
   };
 
-  PJ::Expected<Probe> probe(uint32_t slot, double to, const HistoryQuery& query) const;
+  static PJ::Expected<Probe> probe(uint32_t slot, double to, const PJ::WidgetHostView& host);
+  /// Read the whole history of the wire, whose count @p counted was just read.
   /// @p value_unresolved: the wire's value in this update is NONE, so a failing history read is not reported.
   void fullLoad(
-      uint32_t slot, Wire& wire, const HistoryQuery& query, SyncResult& result, bool value_unresolved = false);
-  void refresh(uint32_t slot, Wire& wire, const HistoryQuery& query, SyncResult& result);
-  void warnOnce(Wire& wire, std::string message, SyncResult& result);
-  /// Decode one sample into a row; false when it is not a decodable log.
-  bool decode(const PJ_widget_value_t& value, Wire& wire, LogRow& row);
+      uint32_t slot, Wire& wire, const PJ::Expected<Probe>& counted, const PJ::WidgetHostView& host, SyncResult& result,
+      bool value_unresolved = false);
+  void refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& host, SyncResult& result);
+  static void warnOnce(Wire& wire, std::string message, SyncResult& result);
 
   LogStore& store_;
   std::map<uint32_t, Wire> wires_;

@@ -25,14 +25,6 @@ namespace {
 constexpr int kTextDebounceMs = 150;
 const std::vector<int> kDefaultColumnWidths = {90, 60, 140, 140};
 
-QString fromStd(const std::string& text) {
-  return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
-}
-
-std::string toStd(const QString& text) {
-  return text.toUtf8().toStdString();
-}
-
 QString formatStamp(int64_t ns) {
   const int64_t seconds = ns / 1'000'000'000;
   const int64_t fraction = std::llabs(ns % 1'000'000'000);
@@ -61,9 +53,10 @@ bool isNavigationKey(int key) {
 }  // namespace
 
 LogViewerWidget::LogViewerWidget(
-    HistoryQuery query, std::optional<PJ::sdk::PlaybackHostView> playback, WarningSink warn, QWidget* parent)
+    const PJ::WidgetHostView& host, std::optional<PJ::sdk::PlaybackHostView> playback, WarningSink warn,
+    QWidget* parent)
     : QWidget(parent),
-      query_(std::move(query)),
+      host_(host),
       playback_(std::move(playback)),
       warn_(std::move(warn)),
       column_widths_(kDefaultColumnWidths) {
@@ -83,7 +76,8 @@ LogViewerWidget::LogViewerWidget(
   ui_.splitter->setStretchFactor(1, 0);
   ui_.detailText->setMinimumHeight(ui_.detailText->fontMetrics().lineSpacing() * 3);
 
-  model_ = new LogTableModel(store_, [this](uint32_t wire) { return fromStd(loader_.label(wire)); }, ui_.logView, this);
+  model_ = new LogTableModel(
+      store_, [this](uint32_t wire) { return QString::fromStdString(loader_.label(wire)); }, ui_.logView, this);
   ui_.logView->setModel(model_);
   QHeaderView* header = ui_.logView->header();
   header->setSectionsMovable(false);
@@ -96,9 +90,7 @@ LogViewerWidget::LogViewerWidget(
   connect(header, &QHeaderView::sectionResized, this, [this](int column, int /*old*/, int size) {
     if (column >= 0 && column < static_cast<int>(column_widths_.size()) && size > 0) {
       column_widths_[static_cast<size_t>(column)] = size;
-      if (!auto_sizing_) {
-        columns_fixed_ = true;
-      }
+      columns_fixed_ = true;
     }
   });
 
@@ -106,7 +98,7 @@ LogViewerWidget::LogViewerWidget(
   ui_.logView->viewport()->installEventFilter(this);
   ui_.logView->verticalScrollBar()->installEventFilter(this);
 
-  for (QToolButton* toggle : {ui_.levelDebug, ui_.levelInfo, ui_.levelWarn, ui_.levelError, ui_.levelFatal}) {
+  for (QToolButton* toggle : levelToggles()) {
     connect(toggle, &QToolButton::toggled, this, &LogViewerWidget::applyFilters);
   }
   connect(ui_.nodeCombo, &QComboBox::currentIndexChanged, this, &LogViewerWidget::applyFilters);
@@ -123,11 +115,17 @@ LogViewerWidget::LogViewerWidget(
 }
 
 void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double time) {
-  SyncResult result = loader_.sync(values, query_);
+  SyncResult result = loader_.sync(values, host_);
   for (const std::string& warning : result.warnings) {
     if (warn_) {
       warn_(warning);
     }
+  }
+  // The detail pane's row is stale from old_tail on, and an eviction shifts every index. Checked before the
+  // model follows the store: its signals may refresh the pane, in new coordinates.
+  const StoreChange& change = result.change;
+  if (detail_row_ && (change.reset || change.dropped_front > 0 || *detail_row_ >= change.old_tail)) {
+    detail_valid_ = false;
   }
   if (result.wires_changed) {
     refreshTopics();
@@ -142,8 +140,7 @@ void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double 
   }
   refreshNotice();
 
-  const bool moved = !have_tracker_ || !sameTime(time, tracker_);
-  have_tracker_ = true;
+  const bool moved = !tracker_ || !sameTime(time, *tracker_);
   tracker_ = time;
   model_->setTracker(time);
 
@@ -183,15 +180,18 @@ bool LogViewerWidget::isPlaying() const {
   return state && state->is_playing;
 }
 
+std::array<QToolButton*, kToggleLevels.size()> LogViewerWidget::levelToggles() const {
+  return {ui_.levelDebug, ui_.levelInfo, ui_.levelWarn, ui_.levelError, ui_.levelFatal};
+}
+
 LogFilter LogViewerWidget::currentFilter() const {
   LogFilter filter;
-  const std::array<const QToolButton*, kToggleLevels.size()> toggles = {
-      ui_.levelDebug, ui_.levelInfo, ui_.levelWarn, ui_.levelError, ui_.levelFatal};
+  const auto toggles = levelToggles();
   for (size_t i = 0; i < kToggleLevels.size(); ++i) {
     filter.levels[static_cast<size_t>(kToggleLevels[i])] = toggles[i]->isChecked();
   }
-  filter.node = toStd(ui_.nodeCombo->currentData().toString());
-  filter.text = toStd(ui_.filterEdit->text().trimmed());
+  filter.node = ui_.nodeCombo->currentData().toString().toStdString();
+  filter.text = ui_.filterEdit->text().trimmed().toStdString();
   for (const WireInfo& wire : loader_.wires()) {
     if (std::find(hidden_topics_.begin(), hidden_topics_.end(), wire.label) != hidden_topics_.end()) {
       filter.hidden_wires.push_back(wire.id);
@@ -245,7 +245,7 @@ void LogViewerWidget::refreshTopics() {
   QMenu* menu = ui_.topicsButton->menu();
   menu->clear();
   for (const WireInfo& wire : wires) {
-    QAction* action = menu->addAction(fromStd(wire.label));
+    QAction* action = menu->addAction(QString::fromStdString(wire.label));
     action->setCheckable(true);
     const bool hidden = std::find(hidden_topics_.begin(), hidden_topics_.end(), wire.label) != hidden_topics_.end();
     action->setChecked(!hidden);
@@ -268,7 +268,7 @@ void LogViewerWidget::refreshTopics() {
 void LogViewerWidget::refreshNodes() {
   QStringList names;
   for (uint32_t id : store_.nodes()) {
-    names.push_back(fromStd(store_.text(id)));
+    names.push_back(QString::fromStdString(store_.text(id)));
   }
   nodes_listed_ = store_.nodes().size();
   names.sort(Qt::CaseInsensitive);
@@ -300,6 +300,11 @@ void LogViewerWidget::refreshNotice() {
 
 void LogViewerWidget::updateDetail() {
   const std::optional<size_t> selected = selectedStoreRow();
+  if (detail_valid_ && selected == detail_row_) {
+    return;
+  }
+  detail_valid_ = true;
+  detail_row_ = selected;
   ui_.copyButton->setEnabled(selected.has_value());
   QString text;
   if (selected && *selected < store_.size()) {
@@ -308,10 +313,10 @@ void LogViewerWidget::updateDetail() {
     lines << QStringLiteral("Time: %1 s").arg(row.time, 0, 'f', 6);
     lines << QStringLiteral("Stamp: %1").arg(formatStamp(row.stamp_ns));
     lines << QStringLiteral("Level: %1").arg(LogTableModel::levelName(row.level));
-    lines << QStringLiteral("Node: %1").arg(fromStd(store_.text(row.node)));
-    lines << QStringLiteral("Topic: %1").arg(fromStd(loader_.label(row.wire)));
-    const QString file = fromStd(store_.text(row.file));
-    const QString function = fromStd(store_.text(row.function));
+    lines << QStringLiteral("Node: %1").arg(QString::fromStdString(store_.text(row.node)));
+    lines << QStringLiteral("Topic: %1").arg(QString::fromStdString(loader_.label(row.wire)));
+    const QString file = QString::fromStdString(store_.text(row.file));
+    const QString function = QString::fromStdString(store_.text(row.function));
     if (!file.isEmpty() || !function.isEmpty()) {
       QString source = file;
       if (row.line > 0) {
@@ -322,9 +327,10 @@ void LogViewerWidget::updateDetail() {
       }
       lines << QStringLiteral("Source: %1").arg(source);
     }
-    text = lines.join(QLatin1Char('\n')) + QStringLiteral("\n\n") + fromStd(row.message);
+    text = lines.join(QLatin1Char('\n')) + QStringLiteral("\n\n") + QString::fromStdString(row.message);
   }
-  if (text != ui_.detailText->toPlainText()) {
+  if (text != detail_text_) {
+    detail_text_ = text;
     ui_.detailText->setPlainText(text);
   }
 }
@@ -379,7 +385,7 @@ void LogViewerWidget::showEvent(QShowEvent* event) {
 }
 
 void LogViewerWidget::autoSizeColumns() {
-  if (columns_fixed_ || auto_sizing_ || model_->rowCount() == 0) {
+  if (columns_fixed_ || model_->rowCount() == 0) {
     return;
   }
   const std::optional<size_t> last = model_->storeIndex(model_->rowCount() - 1);
@@ -396,8 +402,8 @@ void LogViewerWidget::autoSizeColumns() {
     return std::max(body.horizontalAdvance(text) + cell_pad, head.horizontalAdvance(title) + head_pad);
   };
   int level_width = 0;
-  for (Level level : {Level::kDebug, Level::kInfo, Level::kWarning, Level::kError, Level::kFatal, Level::kUnknown}) {
-    level_width = std::max(level_width, body.horizontalAdvance(LogTableModel::levelName(level)));
+  for (const LevelName& name : kLevelNames) {
+    level_width = std::max(level_width, body.horizontalAdvance(LogTableModel::levelName(name.level)));
   }
   const int time_width =
       fit(LogTableModel::formatTime(store_.row(*last).time),
@@ -405,11 +411,11 @@ void LogViewerWidget::autoSizeColumns() {
   level_width = std::max(
       level_width + cell_pad,
       head.horizontalAdvance(model_->headerData(LogTableModel::kLevel, Qt::Horizontal).toString()) + head_pad);
-  auto_sizing_ = true;
+  // Once: later growth of the times does not move the columns under the user (sectionResized sets
+  // columns_fixed_).
   header->resizeSection(LogTableModel::kTime, time_width);
   header->resizeSection(LogTableModel::kLevel, level_width);
-  auto_sizing_ = false;
-  columns_fixed_ = true;  // once: later growth of the times does not move the columns under the user
+  columns_fixed_ = true;
 }
 
 void LogViewerWidget::onRowClicked(const QModelIndex& index) {
@@ -429,13 +435,12 @@ void LogViewerWidget::onRowClicked(const QModelIndex& index) {
 
 ViewState LogViewerWidget::state() const {
   ViewState state;
-  const std::array<const QToolButton*, kToggleLevels.size()> toggles = {
-      ui_.levelDebug, ui_.levelInfo, ui_.levelWarn, ui_.levelError, ui_.levelFatal};
+  const auto toggles = levelToggles();
   for (size_t i = 0; i < toggles.size(); ++i) {
     state.levels[i] = toggles[i]->isChecked();
   }
-  state.node = toStd(ui_.nodeCombo->currentData().toString());
-  state.text = toStd(ui_.filterEdit->text());
+  state.node = ui_.nodeCombo->currentData().toString().toStdString();
+  state.text = ui_.filterEdit->text().toStdString();
   state.hidden_topics = hidden_topics_;
   if (splitter_sized_) {
     const QList<int> sizes = ui_.splitter->sizes();
@@ -448,15 +453,14 @@ ViewState LogViewerWidget::state() const {
 }
 
 void LogViewerWidget::applyState(const ViewState& state) {
-  const std::array<QToolButton*, kToggleLevels.size()> toggles = {
-      ui_.levelDebug, ui_.levelInfo, ui_.levelWarn, ui_.levelError, ui_.levelFatal};
+  const auto toggles = levelToggles();
   for (size_t i = 0; i < toggles.size(); ++i) {
     const QSignalBlocker blocker(toggles[i]);
     toggles[i]->setChecked(state.levels[i]);
   }
   {
     const QSignalBlocker blocker(ui_.nodeCombo);
-    const QString node = fromStd(state.node);
+    const QString node = QString::fromStdString(state.node);
     if (!node.isEmpty() && ui_.nodeCombo->findData(node) < 0) {
       ui_.nodeCombo->addItem(node, node);
     }
@@ -464,7 +468,7 @@ void LogViewerWidget::applyState(const ViewState& state) {
   }
   {
     const QSignalBlocker blocker(ui_.filterEdit);
-    ui_.filterEdit->setText(fromStd(state.text));
+    ui_.filterEdit->setText(QString::fromStdString(state.text));
   }
   hidden_topics_ = state.hidden_topics;
   if (state.columns.size() == column_widths_.size()) {

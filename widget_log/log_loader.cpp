@@ -14,22 +14,37 @@ namespace {
 constexpr double kMinTime = std::numeric_limits<double>::lowest();
 constexpr double kMaxTime = std::numeric_limits<double>::max();
 
-std::string toString(PJ_string_view_t view) {
-  return view.data != nullptr && view.size > 0 ? std::string(view.data, view.size) : std::string();
+bool isLog(const PJ_widget_value_t& value) {
+  return value.kind == PJ_WIDGET_VALUE_OBJECT && PJ::sdk::toStringView(value.type_name) == logTypeName();
 }
 
-Level clampLevel(Level level) {
-  return static_cast<uint8_t>(level) <= static_cast<uint8_t>(Level::kFatal) ? level : Level::kUnknown;
-}
+/// Gathers the rows of one history read and follows the times of the samples it delivers.
+class Collector {
+ public:
+  Collector(LogStore& store, uint64_t& next_seq, size_t expected) : store_(store), next_seq_(next_seq) {
+    rows.reserve(expected);
+  }
 
-/// Follows the times of the samples a read delivers.
-struct TimeTracker {
+  /// Sink of a history read: take every sample.
+  bool operator()(const PJ_widget_value_t& value) {
+    ++delivered;
+    track(value.time);
+    LogRow row;
+    if (decode(value, row)) {
+      rows.push_back(std::move(row));
+    }
+    return true;
+  }
+
+  std::vector<LogRow> rows;
+  size_t delivered = 0;
   bool any = false;
   double first = 0.0;
   double last = 0.0;
   uint32_t at_last = 0;
 
-  void add(double time) {
+ private:
+  void track(double time) {
     if (!any) {
       any = true;
       first = time;
@@ -44,6 +59,30 @@ struct TimeTracker {
       at_last = 1;
     }
   }
+
+  /// Decode one sample into a row; false when it is not a decodable log.
+  bool decode(const PJ_widget_value_t& value, LogRow& row) {
+    if (!isLog(value) || !std::isfinite(value.time)) {
+      return false;
+    }
+    auto log = PJ::deserializeLog(value.bytes.data, value.bytes.size);
+    if (!log) {
+      return false;
+    }
+    row.time = value.time;
+    row.stamp_ns = log->timestamp_ns;
+    row.seq = next_seq_++;
+    row.level = log->level;  // deserializeLog maps unknown wire levels to kUnknown
+    row.node = store_.internNode(log->name);
+    row.file = store_.intern(log->file);
+    row.function = store_.intern(log->function);
+    row.line = log->line;
+    row.message = std::move(log->message);
+    return true;
+  }
+
+  LogStore& store_;
+  uint64_t& next_seq_;
 };
 
 }  // namespace
@@ -52,7 +91,7 @@ std::string_view logTypeName() {
   return PJ::sdk::name(PJ::sdk::BuiltinObjectType::kLog);
 }
 
-SyncResult LogLoader::sync(PJ::Span<const PJ_widget_value_t> values, const HistoryQuery& query) {
+SyncResult LogLoader::sync(PJ::Span<const PJ_widget_value_t> values, const PJ::WidgetHostView& host) {
   SyncResult result{StoreChange::none(store_.size()), false, {}};
 
   std::map<uint32_t, std::string> current;
@@ -61,7 +100,7 @@ SyncResult LogLoader::sync(PJ::Span<const PJ_widget_value_t> values, const Histo
     if (value.input != kInput) {
       continue;
     }
-    std::string label = toString(value.label);
+    std::string label(PJ::sdk::toStringView(value.label));
     if (label.empty()) {
       label = "Topic " + std::to_string(value.slot + 1);
     }
@@ -94,21 +133,19 @@ SyncResult LogLoader::sync(PJ::Span<const PJ_widget_value_t> values, const Histo
     }
     if (!wire.loaded) {
       const auto none = unresolved.find(slot);
-      fullLoad(slot, wire, query, result, none != unresolved.end() && none->second);
+      fullLoad(slot, wire, probe(slot, kMaxTime, host), host, result, none != unresolved.end() && none->second);
     } else {
-      refresh(slot, wire, query, result);
+      refresh(slot, wire, host, result);
     }
   }
   return result;
 }
 
-PJ::Expected<LogLoader::Probe> LogLoader::probe(uint32_t slot, double to, const HistoryQuery& query) const {
+PJ::Expected<LogLoader::Probe> LogLoader::probe(uint32_t slot, double to, const PJ::WidgetHostView& host) {
   Probe out;
-  auto total = query(kInput, slot, kMinTime, to, 1, [&out](const PJ_widget_value_t& value) {
+  auto total = host.queryHistory(kInput, slot, kMinTime, to, 1, [&out](const PJ_widget_value_t& value) {
     out.first_time = value.time;
-    if (value.kind == PJ_WIDGET_VALUE_OBJECT) {
-      out.first_type = toString(value.type_name);
-    }
+    out.first_is_log = isLog(value);
     return false;
   });
   if (!total) {
@@ -119,8 +156,8 @@ PJ::Expected<LogLoader::Probe> LogLoader::probe(uint32_t slot, double to, const 
 }
 
 void LogLoader::fullLoad(
-    uint32_t slot, Wire& wire, const HistoryQuery& query, SyncResult& result, bool value_unresolved) {
-  auto counted = probe(slot, kMaxTime, query);
+    uint32_t slot, Wire& wire, const PJ::Expected<Probe>& counted, const PJ::WidgetHostView& host, SyncResult& result,
+    bool value_unresolved) {
   if (!counted) {
     // A wire whose value is still NONE may not be resolved yet (layout restore): retry on the next update.
     if (!value_unresolved) {
@@ -129,14 +166,13 @@ void LogLoader::fullLoad(
     return;
   }
   wire.loaded = true;
-  wire.complete = true;
-  wire.received = 0;
+  wire.missing = 0;
   wire.host_total = 0;
   if (counted->total == 0) {
     result.change.then(store_.removeWire(slot));
     return;
   }
-  if (counted->first_type != logTypeName()) {
+  if (!counted->first_is_log) {
     wire.is_log = false;
     result.wires_changed = true;
     warnOnce(wire, wire.label + " is not a log topic", result);
@@ -145,51 +181,33 @@ void LogLoader::fullLoad(
   }
 
   ++full_loads_;
-  std::vector<LogRow> rows;
-  rows.reserve(counted->total);
-  TimeTracker times;
-  size_t delivered = 0;
   wire.next_seq = 0;
-  auto total = query(kInput, slot, kMinTime, kMaxTime, counted->total, [&](const PJ_widget_value_t& value) {
-    ++delivered;
-    times.add(value.time);
-    LogRow row;
-    if (decode(value, wire, row)) {
-      rows.push_back(std::move(row));
-    }
-    return true;
-  });
+  Collector collect(store_, wire.next_seq, counted->total);
+  auto total = host.queryHistory(kInput, slot, kMinTime, kMaxTime, counted->total, collect);
   if (!total) {
     wire.loaded = false;
     warnOnce(wire, wire.label + ": cannot read its history: " + total.error(), result);
     return;
   }
-  result.change.then(store_.replaceWire(slot, std::move(rows)));
+  result.change.then(store_.replaceWire(slot, std::move(collect.rows)));
   wire.host_total = *total;
-  wire.host_first = times.first;
-  wire.host_last = times.last;
-  wire.host_at_last = times.at_last;
-  wire.received = delivered;
-  wire.complete = delivered >= *total;
+  wire.host_first = collect.first;
+  wire.host_last = collect.last;
+  wire.host_at_last = collect.at_last;
+  wire.missing = collect.delivered < *total ? *total - collect.delivered : 0;
 }
 
-void LogLoader::refresh(uint32_t slot, Wire& wire, const HistoryQuery& query, SyncResult& result) {
-  if (!wire.complete || wire.host_total == 0) {
+void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& host, SyncResult& result) {
+  auto counted = probe(slot, kMaxTime, host);
+  if (counted && counted->total == wire.host_total && (counted->total == 0 || counted->first_time == wire.host_first)) {
+    return;
+  }
+  if (wire.missing > 0 || wire.host_total == 0) {
     // A reduced history cannot be extended sample by sample, and an empty one has nothing to extend.
-    auto counted = probe(slot, kMaxTime, query);
-    if (counted && counted->total == wire.host_total &&
-        (counted->total == 0 || counted->first_time == wire.host_first)) {
-      return;
-    }
-    fullLoad(slot, wire, query, result);
+    fullLoad(slot, wire, counted, host, result);
     return;
   }
-
-  auto counted = probe(slot, kMaxTime, query);
   if (!counted) {
-    return;
-  }
-  if (counted->total == wire.host_total && counted->first_time == wire.host_first) {
     return;
   }
   if (counted->total == 0) {
@@ -206,20 +224,20 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const HistoryQuery& query, Sy
         store_.wireHasTime(slot, counted->first_time)) {
       evicted = true;
     } else {
-      fullLoad(slot, wire, query, result);
+      fullLoad(slot, wire, counted, host, result);
       return;
     }
   }
 
   // Samples up to the last one held must be exactly those the widget has: more means a late insert.
-  auto up_to_last = probe(slot, wire.host_last, query);
+  auto up_to_last = probe(slot, wire.host_last, host);
   if (!up_to_last) {
     return;
   }
   const size_t expected = evicted ? store_.wireRowsFrom(slot, counted->first_time) : wire.host_total;
   // The second guard keeps `fresh` below from wrapping if the host changed between the two reads.
   if (up_to_last->total != expected || up_to_last->total > counted->total) {
-    fullLoad(slot, wire, query, result);
+    fullLoad(slot, wire, probe(slot, kMaxTime, host), host, result);  // re-count: the host may have changed
     return;
   }
   const uint32_t fresh = counted->total - up_to_last->total;
@@ -234,40 +252,30 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const HistoryQuery& query, Sy
   const uint32_t wanted = fresh + wire.host_at_last;
   uint32_t skip = wire.host_at_last;
   const double held_last = wire.host_last;
-  std::vector<LogRow> rows;
-  rows.reserve(fresh);
-  TimeTracker times;
-  size_t delivered = 0;
-  auto tail = query(kInput, slot, held_last, kMaxTime, wanted, [&](const PJ_widget_value_t& value) {
+  Collector collect(store_, wire.next_seq, fresh);
+  auto tail = host.queryHistory(kInput, slot, held_last, kMaxTime, wanted, [&](const PJ_widget_value_t& value) {
     if (skip > 0 && value.time == held_last) {
       --skip;
       return true;
     }
-    ++delivered;
-    times.add(value.time);
-    LogRow row;
-    if (decode(value, wire, row)) {
-      rows.push_back(std::move(row));
-    }
-    return true;
+    return collect(value);
   });
   if (!tail) {
     return;
   }
   if (*tail != wanted || skip > 0) {
-    fullLoad(slot, wire, query, result);
+    fullLoad(slot, wire, probe(slot, kMaxTime, host), host, result);
     return;
   }
-  result.change.then(store_.insert(slot, std::move(rows)));
+  result.change.then(store_.insert(slot, std::move(collect.rows)));
   wire.host_total = counted->total;
   wire.host_first = counted->first_time;
-  wire.received += delivered;
-  if (delivered < fresh) {
-    wire.complete = false;
+  if (collect.delivered < fresh) {
+    wire.missing += fresh - collect.delivered;
   }
-  if (times.any) {
-    wire.host_last = times.last;
-    wire.host_at_last = times.at_last;
+  if (collect.any) {
+    wire.host_last = collect.last;
+    wire.host_at_last = collect.at_last;
   }
 }
 
@@ -276,27 +284,6 @@ void LogLoader::warnOnce(Wire& wire, std::string message, SyncResult& result) {
     wire.warned = true;
     result.warnings.push_back(std::move(message));
   }
-}
-
-bool LogLoader::decode(const PJ_widget_value_t& value, Wire& wire, LogRow& row) {
-  if (value.kind != PJ_WIDGET_VALUE_OBJECT || toString(value.type_name) != logTypeName() ||
-      !std::isfinite(value.time)) {
-    return false;
-  }
-  auto log = PJ::deserializeLog(value.bytes.data, value.bytes.size);
-  if (!log) {
-    return false;
-  }
-  row.time = value.time;
-  row.stamp_ns = log->timestamp_ns;
-  row.seq = wire.next_seq++;
-  row.level = clampLevel(log->level);
-  row.node = store_.internNode(log->name);
-  row.file = store_.intern(log->file);
-  row.function = store_.intern(log->function);
-  row.line = log->line;
-  row.message = std::move(log->message);
-  return true;
 }
 
 std::vector<WireInfo> LogLoader::wires() const {
@@ -317,7 +304,7 @@ size_t LogLoader::receivedSamples() const {
   size_t sum = 0;
   for (const auto& [slot, wire] : wires_) {
     if (wire.is_log) {
-      sum += wire.complete ? wire.host_total : wire.received;
+      sum += wire.host_total - wire.missing;
     }
   }
   return sum;

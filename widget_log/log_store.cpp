@@ -36,7 +36,7 @@ uint32_t LogStore::intern(std::string_view text) {
   if (text.empty()) {
     return 0;
   }
-  const auto found = string_ids_.find(std::string(text));
+  const auto found = string_ids_.find(text);
   if (found != string_ids_.end()) {
     return found->second;
   }
@@ -60,7 +60,7 @@ std::optional<uint32_t> LogStore::find(std::string_view text) const {
   if (text.empty()) {
     return 0U;
   }
-  const auto found = string_ids_.find(std::string(text));
+  const auto found = string_ids_.find(text);
   if (found == string_ids_.end()) {
     return std::nullopt;
   }
@@ -118,22 +118,6 @@ StoreChange LogStore::replaceWire(uint32_t wire, std::vector<LogRow> rows) {
   StoreChange change = removeWire(wire);
   change.then(insert(wire, std::move(rows)));
   return change;
-}
-
-void LogStore::clear() {
-  rows_.clear();
-  wire_times_.clear();
-}
-
-size_t LogStore::revealCount(double tracker) const {
-  const auto end =
-      std::upper_bound(rows_.begin(), rows_.end(), tracker, [](double t, const LogRow& row) { return t < row.time; });
-  return static_cast<size_t>(std::distance(rows_.begin(), end));
-}
-
-size_t LogStore::wireRowCount(uint32_t wire) const {
-  const auto times = wire_times_.find(wire);
-  return times == wire_times_.end() ? 0 : times->second.size();
 }
 
 bool LogStore::wireHasTime(uint32_t wire, double time) const {

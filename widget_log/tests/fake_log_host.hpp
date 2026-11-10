@@ -45,6 +45,7 @@ class FakeLogHost {
   std::map<uint32_t, Wire> wires;  ///< by slot
   uint32_t default_cap = 10'000;
   uint32_t hard_cap = std::numeric_limits<uint32_t>::max();
+  bool fail_history = false;  ///< every history read fails, as for a wire the host has not resolved yet
   std::vector<PJ::WidgetHistoryQuery> queries;
   std::vector<std::string> warnings;
   PJ::WidgetHostBridge bridge;
@@ -105,7 +106,7 @@ class FakeLogHost {
   PJ::Expected<uint32_t> history(const PJ::WidgetHistoryQuery& query, const PJ::WidgetValueSink& sink) {
     queries.push_back(query);
     const auto found = wires.find(query.slot);
-    if (query.input != 0 || found == wires.end()) {
+    if (fail_history || query.input != 0 || found == wires.end()) {
       return PJ::unexpected(std::string("not wired"));
     }
     const Wire& entry = found->second;

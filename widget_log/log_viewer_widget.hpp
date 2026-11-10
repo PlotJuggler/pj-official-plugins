@@ -35,9 +35,10 @@ class LogViewerWidget : public QWidget {
  public:
   using WarningSink = std::function<void(const std::string& message)>;
 
-  /// @p playback is optional: without it the list always scrolls freely and a click does not seek.
+  /// @p host must outlive the widget. @p playback is optional: without it the list always scrolls freely
+  /// and a click does not seek.
   LogViewerWidget(
-      HistoryQuery query, std::optional<PJ::sdk::PlaybackHostView> playback, WarningSink warn,
+      const PJ::WidgetHostView& host, std::optional<PJ::sdk::PlaybackHostView> playback, WarningSink warn,
       QWidget* parent = nullptr);
 
   void onUpdate(PJ::Span<const PJ_widget_value_t> values, double time);
@@ -51,6 +52,8 @@ class LogViewerWidget : public QWidget {
   void showEvent(QShowEvent* event) override;
 
  private:
+  /// The level toggles, in kToggleLevels order.
+  [[nodiscard]] std::array<QToolButton*, kToggleLevels.size()> levelToggles() const;
   [[nodiscard]] LogFilter currentFilter() const;
   [[nodiscard]] bool isPlaying() const;
   void applyFilters();
@@ -70,7 +73,7 @@ class LogViewerWidget : public QWidget {
   LogStore store_;
   LogLoader loader_{store_};
   LogTableModel* model_ = nullptr;
-  HistoryQuery query_;
+  const PJ::WidgetHostView& host_;
   std::optional<PJ::sdk::PlaybackHostView> playback_;
   WarningSink warn_;
   QTimer text_timer_;
@@ -82,10 +85,13 @@ class LogViewerWidget : public QWidget {
   std::vector<int> pending_splitter_;
   bool splitter_sized_ = false;
   bool columns_fixed_ = false;  ///< saved or user-set widths exist: never auto-size
-  bool auto_sizing_ = false;
 
-  bool have_tracker_ = false;
-  double tracker_ = 0.0;
+  /// The store row the detail pane shows (nullopt: none) and its text; valid while detail_valid_.
+  bool detail_valid_ = false;
+  std::optional<size_t> detail_row_;
+  QString detail_text_;
+
+  std::optional<double> tracker_;
   bool shown_rows_ = false;  ///< the list was positioned on the tracker once since it had rows
   std::optional<double> pending_seek_;
   bool locked_ = false;

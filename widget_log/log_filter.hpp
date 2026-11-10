@@ -6,15 +6,39 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "log_store.hpp"
 
 namespace log_viewer {
 
-/// Levels the user can toggle, in toolbar order. Level::kUnknown has no toggle and is always shown.
-inline constexpr std::array<Level, 5> kToggleLevels = {
-    Level::kDebug, Level::kInfo, Level::kWarning, Level::kError, Level::kFatal};
+/// The spellings of a level: `key` in the saved configuration, `label` on screen.
+struct LevelName {
+  Level level;
+  std::string_view key;
+  std::string_view label;
+};
+
+/// Every level: the ones the user can toggle in toolbar order, then Level::kUnknown, which has no toggle
+/// (it is always shown) and no configuration key.
+inline constexpr std::array<LevelName, 6> kLevelNames = {{
+    {Level::kDebug, "debug", "Debug"},
+    {Level::kInfo, "info", "Info"},
+    {Level::kWarning, "warn", "Warn"},
+    {Level::kError, "error", "Error"},
+    {Level::kFatal, "fatal", "Fatal"},
+    {Level::kUnknown, "", "Unknown"},
+}};
+
+/// Levels the user can toggle, in toolbar order: kLevelNames without kUnknown.
+inline constexpr std::array<Level, kLevelNames.size() - 1> kToggleLevels = [] {
+  std::array<Level, kLevelNames.size() - 1> levels{};
+  for (size_t i = 0; i < levels.size(); ++i) {
+    levels[i] = kLevelNames[i].level;
+  }
+  return levels;
+}();
 
 struct LogFilter {
   /// Indexed by the Level value; kUnknown is ignored (always shown).

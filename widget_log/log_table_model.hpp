@@ -36,7 +36,8 @@ class LogTableModel : public QAbstractTableModel {
 
   /// Re-run the filter over the whole store.
   void setFilter(const LogFilter& filter);
-  /// Follow a store mutation, re-filtering only the rows it touched.
+  /// Follow a store mutation, re-filtering only the rows it touched. The rows it adds are not revealed
+  /// until the next setTracker(), which the caller makes right after.
   void applyStoreChange(const StoreChange& change);
   void setTracker(double tracker);
   void setFutureRows(FutureRows mode);

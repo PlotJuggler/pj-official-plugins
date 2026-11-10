@@ -2,13 +2,13 @@
 #include <QPointer>
 #include <QWidget>
 #include <algorithm>
-#include <array>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/sdk/widget_plugin_base.hpp>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -18,6 +18,8 @@
 namespace {
 
 using log_viewer::FutureRows;
+using log_viewer::kLevelNames;
+using log_viewer::kToggleLevels;
 using log_viewer::ViewState;
 
 // saveConfig keys. They share the load_config object with the manifest settings (`future_rows`), so none
@@ -30,13 +32,11 @@ constexpr const char* kSplitterKey = "splitter_sizes";
 constexpr const char* kColumnsKey = "column_widths";
 constexpr const char* kFutureRowsSetting = "future_rows";
 
-constexpr std::array<const char*, 5> kLevelNames = {"debug", "info", "warn", "error", "fatal"};
-
 nlohmann::json toJson(const ViewState& state) {
   nlohmann::json levels = nlohmann::json::array();
-  for (size_t i = 0; i < kLevelNames.size(); ++i) {
+  for (size_t i = 0; i < kToggleLevels.size(); ++i) {
     if (state.levels[i]) {
-      levels.push_back(kLevelNames[i]);
+      levels.push_back(kLevelNames[i].key);
     }
   }
   return nlohmann::json{
@@ -46,45 +46,36 @@ nlohmann::json toJson(const ViewState& state) {
   };
 }
 
+/// Read the array of strings or integers at @p key into @p out (a std::vector<T>, or a std::optional of
+/// one to learn whether the key is there). An absent or null key leaves @p out alone.
+template <typename T, typename Out>
+PJ::Status readList(const nlohmann::json& config, const char* key, Out& out) {
+  constexpr bool kStrings = std::is_same_v<T, std::string>;
+  const auto found = config.find(key);
+  if (found == config.end() || found->is_null()) {
+    return PJ::okStatus();
+  }
+  const auto wrong_type = [key] {
+    return PJ::unexpected(
+        std::string(key) + (kStrings ? " must be an array of strings" : " must be an array of integers"));
+  };
+  if (!found->is_array()) {
+    return wrong_type();
+  }
+  std::vector<T> values;
+  for (const auto& item : *found) {
+    if (kStrings ? !item.is_string() : !item.is_number_integer()) {
+      return wrong_type();
+    }
+    values.push_back(item.template get<T>());
+  }
+  out = std::move(values);
+  return PJ::okStatus();
+}
+
 /// Lay the state keys present in @p config over @p state. A key of the wrong type is an error.
 PJ::Status readState(const nlohmann::json& config, ViewState& state) {
   ViewState next = state;
-  const auto string_list = [&](const char* key, std::vector<std::string>& out) -> PJ::Status {
-    const auto found = config.find(key);
-    if (found == config.end() || found->is_null()) {
-      return PJ::okStatus();
-    }
-    if (!found->is_array()) {
-      return PJ::unexpected(std::string(key) + " must be an array of strings");
-    }
-    std::vector<std::string> values;
-    for (const auto& item : *found) {
-      if (!item.is_string()) {
-        return PJ::unexpected(std::string(key) + " must be an array of strings");
-      }
-      values.push_back(item.get<std::string>());
-    }
-    out = std::move(values);
-    return PJ::okStatus();
-  };
-  const auto int_list = [&](const char* key, std::vector<int>& out) -> PJ::Status {
-    const auto found = config.find(key);
-    if (found == config.end() || found->is_null()) {
-      return PJ::okStatus();
-    }
-    if (!found->is_array()) {
-      return PJ::unexpected(std::string(key) + " must be an array of integers");
-    }
-    std::vector<int> values;
-    for (const auto& item : *found) {
-      if (!item.is_number_integer()) {
-        return PJ::unexpected(std::string(key) + " must be an array of integers");
-      }
-      values.push_back(item.get<int>());
-    }
-    out = std::move(values);
-    return PJ::okStatus();
-  };
   const auto text = [&](const char* key, std::string& out) -> PJ::Status {
     const auto found = config.find(key);
     if (found == config.end() || found->is_null()) {
@@ -97,19 +88,18 @@ PJ::Status readState(const nlohmann::json& config, ViewState& state) {
     return PJ::okStatus();
   };
 
-  std::vector<std::string> levels;
-  bool has_levels = config.contains(kLevelsKey) && !config.at(kLevelsKey).is_null();
+  std::optional<std::vector<std::string>> levels;
   for (auto status :
-       {string_list(kLevelsKey, levels), text(kNodeKey, next.node), text(kTextKey, next.text),
-        string_list(kHiddenTopicsKey, next.hidden_topics), int_list(kSplitterKey, next.splitter),
-        int_list(kColumnsKey, next.columns)}) {
+       {readList<std::string>(config, kLevelsKey, levels), text(kNodeKey, next.node), text(kTextKey, next.text),
+        readList<std::string>(config, kHiddenTopicsKey, next.hidden_topics),
+        readList<int>(config, kSplitterKey, next.splitter), readList<int>(config, kColumnsKey, next.columns)}) {
     if (!status) {
       return status;
     }
   }
-  if (has_levels) {
-    for (size_t i = 0; i < kLevelNames.size(); ++i) {
-      next.levels[i] = std::find(levels.begin(), levels.end(), kLevelNames[i]) != levels.end();
+  if (levels) {
+    for (size_t i = 0; i < kToggleLevels.size(); ++i) {
+      next.levels[i] = std::find(levels->begin(), levels->end(), kLevelNames[i].key) != levels->end();
     }
   }
   state = std::move(next);
@@ -139,15 +129,10 @@ class LogViewerPlugin : public PJ::WidgetPluginBase {
   }
 
   void* createWidget(void* parent) override {
-    auto query = [this](
-                     uint32_t input, uint32_t slot, double from, double to, uint32_t max_samples,
-                     const log_viewer::HistorySink& sink) {
-      return widgetHost().queryHistory(input, slot, from, to, max_samples, sink);
-    };
     auto warn = [this](const std::string& message) {
       widgetHost().reportWidgetMessage(PJ::WidgetMessageLevel::kWarning, message);
     };
-    auto* widget = new log_viewer::LogViewerWidget(query, playback_, warn, static_cast<QWidget*>(parent));
+    auto* widget = new log_viewer::LogViewerWidget(widgetHost(), playback_, warn, static_cast<QWidget*>(parent));
     widget_ = widget;
     widget->setFutureRows(future_rows_);
     widget->applyState(state_);

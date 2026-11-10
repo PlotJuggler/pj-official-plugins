@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <pj_base/builtin/log.hpp>
@@ -46,9 +47,6 @@ struct StoreChange {
   }
   /// The change of applying @p next after this one, both expressed against the state before this one.
   void then(const StoreChange& next);
-  [[nodiscard]] bool touches(size_t old_size) const {
-    return reset || dropped_front > 0 || old_tail < old_size;
-  }
 };
 
 class LogStore {
@@ -81,7 +79,6 @@ class LogStore {
   StoreChange removeWire(uint32_t wire);
   /// Drop the rows of @p wire and insert @p rows in their place.
   StoreChange replaceWire(uint32_t wire, std::vector<LogRow> rows);
-  void clear();
 
   [[nodiscard]] size_t size() const {
     return rows_.size();
@@ -89,14 +86,6 @@ class LogStore {
   [[nodiscard]] const LogRow& row(size_t index) const {
     return rows_[index];
   }
-  [[nodiscard]] size_t capacity() const {
-    return capacity_;
-  }
-
-  /// Number of rows with time <= @p tracker (they form a prefix).
-  [[nodiscard]] size_t revealCount(double tracker) const;
-
-  [[nodiscard]] size_t wireRowCount(uint32_t wire) const;
   /// Whether one of the rows of @p wire has exactly @p time.
   [[nodiscard]] bool wireHasTime(uint32_t wire, double time) const;
   /// Rows of @p wire with time >= @p time.
@@ -111,7 +100,15 @@ class LogStore {
   std::map<uint32_t, std::deque<double>> wire_times_;
 
   std::vector<std::string> strings_;
-  std::unordered_map<std::string, uint32_t> string_ids_;
+  /// Hashes std::string and std::string_view alike, so a lookup does not build a std::string.
+  struct StringHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view text) const noexcept {
+      return std::hash<std::string_view>{}(text);
+    }
+  };
+
+  std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> string_ids_;
   std::vector<bool> is_node_;
   std::vector<uint32_t> nodes_;
 };

@@ -44,21 +44,10 @@ LogTableModel::LogTableModel(
       tracker_(std::numeric_limits<double>::max()) {}
 
 QString LogTableModel::levelName(Level level) {
-  switch (level) {
-    case Level::kDebug:
-      return QStringLiteral("Debug");
-    case Level::kInfo:
-      return QStringLiteral("Info");
-    case Level::kWarning:
-      return QStringLiteral("Warn");
-    case Level::kError:
-      return QStringLiteral("Error");
-    case Level::kFatal:
-      return QStringLiteral("Fatal");
-    case Level::kUnknown:
-      break;
-  }
-  return QStringLiteral("Unknown");
+  const auto found = std::find_if(
+      kLevelNames.begin(), kLevelNames.end(), [level](const LevelName& name) { return name.level == level; });
+  const std::string_view label = (found != kLevelNames.end() ? *found : kLevelNames.back()).label;
+  return QString::fromLatin1(label.data(), static_cast<qsizetype>(label.size()));
 }
 
 QString LogTableModel::formatTime(double time) {
@@ -172,14 +161,14 @@ void LogTableModel::applyStoreChange(const StoreChange& change) {
   const auto kept = static_cast<size_t>(std::distance(filtered_.begin(), tail));
   if (kept < filtered_.size()) {
     const int visible = visibleCount();
-    if (static_cast<int>(kept) < visible) {
+    const bool notify = static_cast<int>(kept) < visible;
+    if (notify) {
       beginRemoveRows(QModelIndex(), static_cast<int>(kept), visible - 1);
-      filtered_.resize(kept);
-      revealed_ = std::min(revealed_, kept);
+    }
+    filtered_.resize(kept);
+    revealed_ = std::min(revealed_, kept);
+    if (notify) {
       endRemoveRows();
-    } else {
-      filtered_.resize(kept);
-      revealed_ = std::min(revealed_, kept);
     }
   }
 
@@ -201,21 +190,25 @@ void LogTableModel::applyStoreChange(const StoreChange& change) {
     }
   }
 
-  // 3. New rows.
+  // 3. New rows, not revealed yet: setTracker() settles the revealed prefix.
   const size_t start = change.old_tail > change.dropped_front ? change.old_tail - change.dropped_front : 0;
+  if (start >= store_.size()) {
+    return;
+  }
   std::vector<uint32_t> added;
   CompiledFilter(filter_, store_).collect(store_, start, store_.size(), added);
-  if (!added.empty()) {
-    if (future_rows_ == FutureRows::kGrey) {
-      const int first = static_cast<int>(filtered_.size());
-      beginInsertRows(QModelIndex(), first, first + static_cast<int>(added.size()) - 1);
-      filtered_.insert(filtered_.end(), added.begin(), added.end());
-      endInsertRows();
-    } else {
-      filtered_.insert(filtered_.end(), added.begin(), added.end());
-    }
+  if (added.empty()) {
+    return;
   }
-  updateRevealed();
+  const bool notify = future_rows_ == FutureRows::kGrey;
+  if (notify) {
+    const int first = static_cast<int>(filtered_.size());
+    beginInsertRows(QModelIndex(), first, first + static_cast<int>(added.size()) - 1);
+  }
+  filtered_.insert(filtered_.end(), added.begin(), added.end());
+  if (notify) {
+    endInsertRows();
+  }
 }
 
 void LogTableModel::setTracker(double tracker) {

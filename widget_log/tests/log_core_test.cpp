@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <limits>
 #include <pj_plugins/sdk/widget_plugin_base.hpp>
 #include <string>
 #include <vector>
@@ -41,6 +42,11 @@ std::vector<double> times(const LogStore& store) {
   return out;
 }
 
+/// Rows the store holds for @p wire, by its per-wire index.
+size_t wireRows(const LogStore& store, uint32_t wire) {
+  return store.wireRowsFrom(wire, std::numeric_limits<double>::lowest());
+}
+
 // ---------------------------------------------------------------------------------------------- store
 
 TEST(LogStore, EqualTimesOrderByWireThenArrival) {
@@ -56,15 +62,17 @@ TEST(LogStore, EqualTimesOrderByWireThenArrival) {
 
 TEST(LogStore, RevealCountAtTheEdges) {
   LogStore store;
-  EXPECT_EQ(store.revealCount(10.0), 0u);
+  std::vector<uint32_t> all;
+  EXPECT_EQ(log_viewer::revealedCount(store, all, 10.0), 0u);
   store.insert(0, {row(1.0, 0), row(2.0, 1), row(2.0, 2), row(3.0, 3)});
-  EXPECT_EQ(store.revealCount(0.5), 0u);
-  EXPECT_EQ(store.revealCount(1.0), 1u);
-  EXPECT_EQ(store.revealCount(1.5), 1u);
-  EXPECT_EQ(store.revealCount(2.0), 3u);
-  EXPECT_EQ(store.revealCount(3.0), 4u);
-  EXPECT_EQ(store.revealCount(1e300), 4u);
-  EXPECT_EQ(store.revealCount(-1e300), 0u);
+  all = {0, 1, 2, 3};
+  EXPECT_EQ(log_viewer::revealedCount(store, all, 0.5), 0u);
+  EXPECT_EQ(log_viewer::revealedCount(store, all, 1.0), 1u);
+  EXPECT_EQ(log_viewer::revealedCount(store, all, 1.5), 1u);
+  EXPECT_EQ(log_viewer::revealedCount(store, all, 2.0), 3u);
+  EXPECT_EQ(log_viewer::revealedCount(store, all, 3.0), 4u);
+  EXPECT_EQ(log_viewer::revealedCount(store, all, 1e300), 4u);
+  EXPECT_EQ(log_viewer::revealedCount(store, all, -1e300), 0u);
 }
 
 TEST(LogStore, RemoveWireKeepsTheOthers) {
@@ -74,8 +82,8 @@ TEST(LogStore, RemoveWireKeepsTheOthers) {
   const auto change = store.removeWire(0);
   EXPECT_EQ(change.old_tail, 0u);
   EXPECT_EQ(times(store), (std::vector<double>{2.0, 4.0}));
-  EXPECT_EQ(store.wireRowCount(0), 0u);
-  EXPECT_EQ(store.wireRowCount(1), 2u);
+  EXPECT_EQ(wireRows(store, 0), 0u);
+  EXPECT_EQ(wireRows(store, 1), 2u);
 }
 
 TEST(LogStore, CapacityDropsTheOldest) {
@@ -85,13 +93,12 @@ TEST(LogStore, CapacityDropsTheOldest) {
   EXPECT_EQ(change.dropped_front, 2u);
   EXPECT_EQ(change.old_tail, 3u);
   EXPECT_EQ(times(store), (std::vector<double>{3.0, 4.0, 5.0, 6.0, 7.0}));
-  EXPECT_EQ(store.wireRowCount(0), 1u);
-  EXPECT_EQ(store.wireRowCount(1), 4u);
+  EXPECT_EQ(wireRows(store, 0), 1u);
+  EXPECT_EQ(wireRows(store, 1), 4u);
 }
 
 TEST(LogStore, DefaultCapacityIsOneMillion) {
   LogStore store;
-  EXPECT_EQ(store.capacity(), 1'000'000u);
   std::vector<LogRow> rows;
   rows.reserve(1'000'010);
   for (uint64_t i = 0; i < 1'000'010; ++i) {
@@ -118,17 +125,11 @@ TEST(LogStore, ChangesCompose) {
 
 class LogLoaderTest : public ::testing::Test {
  protected:
-  LogLoaderTest() : view_(host_.bridge.host()) {
-    query_ = [this](
-                 uint32_t input, uint32_t slot, double from, double to, uint32_t max_samples,
-                 const log_viewer::HistorySink& sink) {
-      return view_.queryHistory(input, slot, from, to, max_samples, sink);
-    };
-  }
+  LogLoaderTest() : view_(host_.bridge.host()) {}
 
   log_viewer::SyncResult sync(double tracker = 1e9) {
     const auto values = host_.values(tracker);
-    return loader_.sync(PJ::Span<const PJ_widget_value_t>(values.data(), values.size()), query_);
+    return loader_.sync(PJ::Span<const PJ_widget_value_t>(values.data(), values.size()), view_);
   }
 
   void fill(uint32_t slot, const std::vector<double>& at) {
@@ -139,7 +140,6 @@ class LogLoaderTest : public ::testing::Test {
 
   FakeLogHost host_;
   PJ::WidgetHostView view_;
-  log_viewer::HistoryQuery query_;
   LogStore store_;
   LogLoader loader_{store_};
 };
@@ -282,18 +282,14 @@ TEST_F(LogLoaderTest, NonLogWireWarnsOnceAndShowsNothing) {
 TEST_F(LogLoaderTest, UnresolvedWireDoesNotWarnWhileItsValueIsNone) {
   host_.wire(0, "/rosout");
   fill(0, {1.0, 2.0});
-  const log_viewer::HistoryQuery failing = [](uint32_t, uint32_t, double, double, uint32_t,
-                                              const log_viewer::HistorySink&) -> PJ::Expected<uint32_t> {
-    return PJ::unexpected(std::string("input 0 slot 0 is not wired"));
-  };
+  host_.fail_history = true;
   // Tracker before the first sample: the wire's value is NONE.
-  const auto none_values = host_.values(0.5);
-  ASSERT_EQ(none_values[0].kind, PJ_WIDGET_VALUE_NONE);
-  const PJ::Span<const PJ_widget_value_t> none_span(none_values.data(), none_values.size());
-  EXPECT_TRUE(loader_.sync(none_span, failing).warnings.empty());
-  EXPECT_TRUE(loader_.sync(none_span, failing).warnings.empty());
+  ASSERT_EQ(host_.values(0.5)[0].kind, PJ_WIDGET_VALUE_NONE);
+  EXPECT_TRUE(sync(0.5).warnings.empty());
+  EXPECT_TRUE(sync(0.5).warnings.empty());
   EXPECT_EQ(store_.size(), 0u);
   // The wire resolves: the next update loads it.
+  host_.fail_history = false;
   sync();
   EXPECT_EQ(store_.size(), 2u);
   EXPECT_TRUE(host_.warnings.empty());
@@ -302,17 +298,12 @@ TEST_F(LogLoaderTest, UnresolvedWireDoesNotWarnWhileItsValueIsNone) {
 TEST_F(LogLoaderTest, FailingHistoryWithAValueWarnsOnce) {
   host_.wire(0, "/rosout");
   fill(0, {1.0, 2.0});
-  const log_viewer::HistoryQuery failing = [](uint32_t, uint32_t, double, double, uint32_t,
-                                              const log_viewer::HistorySink&) -> PJ::Expected<uint32_t> {
-    return PJ::unexpected(std::string("input 0 slot 0 is not wired"));
-  };
-  const auto values = host_.values(1e9);
-  ASSERT_NE(values[0].kind, PJ_WIDGET_VALUE_NONE);
-  const PJ::Span<const PJ_widget_value_t> span(values.data(), values.size());
-  const auto first = loader_.sync(span, failing);
+  host_.fail_history = true;
+  ASSERT_NE(host_.values(1e9)[0].kind, PJ_WIDGET_VALUE_NONE);
+  const auto first = sync();
   ASSERT_EQ(first.warnings.size(), 1u);
   EXPECT_NE(first.warnings[0].find("cannot read its history"), std::string::npos);
-  EXPECT_TRUE(loader_.sync(span, failing).warnings.empty());
+  EXPECT_TRUE(sync().warnings.empty());
 }
 
 TEST_F(LogLoaderTest, VanishedWireDropsItsRows) {
