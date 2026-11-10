@@ -50,7 +50,7 @@ class PjOfficialPluginsConan(ConanFile):
         "liblsl/1.16.2",
         # data_load_mp4 / data_load_lerobot (via common/pj_video_demux).
         "ffmpeg/8.1.2",
-        "kissfft/131.1.0",
+        "pocketfft/0.0.0.cci.20240801",
         "lua/5.4.6",
         "sol2/3.5.0",
         # libcurl powers anomaly_runner's notification sinks. (pj_scripting_core — the
@@ -85,6 +85,7 @@ class PjOfficialPluginsConan(ConanFile):
         "boost/*:without_test": True,
         "boost/*:without_cobalt": True,
         "lua/*:compile_as_cpp": True,
+        "pocketfft/*:multithreading": False,
         # WebRTC streaming client (data_stream_webrtc): media/SRTP/WebSocket on,
         # libnice off (use the bundled libjuice ICE agent).
         "libdatachannel/*:with_websocket": True,

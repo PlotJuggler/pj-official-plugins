@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -151,6 +152,23 @@ TEST(FftAlgorithmTest, RejectsInvalidSamplingAndValues) {
   values[8] = std::numeric_limits<double>::quiet_NaN();
   computation = PJ::fft::computeFft(timestamps.data(), values.data(), values.size(), false);
   EXPECT_EQ(computation.error, PJ::fft::FftError::kNonFiniteValue);
+}
+
+TEST(FftAlgorithmTest, PrimeHalfLengthStaysFastAndExact) {
+  // n/2 = 100003 is prime: an O(n*p) backend (the old kissfft) took ~14 s here.
+  constexpr std::size_t count = 200006;
+  constexpr std::size_t bin = 20001;
+  auto timestamps = regularTimestamps(count);
+  auto values = sinusoid(count, static_cast<double>(bin) * kSampleRateHz / static_cast<double>(count), 10.0);
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto computation = PJ::fft::computeFft(
+      timestamps.data(), values.data(), values.size(), false, PJ::fft::WindowFunction::kRectangular);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  ASSERT_TRUE(computation) << computation.message;
+  EXPECT_NEAR(computation.result.amplitudes[bin], 10.0, 1e-9);
+  EXPECT_LT(elapsed, std::chrono::seconds(2));
 }
 
 TEST(FftAlgorithmTest, DropsOneTrailingSampleForOddInput) {

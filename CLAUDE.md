@@ -200,7 +200,7 @@ Plugins with UI subclass `PJ::DialogPluginTyped` and use real `.ui` files (Qt Cr
 | Source | Packages |
 |--------|----------|
 | Conan (JFrog), source fallback via `scripts/ensure_core.sh` | plotjuggler_sdk (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
-| Conan (JFrog cache → ConanCenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, kissfft, lua, sol2, libsodium, gtest, libcurl (`anomaly_runner` webhook/email notifications) |
+| Conan (JFrog cache → ConanCenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, pocketfft, lua, sol2, libsodium, gtest, libcurl (`anomaly_runner` webhook/email notifications) |
 | Conan (JFrog) | pj_scripting_core (the shared Luau marker engine; carries Luau + kissfft) — linked by the Anomaly Detector toolbox + `anomaly_runner` |
 | CPM | ulog_cpp, rosx_introspection, data_tamer (plugin-private deps only) |
 | Optional | Qt 6 (WebSockets, Network) — only for foxglove_bridge and pj_bridge |

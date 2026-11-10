@@ -3,6 +3,16 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_fft/`.
 
+## [1.1.0] - 2026-11-10
+
+### Changed
+- The spectrum is computed in double precision (was single precision), so small peaks next to large ones are no longer
+  lost in rounding noise.
+
+### Fixed
+- Selections whose sample count has a large prime factor no longer freeze the panel: a 200,006-sample selection that
+  took about 14 seconds now takes milliseconds, and every selection size runs in comparable time.
+
 ## [1.0.2] - 2026-11-01
 
 ### Fixed

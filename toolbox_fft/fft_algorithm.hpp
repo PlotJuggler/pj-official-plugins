@@ -18,7 +18,6 @@ enum class FftError {
   kInvalidTimestamps,
   kIrregularSampling,
   kNonFiniteValue,
-  kInputTooLarge,
   kAllocationFailed,
 };
 

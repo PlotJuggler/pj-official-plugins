@@ -1,17 +1,15 @@
 #include "fft_algorithm.hpp"
 
+#include <pocketfft_hdronly.h>
+
 #include <algorithm>
-#include <climits>
 #include <cmath>
 #include <iomanip>
 #include <limits>
+#include <new>
 #include <numbers>
 #include <sstream>
 #include <utility>
-
-extern "C" {
-#include <kissfft/kiss_fftr.h>
-}
 
 namespace PJ::fft {
 namespace {
@@ -44,10 +42,7 @@ FftComputation computeFft(
 
   std::size_t n = count;
   if ((n & 1U) != 0U) {
-    --n;  // kiss_fftr requires an even input length.
-  }
-  if (n > static_cast<std::size_t>(INT_MAX)) {
-    return failure(FftError::kInputTooLarge, "Input is too large for the FFT backend");
+    --n;  // An even length keeps an exact Nyquist bin at the end of the spectrum.
   }
 
   long double span_ns = 0.0L;
@@ -91,25 +86,24 @@ FftComputation computeFft(
     average /= static_cast<long double>(n);
   }
 
-  std::vector<kiss_fft_scalar> input(n);
+  std::vector<double> input(n);
   long double coherent_sum = 0.0L;
   for (std::size_t i = 0; i < n; ++i) {
     const double weight = windowWeight(window, i, n);
     coherent_sum += static_cast<long double>(weight);
-    input[i] = static_cast<kiss_fft_scalar>((static_cast<long double>(values[i]) - average) * weight);
+    input[i] = static_cast<double>((static_cast<long double>(values[i]) - average) * weight);
   }
   if (!(coherent_sum > std::numeric_limits<long double>::epsilon())) {
     return failure(FftError::kAllocationFailed, "FFT window has zero coherent gain");
   }
 
-  std::vector<kiss_fft_cpx> output(n / 2 + 1);
-  kiss_fftr_cfg config = kiss_fftr_alloc(static_cast<int>(n), 0, nullptr, nullptr);
-  if (config == nullptr) {
+  try {
+    // pocketfft stays O(n log n) for any n (Bluestein for large prime factors). In place, the
+    // output is FFTPACK half-complex: re0, re1, im1, ..., re(n/2-1), im(n/2-1), re(n/2) (n even).
+    pocketfft::detail::pocketfft_r<double>(n).exec(input.data(), 1.0, true);
+  } catch (const std::bad_alloc&) {
     return failure(FftError::kAllocationFailed, "FFT backend allocation failed");
   }
-
-  kiss_fftr(config, input.data(), output.data());
-  KISS_FFT_FREE(config);
 
   FftComputation computation;
   auto& result = computation.result;
@@ -122,9 +116,11 @@ FftComputation computeFft(
   const double coherent_gain = static_cast<double>(coherent_sum);
   for (std::size_t i = 0; i <= n / 2; ++i) {
     result.frequencies_hz.push_back(static_cast<double>(i) * sample_rate_hz / static_cast<double>(n));
-    double amplitude = std::hypot(static_cast<double>(output[i].r), static_cast<double>(output[i].i)) / coherent_gain;
-    if (i != 0 && i != n / 2) {
-      amplitude *= 2.0;
+    double amplitude = 0.0;
+    if (i == 0 || i == n / 2) {
+      amplitude = std::abs(input[i == 0 ? 0 : n - 1]) / coherent_gain;
+    } else {
+      amplitude = 2.0 * std::hypot(input[2 * i - 1], input[2 * i]) / coherent_gain;
     }
     result.amplitudes.push_back(amplitude);
   }
