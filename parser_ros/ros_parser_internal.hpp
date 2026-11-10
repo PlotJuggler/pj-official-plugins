@@ -452,6 +452,10 @@ class RosParser : public PJ::MessageParserPluginBase {
   // builtin_interfaces/Time (not a Header), then frame_id, then the poses.
   PJ::Expected<PJ::sdk::ObjectRecord> parseFoxglovePosesInFrame(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // rcl_interfaces/Log (ROS 2) and rosgraph_msgs/Log (ROS 1) -> sdk::Log. Dual
+  // route: keeps the generic scalar flatten alongside the object.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseLogObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // geometry_msgs/PoseStamped -> sdk::PosesInFrame (single element). Dual route:
   // keeps its per-axis scalar flatten (handlePoseStamped) alongside the object.
   PJ::Expected<PJ::sdk::ObjectRecord> parsePoseStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);

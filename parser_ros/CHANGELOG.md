@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
+## [1.4.0] - 2026-11-10
+
+### Added
+- ROS 2 `rcl_interfaces/msg/Log` and ROS 1 `rosgraph_msgs/Log` messages are
+  published as log objects (level, text, node name, file, function, line) for the
+  log viewer. The scalar columns (`level`, `line`, ...) are still emitted.
+
 ## [1.3.1] - 2026-11-03
 
 ### Fixed

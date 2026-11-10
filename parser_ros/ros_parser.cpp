@@ -246,6 +246,17 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsGeneric,
         .parse_object = &RosParser::parseLaserScan}},
+      // Log messages feed the log viewer as sdk::Log objects; the scalar route
+      // keeps the generic flatten so level/line/... stay plottable. Keys are
+      // normalised ("/msg/" stripped), so rcl_interfaces/msg/Log matches too.
+      {"rcl_interfaces/Log",
+       {.object_type = ObjectType::kLog,
+        .parse_scalars = &RosParser::parseScalarsGeneric,
+        .parse_object = &RosParser::parseLogObject}},
+      {"rosgraph_msgs/Log",
+       {.object_type = ObjectType::kLog,
+        .parse_scalars = &RosParser::parseScalarsGeneric,
+        .parse_object = &RosParser::parseLogObject}},
       // foxglove_msgs/CompressedPointCloud — opaque compressed cloud (draco/cloudini/…).
       // The parser repackages the blob + format; it does not decode. Its scalar
       // route reads the BARE builtin_interfaces/Time head (this schema has no
