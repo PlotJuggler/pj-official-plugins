@@ -36,6 +36,11 @@
  */
 
 #include <dlfcn.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+
+#include <cstdint>
+#endif
 
 #include <array>
 #include <cstdio>
@@ -181,6 +186,32 @@ bool distroDirectoryExists(std::string_view distro) {
   return std::filesystem::exists("/opt/ros/" + std::string(distro) + "/setup.bash");
 }
 
+// The running executable, symlinks resolved.
+std::optional<std::filesystem::path> executablePath() {
+  std::error_code ec;
+#if defined(__APPLE__)
+  std::uint32_t size = 0;
+  _NSGetExecutablePath(nullptr, &size);
+  std::string buffer(size, '\0');
+  if (_NSGetExecutablePath(buffer.data(), &size) != 0) {
+    return std::nullopt;
+  }
+  auto exe = std::filesystem::canonical(buffer.c_str(), ec);
+#else
+  auto exe = std::filesystem::canonical("/proc/self/exe", ec);
+#endif
+  if (ec) {
+    return std::nullopt;
+  }
+  return exe;
+}
+
+#if defined(__APPLE__)
+constexpr std::string_view kRclcppLibrary = "librclcpp.dylib";
+#else
+constexpr std::string_view kRclcppLibrary = "librclcpp.so";
+#endif
+
 // The conda environment PlotJuggler runs from, when that environment holds
 // rclcpp (RoboStack). Keyed on the executable, not on CONDA_PREFIX: the
 // RoboStack payload resolves its ROS libraries through the executable's
@@ -188,12 +219,12 @@ bool distroDirectoryExists(std::string_view distro) {
 // the environment that provides them.
 std::optional<std::filesystem::path> roboStackEnvironment() {
   std::error_code ec;
-  const auto exe = std::filesystem::canonical("/proc/self/exe", ec);
-  if (ec) {
+  const auto exe = executablePath();
+  if (!exe) {
     return std::nullopt;
   }
-  auto env = exe.parent_path().parent_path();
-  if (!std::filesystem::exists(env / "lib" / "librclcpp.so", ec)) {
+  auto env = exe->parent_path().parent_path();
+  if (!std::filesystem::exists(env / "lib" / kRclcppLibrary, ec)) {
     return std::nullopt;
   }
   return env;
@@ -276,7 +307,7 @@ void loadInnerImpl(
     g_last_error = "ROS 2 distribution '" + *distro + "'" + (robostack ? " (RoboStack)" : "") +
                    " is installed but no matching binary is shipped in this extension. "
                    "Supported: " +
-                   supportedDistrosList() + (robostack ? "; with RoboStack: jazzy, kilted." : ".");
+                   supportedDistrosList() + (robostack ? "; with RoboStack: jazzy, kilted, lyrical." : ".");
     return;
   }
 

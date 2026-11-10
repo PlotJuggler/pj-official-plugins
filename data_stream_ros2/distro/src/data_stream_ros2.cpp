@@ -46,7 +46,7 @@ struct PendingMessage {
   // Hold the rclcpp::SerializedMessage shared_ptr so its rcl buffer survives
   // any deferred FetchMessageData pull the host issues. The same shared_ptr
   // is forwarded as the PayloadView anchor at push time.
-  std::shared_ptr<rclcpp::SerializedMessage> msg;
+  std::shared_ptr<const rclcpp::SerializedMessage> msg;
   int64_t timestamp_ns;
 };
 
@@ -241,7 +241,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
   }
 
  private:
-  void enqueueMessage(const std::string& topic, std::shared_ptr<rclcpp::SerializedMessage> msg) {
+  void enqueueMessage(const std::string& topic, std::shared_ptr<const rclcpp::SerializedMessage> msg) {
     if (!msg) {
       return;
     }
@@ -364,7 +364,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
           "No publishers visible for " + topic + " within discovery timeout — using default QoS");
     }
 
-    auto callback = [this, topic](std::shared_ptr<rclcpp::SerializedMessage> msg) {
+    auto callback = [this, topic](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
       enqueueMessage(topic, std::move(msg));
     };
 
