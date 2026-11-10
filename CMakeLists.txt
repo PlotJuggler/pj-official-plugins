@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.22)
 # or pass -DPJ_BUILD_ANOMALY_RUNNER=ON.
 option(PJ_BUILD_ANOMALY_RUNNER "Build the headless anomaly_runner CLI (needs pj_scripting_core)" OFF)
 
-# Widget-family libraries (widget_basic) link Qt, which the aggregate build and its Conan closure do
+# Widget-family libraries (widget_basic, widget_log) link Qt, which the aggregate build and its Conan closure do
 # not provide: they build only with -DPJ_BUILD_WIDGETS=ON (and Qt on the prefix path), or alone via
 # `./build.sh widget_basic`.
 option(PJ_BUILD_WIDGETS "Build the Qt-linking Widget-family plugins (needs the official Qt)" OFF)
@@ -86,6 +86,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(toolbox_assistant_agent)
   if(PJ_BUILD_WIDGETS)
     add_subdirectory(widget_basic)
+    add_subdirectory(widget_log)
   endif()
   return()
 endif()
@@ -278,5 +279,6 @@ else()
   add_subdirectory(toolbox_assistant_agent)
   if(PJ_BUILD_WIDGETS)
     add_subdirectory(widget_basic)
+    add_subdirectory(widget_log)
   endif()
 endif()

@@ -1,0 +1,271 @@
+#include "log_table_model.hpp"
+
+#include <QColor>
+#include <QFont>
+#include <QPalette>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <utility>
+
+namespace log_viewer {
+
+namespace {
+
+// Level colours: fixed, so warn and error read the same in a light and a dark theme (the values of
+// widget_basic's warnColor()/badColor()). Every other colour comes from the palette.
+QColor warnColor() {
+  return QColor(224, 160, 16);
+}
+
+QColor errorColor() {
+  return QColor(214, 56, 56);
+}
+
+QString firstLine(const std::string& message) {
+  size_t end = message.find('\n');
+  if (end == std::string::npos) {
+    end = message.size();
+  }
+  if (end > 0 && message[end - 1] == '\r') {
+    --end;
+  }
+  return QString::fromUtf8(message.data(), static_cast<qsizetype>(end));
+}
+
+}  // namespace
+
+LogTableModel::LogTableModel(
+    const LogStore& store, std::function<QString(uint32_t wire)> topic_label, QWidget* palette_source, QObject* parent)
+    : QAbstractTableModel(parent),
+      store_(store),
+      topic_label_(std::move(topic_label)),
+      palette_source_(palette_source),
+      tracker_(std::numeric_limits<double>::max()) {}
+
+QString LogTableModel::levelName(Level level) {
+  switch (level) {
+    case Level::kDebug:
+      return QStringLiteral("Debug");
+    case Level::kInfo:
+      return QStringLiteral("Info");
+    case Level::kWarning:
+      return QStringLiteral("Warn");
+    case Level::kError:
+      return QStringLiteral("Error");
+    case Level::kFatal:
+      return QStringLiteral("Fatal");
+    case Level::kUnknown:
+      break;
+  }
+  return QStringLiteral("Unknown");
+}
+
+int LogTableModel::visibleCount() const {
+  return static_cast<int>(future_rows_ == FutureRows::kGrey ? filtered_.size() : revealed_);
+}
+
+int LogTableModel::rowCount(const QModelIndex& parent) const {
+  return parent.isValid() ? 0 : visibleCount();
+}
+
+int LogTableModel::columnCount(const QModelIndex& parent) const {
+  return parent.isValid() ? 0 : kColumnCount;
+}
+
+QVariant LogTableModel::data(const QModelIndex& index, int role) const {
+  if (!index.isValid() || index.row() < 0 || static_cast<size_t>(index.row()) >= filtered_.size()) {
+    return {};
+  }
+  const size_t store_index = filtered_[static_cast<size_t>(index.row())];
+  if (store_index >= store_.size()) {
+    return {};
+  }
+  const LogRow& row = store_.row(store_index);
+  switch (role) {
+    case Qt::DisplayRole:
+      switch (index.column()) {
+        case kTime:
+          return QString::number(row.time, 'f', 3);
+        case kLevel:
+          return levelName(row.level);
+        case kNode:
+          return QString::fromStdString(store_.text(row.node));
+        case kTopic:
+          return topic_label_ ? topic_label_(row.wire) : QString();
+        case kMessage:
+          return firstLine(row.message);
+        default:
+          return {};
+      }
+    case Qt::ForegroundRole:
+      if (static_cast<size_t>(index.row()) >= revealed_) {
+        return palette_source_ ? palette_source_->palette().color(QPalette::PlaceholderText) : QColor(Qt::gray);
+      }
+      if (row.level == Level::kWarning) {
+        return warnColor();
+      }
+      if (row.level == Level::kError || row.level == Level::kFatal) {
+        return errorColor();
+      }
+      return {};
+    case Qt::FontRole:
+      if (row.level == Level::kFatal && palette_source_) {
+        QFont font = palette_source_->font();
+        font.setBold(true);
+        return font;
+      }
+      return {};
+    case Qt::TextAlignmentRole:
+      if (index.column() == kTime) {
+        return QVariant::fromValue(Qt::AlignRight | Qt::AlignVCenter);
+      }
+      return {};
+    default:
+      return {};
+  }
+}
+
+QVariant LogTableModel::headerData(int section, Qt::Orientation orientation, int role) const {
+  if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
+    return {};
+  }
+  switch (section) {
+    case kTime:
+      return QStringLiteral("Time");
+    case kLevel:
+      return QStringLiteral("Level");
+    case kNode:
+      return QStringLiteral("Node");
+    case kTopic:
+      return QStringLiteral("Topic");
+    case kMessage:
+      return QStringLiteral("Message");
+    default:
+      return {};
+  }
+}
+
+void LogTableModel::setFilter(const LogFilter& filter) {
+  beginResetModel();
+  filter_ = filter;
+  filtered_.clear();
+  CompiledFilter(filter_, store_).collect(store_, 0, store_.size(), filtered_);
+  revealed_ = revealedCount(store_, filtered_, tracker_);
+  endResetModel();
+}
+
+void LogTableModel::applyStoreChange(const StoreChange& change) {
+  if (change.reset) {
+    setFilter(filter_);
+    return;
+  }
+  // The store has already changed. Removal signals go first, while the remaining entries still point
+  // at rows that exist; data() also guards the store bounds for the moment in between.
+
+  // 1. Rows removed or replaced at the tail.
+  const auto tail = std::lower_bound(filtered_.begin(), filtered_.end(), change.old_tail);
+  const auto kept = static_cast<size_t>(std::distance(filtered_.begin(), tail));
+  if (kept < filtered_.size()) {
+    const int visible = visibleCount();
+    if (static_cast<int>(kept) < visible) {
+      beginRemoveRows(QModelIndex(), static_cast<int>(kept), visible - 1);
+      filtered_.resize(kept);
+      revealed_ = std::min(revealed_, kept);
+      endRemoveRows();
+    } else {
+      filtered_.resize(kept);
+      revealed_ = std::min(revealed_, kept);
+    }
+  }
+
+  // 2. Rows evicted at the front.
+  if (change.dropped_front > 0) {
+    const auto front = std::lower_bound(filtered_.begin(), filtered_.end(), change.dropped_front);
+    const auto gone = static_cast<size_t>(std::distance(filtered_.begin(), front));
+    const size_t visible_gone = future_rows_ == FutureRows::kGrey ? gone : std::min(gone, revealed_);
+    if (visible_gone > 0) {
+      beginRemoveRows(QModelIndex(), 0, static_cast<int>(visible_gone) - 1);
+    }
+    filtered_.erase(filtered_.begin(), front);
+    revealed_ -= std::min(gone, revealed_);
+    for (auto& index : filtered_) {
+      index -= static_cast<uint32_t>(change.dropped_front);
+    }
+    if (visible_gone > 0) {
+      endRemoveRows();
+    }
+  }
+
+  // 3. New rows.
+  const size_t start = change.old_tail > change.dropped_front ? change.old_tail - change.dropped_front : 0;
+  std::vector<uint32_t> added;
+  CompiledFilter(filter_, store_).collect(store_, start, store_.size(), added);
+  if (!added.empty()) {
+    if (future_rows_ == FutureRows::kGrey) {
+      const int first = static_cast<int>(filtered_.size());
+      beginInsertRows(QModelIndex(), first, first + static_cast<int>(added.size()) - 1);
+      filtered_.insert(filtered_.end(), added.begin(), added.end());
+      endInsertRows();
+    } else {
+      filtered_.insert(filtered_.end(), added.begin(), added.end());
+    }
+  }
+  updateRevealed();
+}
+
+void LogTableModel::setTracker(double tracker) {
+  tracker_ = std::isnan(tracker) ? std::numeric_limits<double>::max() : tracker;
+  updateRevealed();
+}
+
+void LogTableModel::updateRevealed() {
+  const size_t next = revealedCount(store_, filtered_, tracker_);
+  if (next == revealed_) {
+    return;
+  }
+  const size_t low = std::min(next, revealed_);
+  const size_t high = std::max(next, revealed_);
+  if (future_rows_ == FutureRows::kGrey) {
+    revealed_ = next;
+    emit dataChanged(
+        index(static_cast<int>(low), 0), index(static_cast<int>(high) - 1, kColumnCount - 1), {Qt::ForegroundRole});
+    return;
+  }
+  if (next > revealed_) {
+    beginInsertRows(QModelIndex(), static_cast<int>(low), static_cast<int>(high) - 1);
+    revealed_ = next;
+    endInsertRows();
+  } else {
+    beginRemoveRows(QModelIndex(), static_cast<int>(low), static_cast<int>(high) - 1);
+    revealed_ = next;
+    endRemoveRows();
+  }
+}
+
+void LogTableModel::setFutureRows(FutureRows mode) {
+  if (mode == future_rows_) {
+    return;
+  }
+  beginResetModel();
+  future_rows_ = mode;
+  endResetModel();
+}
+
+std::optional<size_t> LogTableModel::storeIndex(int row) const {
+  if (row < 0 || row >= visibleCount()) {
+    return std::nullopt;
+  }
+  return filtered_[static_cast<size_t>(row)];
+}
+
+int LogTableModel::rowOf(size_t store_index) const {
+  const auto found = std::lower_bound(filtered_.begin(), filtered_.end(), store_index);
+  if (found == filtered_.end() || *found != store_index) {
+    return -1;
+  }
+  const auto row = static_cast<int>(std::distance(filtered_.begin(), found));
+  return row < visibleCount() ? row : -1;
+}
+
+}  // namespace log_viewer
