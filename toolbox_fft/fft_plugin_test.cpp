@@ -171,6 +171,27 @@ TEST(FftAlgorithmTest, PrimeHalfLengthStaysFastAndAccurate) {
   EXPECT_LT(elapsed, std::chrono::seconds(2));
 }
 
+TEST(FftAlgorithmTest, LengthIsTrimmedToASmoothSizeOnlyAboveTheMemoryBudget) {
+  EXPECT_EQ(PJ::fft::fftLength(200007, 1'000'000'000), 200006u);  // within budget: only made even
+  EXPECT_EQ(PJ::fft::fftLength(200007, 1'000'000), 200000u);      // 2^6 * 5^5
+  EXPECT_EQ(PJ::fft::fftLength(4620, 1'000), 4620u);              // already 11-smooth: kept
+  EXPECT_EQ(PJ::fft::fftLength(18000017, 0), 18000000u);
+}
+
+TEST(FftAlgorithmTest, OverBudgetInputAnalyzesTheTrimmedLengthAccurately) {
+  constexpr std::size_t count = 200006;  // n/2 prime: Bluestein unless trimmed
+  constexpr std::size_t bin = 20000;
+  auto timestamps = regularTimestamps(count);
+  auto values = sinusoid(count, static_cast<double>(bin) * kSampleRateHz / 200000.0, 10.0);
+
+  const auto computation = PJ::fft::computeFft(
+      timestamps.data(), values.data(), values.size(), false, PJ::fft::WindowFunction::kRectangular, 0.01, 1'000'000);
+
+  ASSERT_TRUE(computation) << computation.message;
+  EXPECT_EQ(computation.result.sample_count, 200000u);
+  EXPECT_NEAR(computation.result.amplitudes[bin], 10.0, 1e-5);
+}
+
 TEST(FftAlgorithmTest, DropsOneTrailingSampleForOddInput) {
   auto timestamps = regularTimestamps(101);
   auto values = sinusoid(101, 50.0, 2.0);

@@ -805,8 +805,13 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     const double resolution_hz = sample_rate_hz / static_cast<double>(computation.result.sample_count);
     dialog_.setLastResult(std::move(computation.result));
     std::ostringstream status;
-    status << "Computed " << bins << " bins from " << dialog_.lastResult().sample_count << " samples · " << std::fixed
-           << std::setprecision(3) << sample_rate_hz << " Hz sample rate · " << resolution_hz << " Hz resolution";
+    const size_t analyzed = dialog_.lastResult().sample_count;
+    status << "Computed " << bins << " bins from " << analyzed << " samples";
+    if (analyzed < (ts.size() & ~size_t{1})) {
+      status << " (last " << ts.size() - analyzed << " of " << ts.size() << " left out to fit memory)";
+    }
+    status << " · " << std::fixed << std::setprecision(3) << sample_rate_hz << " Hz sample rate · " << resolution_hz
+           << " Hz resolution";
     dialog_.setStatus(status.str());
   }
 

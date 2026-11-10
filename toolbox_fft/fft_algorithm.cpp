@@ -33,17 +33,34 @@ double windowWeight(WindowFunction window, std::size_t index, std::size_t count)
 
 }  // namespace
 
+std::size_t fftLength(std::size_t count, std::size_t budget_bytes) {
+  std::size_t n = count & ~std::size_t{1};          // An even length keeps an exact Nyquist bin.
+  constexpr std::size_t kWorstBytesPerSample = 80;  // measured ~76 on pocketfft's float Bluestein path
+  if (n <= budget_bytes / kWorstBytesPerSample) {
+    return n;
+  }
+  const auto smooth = [](std::size_t m) {
+    for (const std::size_t p : {2U, 3U, 5U, 7U, 11U}) {
+      while (m % p == 0) {
+        m /= p;
+      }
+    }
+    return m == 1;
+  };
+  while (!smooth(n)) {  // 11-smooth lengths are dense: a few thousand steps at most
+    n -= 2;
+  }
+  return n;
+}
+
 FftComputation computeFft(
     const std::int64_t* timestamps, const double* values, std::size_t count, bool remove_dc, WindowFunction window,
-    double max_relative_interval_deviation) {
+    double max_relative_interval_deviation, std::size_t memory_budget_bytes) {
   if (timestamps == nullptr || values == nullptr || count < 8) {
     return failure(FftError::kTooFewSamples, "Need at least 8 samples");
   }
 
-  std::size_t n = count;
-  if ((n & 1U) != 0U) {
-    --n;  // An even length keeps an exact Nyquist bin at the end of the spectrum.
-  }
+  const std::size_t n = fftLength(count, memory_budget_bytes);
 
   long double span_ns = 0.0L;
   long double max_interval_deviation_ns = 0.0L;
