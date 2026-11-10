@@ -282,6 +282,8 @@ case "${MODE}" in
     build_proxy
     ;;
   bundle)
+    # The zip is a Linux artifact; on macOS robostack/build.sh would stage Mach-O payloads into it.
+    [[ "$(uname)" == Linux ]] || { echo "error: --bundle runs on Linux only" >&2; exit 2; }
     build_all_distros
     build_robostack_distros
     build_proxy
