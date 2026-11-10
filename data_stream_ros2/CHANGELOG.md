@@ -3,6 +3,18 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_ros2/`.
 
+## [1.2.0] - 2026-11-11
+
+### Added
+- RoboStack payload for lyrical (dist/lyrical-robostack/), next to jazzy and kilted.
+- macOS: the proxy detects a RoboStack environment (the executable's environment
+  holding `librclcpp.dylib`) and loads its payload; `robostack/build.sh` builds
+  macos-arm64 payloads. The marketplace zip is still Linux-only.
+
+### Fixed
+- lyrical: the subscriber builds against rclcpp 32, which deprecates the
+  non-const `SerializedMessage` subscription callback.
+
 ## [1.1.3] - 2026-11-05
 
 ### Fixed

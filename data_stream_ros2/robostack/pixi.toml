@@ -36,11 +36,13 @@ gxx_linux-aarch64 = "14.*"
 gcc_linux-aarch64 = "14.*"
 sysroot_linux-aarch64 = "2.28.*"
 
-# macOS: clang, as RoboStack builds with; the payload's ROS libraries resolve
-# through @executable_path/../lib, i.e. the environment of the plotjuggler4 executable.
+# macOS: clang 21, RoboStack's macOS compiler pin (newer libc++ drops the
+# std::wstring_convert that jazzy's rosidl_runtime_cpp headers use). The payload's
+# ROS libraries resolve through @executable_path/../lib, i.e. the environment of
+# the plotjuggler4 executable.
 [target.osx-arm64.dependencies]
-clangxx_osx-arm64 = "*"
-clang_osx-arm64 = "*"
+clangxx_osx-arm64 = "21.*"
+clang_osx-arm64 = "21.*"
 
 [feature.jazzy]
 channels = ["robostack-jazzy"]
