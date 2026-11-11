@@ -111,7 +111,8 @@ LogViewerWidget::LogViewerWidget(
   connect(ui_.filterEdit, &QLineEdit::textChanged, this, [this]() { text_timer_.start(); });
   // A click only selects (the detail pane shows the entry); a double click seeks to it.
   connect(ui_.logView, &QAbstractItemView::doubleClicked, this, &LogViewerWidget::onRowDoubleClicked);
-  // A click moves the current row before it selects it: the detail follows both.
+  // The detail shows the current row when it is selected: follow both, since Qt moves the current row
+  // before it selects it on a click, and a keyboard move can change one without the other.
   connect(ui_.logView->selectionModel(), &QItemSelectionModel::currentRowChanged, this, &LogViewerWidget::updateDetail);
   connect(ui_.logView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &LogViewerWidget::updateDetail);
   connect(model_, &QAbstractItemModel::modelReset, this, &LogViewerWidget::updateDetail);

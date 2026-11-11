@@ -304,7 +304,7 @@ TEST_F(LogViewerTest, PausedDoubleClickSeeksToTheRowAndKeepsTheView) {
   EXPECT_EQ(view->currentIndex().row(), 105);
   auto* detail = panel->widget->findChild<QPlainTextEdit*>("detailText");
   EXPECT_TRUE(detail->toPlainText().contains("/rosout #105"));
-  QTest::mouseDClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());  // after the click above
+  QTest::mouseDClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());
   ASSERT_EQ(panel->playback.seeks.size(), 1u);
   EXPECT_DOUBLE_EQ(panel->playback.seeks[0], 105.0);
 
@@ -320,9 +320,9 @@ TEST_F(LogViewerTest, PausedDoubleClickSeeksToTheRowAndKeepsTheView) {
   EXPECT_TRUE(panel->rowVisible(450));
 }
 
-TEST_F(LogViewerTest, ClickedRowStaysPutAmongEqualTimes) {
+TEST_F(LogViewerTest, DoubleClickedRowStaysPutAmongEqualTimes) {
   // 60 entries share t = 100: after a double click on the first, following the tracker would show the last of
-  // them and scroll the clicked row away.
+  // them and scroll the double-clicked row away.
   auto panel = open();
   ASSERT_NE(panel, nullptr);
   fill(*panel, 0, "/rosout", 100);
