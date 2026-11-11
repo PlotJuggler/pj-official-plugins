@@ -61,8 +61,8 @@ class LogTableModel : public QAbstractTableModel {
  private:
   int visibleCount() const;
   void updateRevealed();
-  /// Repaints the tracker's row after revealed_ moved from @p old_revealed.
-  void refreshCurrentRow(size_t old_revealed);
+  /// Repaints the background of row @p row_end - 1 (the tracker's row when row_end rows are revealed).
+  void repaintRowBefore(size_t row_end);
 
   const LogStore& store_;
   std::function<QString(uint32_t)> topic_label_;

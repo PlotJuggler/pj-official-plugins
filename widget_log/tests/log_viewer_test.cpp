@@ -385,7 +385,8 @@ TEST_F(LogViewerTest, FutureRowsGreyOrHidden) {
   EXPECT_FALSE(model->index(49, 0).data(Qt::BackgroundRole).isValid());
   const auto repainted = [&repaint](int row) {
     return std::any_of(repaint.begin(), repaint.end(), [row](const QList<QVariant>& args) {
-      return args[0].toModelIndex().row() == row && args[2].value<QList<int>>().contains(Qt::BackgroundRole);
+      return args[0].toModelIndex().row() <= row && row <= args[1].toModelIndex().row() &&
+             args[2].value<QList<int>>().contains(Qt::BackgroundRole);
     });
   };
   EXPECT_TRUE(repainted(49));
@@ -396,6 +397,8 @@ TEST_F(LogViewerTest, FutureRowsGreyOrHidden) {
   EXPECT_EQ(model->rowCount(), 50);
   panel->update(80.0);
   EXPECT_EQ(model->rowCount(), 81);
+  EXPECT_TRUE(model->index(80, 0).data(Qt::BackgroundRole).isValid());
+  EXPECT_FALSE(model->index(49, 0).data(Qt::BackgroundRole).isValid());
   panel->update(10.0);
   EXPECT_EQ(model->rowCount(), 11);
   EXPECT_EQ(panel->message(10), "/rosout #10");

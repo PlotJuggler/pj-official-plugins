@@ -178,12 +178,14 @@ void LogTableModel::applyStoreChange(const StoreChange& change) {
       beginRemoveRows(QModelIndex(), static_cast<int>(kept), visible - 1);
     }
     filtered_.resize(kept);
-    const size_t old_revealed = revealed_;
+    const bool moved = revealed_ > kept;
     revealed_ = std::min(revealed_, kept);
     if (notify) {
       endRemoveRows();
     }
-    refreshCurrentRow(old_revealed);
+    if (moved) {
+      repaintRowBefore(revealed_);  // the tracker's row was removed: tint the new last one
+    }
   }
 
   // 2. Rows evicted at the front.
@@ -235,14 +237,18 @@ void LogTableModel::updateRevealed() {
   if (next == revealed_) {
     return;
   }
-  const size_t old_revealed = revealed_;
   const size_t low = std::min(next, revealed_);
   const size_t high = std::max(next, revealed_);
+  // The tracker's row moves between rows low - 1 and high - 1: the changed range covers high - 1, and
+  // low - 1 (the old row going forward, the new one going back) needs its own repaint.
   if (future_rows_ == FutureRows::kGrey) {
     revealed_ = next;
     emit dataChanged(
-        index(static_cast<int>(low), 0), index(static_cast<int>(high) - 1, kColumnCount - 1), {Qt::ForegroundRole});
-  } else if (next > revealed_) {
+        index(static_cast<int>(low > 0 ? low - 1 : 0), 0), index(static_cast<int>(high) - 1, kColumnCount - 1),
+        {Qt::ForegroundRole, Qt::BackgroundRole});
+    return;
+  }
+  if (next > revealed_) {
     beginInsertRows(QModelIndex(), static_cast<int>(low), static_cast<int>(high) - 1);
     revealed_ = next;
     endInsertRows();
@@ -251,19 +257,13 @@ void LogTableModel::updateRevealed() {
     revealed_ = next;
     endRemoveRows();
   }
-  refreshCurrentRow(old_revealed);
+  repaintRowBefore(low);
 }
 
-void LogTableModel::refreshCurrentRow(size_t old_revealed) {
-  if (old_revealed == revealed_) {
-    return;
-  }
-  const int visible = visibleCount();
-  for (const size_t count : {old_revealed, revealed_}) {
-    const auto row = static_cast<int>(count) - 1;
-    if (row >= 0 && row < visible) {
-      emit dataChanged(index(row, 0), index(row, kColumnCount - 1), {Qt::BackgroundRole});
-    }
+void LogTableModel::repaintRowBefore(size_t row_end) {
+  const auto row = static_cast<int>(row_end) - 1;
+  if (row >= 0 && row < visibleCount()) {
+    emit dataChanged(index(row, 0), index(row, kColumnCount - 1), {Qt::BackgroundRole});
   }
 }
 
