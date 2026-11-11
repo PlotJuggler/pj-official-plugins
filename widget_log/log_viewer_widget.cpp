@@ -69,6 +69,9 @@ LogViewerWidget::LogViewerWidget(
   ui_.noticeLabel->setForegroundRole(QPalette::PlaceholderText);
   ui_.noticeLabel->hide();
   ui_.topicsButton->setMenu(new QMenu(ui_.topicsButton));
+  // The host's style gives tool buttons no padding (they are mostly icons), so the menu
+  // arrow would be drawn over the text: reserve room for it on the right.
+  ui_.topicsButton->setStyleSheet(QStringLiteral("QToolButton { padding-right: 14px; }"));
   ui_.topicsButton->hide();
   ui_.copyButton->setEnabled(false);
   ui_.nodeCombo->addItem(QStringLiteral("All nodes"), QString());
