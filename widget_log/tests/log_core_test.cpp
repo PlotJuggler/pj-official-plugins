@@ -178,6 +178,33 @@ TEST_F(LogLoaderTest, DecodesEveryField) {
   EXPECT_EQ(r.stamp_ns, 1'700'000'000'123'456'789);
 }
 
+TEST_F(LogLoaderTest, StripsTerminalColours) {
+  host_.wire(0, "/rosout");
+  host_.add(0, 1.0, makeLog(Level::kInfo, "\x1b[34m\x1b[1mActivating planner_server\x1b[0m\x1b[0m"));
+  sync();
+  ASSERT_EQ(store_.size(), 1u);
+  EXPECT_EQ(store_.row(0).message, "Activating planner_server");
+}
+
+TEST(StripTerminalEscapes, KeepsTextAndDropsSequences) {
+  const auto strip = [](std::string text) {
+    log_viewer::stripTerminalEscapes(text);
+    return text;
+  };
+  EXPECT_EQ(strip("plain text"), "plain text");
+  EXPECT_EQ(strip("\x1b[1;31mred\x1b[0m and \x1b[38;5;208morange\x1b[m"), "red and orange");
+  EXPECT_EQ(
+      strip(
+          "a\x1b]0;title\x07"
+          "b"),
+      "ab");
+  EXPECT_EQ(strip("a\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\b"), "alinkb");
+  EXPECT_EQ(strip("keep\nlines\x1b[0m"), "keep\nlines");
+  EXPECT_EQ(strip("truncated \x1b[31"), "truncated ");
+  EXPECT_EQ(strip("trailing \x1b"), "trailing ");
+  EXPECT_EQ(strip("\x1b(Bcharset"), "charset");
+}
+
 TEST_F(LogLoaderTest, IncrementalAppendsOnlyNewRows) {
   host_.wire(0, "/rosout");
   fill(0, {1.0, 2.0, 3.0, 3.0});

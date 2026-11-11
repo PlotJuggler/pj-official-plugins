@@ -78,6 +78,7 @@ class Collector {
     row.function = store_.intern(log->function);
     row.line = log->line;
     row.message = std::move(log->message);
+    stripTerminalEscapes(row.message);
     return true;
   }
 
@@ -89,6 +90,49 @@ class Collector {
 
 std::string_view logTypeName() {
   return PJ::sdk::name(PJ::sdk::BuiltinObjectType::kLog);
+}
+
+void stripTerminalEscapes(std::string& text) {
+  constexpr char kEsc = '\x1b';
+  size_t in = text.find(kEsc);
+  if (in == std::string::npos) {
+    return;
+  }
+  size_t out = in;
+  const size_t size = text.size();
+  while (in < size) {
+    if (text[in] != kEsc) {
+      text[out++] = text[in++];
+      continue;
+    }
+    ++in;
+    if (in >= size) {
+      break;
+    }
+    if (text[in] == '[') {
+      // CSI: parameter and intermediate bytes, then one final byte in 0x40..0x7E.
+      ++in;
+      while (in < size &&
+             (static_cast<unsigned char>(text[in]) < 0x40 || static_cast<unsigned char>(text[in]) > 0x7E)) {
+        ++in;
+      }
+      ++in;
+    } else if (text[in] == ']') {
+      // OSC: up to BEL or ESC backslash.
+      ++in;
+      while (in < size && text[in] != '\a' && !(text[in] == kEsc && in + 1 < size && text[in + 1] == '\\')) {
+        ++in;
+      }
+      in += (in < size && text[in] == kEsc) ? 2 : 1;
+    } else {
+      // Any other: intermediate bytes in 0x20..0x2F, then one final byte (ESC ( B, ESC 7, ...).
+      while (in < size && text[in] >= 0x20 && text[in] <= 0x2F) {
+        ++in;
+      }
+      ++in;
+    }
+  }
+  text.resize(out);
 }
 
 SyncResult LogLoader::sync(PJ::Span<const PJ_widget_value_t> values, const PJ::WidgetHostView& host) {

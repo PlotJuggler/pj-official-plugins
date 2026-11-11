@@ -18,6 +18,10 @@ namespace log_viewer {
 /// Type name of the canonical log object (PJ::sdk::name(BuiltinObjectType::kLog)).
 std::string_view logTypeName();
 
+/// Removes terminal escape sequences (ANSI colours and the like) from @p text, in place. Some ROS nodes
+/// colour their messages and the colour codes travel inside the log text.
+void stripTerminalEscapes(std::string& text);
+
 struct WireInfo {
   uint32_t id = 0;  ///< the slot; also the wire id in the store
   std::string label;
