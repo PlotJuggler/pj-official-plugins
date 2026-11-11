@@ -1,6 +1,6 @@
 {
-  "id": "log-viewer",
-  "name": "Log Viewer",
+  "id": "log-widget",
+  "name": "Log Widget",
   "version": "1.0.0",
   "description": "Dock widget that lists log messages (such as ROS /rosout) next to the playback tracker.",
   "author": "PlotJuggler Team",

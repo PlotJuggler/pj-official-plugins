@@ -1,6 +1,6 @@
-# Log Viewer (`widget_log`)
+# Log Widget (`widget_log`)
 
-A dockable widget (`log-viewer`, type `log_viewer`, shown as "Log") that lists log entries next to
+A dockable widget (`log-widget`, type `log_viewer`, shown as "Log") that lists log entries next to
 the playback tracker. It reads `kLog` objects: the canonical log type that parsers such as
 `parser_ros` produce for `rcl_interfaces/msg/Log` and `rosgraph_msgs/Log` (`/rosout`).
 

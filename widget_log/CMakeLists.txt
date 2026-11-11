@@ -48,40 +48,40 @@ target_compile_options(log_viewer_core PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(log_viewer_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(log_viewer_core PUBLIC plotjuggler_sdk::plugin_sdk)
 
-add_library(log_viewer_plugin SHARED
+add_library(log_widget_plugin SHARED
   log_viewer_plugin.cpp
   log_viewer_widget.cpp
   log_table_model.cpp
   log_viewer.ui
 )
-set_target_properties(log_viewer_plugin PROPERTIES
+set_target_properties(log_widget_plugin PROPERTIES
   AUTOMOC ON
   AUTOUIC ON
 )
-target_compile_features(log_viewer_plugin PRIVATE cxx_std_20)
-target_compile_options(log_viewer_plugin PRIVATE ${PJ_WARNING_FLAGS})
-target_include_directories(log_viewer_plugin PRIVATE
+target_compile_features(log_widget_plugin PRIVATE cxx_std_20)
+target_compile_options(log_widget_plugin PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(log_widget_plugin PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
-target_link_libraries(log_viewer_plugin PRIVATE
+target_link_libraries(log_widget_plugin PRIVATE
   log_viewer_core
   plotjuggler_sdk::plugin_sdk
   Qt6::Widgets
   nlohmann_json::nlohmann_json
 )
 
-pj_embed_manifest(log_viewer_plugin
+pj_embed_manifest(log_widget_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/log_viewer_manifest.hpp
   VAR_NAME kLogViewerManifest
 )
 
-pj_emit_plugin_manifest(log_viewer_plugin
+pj_emit_plugin_manifest(log_widget_plugin
   FAMILY        widget
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-pj_harden_plugin_exports(log_viewer_plugin
+pj_harden_plugin_exports(log_widget_plugin
   REQUIRED_EXPORTS PJ_get_widget_vtable)
 
 if(TARGET GTest::gtest AND BUILD_TESTING)
@@ -113,12 +113,12 @@ if(TARGET GTest::gtest AND BUILD_TESTING)
   target_compile_features(log_viewer_test PRIVATE cxx_std_20)
   target_compile_options(log_viewer_test PRIVATE ${PJ_WARNING_FLAGS})
   target_compile_definitions(log_viewer_test PRIVATE
-    PJ_LOG_VIEWER_PLUGIN_PATH="$<TARGET_FILE:log_viewer_plugin>"
+    PJ_LOG_VIEWER_PLUGIN_PATH="$<TARGET_FILE:log_widget_plugin>"
     PJ_EXPECTED_QT_MAJOR=${PJ_HOST_QT_MAJOR}
     PJ_EXPECTED_QT_MINOR=${PJ_HOST_QT_MINOR}
   )
   target_include_directories(log_viewer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-  add_dependencies(log_viewer_test log_viewer_plugin)
+  add_dependencies(log_viewer_test log_widget_plugin)
   target_link_libraries(log_viewer_test PRIVATE
     plotjuggler_sdk::plugin_host
     plotjuggler_sdk::plugin_sdk

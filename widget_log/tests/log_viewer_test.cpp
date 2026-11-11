@@ -185,7 +185,7 @@ void doubleClick(QTreeView* view, const QPoint& point) {
 
 TEST_F(LogViewerTest, ManifestAndInputs) {
   const auto manifest = nlohmann::json::parse(library_->vtable()->manifest_json);
-  EXPECT_EQ(manifest.at("id"), "log-viewer");
+  EXPECT_EQ(manifest.at("id"), "log-widget");
   EXPECT_EQ(manifest.at("min_sdk_required"), "0.41.0");
   ASSERT_EQ(manifest.at("widgets").size(), 1u);
   EXPECT_EQ(manifest.at("widgets")[0].at("type"), "log_viewer");
