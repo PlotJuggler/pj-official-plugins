@@ -12,14 +12,20 @@ namespace log_viewer {
 
 namespace {
 
-// Level colours: fixed, so warn and error read the same in a light and a dark theme (the values of
-// widget_basic's warnColor()/badColor()). Every other colour comes from the palette.
+// Fixed colours, so they read the same in a light and a dark theme; warn and error are widget_basic's
+// warnColor()/badColor(). Every other colour comes from the palette.
 QColor warnColor() {
   return QColor(224, 160, 16);
 }
 
 QColor errorColor() {
   return QColor(214, 56, 56);
+}
+
+// The tracker's row: a translucent blue, a lighter cousin of the host's selection. The host paints
+// its selection from a style sheet, so no palette role carries that colour.
+QColor currentRowColor() {
+  return QColor(64, 140, 255, 56);
 }
 
 QString firstLine(const std::string& message) {
@@ -102,6 +108,12 @@ QVariant LogTableModel::data(const QModelIndex& index, int role) const {
         return errorColor();
       }
       return {};
+    case Qt::BackgroundRole:
+      // The row the tracker is at: the last one at or before it.
+      if (static_cast<size_t>(index.row()) + 1 == revealed_) {
+        return currentRowColor();
+      }
+      return {};
     case Qt::FontRole:
       if (row.level == Level::kFatal && palette_source_) {
         QFont font = palette_source_->font();
@@ -166,10 +178,12 @@ void LogTableModel::applyStoreChange(const StoreChange& change) {
       beginRemoveRows(QModelIndex(), static_cast<int>(kept), visible - 1);
     }
     filtered_.resize(kept);
+    const size_t old_revealed = revealed_;
     revealed_ = std::min(revealed_, kept);
     if (notify) {
       endRemoveRows();
     }
+    refreshCurrentRow(old_revealed);
   }
 
   // 2. Rows evicted at the front.
@@ -221,15 +235,14 @@ void LogTableModel::updateRevealed() {
   if (next == revealed_) {
     return;
   }
+  const size_t old_revealed = revealed_;
   const size_t low = std::min(next, revealed_);
   const size_t high = std::max(next, revealed_);
   if (future_rows_ == FutureRows::kGrey) {
     revealed_ = next;
     emit dataChanged(
         index(static_cast<int>(low), 0), index(static_cast<int>(high) - 1, kColumnCount - 1), {Qt::ForegroundRole});
-    return;
-  }
-  if (next > revealed_) {
+  } else if (next > revealed_) {
     beginInsertRows(QModelIndex(), static_cast<int>(low), static_cast<int>(high) - 1);
     revealed_ = next;
     endInsertRows();
@@ -237,6 +250,20 @@ void LogTableModel::updateRevealed() {
     beginRemoveRows(QModelIndex(), static_cast<int>(low), static_cast<int>(high) - 1);
     revealed_ = next;
     endRemoveRows();
+  }
+  refreshCurrentRow(old_revealed);
+}
+
+void LogTableModel::refreshCurrentRow(size_t old_revealed) {
+  if (old_revealed == revealed_) {
+    return;
+  }
+  const int visible = visibleCount();
+  for (const size_t count : {old_revealed, revealed_}) {
+    const auto row = static_cast<int>(count) - 1;
+    if (row >= 0 && row < visible) {
+      emit dataChanged(index(row, 0), index(row, kColumnCount - 1), {Qt::BackgroundRole});
+    }
   }
 }
 

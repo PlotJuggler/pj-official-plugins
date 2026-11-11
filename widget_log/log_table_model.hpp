@@ -1,4 +1,4 @@
-// Table model over the filtered rows of a LogStore.
+// Table model over the filtered rows of a LogStore; the last row at or before the tracker is tinted.
 #pragma once
 
 #include <QAbstractTableModel>
@@ -61,6 +61,8 @@ class LogTableModel : public QAbstractTableModel {
  private:
   int visibleCount() const;
   void updateRevealed();
+  /// Repaints the tracker's row after revealed_ moved from @p old_revealed.
+  void refreshCurrentRow(size_t old_revealed);
 
   const LogStore& store_;
   std::function<QString(uint32_t)> topic_label_;

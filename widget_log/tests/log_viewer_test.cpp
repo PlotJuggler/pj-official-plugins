@@ -14,12 +14,14 @@
 #include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QSignalBlocker>
+#include <QSignalSpy>
 #include <QStackedWidget>
 #include <QTest>
 #include <QToolButton>
 #include <QTreeView>
 #include <QWheelEvent>
 #include <QWidget>
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -373,6 +375,22 @@ TEST_F(LogViewerTest, FutureRowsGreyOrHidden) {
   const QColor grey = panel->view()->palette().color(QPalette::PlaceholderText);
   EXPECT_EQ(model->index(60, 4).data(Qt::ForegroundRole).value<QColor>(), grey);
   EXPECT_FALSE(model->index(40, 4).data(Qt::ForegroundRole).isValid());
+  // Only the row the tracker is at (the last one at or before it) is tinted, and it follows the tracker.
+  EXPECT_TRUE(model->index(49, 0).data(Qt::BackgroundRole).isValid());
+  EXPECT_FALSE(model->index(48, 0).data(Qt::BackgroundRole).isValid());
+  EXPECT_FALSE(model->index(50, 0).data(Qt::BackgroundRole).isValid());
+  QSignalSpy repaint(model, &QAbstractItemModel::dataChanged);
+  panel->update(52.5);
+  EXPECT_TRUE(model->index(52, 0).data(Qt::BackgroundRole).isValid());
+  EXPECT_FALSE(model->index(49, 0).data(Qt::BackgroundRole).isValid());
+  const auto repainted = [&repaint](int row) {
+    return std::any_of(repaint.begin(), repaint.end(), [row](const QList<QVariant>& args) {
+      return args[0].toModelIndex().row() == row && args[2].value<QList<int>>().contains(Qt::BackgroundRole);
+    });
+  };
+  EXPECT_TRUE(repainted(49));
+  EXPECT_TRUE(repainted(52));
+  panel->update(49.5);
 
   ASSERT_TRUE(panel->handle.loadConfig(R"({"future_rows":"hide"})"));
   EXPECT_EQ(model->rowCount(), 50);
