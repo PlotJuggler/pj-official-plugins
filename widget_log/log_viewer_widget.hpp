@@ -36,7 +36,7 @@ class LogViewerWidget : public QWidget {
   using WarningSink = std::function<void(const std::string& message)>;
 
   /// @p host must outlive the widget. @p playback is optional: without it the list always scrolls freely
-  /// and a click does not seek.
+  /// and a double click does not seek.
   LogViewerWidget(
       const PJ::WidgetHostView& host, std::optional<PJ::sdk::PlaybackHostView> playback, WarningSink warn,
       QWidget* parent = nullptr);
@@ -65,7 +65,7 @@ class LogViewerWidget : public QWidget {
   [[nodiscard]] std::optional<size_t> selectedStoreRow() const;
   void scrollToTracker(bool to_bottom);
   void setScrollLocked(bool locked);
-  void onRowClicked(const QModelIndex& index);
+  void onRowDoubleClicked(const QModelIndex& index);
   /// Fit the Time and Level columns once, when rows first appear and the user has no widths of their own.
   void autoSizeColumns();
 

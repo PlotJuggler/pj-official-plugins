@@ -109,8 +109,11 @@ LogViewerWidget::LogViewerWidget(
   text_timer_.setInterval(kTextDebounceMs);
   connect(&text_timer_, &QTimer::timeout, this, &LogViewerWidget::applyFilters);
   connect(ui_.filterEdit, &QLineEdit::textChanged, this, [this]() { text_timer_.start(); });
-  connect(ui_.logView, &QAbstractItemView::clicked, this, &LogViewerWidget::onRowClicked);
+  // A click only selects (the detail pane shows the entry); a double click seeks to it.
+  connect(ui_.logView, &QAbstractItemView::doubleClicked, this, &LogViewerWidget::onRowDoubleClicked);
+  // A click moves the current row before it selects it: the detail follows both.
   connect(ui_.logView->selectionModel(), &QItemSelectionModel::currentRowChanged, this, &LogViewerWidget::updateDetail);
+  connect(ui_.logView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &LogViewerWidget::updateDetail);
   connect(model_, &QAbstractItemModel::modelReset, this, &LogViewerWidget::updateDetail);
   connect(ui_.copyButton, &QPushButton::clicked, this, [this]() {
     QGuiApplication::clipboard()->setText(ui_.detailText->toPlainText());
@@ -153,7 +156,7 @@ void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double 
     pending_seek_.reset();
     scrollToTracker(true);
   } else if (moved) {
-    // The tracker moved because of a click in this list: the clicked row stays where it is.
+    // The tracker moved because of a double click in this list: that row stays where it is.
     const bool own_seek = pending_seek_.has_value() && sameTime(*pending_seek_, time);
     pending_seek_.reset();
     if (!own_seek) {
@@ -421,7 +424,7 @@ void LogViewerWidget::autoSizeColumns() {
   columns_fixed_ = true;
 }
 
-void LogViewerWidget::onRowClicked(const QModelIndex& index) {
+void LogViewerWidget::onRowDoubleClicked(const QModelIndex& index) {
   if (!playback_ || !index.isValid() || isPlaying()) {
     return;
   }

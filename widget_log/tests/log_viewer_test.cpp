@@ -177,6 +177,12 @@ class LogViewerTest : public ::testing::Test {
   std::unique_ptr<PJ::WidgetLibrary> library_;
 };
 
+/// A real double click: the press of the first click, then the double-click event on the same row.
+void doubleClick(QTreeView* view, const QPoint& point) {
+  QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, point);
+  QTest::mouseDClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, point);
+}
+
 TEST_F(LogViewerTest, ManifestAndInputs) {
   const auto manifest = nlohmann::json::parse(library_->vtable()->manifest_json);
   EXPECT_EQ(manifest.at("id"), "log-viewer");
@@ -280,7 +286,7 @@ TEST_F(LogViewerTest, PlayingFollowsTheTrackerAndBlocksScrolling) {
   EXPECT_NE(bar->value(), paused);
 }
 
-TEST_F(LogViewerTest, PausedClickSeeksToTheRowAndKeepsTheView) {
+TEST_F(LogViewerTest, PausedDoubleClickSeeksToTheRowAndKeepsTheView) {
   auto panel = open();
   ASSERT_NE(panel, nullptr);
   fill(*panel, 0, "/rosout", 500);
@@ -292,7 +298,13 @@ TEST_F(LogViewerTest, PausedClickSeeksToTheRowAndKeepsTheView) {
   ASSERT_TRUE(panel->rowVisible(105));
 
   const QRect rect = view->visualRect(panel->model()->index(105, 4));
+  // A single click selects and shows the entry, and leaves the tracker alone.
   QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());
+  EXPECT_TRUE(panel->playback.seeks.empty());
+  EXPECT_EQ(view->currentIndex().row(), 105);
+  auto* detail = panel->widget->findChild<QPlainTextEdit*>("detailText");
+  EXPECT_TRUE(detail->toPlainText().contains("/rosout #105"));
+  QTest::mouseDClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());  // after the click above
   ASSERT_EQ(panel->playback.seeks.size(), 1u);
   EXPECT_DOUBLE_EQ(panel->playback.seeks[0], 105.0);
 
@@ -301,7 +313,6 @@ TEST_F(LogViewerTest, PausedClickSeeksToTheRowAndKeepsTheView) {
   EXPECT_EQ(view->verticalScrollBar()->value(), scrolled);
   EXPECT_TRUE(panel->rowVisible(105));
   EXPECT_EQ(view->currentIndex().row(), 105);
-  auto* detail = panel->widget->findChild<QPlainTextEdit*>("detailText");
   EXPECT_TRUE(detail->toPlainText().contains("/rosout #105"));
 
   // A tracker move from elsewhere brings the last revealed row into view.
@@ -310,7 +321,7 @@ TEST_F(LogViewerTest, PausedClickSeeksToTheRowAndKeepsTheView) {
 }
 
 TEST_F(LogViewerTest, ClickedRowStaysPutAmongEqualTimes) {
-  // 60 entries share t = 100: after a click on the first, following the tracker would show the last of
+  // 60 entries share t = 100: after a double click on the first, following the tracker would show the last of
   // them and scroll the clicked row away.
   auto panel = open();
   ASSERT_NE(panel, nullptr);
@@ -329,7 +340,7 @@ TEST_F(LogViewerTest, ClickedRowStaysPutAmongEqualTimes) {
   ASSERT_FALSE(panel->rowVisible(159));
 
   const QRect rect = view->visualRect(panel->model()->index(100, 4));
-  QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());
+  doubleClick(view, rect.center());
   ASSERT_EQ(panel->playback.seeks.size(), 1u);
   EXPECT_DOUBLE_EQ(panel->playback.seeks[0], 100.0);
   panel->update(panel->playback.seeks[0]);
@@ -337,7 +348,7 @@ TEST_F(LogViewerTest, ClickedRowStaysPutAmongEqualTimes) {
   EXPECT_TRUE(panel->rowVisible(100));
 }
 
-TEST_F(LogViewerTest, WithoutPlaybackServiceClickDoesNothing) {
+TEST_F(LogViewerTest, WithoutPlaybackServiceDoubleClickDoesNothing) {
   auto panel = open(/*with_playback=*/false);
   ASSERT_NE(panel, nullptr);
   fill(*panel, 0, "/rosout", 50);
@@ -347,7 +358,7 @@ TEST_F(LogViewerTest, WithoutPlaybackServiceClickDoesNothing) {
   EXPECT_TRUE(view->verticalScrollBar()->isEnabled());
   view->scrollTo(panel->model()->index(3, 4));  // the list is shorter now that the detail pane is taller
   const QRect rect = view->visualRect(panel->model()->index(3, 4));
-  QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());
+  doubleClick(view, rect.center());
   EXPECT_TRUE(panel->playback.seeks.empty());
   EXPECT_EQ(view->currentIndex().row(), 3);
 }

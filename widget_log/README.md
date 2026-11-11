@@ -22,8 +22,9 @@ A wired topic that does not carry `kLog` objects is reported as a warning and sh
   after the tracker are greyed (or hidden); entries at or before it are shown normally.
 - With the host's playback service (`pj.playback.v1`): while playing, the list keeps the last
   entry at or before the tracker at the bottom and ignores scrolling; while paused, it scrolls
-  freely and a click on an entry seeks the tracker to that entry's time. Without the service the
-  list always scrolls freely and a click only selects.
+  freely and a double click on an entry seeks the tracker to that entry's time. A single click only
+  selects the entry and shows it in the detail pane. Without the service the list always scrolls
+  freely and a double click does nothing.
 - Filters: level toggles (Debug, Info, Warn, Error, Fatal; entries without a level are always
   shown), node, message text (case-insensitive for ASCII letters, applied 150 ms after typing
   stops) and, with more than one topic, a Topics menu. The Topic column appears only with more
