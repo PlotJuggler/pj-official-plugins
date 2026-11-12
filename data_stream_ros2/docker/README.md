@@ -76,6 +76,7 @@ After `--bundle`, under the `pj-official-plugins` root:
         rolling/libros2_stream_plugin-rolling.pjros2
         jazzy-robostack/libros2_stream_plugin-jazzy.pjros2    ← ../robostack/build.sh
         kilted-robostack/libros2_stream_plugin-kilted.pjros2
+        lyrical-robostack/libros2_stream_plugin-lyrical.pjros2
 
     ros2-topic-subscriber-linux-x86_64.zip           ← marketplace artifact
 

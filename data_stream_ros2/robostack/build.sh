@@ -12,7 +12,8 @@
 # resolve through the DT_RPATH of the conda-installed plotjuggler4 executable
 # ($ORIGIN/../lib, i.e. the environment's lib/): the environment's path is
 # unknown at build time, and a RUNPATH would stop glibc from consulting the
-# executable's.
+# executable's. On macOS the payload's only rpath is @executable_path/../lib,
+# the same directory.
 set -euo pipefail
 
 DISTRO="${1:?usage: build.sh <jazzy|kilted|lyrical> [output-dir]}"
