@@ -1,5 +1,5 @@
 find_package(nlohmann_json REQUIRED)
-find_package(kissfft REQUIRED)
+find_package(pocketfft REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
@@ -9,7 +9,7 @@ set_target_properties(toolbox_fft_algorithm PROPERTIES POSITION_INDEPENDENT_CODE
 target_compile_features(toolbox_fft_algorithm PUBLIC cxx_std_20)
 target_compile_options(toolbox_fft_algorithm PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(toolbox_fft_algorithm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(toolbox_fft_algorithm PUBLIC kissfft::kissfft)
+target_link_libraries(toolbox_fft_algorithm PRIVATE pocketfft::pocketfft)
 
 add_library(toolbox_fft_plugin SHARED fft_plugin.cpp)
 

@@ -238,7 +238,7 @@ is available (`scripts/ensure_core.sh`).
 | ixwebsocket | 12.0.0 | data_stream_foxglove_bridge, data_stream_pj_bridge, data_stream_webrtc |
 | asio | 1.28.2 | data_stream_udp |
 | liblsl | 1.16.2 | data_stream_lsl |
-| kissfft | 131.1.0 | toolbox_fft |
+| pocketfft | 0.0.0.cci.20240801 | toolbox_fft |
 | lua | 5.4.6 | toolbox_mosaico |
 | sol2 | 3.5.0 | toolbox_mosaico |
 | libdatachannel | 0.24.0 | data_stream_webrtc |

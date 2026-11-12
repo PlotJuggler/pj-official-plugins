@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -151,6 +152,44 @@ TEST(FftAlgorithmTest, RejectsInvalidSamplingAndValues) {
   values[8] = std::numeric_limits<double>::quiet_NaN();
   computation = PJ::fft::computeFft(timestamps.data(), values.data(), values.size(), false);
   EXPECT_EQ(computation.error, PJ::fft::FftError::kNonFiniteValue);
+}
+
+TEST(FftAlgorithmTest, PrimeHalfLengthStaysFastAndAccurate) {
+  // n/2 = 100003 is prime: an O(n*p) backend (the old kissfft) took ~14 s here.
+  constexpr std::size_t count = 200006;
+  constexpr std::size_t bin = 20001;
+  auto timestamps = regularTimestamps(count);
+  auto values = sinusoid(count, static_cast<double>(bin) * kSampleRateHz / static_cast<double>(count), 10.0);
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto computation = PJ::fft::computeFft(
+      timestamps.data(), values.data(), values.size(), false, PJ::fft::WindowFunction::kRectangular);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  ASSERT_TRUE(computation) << computation.message;
+  EXPECT_NEAR(computation.result.amplitudes[bin], 10.0, 1e-5);  // float FFT: ~1e-7 relative
+  EXPECT_LT(elapsed, std::chrono::seconds(2));
+}
+
+TEST(FftAlgorithmTest, LengthIsTrimmedToASmoothSizeOnlyAboveTheMemoryBudget) {
+  EXPECT_EQ(PJ::fft::fftLength(200007, 1'000'000'000), 200006u);  // within budget: only made even
+  EXPECT_EQ(PJ::fft::fftLength(200007, 1'000'000), 200000u);      // 2^6 * 5^5
+  EXPECT_EQ(PJ::fft::fftLength(4620, 1'000), 4620u);              // already 11-smooth: kept
+  EXPECT_EQ(PJ::fft::fftLength(18000017, 0), 18000000u);
+}
+
+TEST(FftAlgorithmTest, OverBudgetInputAnalyzesTheTrimmedLengthAccurately) {
+  constexpr std::size_t count = 200006;  // n/2 prime: Bluestein unless trimmed
+  constexpr std::size_t bin = 20000;
+  auto timestamps = regularTimestamps(count);
+  auto values = sinusoid(count, static_cast<double>(bin) * kSampleRateHz / 200000.0, 10.0);
+
+  const auto computation = PJ::fft::computeFft(
+      timestamps.data(), values.data(), values.size(), false, PJ::fft::WindowFunction::kRectangular, 0.01, 1'000'000);
+
+  ASSERT_TRUE(computation) << computation.message;
+  EXPECT_EQ(computation.result.sample_count, 200000u);
+  EXPECT_NEAR(computation.result.amplitudes[bin], 10.0, 1e-5);
 }
 
 TEST(FftAlgorithmTest, DropsOneTrailingSampleForOddInput) {

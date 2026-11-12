@@ -1,7 +1,7 @@
 {
   "id": "toolbox-fft",
   "name": "Fast Fourier Transform",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Plot the frequency spectrum (FFT amplitude) of numeric time series.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
