@@ -3,6 +3,15 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_ros2/`.
 
+## [1.2.1] - 2026-11-11
+
+### Fixed
+- RoboStack: with several conda environments on one machine, each loads its own
+  distro's payload. PlotJuggler copies bundled plugins into the per-user
+  extensions folder, which the environments share; when the running environment
+  ships this extension (`<env>/lib/plotjuggler/plugins/ros2-topic-subscriber/`),
+  the payload is now loaded from there instead of from that copy.
+
 ## [1.2.0] - 2026-11-11
 
 ### Added
