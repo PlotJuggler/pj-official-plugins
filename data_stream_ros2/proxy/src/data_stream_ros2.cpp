@@ -230,13 +230,18 @@ std::optional<std::filesystem::path> roboStackEnvironment() {
   return env;
 }
 
-// The distro whose rclcpp a conda environment holds, from its package records
-// (conda-meta/ros-<distro>-rclcpp-<version>-<build>.json).
+// The distro whose rclcpp a conda environment holds, from its package records:
+// conda-meta/ros-<distro>-rclcpp-<version>-<build>.json, or, where RoboStack
+// ships the distro-less ros2-rclcpp (lyrical; jazzy/kilted on macOS), the
+// distro in ros2-distro-mutex's build string (ros2-distro-mutex-<ver>-<distro>_<n>.json).
 bool condaHasDistro(const std::filesystem::path& env, std::string_view distro) {
   const std::string prefix = "ros-" + std::string(distro) + "-rclcpp-";
+  const std::string mutex_build = "-" + std::string(distro) + "_";
   std::error_code ec;
   for (const auto& entry : std::filesystem::directory_iterator(env / "conda-meta", ec)) {
-    if (entry.path().filename().string().starts_with(prefix)) {
+    const auto name = entry.path().filename().string();
+    if (name.starts_with(prefix) ||
+        (name.starts_with("ros2-distro-mutex-") && name.find(mutex_build) != std::string::npos)) {
       return true;
     }
   }

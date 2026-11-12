@@ -125,6 +125,25 @@ TEST_F(Ros2ProxyTest, CorruptPayloadRemainsFatal) {
   EXPECT_NE(g_last_error.find("dlopen failed"), std::string::npos);
 }
 
+// RoboStack ships rclcpp as ros2-rclcpp (lyrical; jazzy/kilted on macOS); only
+// ros2-distro-mutex's build string names the distro.
+TEST_F(Ros2ProxyTest, CondaDistroDetectedFromDistroMutex) {
+  const auto meta = root_ / "env/conda-meta";
+  std::filesystem::create_directories(meta);
+  std::ofstream(meta / "ros2-rclcpp-32.0.3-np2py314h53a0733_30.json") << "{}";
+  std::ofstream(meta / "ros2-distro-mutex-0.22.0-lyrical_30.json") << "{}";
+  EXPECT_TRUE(condaHasDistro(root_ / "env", "lyrical"));
+  EXPECT_FALSE(condaHasDistro(root_ / "env", "jazzy"));
+}
+
+TEST_F(Ros2ProxyTest, CondaDistroDetectedFromLegacyRclcppRecord) {
+  const auto meta = root_ / "env/conda-meta";
+  std::filesystem::create_directories(meta);
+  std::ofstream(meta / "ros-jazzy-rclcpp-28.1.21-np2py312h2ed9cc7_21.json") << "{}";
+  EXPECT_TRUE(condaHasDistro(root_ / "env", "jazzy"));
+  EXPECT_FALSE(condaHasDistro(root_ / "env", "kilted"));
+}
+
 TEST_F(Ros2ProxyTest, SymbolAndVersionErrorsAreNeverClassifiedAsMissingSearchPath) {
   const auto lib = root_ / "ros/lib/libstdc++.so.6";
   std::filesystem::create_directories(lib.parent_path());
