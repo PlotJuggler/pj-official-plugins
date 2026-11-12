@@ -2412,6 +2412,22 @@ TEST(RosParserTest, RobotDescriptionTopicProducesObject) {
   EXPECT_EQ(rd->text, urdf);
 }
 
+TEST(RosParserTest, RobotDescriptionTopicIngestsThroughTheScalarPath) {
+  // The host's eager-scalar ingest calls parse() before the object route; an
+  // object-only handler with no parse_scalars made it fail with "registered
+  // handler has no parse_scalars", so a bag's URDF never reached the store.
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"topic_name":"/robot_description"})"));
+  ASSERT_TRUE(f.bindSchema("std_msgs/String", "string data\n"));
+
+  const std::string urdf = "<robot name=\"r\"><link name=\"base_link\"/></robot>";
+  auto payload = serializeCdr([&urdf](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeString(urdf); });
+
+  ASSERT_TRUE(f.parse(payload));
+  EXPECT_TRUE(f.recorder.rows().empty()) << "the URDF text is not stored as a scalar column";
+}
+
 TEST(RosParserTest, RobotDescriptionNamespacedTopicProducesObject) {
   RosParserFixture f;
   f.setUp();
