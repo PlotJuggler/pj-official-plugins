@@ -227,7 +227,8 @@ void LogLoader::fullLoad(
   ++full_loads_;
   wire.next_seq = 0;
   Collector collect(store_, wire.next_seq, counted->total);
-  auto total = host.queryHistory(kInput, slot, kMinTime, kMaxTime, counted->total, collect);
+  // Ask for everything, not the count just read: a streaming host may have added samples since.
+  auto total = host.queryHistory(kInput, slot, kMinTime, kMaxTime, std::numeric_limits<uint32_t>::max(), collect);
   if (!total) {
     wire.loaded = false;
     warnOnce(wire, wire.label + ": cannot read its history: " + total.error(), result);

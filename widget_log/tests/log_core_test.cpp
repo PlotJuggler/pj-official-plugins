@@ -170,10 +170,10 @@ TEST_F(LogLoaderTest, FullLoadAsksForTheWholeCount) {
   sync();
   EXPECT_EQ(store_.size(), 25'000u);
   EXPECT_EQ(loader_.receivedSamples(), loader_.hostSamples());
-  // The count read asks for one sample; the load asks for exactly the total, beyond the default cap.
+  // The count read asks for one sample; the load asks for everything, beyond the default cap.
   ASSERT_GE(host_.queries.size(), 2u);
   EXPECT_EQ(host_.queries[0].max_samples, 1u);
-  EXPECT_EQ(host_.queries[1].max_samples, 25'000u);
+  EXPECT_EQ(host_.queries[1].max_samples, std::numeric_limits<uint32_t>::max());
   EXPECT_EQ(store_.row(0).message, "t=0.000000");
 }
 
