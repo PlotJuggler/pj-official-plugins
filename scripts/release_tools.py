@@ -85,7 +85,15 @@ import sys as _sys
 _sys.path.insert(0, str(Path(__file__).resolve().parent / "vendor"))
 import feature_floor_check as floor_core  # noqa: E402
 
-SEMVER_REGEX = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?(?:\+([a-zA-Z0-9.-]+))?$")
+# SemVer 2.0.0 grammar (semver.org), the one the PlotJuggler host and the registry
+# validator enforce; match it with fullmatch(). Groups: major, minor, patch, pre-release.
+_SEMVER_IDENTIFIER = r"(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+SEMVER_REGEX = re.compile(
+    rf"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    rf"(?:-({_SEMVER_IDENTIFIER}(?:\.{_SEMVER_IDENTIFIER})*))?"
+    r"(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?",
+    re.ASCII,
+)
 SDK_VERSION_REGEX = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}(?:-dev\.(?:0|[1-9][0-9]*))?")
 
 
@@ -315,16 +323,12 @@ def validate_manifest_file(manifest_path: Path) -> tuple[dict | None, list[str]]
 
 
 def validate_semver(version: str) -> bool:
-    """
-    Validate that a version string follows semantic versioning.
+    """Whether `version` is SemVer 2.0.0: X.Y.Z[-pre-release][+build], no leading zeros.
 
-    Args:
-        version: Version string to validate
-
-    Returns:
-        True if valid semver format, False otherwise
+    The registry and the host refuse anything else, so a release must fail here,
+    before its tag exists.
     """
-    return SEMVER_REGEX.match(version) is not None
+    return SEMVER_REGEX.fullmatch(version) is not None
 
 
 def parse_tag_version(tag: str) -> tuple[str, str] | None:
@@ -345,31 +349,6 @@ def parse_tag_version(tag: str) -> tuple[str, str] | None:
     return None
 
 
-def compare_versions(v1: str, v2: str) -> int:
-    """
-    Compare two semantic version strings.
-
-    Args:
-        v1: First version
-        v2: Second version
-
-    Returns:
-        -1 if v1 < v2, 0 if equal, 1 if v1 > v2
-    """
-    def parse(v: str) -> tuple:
-        match = SEMVER_REGEX.match(v)
-        if not match:
-            return (0, 0, 0)
-        return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
-
-    p1, p2 = parse(v1), parse(v2)
-    if p1 < p2:
-        return -1
-    elif p1 > p2:
-        return 1
-    return 0
-
-
 def semver_sort_key(version: str) -> tuple:
     """Sort key with SemVer 2.0.0 precedence, the order the PlotJuggler host uses.
 
@@ -378,7 +357,7 @@ def semver_sort_key(version: str) -> tuple:
     ones, and build metadata is ignored. A string that is not a version sorts
     below every version.
     """
-    match = SEMVER_REGEX.match(version)
+    match = SEMVER_REGEX.fullmatch(version)
     if not match:
         return ((0, 0, 0), 0, ())
     core = tuple(int(match.group(i)) for i in (1, 2, 3))
@@ -761,7 +740,7 @@ def find_previous_release_tag(root: Path, source_name: str, current_tag: str) ->
         if not tag_info:
             continue
         _, version = tag_info
-        if compare_versions(version, current_version) < 0:
+        if semver_sort_key(version) < semver_sort_key(current_version):
             candidates.append((version, tag))
 
     if not candidates:

@@ -159,6 +159,10 @@ git push origin "data_load_csv/v1.0.6"
 python3 scripts/submit_to_registry.py csv-loader --version 1.0.6
 ```
 
+The registry entry takes its `version` and `min_sdk_required` from the manifest on disk, so the
+script refuses a release whose version is not the checked-out manifest's. To submit an older
+release, check out its tag first.
+
 Tag format: `{source_dir}/v{version}` (e.g., `data_load_csv/v1.0.6`)
 
 ---
