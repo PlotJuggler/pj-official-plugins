@@ -1054,9 +1054,12 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLogObject(PJ::Timestamp ts, 
     result.level = mapRosLogLevel(readU8(*deserializer_), ros2);
     deserializer_->deserializeString(result.name);
     deserializer_->deserializeString(result.message);
-    deserializer_->deserializeString(result.file);
-    deserializer_->deserializeString(result.function);
-    result.line = deserializer_->deserializeUInt32();
+    // The source location (file, function, line) is not part of the canonical Log; it is read only so a
+    // truncated message is rejected instead of accepted.
+    std::string skipped;
+    deserializer_->deserializeString(skipped);
+    deserializer_->deserializeString(skipped);
+    deserializer_->deserializeUInt32();
     return PJ::sdk::ObjectRecord{
         .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
         .object = PJ::sdk::BuiltinObject{std::move(result)}};

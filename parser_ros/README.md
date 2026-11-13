@@ -106,7 +106,7 @@ polar ranges, so cartesian points must be generated:
 | Schema | `BuiltinObjectType` | Handler |
 |--------|-----------------------|---------|
 | `sensor_msgs/msg/LaserScan` | `kPointCloud` | `parseLaserScan` — projects rays to x/y/z (+`intensity` when present) FLOAT32 points via the shared `pj_laser_scan` projector (cos/sin LUT cached per scanner config); non-finite and out-of-`[range_min, range_max]` rays are dropped, so the cloud is unorganized and dense. The point buffer is newly generated and owned via the cloud's `BufferAnchor`. The scalar route stays on the generic flatten (`angle_*`, `ranges[i]`, … columns). |
-| `rcl_interfaces/msg/Log` (ROS 2), `rosgraph_msgs/Log` (ROS 1) | `kLog` | `parseLogObject` — level (mapped to the SDK levels; ROS 2 10/20/30/40/50, ROS 1 1/2/4/8/16, anything else is unknown), name, msg, file, function, line. The timestamp is the message stamp, or the record time when the stamp is 0. ROS 1 `topics[]` is not read. The scalar route stays on the generic flatten. |
+| `rcl_interfaces/msg/Log` (ROS 2), `rosgraph_msgs/Log` (ROS 1) | `kLog` | `parseLogObject` — level (mapped to the SDK levels; ROS 2 10/20/30/40/50, ROS 1 1/2/4/8/16, anything else is unknown), name, msg; file, function and line are not kept, and no category is set. The timestamp is the message stamp, or the record time when the stamp is 0. ROS 1 `topics[]` is not read. The scalar route stays on the generic flatten. |
 
 Four pose schemas are promoted to the canonical `kPosesInFrame` object (owned —
 the message carries only scalars, no byte blob). The shared `readPose()` helper

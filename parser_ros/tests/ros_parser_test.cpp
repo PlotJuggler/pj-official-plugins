@@ -3401,9 +3401,7 @@ TEST(RosParserTest, RosLog2DecodesAllFields) {
   EXPECT_EQ(log->level, PJ::sdk::Log::Level::kError);
   EXPECT_EQ(log->name, "/my_node");
   EXPECT_EQ(log->message, "boom");
-  EXPECT_EQ(log->file, "node.cpp");
-  EXPECT_EQ(log->function, "spin");
-  EXPECT_EQ(log->line, 77u);
+  EXPECT_TRUE(log->category.empty());  // ROS logs have none
 }
 
 TEST(RosParserTest, RosLog2LevelMapping) {
@@ -3474,9 +3472,6 @@ TEST(RosParserTest, RosLog1DecodesFieldsWithTopics) {
     EXPECT_EQ(log->level, expected) << "raw level " << static_cast<int>(raw);
     EXPECT_EQ(log->name, "/talker");
     EXPECT_EQ(log->message, "hello");
-    EXPECT_EQ(log->file, "talker.py");
-    EXPECT_EQ(log->function, "publish");
-    EXPECT_EQ(log->line, 123u);
   }
 }
 
