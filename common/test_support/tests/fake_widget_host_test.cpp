@@ -99,7 +99,9 @@ TEST(FakeWidgetHost, NearbyNanosecondsShareADisplayTimeFarFromTheOrigin) {
   const Read all = query(fake, -kInf, kInf);
   ASSERT_EQ(all.times.size(), 2u);
   EXPECT_EQ(all.times[0], all.times[1]);
-  EXPECT_EQ(query(fake, all.times[0], all.times[0]).total, 2u);
+  const Read at = query(fake, all.times[0], all.times[0]);
+  EXPECT_EQ(at.total, 2u);
+  EXPECT_EQ(at.times.size(), 2u);  // both delivered, not only counted
 }
 
 TEST(FakeWidgetHost, DisplayOffsetShiftsTimes) {
@@ -137,6 +139,8 @@ TEST(FakeWidgetHost, UndeliverableSamplesAreCountedNotDelivered) {
   EXPECT_EQ(read.total, 2u);
   EXPECT_TRUE(read.times.empty());  // the one pick was the undeliverable first sample
   EXPECT_EQ(query(fake, -kInf, kInf).times, (std::vector<double>{2.0}));
+  // Nor is it the wire's value at the tracker.
+  EXPECT_EQ(fake.values(1.5)[0].kind, PJ_WIDGET_VALUE_NONE);
 }
 
 TEST(FakeWidgetHost, SinkCanStopEarly) {

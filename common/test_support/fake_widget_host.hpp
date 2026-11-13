@@ -119,7 +119,8 @@ class FakeWidgetHost {
   }
 
   /// What on_update carries at display time @p tracker: one value per wire in (input, slot) order,
-  /// the latest sample at or before it, or NONE (label still set) when there is none.
+  /// the latest sample at or before it, or NONE (label still set) when there is none or it is
+  /// undeliverable.
   [[nodiscard]] std::vector<PJ_widget_value_t> values(double tracker) const {
     std::vector<PJ_widget_value_t> out;
     out.reserve(wires.size());
@@ -136,7 +137,7 @@ class FakeWidgetHost {
         }
         latest = &sample;
       }
-      if (latest != nullptr) {
+      if (latest != nullptr && !latest->undeliverable) {
         fill(value, *latest, entry);
       }
       out.push_back(value);
@@ -180,6 +181,7 @@ class FakeWidgetHost {
       }
     }
     const size_t total = in_range.size();
+    // At least one, as on the application's host.
     const size_t cap =
         std::max<size_t>(1, query.max_samples == 0 ? default_cap : std::min(query.max_samples, hard_cap));
     // Over the cap: evenly spaced picks that keep the first and the last sample.
