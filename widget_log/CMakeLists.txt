@@ -99,6 +99,7 @@ if(TARGET GTest::gtest AND BUILD_TESTING)
   target_include_directories(log_viewer_core_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
   target_link_libraries(log_viewer_core_test PRIVATE
     log_viewer_core
+    pj_test_support
     plotjuggler_sdk::plugin_host
     plotjuggler_sdk::plugin_sdk
     GTest::gtest
@@ -120,6 +121,7 @@ if(TARGET GTest::gtest AND BUILD_TESTING)
   target_include_directories(log_viewer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
   add_dependencies(log_viewer_test log_widget_plugin)
   target_link_libraries(log_viewer_test PRIVATE
+    pj_test_support
     plotjuggler_sdk::plugin_host
     plotjuggler_sdk::plugin_sdk
     nlohmann_json::nlohmann_json

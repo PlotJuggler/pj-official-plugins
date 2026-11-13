@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <pj_plugins/sdk/widget_plugin_base.hpp>
@@ -125,7 +126,7 @@ TEST(LogStore, ChangesCompose) {
 
 class LogLoaderTest : public ::testing::Test {
  protected:
-  LogLoaderTest() : view_(host_.bridge.host()) {}
+  LogLoaderTest() : view_(host_.makeHost()) {}
 
   log_viewer::SyncResult sync(double tracker = 1e9) {
     const auto values = host_.values(tracker);
@@ -245,9 +246,7 @@ TEST_F(LogLoaderTest, OffsetShiftReloads) {
   host_.wire(0, "/rosout");
   fill(0, {1.0, 2.0, 3.0});
   sync();
-  for (auto& sample : host_.wires.at(0).samples) {
-    sample.time += 10.0;
-  }
+  host_.display_offset -= std::chrono::seconds(10);  // the display origin moves 10 s earlier
   sync();
   EXPECT_EQ(loader_.fullLoads(), 2u);
   EXPECT_EQ(times(store_), (std::vector<double>{11.0, 12.0, 13.0}));
@@ -257,7 +256,7 @@ TEST_F(LogLoaderTest, HostEvictionKeepsTheRowsShown) {
   host_.wire(0, "/rosout");
   fill(0, {1.0, 2.0, 3.0, 4.0, 5.0});
   sync();
-  auto& samples = host_.wires.at(0).samples;
+  auto& samples = host_.samples(0);
   samples.erase(samples.begin(), samples.begin() + 2);
   sync();
   EXPECT_EQ(loader_.fullLoads(), 1u);
@@ -305,23 +304,23 @@ TEST_F(LogLoaderTest, NonLogWireWarnsOnceAndShowsNothing) {
 TEST_F(LogLoaderTest, UnresolvedWireDoesNotWarnWhileItsValueIsNone) {
   host_.wire(0, "/rosout");
   fill(0, {1.0, 2.0});
-  host_.fail_history = true;
+  host_.fail_with = "not resolved yet";
   // Tracker before the first sample: the wire's value is NONE.
   ASSERT_EQ(host_.values(0.5)[0].kind, PJ_WIDGET_VALUE_NONE);
   EXPECT_TRUE(sync(0.5).warnings.empty());
   EXPECT_TRUE(sync(0.5).warnings.empty());
   EXPECT_EQ(store_.size(), 0u);
   // The wire resolves: the next update loads it.
-  host_.fail_history = false;
+  host_.fail_with.clear();
   sync();
   EXPECT_EQ(store_.size(), 2u);
-  EXPECT_TRUE(host_.warnings.empty());
+  EXPECT_TRUE(host_.warnings().empty());
 }
 
 TEST_F(LogLoaderTest, FailingHistoryWithAValueWarnsOnce) {
   host_.wire(0, "/rosout");
   fill(0, {1.0, 2.0});
-  host_.fail_history = true;
+  host_.fail_with = "not resolved yet";
   ASSERT_NE(host_.values(1e9)[0].kind, PJ_WIDGET_VALUE_NONE);
   const auto first = sync();
   ASSERT_EQ(first.warnings.size(), 1u);
@@ -336,7 +335,7 @@ TEST_F(LogLoaderTest, VanishedWireDropsItsRows) {
   fill(1, {2.0});
   sync();
   ASSERT_EQ(store_.size(), 3u);
-  host_.wires.erase(1);
+  host_.wires.erase({FakeLogHost::kInput, 1});
   const auto result = sync();
   EXPECT_TRUE(result.wires_changed);
   EXPECT_EQ(times(store_), (std::vector<double>{1.0, 3.0}));

@@ -139,7 +139,7 @@ class LogViewerTest : public ::testing::Test {
       return nullptr;
     }
     auto panel = std::make_unique<Panel>(std::move(*handle));
-    panel->registry.registerService<PJ::sdk::WidgetHostService>(panel->host.bridge.host());
+    panel->registry.registerService<PJ::sdk::WidgetHostService>(panel->host.makeHost());
     if (with_playback) {
       panel->registry.registerService<PJ::sdk::PlaybackHostService>(panel->playback.raw());
     }
@@ -371,8 +371,8 @@ TEST_F(LogViewerTest, NonLogWireIsReported) {
   panel->host.addBytes(0, 1.0, {1, 2, 3});
   panel->update(2.0);
   panel->update(3.0);
-  ASSERT_EQ(panel->host.warnings.size(), 1u);
-  EXPECT_EQ(panel->host.warnings[0], "/camera/image is not a log topic");
+  ASSERT_EQ(panel->host.warnings().size(), 1u);
+  EXPECT_EQ(panel->host.warnings()[0], "/camera/image is not a log topic");
   EXPECT_EQ(panel->model()->rowCount(), 0);
 }
 
