@@ -6,7 +6,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
 from release_tools import semver_sort_key
-from submit_to_registry import prune_registry, update_registry
+from submit_to_registry import prune_registry, superseded_entries, update_registry
 
 LINUX, MACOS, WINDOWS = "linux-x86_64", "macos-arm64", "windows-x86_64"
 
@@ -112,10 +112,10 @@ class UpdateRegistryTests(unittest.TestCase):
         result = update_registry({"extensions": [other]}, record("1.0.0", "0.28.0"))
         self.assertEqual(result["extensions"], [record("1.0.0", "0.28.0"), other])
 
-    def test_resubmitting_a_version_with_the_same_platforms_is_rejected(self):
-        with self.assertRaises(ValueError) as raised:
-            update_registry({"extensions": [record("1.0.0", "0.28.0")]}, record("1.0.0", "0.28.0"))
-        self.assertIn("already holds", str(raised.exception))
+    def test_resubmitting_a_version_with_the_same_platforms_changes_nothing(self):
+        extensions = [record("1.0.0", "0.28.0")]
+        result = update_registry({"extensions": extensions}, record("1.0.0", "0.28.0"))
+        self.assertIs(result["extensions"], extensions)
 
     def test_resubmitting_a_version_may_add_a_platform(self):
         stored = record("1.0.0", "0.28.0", platforms=(LINUX,))
@@ -131,9 +131,8 @@ class UpdateRegistryTests(unittest.TestCase):
         changed = record("1.0.0", "0.28.0", platforms=(LINUX, MACOS))
         changed["platforms"][LINUX] = {"url": "rebuilt"}
         dropped = record("1.0.0", "0.28.0", platforms=(MACOS,))
-        other_floor = record("1.0.0", "0.31.0", platforms=(LINUX, MACOS))
         other_build = record("1.0.0+rebuild", "0.28.0", platforms=(LINUX, MACOS))
-        for name, entry in (("changed", changed), ("dropped", dropped), ("floor", other_floor), ("build", other_build)):
+        for name, entry in (("changed", changed), ("dropped", dropped), ("build", other_build)):
             with self.subTest(name), self.assertRaises(ValueError) as raised:
                 update_registry({"extensions": [record("1.0.0", "0.28.0", platforms=(LINUX,))]}, entry)
             self.assertIn("already holds", str(raised.exception))
@@ -144,12 +143,21 @@ class UpdateRegistryTests(unittest.TestCase):
         self.assertEqual(submit([trimmed, newer], record("1.0.0", "0.31.0", platforms=(LINUX, MACOS, WINDOWS))),
                          [("csv-loader", "1.0.0", [MACOS, WINDOWS]), ("csv-loader", "1.1.0", [LINUX])])
 
-    def test_resubmitting_a_version_whose_new_platforms_are_superseded_is_rejected(self):
-        trimmed = record("1.0.0", "0.31.0", platforms=(MACOS,))
-        newer = record("1.1.0", "0.31.0", platforms=(LINUX, WINDOWS))
+    def test_resubmitting_a_version_whose_new_platforms_are_superseded_changes_nothing(self):
+        extensions = [record("1.0.0", "0.31.0", platforms=(MACOS,)), record("1.1.0", "0.31.0", platforms=(LINUX, WINDOWS))]
+        result = update_registry({"extensions": extensions}, record("1.0.0", "0.31.0", platforms=(LINUX, MACOS, WINDOWS)))
+        self.assertIs(result["extensions"], extensions)
+
+    def test_resubmitting_a_version_keeps_a_floor_corrected_in_the_registry(self):
+        corrected = record("1.0.0", "0.31.0", platforms=(LINUX,))
+        result = update_registry({"extensions": [corrected]}, record("1.0.0", "0.28.0", platforms=(LINUX, MACOS)))
+        (merged,) = result["extensions"]
+        self.assertEqual((merged["min_sdk_required"], sorted(merged["platforms"])), ("0.31.0", [LINUX, MACOS]))
+
+    def test_a_version_without_platforms_is_rejected(self):
         with self.assertRaises(ValueError) as raised:
-            update_registry({"extensions": [trimmed, newer]}, record("1.0.0", "0.31.0", platforms=(LINUX, MACOS, WINDOWS)))
-        self.assertIn("already holds", str(raised.exception))
+            update_registry({"extensions": []}, record("1.0.0", "0.28.0", platforms=()))
+        self.assertIn("no platform", str(raised.exception))
 
     def test_a_rejected_submission_leaves_the_registry_untouched(self):
         registry = {"extensions": [record("1.1.0", "0.28.0")]}
@@ -166,6 +174,23 @@ class UpdateRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             update_registry({"extensions": [record("1.1.0", "0.28.0")]}, record("1.0.0", "0.28.0"))
         self.assertIn("1.1.0", str(raised.exception))
+
+
+class SupersededEntriesTests(unittest.TestCase):
+    def test_lists_dropped_records_and_trimmed_platforms(self):
+        before = [record("1.0.0", "0.28.0"), record("1.1.0", "0.31.0"), record("0.1.0", "0.28.0", ext_id="mcap-loader")]
+        after = update_registry({"extensions": list(before)}, record("1.2.0", "0.31.0", platforms=(LINUX,)))["extensions"]
+        self.assertEqual(superseded_entries(before, after), ["csv-loader 1.1.0 (linux-x86_64)"])
+        after = update_registry({"extensions": list(before)}, record("1.2.0", "0.28.0"))["extensions"]
+        self.assertEqual(
+            superseded_entries(before, after),
+            ["csv-loader 1.0.0 (linux-x86_64, macos-arm64)", "csv-loader 1.1.0 (linux-x86_64, macos-arm64)"],
+        )
+
+    def test_a_plain_addition_supersedes_nothing(self):
+        before = [record("1.0.0", "0.28.0")]
+        after = update_registry({"extensions": list(before)}, record("2.0.0", "0.34.0"))["extensions"]
+        self.assertEqual(superseded_entries(before, after), [])
 
 
 if __name__ == "__main__":

@@ -268,9 +268,11 @@ SemVer precedence (`semver_sort_key`), pre-releases included.
 
 A published version is immutable, with one exception: submitting it again may add platforms,
 which is what the "Recover a missing platform" dispatch does. The stored record gains the new
-platforms and changes in nothing else. The script refuses a re-submission that would change a
-stored URL or checksum or the `min_sdk_required`, one that adds nothing, and a version that would
-be pruned at once. Nothing else is removed automatically: pulling a broken release, or publishing
+platforms and changes in nothing else, so metadata corrected by hand in the registry survives.
+A re-submission that adds nothing succeeds without opening a PR. The script refuses one that
+would change a stored URL or checksum, and a new version that would be pruned at once. The
+registry PR lists every record or platform entry it removes. Nothing else is removed
+automatically: pulling a broken release, or publishing
 the new checksums of a force-recreated tag, is a manual edit of `registry.json`. The registry's
 own validator rejects a file that is not pruned by this rule.
 
