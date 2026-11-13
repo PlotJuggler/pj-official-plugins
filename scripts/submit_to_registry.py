@@ -31,6 +31,7 @@ from release_tools import (
     compute_sha256_bytes,
     normalize_platform,
     read_manifest,
+    semver_sort_key,
     validate_manifest_file,
     VALID_PLATFORMS,
 )
@@ -239,43 +240,121 @@ def fetch_registry_json() -> dict:
     return json.loads(content)
 
 
+def prune_registry(extensions: list[dict]) -> list[dict]:
+    """Drop the registry records no host would ever pick; sort the rest by (id, version).
+
+    A host admits a record when its min_sdk_required is at most the host SDK
+    version, with no upper bound, and installs the highest admitted version
+    that ships its platform. So version V is worth keeping for platform P only
+    if V's min_sdk_required is strictly lower than that of every newer version
+    of the same extension that ships P: one record per SDK floor level, per
+    platform. A record keeps only the platforms it still serves and is dropped
+    when none is left. A record without min_sdk_required is admitted by every
+    host, so it counts as the lowest floor.
+
+    The validator in pj-plugin-registry rejects a registry.json that is not
+    pruned by this rule; keep the two in step.
+    """
+    lowest_newer_floor: dict[tuple[str, str], tuple] = {}
+    kept = []
+    for ext in sorted(extensions, key=lambda e: (e["id"], semver_sort_key(e["version"])), reverse=True):
+        floor = semver_sort_key(ext.get("min_sdk_required", ""))
+        platforms = {
+            platform: data
+            for platform, data in ext["platforms"].items()
+            if (ext["id"], platform) not in lowest_newer_floor or floor < lowest_newer_floor[(ext["id"], platform)]
+        }
+        for platform in platforms:
+            lowest_newer_floor[(ext["id"], platform)] = floor
+        if platforms:
+            kept.append({**ext, "platforms": platforms})
+    kept.reverse()
+    return kept
+
+
 def update_registry(registry: dict, entry: dict) -> dict:
-    """Update registry with new entry (add or update existing)."""
+    """Add a release to the registry, next to the older versions hosts on an older SDK still need.
+
+    A published version is immutable, with one exception: submitting it again
+    may add platforms (a platform build recovered after the release). The
+    stored record then gains those platforms and changes in nothing else, so
+    metadata corrected by hand in the registry survives. A submission that adds
+    nothing returns the registry as it was, with the same "extensions" list.
+
+    Raises ValueError, leaving the registry untouched, when the entry would
+    change a published artifact (another URL or checksum for a stored platform,
+    or a stored platform gone), or when a newer version already serves every
+    platform of the entry at the same or a lower min_sdk_required.
+    """
+    extension_id, version = entry["id"], entry["version"]
     extensions = registry.get("extensions", [])
 
-    # Find existing entry by id
-    existing_idx = None
-    for i, ext in enumerate(extensions):
-        if ext.get("id") == entry["id"]:
-            existing_idx = i
-            break
+    def is_this_version(ext: dict) -> bool:
+        return ext.get("id") == extension_id and semver_sort_key(ext["version"]) == semver_sort_key(version)
 
-    if existing_idx is not None:
-        # Update existing entry
-        extensions[existing_idx] = entry
-    else:
-        # Add new entry
-        extensions.append(entry)
+    stored = next((ext for ext in extensions if is_this_version(ext)), None)
+    if stored is not None:
+        if stored["version"] != version or any(
+            entry["platforms"].get(platform) != data for platform, data in stored["platforms"].items()
+        ):
+            raise ValueError(
+                f"the registry already holds {extension_id} v{stored['version']} with different content. A published "
+                "version is immutable: release a new version, or edit registry.json by hand to pull a broken one."
+            )
+        entry = {**stored, "platforms": {**stored["platforms"], **entry["platforms"]}}
+        extensions = [ext for ext in extensions if ext is not stored]
 
-    # Sort extensions alphabetically by id
-    extensions.sort(key=lambda x: x.get("id", ""))
+    pruned = prune_registry(extensions + [entry])
+    kept = next((ext for ext in pruned if is_this_version(ext)), None)
+    if stored is not None and kept == stored:
+        return registry
+    if kept is None:
+        newer = max((ext["version"] for ext in pruned if ext["id"] == extension_id), key=semver_sort_key, default=None)
+        reason = (
+            f"v{newer} already covers its platforms at the same or a lower min_sdk_required"
+            if newer
+            else "it ships no platform"
+        )
+        raise ValueError(f"{extension_id} v{version} would serve no host: {reason}.")
 
-    registry["extensions"] = extensions
-
+    registry["extensions"] = pruned
     return registry
 
 
-def create_registry_pr(entry: dict, dry_run: bool = False, release_notes: str | None = None) -> str:
-    """Create a PR to update the registry with the new extension entry."""
+def superseded_entries(before: list[dict], after: list[dict]) -> list[str]:
+    """Describe the platform entries of `before` that `after` no longer holds, one line per record."""
+    remaining = {(ext["id"], ext["version"]): ext["platforms"] for ext in after}
+    lines = []
+    for ext in before:
+        gone = sorted(p for p in ext["platforms"] if p not in remaining.get((ext["id"], ext["version"]), {}))
+        if gone:
+            lines.append(f"{ext['id']} {ext['version']} ({', '.join(gone)})")
+    return lines
+
+
+def create_registry_pr(entry: dict, dry_run: bool = False, release_notes: str | None = None) -> str | None:
+    """Create a PR that adds the entry to the registry; return its URL, or None when the registry needs no change."""
     extension_id = entry["id"]
     version = entry["version"]
     branch_name = f"update-{extension_id}-{version}"
 
     print(f"  Fetching current registry.json...")
     registry = fetch_registry_json()
+    before = registry.get("extensions", [])
 
     print(f"  Updating registry with {extension_id} v{version}...")
-    updated_registry = update_registry(registry, entry)
+    try:
+        updated_registry = update_registry(registry, entry)
+    except ValueError as e:
+        sys.exit(f"Error: {e}")
+
+    if updated_registry.get("extensions", []) == before:
+        print(f"  The registry already serves every platform of {extension_id} v{version}: nothing to submit")
+        return None
+
+    superseded = superseded_entries(before, updated_registry["extensions"])
+    for line in superseded:
+        print(f"  Superseded, removed from the registry: {line}")
 
     if dry_run:
         print(f"\n  [dry-run] Would create PR to update registry")
@@ -351,12 +430,22 @@ def create_registry_pr(entry: dict, dry_run: bool = False, release_notes: str | 
 
     # Create PR
     print(f"  Creating PR...")
-    platform_summary = ", ".join(sorted(entry.get("platforms", {}).keys()))
+    stored_platforms = next(
+        ext["platforms"]
+        for ext in updated_registry["extensions"]
+        if ext["id"] == extension_id and ext["version"] == version
+    )
+    platform_summary = ", ".join(sorted(stored_platforms))
     pr_body = (
         f"## Update `{extension_id}` to v{version}\n\n"
         f"**Platforms:** {platform_summary}\n\n"
-        f"This PR updates the registry entry for extension `{extension_id}`."
+        f"This PR adds v{version} of extension `{extension_id}` to the registry, or platforms to its record."
     )
+    if superseded:
+        pr_body += "\n\n**Removed, because no PlotJuggler would pick them any more:**\n\n"
+        pr_body += "\n".join(f"- `{line}`" for line in superseded)
+    else:
+        pr_body += "\n\nNo other record changes."
     if release_notes:
         pr_body += f"\n\n## Release Notes\n\n{release_notes.strip()}"
     pr_body += "\n\n---\n*Generated by submit_to_registry.py*"
@@ -527,7 +616,9 @@ def main():
     print(f"\nCreating PR on {REGISTRY_REPO}...")
     pr_url = create_registry_pr(entry, dry_run=args.dry_run, release_notes=release_notes)
 
-    if not args.dry_run:
+    if pr_url is None:
+        print("\n✓ Registry already up to date, no PR created")
+    elif not args.dry_run:
         print(f"\n✓ PR created: {pr_url}")
 
 

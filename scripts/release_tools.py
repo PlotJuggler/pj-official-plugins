@@ -370,13 +370,22 @@ def compare_versions(v1: str, v2: str) -> int:
     return 0
 
 
-def semver_sort_key(version: str) -> tuple[int, int, int, str]:
-    """Return a stable sort key for supported semantic versions."""
+def semver_sort_key(version: str) -> tuple:
+    """Sort key with SemVer 2.0.0 precedence, the order the PlotJuggler host uses.
+
+    A pre-release sorts before its release (X.Y.Z-dev.N < X.Y.Z), numeric
+    pre-release identifiers compare as numbers and sort before alphanumeric
+    ones, and build metadata is ignored. A string that is not a version sorts
+    below every version.
+    """
     match = SEMVER_REGEX.match(version)
     if not match:
-        return (0, 0, 0, "")
-    prerelease = match.group(4) or ""
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3)), prerelease)
+        return ((0, 0, 0), 0, ())
+    core = tuple(int(match.group(i)) for i in (1, 2, 3))
+    if not match.group(4):
+        return (core, 1, ())
+    identifiers = tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in match.group(4).split("."))
+    return (core, 0, identifiers)
 
 
 # =============================================================================
