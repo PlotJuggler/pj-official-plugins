@@ -79,6 +79,14 @@ class CdrReader {
     return count;
   }
 
+  /// Returns @p count after checking that @p element_size bytes per element fit (a fixed-size array).
+  [[nodiscard]] uint32_t requireElements(uint32_t count, size_t element_size) const {
+    if (element_size != 0 && count > remaining() / element_size) {
+      throw CdrError("CDR fixed array exceeds the remaining payload");
+    }
+    return count;
+  }
+
   /// Appends @p count primitives of type T to @p out, or skips them when out is null.
   template <typename T>
   void readArray(uint32_t count, std::vector<T>* out) {

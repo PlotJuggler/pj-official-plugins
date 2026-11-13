@@ -13,7 +13,15 @@ One entry per released version (newest first).
 - Keep the links between NavCels (stairs, ramps, elevators, doors) for the 3D
   scene to draw.
 - Plot a compact summary per message (header stamp and frame, vertex, NavCel,
-  surface, layer and link counts, geometry id; for layers the name and value
-  count) instead of the raw arrays.
+  surface, layer and link counts, geometry id, and how many layers and links
+  were dropped; for layers the name and value count) instead of the raw arrays.
+  Dropped layers and links are also reported as parser warnings.
+- Honour the data source's "use embedded timestamp" option: maps, updates and
+  their summaries are placed at the header stamp when it is set.
+- Name each layer's channel after the layer; a layer with an empty, repeated
+  or reserved name is dropped, so maps and their updates always address the
+  same channel with the same type. A sparse integer layer inside a map without
+  an "unknown" value to mark the unlisted NavCels is dropped. NavCels on no
+  surface are marked as no-data in the `surface` channel.
 - Decode every released message layout, using the definition carried by each
   recording.

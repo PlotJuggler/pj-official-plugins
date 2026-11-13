@@ -16,6 +16,7 @@ class ParserNavmapConan(ConanFile):
     generators = "CMakeDeps", "CMakeToolchain"
     requires = (
         f"plotjuggler_sdk/{_SDK_VERSION}",
+        "nlohmann_json/3.12.0",
         "gtest/1.17.0",
     )
     default_options = {"*:shared": False}

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <charconv>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -233,12 +234,14 @@ Value decodeField(const MsgSchema& schema, const MsgField& field, CdrReader& rea
     value.nodes.push_back(decodeNode(schema, field.type, reader, keep, depth + 1));
     return value;
   }
-  // A nested message is at least one byte on the wire only if it has fields;
-  // bound the count by the remaining payload either way.
-  const uint32_t count = field.fixed_size != 0 ? field.fixed_size : reader.readSequenceLength(1);
+  // Every element takes at least its type's minimum wire size, which bounds
+  // the count (fixed or not) by the remaining payload.
+  const size_t element_size = schema.min_wire_size.at(field.type);
+  const uint32_t count = field.fixed_size != 0 ? reader.requireElements(field.fixed_size, element_size)
+                                               : reader.readSequenceLength(element_size);
   value.kind = Value::Kind::kNodeArray;
   value.count = count;
-  value.nodes.reserve(std::min<size_t>(count, reader.remaining()));
+  value.nodes.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     value.nodes.push_back(decodeNode(schema, field.type, reader, keep, depth + 1));
   }
@@ -254,6 +257,10 @@ Node decodeNode(const MsgSchema& schema, const std::string& type, CdrReader& rea
     throw CdrError("type is missing from the schema: " + type);
   }
   Node node;
+  if (it->second.empty()) {
+    (void)reader.read<uint8_t>();  // rosidl puts an empty message on the wire as one uint8
+    return node;
+  }
   node.fields.reserve(it->second.size());
   for (const MsgField& field : it->second) {
     node.fields.emplace_back(field.name, decodeField(schema, field, reader, keep, depth));
@@ -271,6 +278,47 @@ void addImplicitTypes(MsgSchema& schema) {
       "std_msgs/Header",
       std::vector<MsgField>{
           {.type = "builtin_interfaces/Time", .name = "stamp"}, {.type = "string", .name = "frame_id"}});
+}
+
+size_t saturatingAdd(size_t a, size_t b) {
+  return a > std::numeric_limits<size_t>::max() - b ? std::numeric_limits<size_t>::max() : a + b;
+}
+
+size_t saturatingMul(size_t a, size_t b) {
+  return b != 0 && a > std::numeric_limits<size_t>::max() / b ? std::numeric_limits<size_t>::max() : a * b;
+}
+
+// Memoizes min_wire_size for `type` and every type it embeds. `visiting` holds
+// the types on the current path: reaching one again means the type would embed
+// itself, which no finite payload can hold.
+PJ::Expected<size_t> computeMinWireSize(
+    MsgSchema& schema, const std::string& type, std::unordered_set<std::string>& visiting) {
+  if (const auto known = schema.min_wire_size.find(type); known != schema.min_wire_size.end()) {
+    return known->second;
+  }
+  if (!visiting.insert(type).second) {
+    return PJ::unexpected(type + " contains itself");
+  }
+  size_t total = 0;
+  for (const MsgField& field : schema.types.at(type)) {
+    size_t element = 0;
+    if (field.is_array && field.fixed_size == 0) {
+      element = sizeof(uint32_t);  // the sequence length; the elements may be absent
+    } else if (field.type == "string") {
+      element = sizeof(uint32_t) + 1;  // the length and the terminating NUL
+    } else if (!visitPrimitive(field.type, [&](auto tag) { element = sizeof(tag); })) {
+      auto nested = computeMinWireSize(schema, field.type, visiting);
+      if (!nested) {
+        return nested;
+      }
+      element = *nested;
+    }
+    total = saturatingAdd(total, field.fixed_size != 0 ? saturatingMul(element, field.fixed_size) : element);
+  }
+  visiting.erase(type);
+  const size_t size = std::max<size_t>(total, 1);
+  schema.min_wire_size.emplace(type, size);
+  return size;
 }
 
 }  // namespace
@@ -345,6 +393,12 @@ PJ::Expected<MsgSchema> compileMsgBundle(std::string_view root_type, std::string
   if (!schema.types.contains(schema.root)) {
     return PJ::unexpected("schema does not define " + schema.root);
   }
+  std::unordered_set<std::string> visiting;
+  for (const auto& entry : schema.types) {
+    if (auto size = computeMinWireSize(schema, entry.first, visiting); !size) {
+      return PJ::unexpected(size.error());
+    }
+  }
   return schema;
 }
 
@@ -365,20 +419,9 @@ Node decodeMessage(const MsgSchema& schema, CdrReader& reader, bool keep_primiti
   return decodeNode(schema, schema.root, reader, keep_primitive_arrays, 0);
 }
 
-std::vector<double> arrayAsDoubles(const Value* value) {
-  if (value == nullptr || value->kind != Value::Kind::kNumberArray) {
-    return {};
-  }
-  return std::visit(
-      [](const auto& elements) {
-        std::vector<double> out;
-        out.reserve(elements.size());
-        for (const auto element : elements) {
-          out.push_back(static_cast<double>(element));
-        }
-        return out;
-      },
-      value->numbers);
+std::optional<double> numberOf(const Node& node, std::string_view name) {
+  const Value* value = node.find(name);
+  return value != nullptr && value->kind == Value::Kind::kNumber ? std::optional<double>(value->number) : std::nullopt;
 }
 
 }  // namespace navmap_parser

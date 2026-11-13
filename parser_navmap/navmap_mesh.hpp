@@ -2,14 +2,15 @@
  * @file navmap_mesh.hpp
  * @brief NavMap / NavMapLayer messages -> sdk::MeshMap / sdk::MeshMapUpdate.
  *
- * Layers pass through as MeshMap channels in their own type; only the geometry
- * is repacked (NavMap keeps one array per axis and per corner, MeshMap wants
- * them interleaved). Styling is left to the 3D view.
+ * Layers pass through as MeshMap channels in their wire type; only the
+ * geometry is repacked (NavMap keeps one array per axis and per corner, MeshMap wants them
+ * interleaved). Styling is left to the 3D view.
  */
 #pragma once
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <pj_base/builtin/mesh_map.hpp>
 #include <pj_base/builtin/mesh_map_update.hpp>
 #include <pj_base/expected.hpp>
@@ -20,14 +21,10 @@
 
 namespace navmap_parser {
 
-/// navmap_ros_interfaces/NavMapLayer type tags.
-enum class LayerType : uint8_t { kU8 = 0, kF32 = 1, kF64 = 2, kI16 = 3 };
-
-/// One per-NavCel layer, values widened to double.
+/// One per-NavCel layer.
 struct NavMapLayer {
   std::string frame_id;  ///< Header frame; set only for a standalone NavMapLayer message.
   std::string name;
-  LayerType type = LayerType::kF32;  ///< the type of the data array actually present
   std::string unit;
   bool has_unknown = false;
   double unknown_value = std::numeric_limits<double>::quiet_NaN();
@@ -35,7 +32,9 @@ struct NavMapLayer {
   uint64_t geometry_id = 0;
   /// Empty: `values` covers every NavCel. Otherwise values[k] belongs to NavCel indices[k].
   std::vector<uint32_t> indices;
-  std::vector<double> values;
+  /// The data array the type tag names (or, when that one is empty, the one
+  /// that is filled), in its wire type, which the channel datatype follows.
+  NumberArray values = std::vector<float>{};
 };
 
 /// A group of NavCels expressed in one frame.
@@ -66,34 +65,48 @@ struct NavMapData {
   bool has_geometry_id = false;
   uint64_t geometry_id = 0;
   std::vector<NavMapLink> links;
-  /// Layers dropped because their data does not match the NavCel count.
+  /// Layers dropped: data that does not match the NavCel count, an index out
+  /// of range, a name that cannot be a channel (empty, reserved, repeated), a
+  /// sparse integer layer with no no-data value to fill the unlisted NavCels
+  /// with, or 64-bit integer data.
   uint32_t dropped_layers = 0;
+  /// Links dropped: a NavCel out of range or a field that is not a valid integer.
+  uint32_t dropped_links = 0;
 };
 
 /// Validates a decoded NavMap and moves its arrays out of @p root. Fields
-/// missing from older message revisions keep their defaults.
+/// missing from older message revisions keep their defaults. An empty header
+/// frame falls back to the first surface's frame. Invalid layers and links are
+/// dropped and counted rather than failing the map.
 [[nodiscard]] PJ::Expected<NavMapData> extractNavMap(Node& root);
 
 /// Reads a decoded NavMapLayer (standalone message or an element of NavMap.layers).
 [[nodiscard]] NavMapLayer extractLayer(Node& node);
 
+/// The header stamp of a decoded message in nanoseconds; nullopt when it is
+/// missing, malformed or not positive (an unset stamp).
+[[nodiscard]] std::optional<int64_t> positiveHeaderStampNs(const Node& root);
+
 /// Builds the MeshMap: positions and indices interleaved from NavMap's per-axis
 /// and per-corner arrays; `red`/`green`/`blue`/`alpha` vertex channels when the
 /// map has vertex colours; a categorical uint32 `surface` face channel (labels:
-/// the surface frames) when it has surfaces; one face channel per layer, in the
-/// layer's own type, carrying its unit and its "unknown" value as
-/// `info.no_data`. A layer listing only some NavCels marks the others with that
-/// value (NaN for a float layer; an integer layer without one widens to
-/// float32). A layer name that is empty or `surface` is renamed (channelNameFor),
-/// a repeated one gets a numeric suffix. Links keep their type and length.
+/// the surface frames; a NavCel on no surface holds the uint32 maximum, then
+/// declared as `info.no_data`) when it has surfaces; one face channel per layer,
+/// named after it, carrying its unit and its "unknown" value as `info.no_data`.
+/// Every channel has the type of the layer's array, as in an update, and the
+/// "unknown" value is declared only when that type can hold it. A layer listing
+/// only some NavCels marks the others with the no-data value (NaN in a float
+/// channel without one). Links keep their type; a link's
+/// length becomes its cost, NaN when upstream leaves it to compute (negative).
 /// `frame_id` is the header frame: MeshMap has one frame per object, and NavMap
 /// surfaces share the map frame in practice.
-[[nodiscard]] PJ::sdk::MeshMap buildMeshMap(const NavMapData& map, int64_t timestamp_ns);
+[[nodiscard]] PJ::sdk::MeshMap buildMeshMap(NavMapData map, int64_t timestamp_ns);
 
 /// Builds the MeshMapUpdate for a standalone NavMapLayer message: one face
 /// patch for the layer's channel, dense when the layer lists no indices, sparse
-/// otherwise, in the layer's own type. Fails when the data does not match the
-/// listed indices.
-[[nodiscard]] PJ::Expected<PJ::sdk::MeshMapUpdate> buildMeshMapUpdate(const NavMapLayer& layer, int64_t timestamp_ns);
+/// otherwise, with the channel name, datatype and info a map gives the same
+/// layer. Fails when the data does not match the listed indices or the name is
+/// one a map drops.
+[[nodiscard]] PJ::Expected<PJ::sdk::MeshMapUpdate> buildMeshMapUpdate(NavMapLayer layer, int64_t timestamp_ns);
 
 }  // namespace navmap_parser

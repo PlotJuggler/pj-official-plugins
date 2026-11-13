@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -19,8 +21,28 @@ namespace {
 
 using Datatype = PJ::sdk::PointField::Datatype;
 
+// `value` as T when it is finite and in T's range, else nullopt (casting it
+// would be undefined). Only a hostile schema, declaring an integer field as a
+// floating or wider type, produces a failing value.
+template <typename T, typename S>
+std::optional<T> checkedCast(S value) {
+  static_assert(std::is_integral_v<T> && sizeof(T) <= sizeof(uint32_t));
+  if constexpr (std::is_floating_point_v<S>) {
+    // Both bounds are exact doubles for T up to 32 bits; NaN fails both.
+    if (!(value > static_cast<double>(std::numeric_limits<T>::min()) - 1.0 &&
+          value < static_cast<double>(std::numeric_limits<T>::max()) + 1.0)) {
+      return std::nullopt;
+    }
+    return static_cast<T>(value);
+  } else {
+    return std::in_range<T>(value) ? std::optional<T>(static_cast<T>(value)) : std::nullopt;
+  }
+}
+
 // Moves a numeric array out of a decoded field, converting element-wise when
-// the wire type differs from T. A missing or non-array field yields empty.
+// the wire type differs from T. A missing or non-array field yields empty. An
+// integer element that does not fit T becomes T's maximum, which every index
+// bound check rejects, so its layer, surface or map fails validation.
 template <typename T>
 std::vector<T> takeArray(Node& node, std::string_view name) {
   Value* value = node.find(name);
@@ -35,7 +57,11 @@ std::vector<T> takeArray(Node& node, std::string_view name) {
         std::vector<T> out;
         out.reserve(elements.size());
         for (const auto element : elements) {
-          out.push_back(static_cast<T>(element));
+          if constexpr (std::is_integral_v<T>) {
+            out.push_back(checkedCast<T>(element).value_or(std::numeric_limits<T>::max()));
+          } else {
+            out.push_back(static_cast<T>(element));
+          }
         }
         return out;
       },
@@ -47,12 +73,11 @@ std::string takeString(Node& node, std::string_view name) {
   return value != nullptr && value->kind == Value::Kind::kString ? std::move(value->text) : std::string();
 }
 
-std::optional<double> numberOf(const Node& node, std::string_view name) {
-  const Value* value = node.find(name);
-  if (value == nullptr || value->kind != Value::Kind::kNumber) {
-    return std::nullopt;
-  }
-  return value->number;
+// An integer field as T; nullopt when it is missing or does not fit T.
+template <typename T>
+std::optional<T> integerOf(const Node& node, std::string_view name) {
+  const auto number = numberOf(node, name);
+  return number ? checkedCast<T>(*number) : std::nullopt;
 }
 
 Node* nodeOf(Node& node, std::string_view name) {
@@ -70,119 +95,150 @@ bool allBelow(const std::vector<uint32_t>& indices, size_t limit) {
   return std::all_of(indices.begin(), indices.end(), [limit](uint32_t index) { return index < limit; });
 }
 
+size_t sizeOf(const NumberArray& values) {
+  return std::visit([](const auto& elements) { return elements.size(); }, values);
+}
+
 // --- Channel encoding --------------------------------------------------------
 
-Datatype datatypeOf(LayerType type) {
-  switch (type) {
-    case LayerType::kU8:
-      return Datatype::kUint8;
-    case LayerType::kF64:
-      return Datatype::kFloat64;
-    case LayerType::kI16:
-      return Datatype::kInt16;
-    case LayerType::kF32:
-      break;
-  }
-  return Datatype::kFloat32;
-}
-
-bool isFloat(Datatype datatype) {
-  return datatype == Datatype::kFloat32 || datatype == Datatype::kFloat64;
-}
-
-// One value stored as `datatype`. Integer values come from integer wire arrays,
-// so they fit; a non-finite one (never produced here) is clamped to 0 rather
-// than cast, which would be undefined.
-void writeValue(uint8_t* dst, Datatype datatype, double value) {
-  switch (datatype) {
-    case Datatype::kUint8: {
-      const auto v = std::isfinite(value) ? static_cast<uint8_t>(std::clamp(value, 0.0, 255.0)) : uint8_t{0};
-      std::memcpy(dst, &v, sizeof(v));
-      return;
-    }
-    case Datatype::kInt16: {
-      const auto v = std::isfinite(value) ? static_cast<int16_t>(std::clamp(value, -32768.0, 32767.0)) : int16_t{0};
-      std::memcpy(dst, &v, sizeof(v));
-      return;
-    }
-    case Datatype::kUint32: {
-      const auto v = std::isfinite(value) ? static_cast<uint32_t>(std::clamp(value, 0.0, 4294967295.0)) : 0U;
-      std::memcpy(dst, &v, sizeof(v));
-      return;
-    }
-    case Datatype::kFloat64:
-      std::memcpy(dst, &value, sizeof(value));
-      return;
-    default: {
-      const auto v = static_cast<float>(value);
-      std::memcpy(dst, &v, sizeof(v));
-      return;
-    }
+// The channel datatype that stores T as is; kUnknown for the 64-bit integers,
+// which MeshMap channels cannot hold.
+template <typename T>
+constexpr Datatype datatypeFor() {
+  if constexpr (std::is_same_v<T, uint8_t>) {
+    return Datatype::kUint8;
+  } else if constexpr (std::is_same_v<T, int8_t>) {
+    return Datatype::kInt8;
+  } else if constexpr (std::is_same_v<T, int16_t>) {
+    return Datatype::kInt16;
+  } else if constexpr (std::is_same_v<T, uint16_t>) {
+    return Datatype::kUint16;
+  } else if constexpr (std::is_same_v<T, int32_t>) {
+    return Datatype::kInt32;
+  } else if constexpr (std::is_same_v<T, uint32_t>) {
+    return Datatype::kUint32;
+  } else if constexpr (std::is_same_v<T, float>) {
+    return Datatype::kFloat32;
+  } else if constexpr (std::is_same_v<T, double>) {
+    return Datatype::kFloat64;
+  } else {
+    return Datatype::kUnknown;
   }
 }
 
-// The byte arrays a MeshMap / MeshMapUpdate views, kept alive by its anchor.
-// Moving a vector keeps its buffer, so spans stay valid as blobs grows.
+// The arrays a MeshMap / MeshMapUpdate views, kept alive by its anchor, in
+// their own type. Moving a vector keeps its buffer, so spans stay valid as
+// `arrays` grows.
 struct OwnedBlobs {
-  std::vector<std::vector<uint8_t>> blobs;
+  std::vector<NumberArray> arrays;
 
-  PJ::Span<const uint8_t> add(std::vector<uint8_t> bytes) {
-    blobs.push_back(std::move(bytes));
-    return {blobs.back().data(), blobs.back().size()};
+  template <typename T>
+  PJ::Span<const uint8_t> add(std::vector<T> values) {
+    const auto& stored = std::get<std::vector<T>>(arrays.emplace_back(std::move(values)));
+    return {reinterpret_cast<const uint8_t*>(stored.data()), stored.size() * sizeof(T)};
   }
 };
 
-// `values` stored as `datatype`, tightly packed.
-std::vector<uint8_t> encode(const std::vector<double>& values, Datatype datatype) {
-  const size_t size = PJ::sdk::bytesPerElement(datatype);
-  std::vector<uint8_t> bytes(values.size() * size);
-  for (size_t i = 0; i < values.size(); ++i) {
-    writeValue(bytes.data() + (i * size), datatype, values[i]);
+// Three per-axis (or per-corner) arrays as one xyz-interleaved array.
+template <typename T>
+std::vector<T> interleave(const std::vector<T>& a, const std::vector<T>& b, const std::vector<T>& c) {
+  std::vector<T> out;
+  out.reserve(a.size() * 3);
+  for (size_t i = 0; i < a.size(); ++i) {
+    out.push_back(a[i]);
+    out.push_back(b[i]);
+    out.push_back(c[i]);
   }
-  return bytes;
+  return out;
 }
 
+// A layer is stored in the channel named after it. A name that is empty or
+// collides with a channel this parser adds (`surface`) or a MeshMap channel
+// convention cannot be one, and renaming it would need state shared by a map
+// and its updates, so such a layer is dropped. Shared by maps and updates so
+// both address the same channel.
+bool isLayerChannelName(std::string_view name) {
+  static constexpr std::string_view kReserved[] = {"surface", "red", "green", "blue", "alpha", "normal", "uv"};
+  return !name.empty() && std::find(std::begin(kReserved), std::end(kReserved), name) == std::end(kReserved);
+}
+
+// Whether `value` is exactly a value of T (always for a floating T).
 template <typename T>
-std::vector<uint8_t> rawBytes(const std::vector<T>& values) {
-  std::vector<uint8_t> bytes(values.size() * sizeof(T));
-  if (!bytes.empty()) {
-    std::memcpy(bytes.data(), values.data(), bytes.size());
+bool representable(double value) {
+  if constexpr (std::is_floating_point_v<T>) {
+    return true;
+  } else {
+    return value == std::trunc(value) && value >= static_cast<double>(std::numeric_limits<T>::min()) &&
+           value <= static_cast<double>(std::numeric_limits<T>::max());
   }
-  return bytes;
+}
+
+// A layer's channel datatype is the type of the array it carries, in a map and
+// in an update alike, so the two agree by construction. kUnknown for the 64-bit
+// integers, which no MeshMap channel holds.
+Datatype datatypeOf(const NavMapLayer& layer) {
+  return std::visit(
+      [](const auto& elements) { return datatypeFor<typename std::decay_t<decltype(elements)>::value_type>(); },
+      layer.values);
 }
 
 // The layer's unit, and its "unknown" value as the channel's no-data marker
-// (NaN needs none: it is always "no data" in a float channel).
+// when the channel's type can hold it (an integer channel cannot hold -1.5 or
+// 300 in uint8, so it then declares none). NaN needs none: it is always "no
+// data" in a float channel.
 PJ::sdk::ChannelInfo infoFor(const NavMapLayer& layer) {
   PJ::sdk::ChannelInfo info;
   info.unit = layer.unit;
-  if (layer.has_unknown && !std::isnan(layer.unknown_value)) {
+  const bool holds = std::visit(
+      [&](const auto& elements) {
+        return representable<typename std::decay_t<decltype(elements)>::value_type>(layer.unknown_value);
+      },
+      layer.values);
+  if (layer.has_unknown && !std::isnan(layer.unknown_value) && holds) {
     info.no_data = layer.unknown_value;
   }
   return info;
 }
 
-// The channel a layer is stored in: its name, unless that is empty or the
-// `surface` channel this parser adds. Shared by maps and updates so both
-// address the same channel.
-std::string channelNameFor(const std::string& layer_name) {
-  if (layer_name.empty()) {
-    return "layer";
-  }
-  if (layer_name == "surface") {
-    return "surface_layer";
-  }
-  return layer_name;
+// Whether a sparse layer inside a map can be stored: the NavCels it does not
+// list need a fill value, the no-data value or, in a float channel, NaN.
+bool fillable(const NavMapLayer& layer, const PJ::sdk::ChannelInfo& info) {
+  return layer.indices.empty() || info.no_data.has_value() || datatypeOf(layer) == Datatype::kFloat32 ||
+         datatypeOf(layer) == Datatype::kFloat64;
 }
 
-// A later layer with an already-used name gets a numeric suffix.
-std::string uniqueChannelName(const std::string& wanted, std::set<std::string>& used) {
-  std::string name = wanted;
-  for (int suffix = 2; used.contains(name); ++suffix) {
-    name = wanted + "_" + std::to_string(suffix);
+// `values` scattered over `size` elements, the rest `fill`, when `scatter`
+// lists their elements; else moved as they are.
+template <typename T>
+std::vector<T> layerValues(std::vector<T>& values, const std::vector<uint32_t>& scatter, size_t size, T fill) {
+  if (scatter.empty()) {
+    return std::move(values);
   }
-  used.insert(name);
-  return name;
+  std::vector<T> out(size, fill);
+  for (size_t k = 0; k < scatter.size(); ++k) {
+    out[scatter[k]] = values[k];
+  }
+  return out;
+}
+
+// Adds a layer's channel data in its own type. Scattered elements not listed
+// hold the no-data value, else NaN (extractNavMap() drops an integer layer
+// that would need a fill without a no-data value).
+PJ::Span<const uint8_t> addLayerData(
+    OwnedBlobs& owned, NumberArray& values, const std::vector<uint32_t>& scatter, size_t size,
+    const PJ::sdk::ChannelInfo& info) {
+  return std::visit(
+      [&](auto& elements) {
+        using T = typename std::decay_t<decltype(elements)>::value_type;
+        T fill{};
+        if (info.no_data.has_value()) {
+          fill = static_cast<T>(*info.no_data);
+        } else if constexpr (std::is_floating_point_v<T>) {
+          fill = std::numeric_limits<T>::quiet_NaN();
+        }
+        return owned.add(layerValues<T>(elements, scatter, size, fill));
+      },
+      values);
 }
 
 std::string geometryIdText(bool has_id, uint64_t id) {
@@ -197,8 +253,6 @@ NavMapLayer extractLayer(Node& node) {
     layer.frame_id = takeString(*header, "frame_id");
   }
   layer.name = takeString(node, "name");
-  const auto declared = static_cast<uint8_t>(numberOf(node, "type").value_or(1.0));
-  layer.type = declared <= 3 ? static_cast<LayerType>(declared) : LayerType::kF32;
   layer.unit = takeString(node, "unit");
   layer.has_unknown = numberOf(node, "has_unknown").value_or(0.0) != 0.0;
   if (const auto unknown = numberOf(node, "unknown_value")) {
@@ -210,26 +264,23 @@ NavMapLayer extractLayer(Node& node) {
   }
   layer.indices = takeArray<uint32_t>(node, "indices");
 
-  // The type tag names the data array; when that one is empty, fall back to
-  // whichever array is filled, and take the type from it so values always fit.
-  static constexpr std::pair<const char*, LayerType> kArrays[] = {
-      {"data_u8", LayerType::kU8},
-      {"data_f32", LayerType::kF32},
-      {"data_f64", LayerType::kF64},
-      {"data_i16", LayerType::kI16}};
-  for (const auto& [name, type] : kArrays) {
-    if (type == layer.type) {
-      layer.values = arrayAsDoubles(node.find(name));
+  // The type tag (0 U8, 1 F32, 2 F64, 3 I16) names the data array; an unknown
+  // tag means F32. When that array is empty, fall back to whichever is filled.
+  static constexpr const char* kDataArrays[] = {"data_u8", "data_f32", "data_f64", "data_i16"};
+  auto filled = [&](const char* name) -> NumberArray* {
+    Value* value = node.find(name);
+    return value != nullptr && value->kind == Value::Kind::kNumberArray && sizeOf(value->numbers) != 0 ? &value->numbers
+                                                                                                       : nullptr;
+  };
+  const uint8_t tag = integerOf<uint8_t>(node, "type").value_or(uint8_t{1});
+  NumberArray* data = filled(kDataArrays[tag < std::size(kDataArrays) ? tag : 1]);
+  for (const char* name : kDataArrays) {
+    if (data == nullptr) {
+      data = filled(name);
     }
   }
-  if (layer.values.empty()) {
-    for (const auto& [name, type] : kArrays) {
-      layer.values = arrayAsDoubles(node.find(name));
-      if (!layer.values.empty()) {
-        layer.type = type;
-        break;
-      }
-    }
+  if (data != nullptr) {
+    layer.values = std::move(*data);
   }
   return layer;
 }
@@ -280,14 +331,19 @@ PJ::Expected<NavMapData> extractNavMap(Node& root) {
       map.surfaces.push_back(std::move(surface));
     }
   }
+  if (map.frame_id.empty() && !map.surfaces.empty()) {
+    map.frame_id = map.surfaces.front().frame_id;  // as upstream's own conversion does
+  }
 
   if (std::vector<Node>* layers = nodeArrayOf(root, "layers")) {
+    std::set<std::string> names;
     for (Node& node : *layers) {
       NavMapLayer layer = extractLayer(node);
-      const bool valid = layer.indices.empty()
-                             ? layer.values.size() == navcel_count
-                             : layer.values.size() == layer.indices.size() && allBelow(layer.indices, navcel_count);
-      if (valid) {
+      const size_t values = sizeOf(layer.values);
+      const bool fits = layer.indices.empty() ? values == navcel_count
+                                              : values == layer.indices.size() && allBelow(layer.indices, navcel_count);
+      const bool storable = datatypeOf(layer) != Datatype::kUnknown && fillable(layer, infoFor(layer));
+      if (fits && storable && isLayerChannelName(layer.name) && names.insert(layer.name).second) {
         map.layers.push_back(std::move(layer));
       } else {
         ++map.dropped_layers;
@@ -302,69 +358,86 @@ PJ::Expected<NavMapData> extractNavMap(Node& root) {
 
   if (std::vector<Node>* links = nodeArrayOf(root, "links")) {
     for (const Node& node : *links) {
-      NavMapLink link;
-      link.from_navcel = static_cast<uint32_t>(numberOf(node, "from_navcel").value_or(0.0));
-      link.to_navcel = static_cast<uint32_t>(numberOf(node, "to_navcel").value_or(0.0));
-      link.type = static_cast<uint8_t>(numberOf(node, "type").value_or(0.0));
-      link.bidirectional = numberOf(node, "bidirectional").value_or(0.0) != 0.0;
-      link.length = numberOf(node, "length").value_or(std::numeric_limits<double>::quiet_NaN());
+      const auto from = integerOf<uint32_t>(node, "from_navcel");
+      const auto to = integerOf<uint32_t>(node, "to_navcel");
+      const auto type = node.find("type") != nullptr ? integerOf<uint8_t>(node, "type") : std::optional<uint8_t>(0);
       // A link to a missing NavCel cannot be drawn; skip it rather than lose the map.
-      if (link.from_navcel < navcel_count && link.to_navcel < navcel_count) {
-        map.links.push_back(link);
+      if (!from || !to || !type || *from >= navcel_count || *to >= navcel_count) {
+        ++map.dropped_links;
+        continue;
       }
+      NavMapLink link;
+      link.from_navcel = *from;
+      link.to_navcel = *to;
+      link.type = *type;
+      link.bidirectional = numberOf(node, "bidirectional").value_or(0.0) != 0.0;
+      // Upstream reads a negative length as "compute it": the cost is unspecified.
+      const double length = numberOf(node, "length").value_or(std::numeric_limits<double>::quiet_NaN());
+      link.length = length < 0.0 ? std::numeric_limits<double>::quiet_NaN() : length;
+      map.links.push_back(link);
     }
   }
   return map;
 }
 
-PJ::sdk::MeshMap buildMeshMap(const NavMapData& map, int64_t timestamp_ns) {
+std::optional<int64_t> positiveHeaderStampNs(const Node& root) {
+  const Value* header = root.find("header");
+  if (header == nullptr || header->kind != Value::Kind::kNode || header->nodes.empty()) {
+    return std::nullopt;
+  }
+  const Value* stamp = header->nodes.front().find("stamp");
+  if (stamp == nullptr || stamp->kind != Value::Kind::kNode || stamp->nodes.empty()) {
+    return std::nullopt;
+  }
+  const auto sec = integerOf<int32_t>(stamp->nodes.front(), "sec");
+  const auto nanosec = integerOf<uint32_t>(stamp->nodes.front(), "nanosec");
+  if (!sec || !nanosec) {
+    return std::nullopt;
+  }
+  const int64_t ns = (int64_t{*sec} * 1'000'000'000) + int64_t{*nanosec};
+  return ns > 0 ? std::optional<int64_t>(ns) : std::nullopt;
+}
+
+PJ::sdk::MeshMap buildMeshMap(NavMapData map, int64_t timestamp_ns) {
   using PJ::sdk::MeshChannel;
   auto owned = std::make_shared<OwnedBlobs>();
   PJ::sdk::MeshMap mesh;
   mesh.timestamp_ns = timestamp_ns;
-  mesh.frame_id = map.frame_id;
+  mesh.frame_id = std::move(map.frame_id);
   mesh.geometry_id = geometryIdText(map.has_geometry_id, map.geometry_id);
   mesh.vertex_count = static_cast<uint32_t>(map.x.size());
   mesh.face_count = static_cast<uint32_t>(map.v0.size());
   const size_t navcels = map.v0.size();
 
   // Geometry: NavMap keeps one array per axis and per corner; MeshMap wants them interleaved.
-  std::vector<float> positions(map.x.size() * 3);
-  for (size_t v = 0; v < map.x.size(); ++v) {
-    positions[(3 * v) + 0] = map.x[v];
-    positions[(3 * v) + 1] = map.y[v];
-    positions[(3 * v) + 2] = map.z[v];
-  }
   mesh.position_type = Datatype::kFloat32;
-  mesh.positions = owned->add(rawBytes(positions));
-  std::vector<uint32_t> indices(navcels * 3);
-  for (size_t f = 0; f < navcels; ++f) {
-    indices[(3 * f) + 0] = map.v0[f];
-    indices[(3 * f) + 1] = map.v1[f];
-    indices[(3 * f) + 2] = map.v2[f];
-  }
-  mesh.indices = owned->add(rawBytes(indices));
+  mesh.positions = owned->add(interleave(map.x, map.y, map.z));
+  mesh.indices = owned->add(interleave(map.v0, map.v1, map.v2));
 
   // Vertex colour: the arrays are already one per channel.
   if (map.has_vertex_rgba) {
-    const std::vector<uint8_t> opaque(map.x.size(), uint8_t{255});
-    for (const auto& [name, values] :
-         {std::pair<const char*, const std::vector<uint8_t>*>{"red", &map.r},
+    if (map.a.empty()) {
+      map.a.assign(map.x.size(), uint8_t{255});
+    }
+    for (auto& [name, values] :
+         {std::pair<const char*, std::vector<uint8_t>*>{"red", &map.r},
           {"green", &map.g},
           {"blue", &map.b},
-          {"alpha", map.a.empty() ? &opaque : &map.a}}) {
+          {"alpha", &map.a}}) {
       MeshChannel channel;
       channel.name = name;
       channel.target = MeshChannel::Target::kVertex;
       channel.datatype = Datatype::kUint8;
-      channel.data = owned->add(*values);
+      channel.data = owned->add(std::move(*values));
       mesh.channels.push_back(std::move(channel));
     }
   }
 
-  // The surface each NavCel belongs to, as a categorical channel labelled by frame.
+  // The surface each NavCel belongs to, as a categorical channel labelled by
+  // frame. A NavCel no surface lists holds the uint32 maximum, declared no-data.
   if (!map.surfaces.empty()) {
-    std::vector<uint32_t> surface(navcels, 0U);
+    constexpr uint32_t kNoSurface = std::numeric_limits<uint32_t>::max();
+    std::vector<uint32_t> surface(navcels, kNoSurface);
     PJ::sdk::ChannelInfo info;
     info.kind = PJ::sdk::ChannelKind::kCategorical;
     for (uint32_t s = 0; s < map.surfaces.size(); ++s) {
@@ -377,41 +450,28 @@ PJ::sdk::MeshMap buildMeshMap(const NavMapData& map, int64_t timestamp_ns) {
       category.label = frame.empty() ? "surface " + std::to_string(s) : frame;
       info.categories.push_back(std::move(category));
     }
+    if (std::find(surface.begin(), surface.end(), kNoSurface) != surface.end()) {
+      info.no_data = static_cast<double>(kNoSurface);
+    }
     mesh.channels.push_back(
         {.name = "surface",
          .target = MeshChannel::Target::kFace,
          .datatype = Datatype::kUint32,
-         .data = owned->add(rawBytes(surface)),
+         .data = owned->add(std::move(surface)),
          .info = std::move(info)});
   }
 
-  // One face channel per layer, in its own type.
-  std::set<std::string> used_names{"surface"};
-  for (const NavMapLayer& layer : map.layers) {
-    Datatype datatype = datatypeOf(layer.type);
+  // One face channel per layer, in the type of its array; a sparse layer is
+  // scattered over every NavCel.
+  for (NavMapLayer& layer : map.layers) {
     PJ::sdk::ChannelInfo info = infoFor(layer);
-    std::vector<double> values = layer.values;
-    if (!layer.indices.empty()) {
-      // Listed NavCels only: the rest have no data. An integer layer without an
-      // "unknown" value has nothing to mark them with, so it widens to float.
-      double fill = std::numeric_limits<double>::quiet_NaN();
-      if (!isFloat(datatype)) {
-        if (info.no_data.has_value()) {
-          fill = *info.no_data;
-        } else {
-          datatype = Datatype::kFloat32;
-        }
-      }
-      values.assign(navcels, fill);
-      for (size_t k = 0; k < layer.indices.size(); ++k) {
-        values[layer.indices[k]] = layer.values[k];
-      }
-    }
+    const Datatype datatype = datatypeOf(layer);
+    const auto data = addLayerData(*owned, layer.values, layer.indices, navcels, info);
     mesh.channels.push_back(
-        {.name = uniqueChannelName(channelNameFor(layer.name), used_names),
+        {.name = std::move(layer.name),
          .target = MeshChannel::Target::kFace,
          .datatype = datatype,
-         .data = owned->add(encode(values, datatype)),
+         .data = data,
          .info = std::move(info)});
   }
 
@@ -427,25 +487,34 @@ PJ::sdk::MeshMap buildMeshMap(const NavMapData& map, int64_t timestamp_ns) {
   return mesh;
 }
 
-PJ::Expected<PJ::sdk::MeshMapUpdate> buildMeshMapUpdate(const NavMapLayer& layer, int64_t timestamp_ns) {
-  if (!layer.indices.empty() && layer.indices.size() != layer.values.size()) {
+PJ::Expected<PJ::sdk::MeshMapUpdate> buildMeshMapUpdate(NavMapLayer layer, int64_t timestamp_ns) {
+  if (!layer.indices.empty() && layer.indices.size() != sizeOf(layer.values)) {
     return PJ::unexpected(std::string("NavMapLayer: indices and data have different lengths"));
+  }
+  if (!isLayerChannelName(layer.name)) {
+    return PJ::unexpected("NavMapLayer: a map drops a layer named '" + layer.name + "', so there is nothing to update");
   }
   auto owned = std::make_shared<OwnedBlobs>();
   PJ::sdk::MeshMapUpdate update;
   update.timestamp_ns = timestamp_ns;
-  update.frame_id = layer.frame_id;
+  update.frame_id = std::move(layer.frame_id);
   update.geometry_id = geometryIdText(layer.has_geometry_id, layer.geometry_id);
-  const Datatype datatype = datatypeOf(layer.type);
+  PJ::sdk::ChannelInfo info = infoFor(layer);
+  const Datatype datatype = datatypeOf(layer);
+  if (datatype == Datatype::kUnknown) {
+    return PJ::unexpected(std::string("NavMapLayer: 64-bit integer data cannot be a MeshMap channel"));
+  }
   PJ::sdk::MeshChannelPatch patch;
+  // The patch lists the values in order; its indices, if any, place them.
+  const auto data = addLayerData(*owned, layer.values, {}, 0, info);
+  // No indices: a dense patch replacing the whole channel.
+  patch.indices = layer.indices.empty() ? PJ::Span<const uint8_t>{} : owned->add(std::move(layer.indices));
   patch.channel = {
-      .name = channelNameFor(layer.name),
+      .name = std::move(layer.name),
       .target = PJ::sdk::MeshChannel::Target::kFace,
       .datatype = datatype,
-      .data = owned->add(encode(layer.values, datatype)),
-      .info = infoFor(layer)};
-  // No indices: a dense patch replacing the whole channel.
-  patch.indices = layer.indices.empty() ? PJ::Span<const uint8_t>{} : owned->add(rawBytes(layer.indices));
+      .data = data,
+      .info = std::move(info)};
   update.patches.push_back(std::move(patch));
   update.anchor = std::move(owned);
   return update;

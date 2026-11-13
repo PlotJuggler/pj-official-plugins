@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <pj_base/expected.hpp>
 #include <string>
 #include <string_view>
@@ -41,14 +42,20 @@ struct MsgField {
 struct MsgSchema {
   std::string root;  ///< "pkg/Type"
   std::unordered_map<std::string, std::vector<MsgField>> types;
+  /// Fewest payload bytes one message of each type takes, alignment padding
+  /// excluded (saturating; at least 1, since a field-less message is one
+  /// uint8). Bounds the element count of an array of that type by the
+  /// remaining payload, so a hostile length cannot allocate far beyond it.
+  std::unordered_map<std::string, size_t> min_wire_size;
 };
 
 /// Normalizes "pkg/msg/Type" and "pkg/Type" to "pkg/Type".
 [[nodiscard]] std::string normalizeRosTypeName(std::string_view type_name);
 
 /// Compiles a ROS 2 concatenated `.msg` bundle (root definition first, then
-/// "MSG: pkg/Type" sections). Fails when a referenced type is undefined or a
-/// field uses an unsupported type.
+/// "MSG: pkg/Type" sections). Fails when a referenced type is undefined, a
+/// field uses an unsupported type, or a type contains itself other than
+/// through a sequence.
 [[nodiscard]] PJ::Expected<MsgSchema> compileMsgBundle(std::string_view root_type, std::string_view bundle);
 
 /// A decoded primitive array, kept in its wire type.
@@ -85,16 +92,7 @@ struct Value {
 /// Throws CdrError on malformed data.
 [[nodiscard]] Node decodeMessage(const MsgSchema& schema, CdrReader& reader, bool keep_primitive_arrays);
 
-/// Returns the array if @p value holds exactly std::vector<T>, else nullptr.
-template <typename T>
-[[nodiscard]] const std::vector<T>* arrayAs(const Value* value) {
-  if (value == nullptr || value->kind != Value::Kind::kNumberArray) {
-    return nullptr;
-  }
-  return std::get_if<std::vector<T>>(&value->numbers);
-}
-
-/// Copies any numeric array into doubles (empty for a non-numeric value).
-[[nodiscard]] std::vector<double> arrayAsDoubles(const Value* value);
+/// The number field @p name of @p node; nullopt when it is missing or not a number.
+[[nodiscard]] std::optional<double> numberOf(const Node& node, std::string_view name);
 
 }  // namespace navmap_parser

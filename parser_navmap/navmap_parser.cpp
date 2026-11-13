@@ -2,13 +2,17 @@
  * @file navmap_parser.cpp
  * @brief EasyNavigation NavMap messages -> sdk::MeshMap / sdk::MeshMapUpdate.
  *
- * Routing: this parser registers SchemaHandlers for exactly two ROS 2 types,
- * so the host's claim resolver prefers it over the generic ROS parser for them
- * on both the object route (3D) and the scalar route (a few summary series
- * instead of flattening million-element arrays):
+ * Routing: this parser registers SchemaHandlers for exactly two ROS 2 types
+ * and claims both routes, the object route (3D) and the scalar route (a few
+ * summary series instead of flattening million-element arrays):
  *   navmap_ros_interfaces/msg/NavMap      -> kMeshMap
  *   navmap_ros_interfaces/msg/NavMapLayer -> kMeshMapUpdate (the sparse layer
  *                                            updates on `<map topic>_updates`)
+ * The ROS parser makes an exact claim for every type it can bind too, and the
+ * host breaks the tie by plugin provenance first: when the ROS parser is
+ * bundled and this one is installed from the marketplace or a plugin
+ * directory, the ROS parser takes the scalar route of NavMap topics (its
+ * generic flattening). Only the object route is this parser's alone.
  *
  * The host also gives every parser a wildcard scalar claim for each manifest
  * encoding and accepts it whenever bindSchema() succeeds. bindSchema() must
@@ -16,8 +20,10 @@
  * parser for all ros2msg topics.
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
@@ -87,11 +93,6 @@ MSG: navmap_ros_interfaces/NavMapLayer
 
 enum class BoundType : uint8_t { kNone, kNavMap, kNavMapLayer };
 
-std::optional<double> numberField(const Node& node, std::string_view name) {
-  const Value* value = node.find(name);
-  return value != nullptr && value->kind == Value::Kind::kNumber ? std::optional<double>(value->number) : std::nullopt;
-}
-
 }  // namespace
 
 class NavMapParser : public PJ::MessageParserPluginBase {
@@ -114,6 +115,23 @@ class NavMapParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(normalizeRosTypeName(kNavMapType), map_handler);
     registerSchemaHandler(kNavMapLayerType, layer_handler);
     registerSchemaHandler(normalizeRosTypeName(kNavMapLayerType), layer_handler);
+  }
+
+  /// The data sources put "use_embedded_timestamp" in every parser's config:
+  /// when set, a message with a positive header stamp is filed under it on both
+  /// routes (record time and object timestamp), as the ROS parser does.
+  std::string saveConfig() const override {
+    nlohmann::json cfg;
+    cfg["use_embedded_timestamp"] = use_embedded_timestamp_;
+    return cfg.dump();
+  }
+
+  PJ::Status loadConfig(std::string_view config_json) override {
+    const auto cfg = nlohmann::json::parse(config_json, nullptr, false);
+    if (cfg.is_object()) {
+      use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
+    }
+    return PJ::okStatus();
   }
 
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override {
@@ -151,16 +169,25 @@ class NavMapParser : public PJ::MessageParserPluginBase {
   }
 
  private:
-  // One summary row per message; the arrays are counted, never copied.
+  // The header stamp when use_embedded_timestamp is set and the stamp is
+  // positive; nullopt keeps the host's receive time.
+  [[nodiscard]] std::optional<PJ::Timestamp> embeddedTimestamp(const Node& root) const {
+    return use_embedded_timestamp_ ? positiveHeaderStampNs(root) : std::nullopt;
+  }
+
+  // One summary row per message. A NavMap is decoded in full so the dropped
+  // layer and link counts match what the object route keeps; a NavMapLayer's
+  // arrays are only counted.
   PJ::Expected<PJ::sdk::ScalarRecord> decodeScalars(PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) {
     if (!schema_) {
       return PJ::unexpected(std::string("NavMap parser has no bound schema"));
     }
     try {
       CdrReader reader(payload.data(), payload.size());
-      const Node root = decodeMessage(*schema_, reader, /*keep_primitive_arrays=*/false);
+      Node root = decodeMessage(*schema_, reader, /*keep_primitive_arrays=*/bound_ == BoundType::kNavMap);
 
       PJ::sdk::ScalarRecord record;
+      record.ts = embeddedTimestamp(root);
       auto count = [&](std::string_view name) -> uint32_t {
         const Value* value = root.find(name);
         return value != nullptr ? value->count : 0U;
@@ -168,8 +195,8 @@ class NavMapParser : public PJ::MessageParserPluginBase {
       if (const Value* header = root.find("header"); header != nullptr && !header->nodes.empty()) {
         const Node& h = header->nodes.front();
         if (const Value* stamp = h.find("stamp"); stamp != nullptr && !stamp->nodes.empty()) {
-          const double sec = numberField(stamp->nodes.front(), "sec").value_or(0.0);
-          const double nanosec = numberField(stamp->nodes.front(), "nanosec").value_or(0.0);
+          const double sec = numberOf(stamp->nodes.front(), "sec").value_or(0.0);
+          const double nanosec = numberOf(stamp->nodes.front(), "nanosec").value_or(0.0);
           record.fields.push_back({"/header/stamp", PJ::sdk::ValueRef{sec + (nanosec * 1e-9)}});
         }
         if (const Value* frame = h.find("frame_id"); frame != nullptr) {
@@ -200,14 +227,21 @@ class NavMapParser : public PJ::MessageParserPluginBase {
       if (const Value* geometry_id = root.find("geometry_id")) {
         record.fields.push_back({"/geometry_id", PJ::sdk::ValueRef{geometry_id->unsigned_bits}});
       }
+      if (bound_ == BoundType::kNavMap) {
+        // Last: extracting moves the arrays out of the tree counted above.
+        if (const auto map = extractNavMap(root)) {
+          record.fields.push_back({"/dropped_layers", PJ::sdk::ValueRef{map->dropped_layers}});
+          record.fields.push_back({"/dropped_links", PJ::sdk::ValueRef{map->dropped_links}});
+        }
+      }
       return record;
     } catch (const std::exception& e) {
       return PJ::unexpected(std::string("NavMap: ") + e.what());
     }
   }
 
-  // The object carries the host's message time (std::nullopt), like the ROS
-  // parser's default, so the map aligns with the other topics.
+  // The object carries the host's message time (std::nullopt) unless
+  // use_embedded_timestamp moves it to the header stamp, like the ROS parser.
   PJ::Expected<PJ::sdk::ObjectRecord> decodeMap(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
     if (!schema_) {
       return PJ::unexpected(std::string("NavMap parser has no bound schema"));
@@ -215,11 +249,14 @@ class NavMapParser : public PJ::MessageParserPluginBase {
     try {
       CdrReader reader(payload.bytes.data(), payload.bytes.size());
       Node root = decodeMessage(*schema_, reader, /*keep_primitive_arrays=*/true);
+      const auto stamp = embeddedTimestamp(root);
       auto map = extractNavMap(root);
       if (!map) {
         return PJ::unexpected(map.error());
       }
-      return PJ::sdk::ObjectRecord{.ts = std::nullopt, .object = PJ::sdk::BuiltinObject{buildMeshMap(*map, ts)}};
+      reportDropped(*map);
+      return PJ::sdk::ObjectRecord{
+          .ts = stamp, .object = PJ::sdk::BuiltinObject{buildMeshMap(std::move(*map), stamp.value_or(ts))}};
     } catch (const std::exception& e) {
       return PJ::unexpected(std::string("NavMap: ") + e.what());
     }
@@ -232,18 +269,41 @@ class NavMapParser : public PJ::MessageParserPluginBase {
     try {
       CdrReader reader(payload.bytes.data(), payload.bytes.size());
       Node root = decodeMessage(*schema_, reader, /*keep_primitive_arrays=*/true);
-      auto update = buildMeshMapUpdate(extractLayer(root), ts);
+      const auto stamp = embeddedTimestamp(root);
+      auto update = buildMeshMapUpdate(extractLayer(root), stamp.value_or(ts));
       if (!update) {
         return PJ::unexpected(update.error());
       }
-      return PJ::sdk::ObjectRecord{.ts = std::nullopt, .object = PJ::sdk::BuiltinObject{std::move(*update)}};
+      return PJ::sdk::ObjectRecord{.ts = stamp, .object = PJ::sdk::BuiltinObject{std::move(*update)}};
     } catch (const std::exception& e) {
       return PJ::unexpected(std::string("NavMap: ") + e.what());
     }
   }
 
+  // Warns through the host's diagnostics channel when a map drops layers or
+  // links, once per change of the counts (maps are often republished as is).
+  void reportDropped(const NavMapData& map) {
+    if (map.dropped_layers != reported_dropped_layers_ && map.dropped_layers != 0) {
+      parserRuntimeHost().reportDiagnostic(
+          PJ::sdk::ParserDiagnosticLevel::Warning, "parser_navmap.dropped_layers",
+          "NavMap: dropped " + std::to_string(map.dropped_layers) +
+              " layer(s): data not matching the NavCel count, an index out of range, a name that is empty, "
+              "repeated or reserved, or a sparse integer layer without an unknown value to fill with");
+    }
+    if (map.dropped_links != reported_dropped_links_ && map.dropped_links != 0) {
+      parserRuntimeHost().reportDiagnostic(
+          PJ::sdk::ParserDiagnosticLevel::Warning, "parser_navmap.dropped_links",
+          "NavMap: dropped " + std::to_string(map.dropped_links) + " link(s) to a NavCel out of range");
+    }
+    reported_dropped_layers_ = map.dropped_layers;
+    reported_dropped_links_ = map.dropped_links;
+  }
+
   std::optional<MsgSchema> schema_;
   BoundType bound_ = BoundType::kNone;
+  bool use_embedded_timestamp_ = false;
+  uint32_t reported_dropped_layers_ = 0;
+  uint32_t reported_dropped_links_ = 0;
   std::string frame_id_;    ///< Backs the frame_id string_view of the last scalar record.
   std::string layer_name_;  ///< Backs the name string_view of the last scalar record.
 };

@@ -1,3 +1,4 @@
+find_package(nlohmann_json REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 # Decoder + mesh conversion, shared by the plugin and the unit tests.
@@ -27,7 +28,7 @@ add_library(parser_navmap_plugin SHARED navmap_parser.cpp)
 target_compile_features(parser_navmap_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_navmap_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(parser_navmap_plugin PRIVATE
-  parser_navmap_core plotjuggler_sdk::plugin_sdk)
+  parser_navmap_core plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json)
 
 pj_embed_manifest(parser_navmap_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/navmap_manifest.hpp
@@ -57,6 +58,7 @@ target_compile_features(navmap_parser_test PRIVATE cxx_std_20)
 target_compile_options(navmap_parser_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(navmap_parser_test PRIVATE
   PJ_NAVMAP_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_navmap_plugin>"
+  PJ_NAVMAP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
 )
 target_include_directories(navmap_parser_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 target_link_libraries(navmap_parser_test PRIVATE
