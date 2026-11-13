@@ -49,6 +49,18 @@ target_link_libraries(foxglove_topic_subscription_test PRIVATE
 )
 add_test(NAME foxglove_topic_subscription_test COMMAND foxglove_topic_subscription_test)
 
+# --- Handshake test: an in-process loopback server captures what makeSocket() offers ---
+add_executable(foxglove_socket_test tests/foxglove_socket_test.cpp)
+target_compile_features(foxglove_socket_test PRIVATE cxx_std_20)
+target_compile_options(foxglove_socket_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(foxglove_socket_test PRIVATE
+  plotjuggler_sdk::plugin_sdk
+  ixwebsocket::ixwebsocket
+  pj_streaming_utils
+  GTest::gtest_main
+)
+add_test(NAME foxglove_socket_test COMMAND foxglove_socket_test)
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(foxglove_source_plugin
   REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)
