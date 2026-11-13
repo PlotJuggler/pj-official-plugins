@@ -2,9 +2,9 @@
  * @file navmap_mesh.hpp
  * @brief NavMap / NavMapLayer messages -> sdk::MeshMap / sdk::MeshMapUpdate.
  *
- * The NavMap arrays arrive one array per coordinate and per corner; MeshMap
- * wants interleaved vertex and face records, so the conversion transcodes once
- * here, as grid_map does for GridMap. Styling is left to the 3D view.
+ * Layers pass through as MeshMap channels in their own type; only the geometry
+ * is repacked (NavMap keeps one array per axis and per corner, MeshMap wants
+ * them interleaved). Styling is left to the 3D view.
  */
 #pragma once
 
@@ -27,7 +27,7 @@ enum class LayerType : uint8_t { kU8 = 0, kF32 = 1, kF64 = 2, kI16 = 3 };
 struct NavMapLayer {
   std::string frame_id;  ///< Header frame; set only for a standalone NavMapLayer message.
   std::string name;
-  LayerType type = LayerType::kF32;
+  LayerType type = LayerType::kF32;  ///< the type of the data array actually present
   std::string unit;
   bool has_unknown = false;
   double unknown_value = std::numeric_limits<double>::quiet_NaN();
@@ -50,6 +50,7 @@ struct NavMapLink {
   uint32_t to_navcel = 0;
   uint8_t type = 0;
   bool bidirectional = false;
+  double length = std::numeric_limits<double>::quiet_NaN();  ///< travel length (m); NaN when the layout has none
 };
 
 /// A NavMap message after validation: every index is in range and every kept
@@ -76,22 +77,23 @@ struct NavMapData {
 /// Reads a decoded NavMapLayer (standalone message or an element of NavMap.layers).
 [[nodiscard]] NavMapLayer extractLayer(Node& node);
 
-/// Builds the MeshMap:
-/// - vertex records: x, y, z (float32), plus red, green, blue, alpha (uint8)
-///   when the map has vertex colours;
-/// - face records: vertex_indices, `surface` (uint32 surface index, or 0 when
-///   the map has none), then one channel per layer. A layer with an unknown
-///   value or listing only some NavCels becomes float32 with NaN for "no data";
-///   an int16 `1/1000 log-odds` layer becomes the float32 occupancy probability.
-///   Other layers keep their type.
-/// - `frame_id` is the header frame: MeshMap has one frame per object, and
-///   NavMap surfaces share the map frame in practice.
+/// Builds the MeshMap: positions and indices interleaved from NavMap's per-axis
+/// and per-corner arrays; `red`/`green`/`blue`/`alpha` vertex channels when the
+/// map has vertex colours; a categorical uint32 `surface` face channel (labels:
+/// the surface frames) when it has surfaces; one face channel per layer, in the
+/// layer's own type, carrying its unit and its "unknown" value as
+/// `info.no_data`. A layer listing only some NavCels marks the others with that
+/// value (NaN for a float layer; an integer layer without one widens to
+/// float32). A layer name that is empty or `surface` is renamed (channelNameFor),
+/// a repeated one gets a numeric suffix. Links keep their type and length.
+/// `frame_id` is the header frame: MeshMap has one frame per object, and NavMap
+/// surfaces share the map frame in practice.
 [[nodiscard]] PJ::sdk::MeshMap buildMeshMap(const NavMapData& map, int64_t timestamp_ns);
 
-/// Builds the MeshMapUpdate for a standalone NavMapLayer message: face records
-/// of `index` plus the layer channel, encoded as in buildMeshMap() (without
-/// the sparse widening: an update only lists what it changes). Fails when the
-/// data does not match the listed indices.
+/// Builds the MeshMapUpdate for a standalone NavMapLayer message: one face
+/// patch for the layer's channel, dense when the layer lists no indices, sparse
+/// otherwise, in the layer's own type. Fails when the data does not match the
+/// listed indices.
 [[nodiscard]] PJ::Expected<PJ::sdk::MeshMapUpdate> buildMeshMapUpdate(const NavMapLayer& layer, int64_t timestamp_ns);
 
 }  // namespace navmap_parser

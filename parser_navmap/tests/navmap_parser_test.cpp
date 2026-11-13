@@ -325,19 +325,15 @@ int32 sec
 uint32 nanosec
 )";
 
-// Reads element `index`'s value of `field` from a record buffer, widened to double.
-double readChannel(
-    PJ::Span<const uint8_t> records, uint64_t base, uint32_t stride, const std::vector<PJ::sdk::PointField>& fields,
-    std::string_view field, uint32_t index, uint32_t element = 0) {
-  const auto* f = PJ::sdk::findField(fields, field);
-  EXPECT_NE(f, nullptr) << "no channel " << field;
-  if (f == nullptr) {
-    return std::nan("");
-  }
-  const uint8_t* p = records.data() + base + (static_cast<size_t>(index) * stride) + f->offset +
-                     (static_cast<size_t>(element) * PJ::sdk::bytesPerElement(f->datatype));
-  using Datatype = PJ::sdk::PointField::Datatype;
-  switch (f->datatype) {
+using Target = PJ::sdk::MeshChannel::Target;
+using Datatype = PJ::sdk::PointField::Datatype;
+
+// Element `index`, component `component`, of a tightly packed array, widened to double.
+double valueAt(
+    PJ::Span<const uint8_t> data, Datatype datatype, uint32_t count, uint32_t index, uint32_t component = 0) {
+  const uint8_t* p =
+      data.data() + ((static_cast<size_t>(index) * count) + component) * PJ::sdk::bytesPerElement(datatype);
+  switch (datatype) {
     case Datatype::kUint8:
       return *p;
     case Datatype::kInt16: {
@@ -361,17 +357,34 @@ double readChannel(
       return v;
     }
     default:
-      ADD_FAILURE() << "unexpected datatype for " << field;
+      ADD_FAILURE() << "unexpected datatype";
       return std::nan("");
   }
 }
 
-double faceValue(const PJ::sdk::MeshMap& mesh, std::string_view field, uint32_t face, uint32_t element = 0) {
-  return readChannel(mesh.data, mesh.face_data_offset, mesh.face_stride, mesh.face_fields, field, face, element);
+const PJ::sdk::MeshChannel& channel(const PJ::sdk::MeshMap& mesh, Target target, std::string_view name) {
+  const auto* found = PJ::sdk::findChannel(mesh.channels, target, name);
+  EXPECT_NE(found, nullptr) << "no channel " << name;
+  static const PJ::sdk::MeshChannel kMissing;
+  return found != nullptr ? *found : kMissing;
 }
 
-double vertexValue(const PJ::sdk::MeshMap& mesh, std::string_view field, uint32_t vertex) {
-  return readChannel(mesh.data, 0, mesh.vertex_stride, mesh.vertex_fields, field, vertex);
+double faceValue(const PJ::sdk::MeshMap& mesh, std::string_view name, uint32_t face) {
+  const auto& c = channel(mesh, Target::kFace, name);
+  return c.data.empty() ? std::nan("") : valueAt(c.data, c.datatype, c.count, face);
+}
+
+double vertexValue(const PJ::sdk::MeshMap& mesh, std::string_view name, uint32_t vertex) {
+  const auto& c = channel(mesh, Target::kVertex, name);
+  return c.data.empty() ? std::nan("") : valueAt(c.data, c.datatype, c.count, vertex);
+}
+
+double position(const PJ::sdk::MeshMap& mesh, uint32_t vertex, uint32_t axis) {
+  return valueAt(mesh.positions, mesh.position_type, 3, vertex, axis);
+}
+
+uint32_t cornerIndex(const PJ::sdk::MeshMap& mesh, uint32_t face, uint32_t corner) {
+  return static_cast<uint32_t>(valueAt(mesh.indices, Datatype::kUint32, 3, face, corner));
 }
 
 class NavMapParserTest : public ::testing::Test {
@@ -458,20 +471,24 @@ TEST_F(NavMapParserTest, BuildsTheMeshWithChannelsAndLinks) {
   EXPECT_EQ(mesh.geometry_id, "18364758544493064720");  // 0xFEDCBA9876543210
   ASSERT_EQ(mesh.vertex_count, 6u);
   ASSERT_EQ(mesh.face_count, 4u);
-  EXPECT_DOUBLE_EQ(vertexValue(mesh, "x", 2), 1.0);
-  EXPECT_DOUBLE_EQ(vertexValue(mesh, "y", 2), 1.0);
-  EXPECT_DOUBLE_EQ(vertexValue(mesh, "z", 4), 1.0);
-  EXPECT_EQ(PJ::sdk::findField(mesh.vertex_fields, "red"), nullptr);  // no vertex colours
+  EXPECT_EQ(mesh.position_type, Datatype::kFloat32);
+  EXPECT_DOUBLE_EQ(position(mesh, 2, 0), 1.0);
+  EXPECT_DOUBLE_EQ(position(mesh, 2, 1), 1.0);
+  EXPECT_DOUBLE_EQ(position(mesh, 4, 2), 1.0);
+  EXPECT_EQ(cornerIndex(mesh, 2, 0), 4u);  // navcel 2 = (4, 5, 1)
+  EXPECT_EQ(cornerIndex(mesh, 2, 1), 5u);
+  EXPECT_EQ(cornerIndex(mesh, 2, 2), 1u);
+  EXPECT_EQ(PJ::sdk::findChannel(mesh.channels, Target::kVertex, "red"), nullptr);  // no vertex colours
 
-  // navcel 2 = (4, 5, 1)
-  EXPECT_DOUBLE_EQ(faceValue(mesh, "vertex_indices", 2, 0), 4.0);
-  EXPECT_DOUBLE_EQ(faceValue(mesh, "vertex_indices", 2, 1), 5.0);
-  EXPECT_DOUBLE_EQ(faceValue(mesh, "vertex_indices", 2, 2), 1.0);
+  const auto& surface = channel(mesh, Target::kFace, "surface");
+  EXPECT_EQ(surface.info.kind, PJ::sdk::ChannelKind::kCategorical);
+  ASSERT_EQ(surface.info.categories.size(), 2u);
+  EXPECT_EQ(surface.info.categories[1].label, "upstairs");
   EXPECT_DOUBLE_EQ(faceValue(mesh, "surface", 1), 0.0);
   EXPECT_DOUBLE_EQ(faceValue(mesh, "surface", 2), 1.0);
-  const auto* cost = PJ::sdk::findField(mesh.face_fields, "cost");
-  ASSERT_NE(cost, nullptr);
-  EXPECT_EQ(cost->datatype, PJ::sdk::PointField::Datatype::kFloat32);
+
+  const auto& cost = channel(mesh, Target::kFace, "cost");
+  EXPECT_EQ(cost.datatype, Datatype::kFloat32);
   EXPECT_DOUBLE_EQ(faceValue(mesh, "cost", 2), 4.0);
 
   ASSERT_EQ(mesh.links.size(), 1u);
@@ -479,6 +496,7 @@ TEST_F(NavMapParserTest, BuildsTheMeshWithChannelsAndLinks) {
   EXPECT_EQ(mesh.links[0].to_face, 2u);
   EXPECT_EQ(mesh.links[0].kind, 2u);
   EXPECT_TRUE(mesh.links[0].bidirectional);
+  EXPECT_DOUBLE_EQ(mesh.links[0].cost, 1.5);  // the link's length
 }
 
 TEST_F(NavMapParserTest, VertexColorsBecomeChannels) {
@@ -489,12 +507,13 @@ TEST_F(NavMapParserTest, VertexColorsBecomeChannels) {
   map.g = {1, 2, 3, 4, 5, 6};
   map.b = {0, 0, 0, 0, 0, 0};
   const auto mesh = parseMap(map.serializeCurrent());
+  EXPECT_EQ(channel(mesh, Target::kVertex, "red").datatype, Datatype::kUint8);
   EXPECT_DOUBLE_EQ(vertexValue(mesh, "red", 3), 40.0);
   EXPECT_DOUBLE_EQ(vertexValue(mesh, "green", 5), 6.0);
   EXPECT_DOUBLE_EQ(vertexValue(mesh, "alpha", 0), 255.0);  // colors_a empty: opaque
 }
 
-TEST_F(NavMapParserTest, EncodesEachLayerKind) {
+TEST_F(NavMapParserTest, LayersKeepTheirTypeUnitAndUnknownValue) {
   bind(kNavMapType, kCurrentSchema);
   TestMap map;
   map.layers.push_back(u8Layer("occupancy", {0, 254, 255, 7}));
@@ -517,34 +536,60 @@ TEST_F(NavMapParserTest, EncodesEachLayerKind) {
   height.i16 = {-1, 7};
   map.layers.push_back(height);
 
+  TestLayer slope = f32Layer("slope", {0.5F, 0.25F});
+  slope.indices = {3, 1};  // sparse float: unlisted NavCels become NaN
+  map.layers.push_back(slope);
+
+  TestLayer ids;
+  ids.name = "ids";
+  ids.type = 3;
+  ids.indices = {2};  // sparse integer with no unknown value: widens to float
+  ids.i16 = {9};
+  map.layers.push_back(ids);
+
   map.layers.push_back(f32Layer("surface", {1, 1, 1, 1}));  // clashes with the surface channel
   map.layers.push_back(f32Layer("cost", {1, 2, 3, 4}));
   map.layers.push_back(f32Layer("cost", {5, 6, 7, 8}));  // duplicate name
 
   const auto mesh = parseMap(map.serializeCurrent());
-  using Datatype = PJ::sdk::PointField::Datatype;
 
-  // A plain uint8 layer keeps its type.
-  EXPECT_EQ(PJ::sdk::findField(mesh.face_fields, "occupancy")->datatype, Datatype::kUint8);
+  EXPECT_EQ(channel(mesh, Target::kFace, "occupancy").datatype, Datatype::kUint8);
   EXPECT_DOUBLE_EQ(faceValue(mesh, "occupancy", 1), 254.0);
 
-  // Log-odds -> probability, unknown -> NaN.
-  EXPECT_EQ(PJ::sdk::findField(mesh.face_fields, "occ_logodds")->datatype, Datatype::kFloat32);
-  EXPECT_NEAR(faceValue(mesh, "occ_logodds", 0), 0.5, 1e-6);
-  EXPECT_TRUE(std::isnan(faceValue(mesh, "occ_logodds", 1)));
-  EXPECT_NEAR(faceValue(mesh, "occ_logodds", 2), 1.0 / (1.0 + std::exp(-2.0)), 1e-6);
+  const auto& lo = channel(mesh, Target::kFace, "occ_logodds");
+  EXPECT_EQ(lo.datatype, Datatype::kInt16);  // raw, no conversion
+  EXPECT_EQ(lo.info.unit, "1/1000 log-odds");
+  ASSERT_TRUE(lo.info.no_data.has_value());
+  EXPECT_DOUBLE_EQ(*lo.info.no_data, -32768.0);
+  EXPECT_DOUBLE_EQ(faceValue(mesh, "occ_logodds", 2), 2000.0);
 
-  // int16 with an unknown value, sparse: float32 with NaN for unknown and unlisted.
-  EXPECT_EQ(PJ::sdk::findField(mesh.face_fields, "height")->datatype, Datatype::kFloat32);
-  EXPECT_TRUE(std::isnan(faceValue(mesh, "height", 0)));
+  EXPECT_EQ(channel(mesh, Target::kFace, "height").datatype, Datatype::kInt16);
   EXPECT_DOUBLE_EQ(faceValue(mesh, "height", 1), 7.0);
-  EXPECT_TRUE(std::isnan(faceValue(mesh, "height", 2)));
+  EXPECT_DOUBLE_EQ(faceValue(mesh, "height", 2), -1.0);  // unlisted: the unknown value
 
-  // Names are made unique and never shadow the record's own fields.
+  EXPECT_EQ(channel(mesh, Target::kFace, "slope").datatype, Datatype::kFloat32);
+  EXPECT_DOUBLE_EQ(faceValue(mesh, "slope", 3), 0.5);
+  EXPECT_TRUE(std::isnan(faceValue(mesh, "slope", 0)));
+
+  EXPECT_EQ(channel(mesh, Target::kFace, "ids").datatype, Datatype::kFloat32);
+  EXPECT_DOUBLE_EQ(faceValue(mesh, "ids", 2), 9.0);
+  EXPECT_TRUE(std::isnan(faceValue(mesh, "ids", 0)));
+
   EXPECT_DOUBLE_EQ(faceValue(mesh, "surface", 2), 1.0);  // still the surface index
   EXPECT_DOUBLE_EQ(faceValue(mesh, "surface_layer", 0), 1.0);
   EXPECT_DOUBLE_EQ(faceValue(mesh, "cost", 3), 4.0);
   EXPECT_DOUBLE_EQ(faceValue(mesh, "cost_2", 3), 8.0);
+}
+
+TEST_F(NavMapParserTest, ALayerTakesTheTypeOfTheArrayItCarries) {
+  bind(kNavMapType, kCurrentSchema);
+  TestMap map;
+  TestLayer mismatched = f32Layer("mixed", {1.0F, std::nanf(""), 3.0F, 4.0F});
+  mismatched.type = 3;  // declared int16, but only data_f32 is filled
+  map.layers.push_back(mismatched);
+  const auto mesh = parseMap(map.serializeCurrent());
+  EXPECT_EQ(channel(mesh, Target::kFace, "mixed").datatype, Datatype::kFloat32);
+  EXPECT_TRUE(std::isnan(faceValue(mesh, "mixed", 1)));  // not cast to an integer
 }
 
 TEST_F(NavMapParserTest, DropsALayerThatDoesNotMatchTheMesh) {
@@ -553,7 +598,7 @@ TEST_F(NavMapParserTest, DropsALayerThatDoesNotMatchTheMesh) {
   map.layers.push_back(f32Layer("short", {1.0F}));  // 1 value for 4 navcels
   const auto mesh = parseMap(map.serializeCurrent());
   EXPECT_EQ(mesh.face_count, 4u);
-  EXPECT_EQ(PJ::sdk::findField(mesh.face_fields, "short"), nullptr);
+  EXPECT_EQ(PJ::sdk::findChannel(mesh.channels, Target::kFace, "short"), nullptr);
 }
 
 TEST_F(NavMapParserTest, DecodesTheFirstReleasedLayout) {
@@ -579,46 +624,55 @@ TEST_F(NavMapParserTest, FallsBackToTheCurrentLayoutWithoutSchema) {
   bind(kNavMapLayerType, "");
   const auto update =
       parseObject<PJ::sdk::MeshMapUpdate>(serializeLayerMessage(f32Layer("cost", {1.0F, 2.0F, 3.0F, 4.0F}), 7));
-  EXPECT_EQ(update.count, 4u);
+  ASSERT_EQ(update.patches.size(), 1u);
+  EXPECT_EQ(update.patches[0].channel.data.size(), 16u);
 }
 
-TEST_F(NavMapParserTest, MapWithoutSurfacesPutsEveryFaceOnSurfaceZero) {
+TEST_F(NavMapParserTest, MapWithoutSurfacesHasNoSurfaceChannel) {
   bind(kNavMapType, kCurrentSchema);
   TestMap map;
   map.surfaces.clear();
   const auto mesh = parseMap(map.serializeCurrent());
   EXPECT_EQ(mesh.frame_id, "map");
-  EXPECT_DOUBLE_EQ(faceValue(mesh, "surface", 3), 0.0);
+  EXPECT_EQ(PJ::sdk::findChannel(mesh.channels, Target::kFace, "surface"), nullptr);
+  EXPECT_EQ(mesh.face_count, 4u);
 }
 
-TEST_F(NavMapParserTest, LayerMessageBecomesAFaceUpdate) {
+TEST_F(NavMapParserTest, LayerMessageBecomesAPatch) {
   bind(kNavMapLayerType, kLayerSchema);
 
-  // A full layer: one record per NavCel, indices 0..N-1.
+  // A full layer: a dense patch, no indices, in the layer's own type.
   auto update = parseObject<PJ::sdk::MeshMapUpdate>(serializeLayerMessage(u8Layer("occupancy", {0, 9, 254}), 42));
-  EXPECT_EQ(update.target, PJ::sdk::MeshMapUpdate::Target::kFaces);
   EXPECT_EQ(update.frame_id, "map");
   EXPECT_EQ(update.geometry_id, "42");
-  ASSERT_EQ(update.count, 3u);
-  EXPECT_EQ(PJ::sdk::findField(update.fields, "occupancy")->datatype, PJ::sdk::PointField::Datatype::kUint8);
-  EXPECT_DOUBLE_EQ(readChannel(update.data, 0, update.stride, update.fields, "index", 2), 2.0);
-  EXPECT_DOUBLE_EQ(readChannel(update.data, 0, update.stride, update.fields, "occupancy", 1), 9.0);
+  ASSERT_EQ(update.patches.size(), 1u);
+  const auto& dense = update.patches[0];
+  EXPECT_EQ(dense.channel.name, "occupancy");
+  EXPECT_EQ(dense.channel.target, Target::kFace);
+  EXPECT_EQ(dense.channel.datatype, Datatype::kUint8);
+  EXPECT_TRUE(dense.indices.empty());
+  EXPECT_DOUBLE_EQ(valueAt(dense.channel.data, Datatype::kUint8, 1, 1), 9.0);
 
-  // A sparse layer with an unknown value: listed NavCels only, unknown -> NaN.
+  // A sparse layer with an unknown value: the listed NavCels, the unknown value as no-data.
   TestLayer sparse;
   sparse.name = "height";
   sparse.type = 3;
+  sparse.unit = "cm";
   sparse.has_unknown = true;
   sparse.unknown_value = -1;
   sparse.indices = {7, 3};
   sparse.i16 = {5, -1};
   update = parseObject<PJ::sdk::MeshMapUpdate>(serializeLayerMessage(sparse, 0));
   EXPECT_EQ(update.geometry_id, "");  // 0 = unspecified
-  ASSERT_EQ(update.count, 2u);
-  EXPECT_DOUBLE_EQ(readChannel(update.data, 0, update.stride, update.fields, "index", 0), 7.0);
-  EXPECT_DOUBLE_EQ(readChannel(update.data, 0, update.stride, update.fields, "height", 0), 5.0);
-  EXPECT_DOUBLE_EQ(readChannel(update.data, 0, update.stride, update.fields, "index", 1), 3.0);
-  EXPECT_TRUE(std::isnan(readChannel(update.data, 0, update.stride, update.fields, "height", 1)));
+  ASSERT_EQ(update.patches.size(), 1u);
+  const auto& patch = update.patches[0];
+  EXPECT_EQ(patch.channel.datatype, Datatype::kInt16);
+  EXPECT_EQ(patch.channel.info.unit, "cm");
+  ASSERT_TRUE(patch.channel.info.no_data.has_value());
+  EXPECT_DOUBLE_EQ(*patch.channel.info.no_data, -1.0);
+  ASSERT_EQ(patch.indices.size(), 8u);
+  EXPECT_DOUBLE_EQ(valueAt(patch.indices, Datatype::kUint32, 1, 0), 7.0);
+  EXPECT_DOUBLE_EQ(valueAt(patch.channel.data, Datatype::kInt16, 1, 1), -1.0);
 
   // Indices and data that disagree are rejected.
   sparse.indices = {1};

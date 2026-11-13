@@ -6,7 +6,8 @@ One entry per released version (newest first).
 
 ### Added
 - Show EasyNavigation NavMap maps (`navmap_ros_interfaces/msg/NavMap`) in the 3D
-  scene, with every layer available for colouring there.
+  scene, with every layer available for colouring there, in its own type and
+  with its unit and "unknown" value.
 - Apply the NavMapLayer updates published beside a map (e.g. on
   `navmap_updates`), so live maps change over time.
 - Keep the links between NavCels (stairs, ramps, elevators, doors) for the 3D

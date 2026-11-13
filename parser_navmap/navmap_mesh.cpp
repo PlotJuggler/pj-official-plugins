@@ -17,10 +17,7 @@ namespace navmap_parser {
 
 namespace {
 
-using PJ::sdk::PointField;
 using Datatype = PJ::sdk::PointField::Datatype;
-
-constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // Moves a numeric array out of a decoded field, converting element-wise when
 // the wire type differs from T. A missing or non-array field yields empty.
@@ -75,60 +72,41 @@ bool allBelow(const std::vector<uint32_t>& indices, size_t limit) {
 
 // --- Channel encoding --------------------------------------------------------
 
-// How one layer is stored as a MeshMap channel.
-struct ChannelEncoding {
-  Datatype datatype = Datatype::kFloat32;
-  bool log_odds_to_probability = false;
-  bool unknown_to_nan = false;
-};
-
-bool isLogOdds(const NavMapLayer& layer) {
-  return layer.type == LayerType::kI16 && layer.unit == "1/1000 log-odds";
-}
-
-ChannelEncoding encodingFor(const NavMapLayer& layer, bool sparse_means_no_data) {
-  if (isLogOdds(layer)) {
-    return {.datatype = Datatype::kFloat32, .log_odds_to_probability = true, .unknown_to_nan = layer.has_unknown};
-  }
-  if (layer.has_unknown || (sparse_means_no_data && !layer.indices.empty())) {
-    // MeshMap has no integer "no data" sentinel: widen so NaN can carry it.
-    return {
-        .datatype = layer.type == LayerType::kF64 ? Datatype::kFloat64 : Datatype::kFloat32,
-        .unknown_to_nan = layer.has_unknown};
-  }
-  switch (layer.type) {
+Datatype datatypeOf(LayerType type) {
+  switch (type) {
     case LayerType::kU8:
-      return {.datatype = Datatype::kUint8};
+      return Datatype::kUint8;
     case LayerType::kF64:
-      return {.datatype = Datatype::kFloat64};
+      return Datatype::kFloat64;
     case LayerType::kI16:
-      return {.datatype = Datatype::kInt16};
+      return Datatype::kInt16;
     case LayerType::kF32:
       break;
   }
-  return {.datatype = Datatype::kFloat32};
+  return Datatype::kFloat32;
 }
 
-double encodeValue(const NavMapLayer& layer, const ChannelEncoding& encoding, double value) {
-  if (encoding.unknown_to_nan &&
-      ((std::isnan(layer.unknown_value) && std::isnan(value)) || value == layer.unknown_value)) {
-    return kNaN;
-  }
-  if (encoding.log_odds_to_probability) {
-    return 1.0 / (1.0 + std::exp(-value / 1000.0));
-  }
-  return value;
+bool isFloat(Datatype datatype) {
+  return datatype == Datatype::kFloat32 || datatype == Datatype::kFloat64;
 }
 
+// One value stored as `datatype`. Integer values come from integer wire arrays,
+// so they fit; a non-finite one (never produced here) is clamped to 0 rather
+// than cast, which would be undefined.
 void writeValue(uint8_t* dst, Datatype datatype, double value) {
   switch (datatype) {
     case Datatype::kUint8: {
-      const auto v = static_cast<uint8_t>(value);
+      const auto v = std::isfinite(value) ? static_cast<uint8_t>(std::clamp(value, 0.0, 255.0)) : uint8_t{0};
       std::memcpy(dst, &v, sizeof(v));
       return;
     }
     case Datatype::kInt16: {
-      const auto v = static_cast<int16_t>(value);
+      const auto v = std::isfinite(value) ? static_cast<int16_t>(std::clamp(value, -32768.0, 32767.0)) : int16_t{0};
+      std::memcpy(dst, &v, sizeof(v));
+      return;
+    }
+    case Datatype::kUint32: {
+      const auto v = std::isfinite(value) ? static_cast<uint32_t>(std::clamp(value, 0.0, 4294967295.0)) : 0U;
       std::memcpy(dst, &v, sizeof(v));
       return;
     }
@@ -143,30 +121,56 @@ void writeValue(uint8_t* dst, Datatype datatype, double value) {
   }
 }
 
-// Appends a field at the next offset aligned to its element size; returns the offset.
-uint32_t addField(
-    std::vector<PointField>& fields, uint32_t& stride, std::string name, Datatype datatype, uint32_t count = 1) {
-  const uint32_t size = PJ::sdk::bytesPerElement(datatype);
-  const uint32_t offset = (stride + size - 1) / size * size;
-  fields.push_back({.name = std::move(name), .offset = offset, .datatype = datatype, .count = count});
-  stride = offset + (size * count);
-  return offset;
+// The byte arrays a MeshMap / MeshMapUpdate views, kept alive by its anchor.
+// Moving a vector keeps its buffer, so spans stay valid as blobs grows.
+struct OwnedBlobs {
+  std::vector<std::vector<uint8_t>> blobs;
+
+  PJ::Span<const uint8_t> add(std::vector<uint8_t> bytes) {
+    blobs.push_back(std::move(bytes));
+    return {blobs.back().data(), blobs.back().size()};
+  }
+};
+
+// `values` stored as `datatype`, tightly packed.
+std::vector<uint8_t> encode(const std::vector<double>& values, Datatype datatype) {
+  const size_t size = PJ::sdk::bytesPerElement(datatype);
+  std::vector<uint8_t> bytes(values.size() * size);
+  for (size_t i = 0; i < values.size(); ++i) {
+    writeValue(bytes.data() + (i * size), datatype, values[i]);
+  }
+  return bytes;
 }
 
-uint32_t roundUp(uint32_t value, uint32_t multiple) {
-  return (value + multiple - 1) / multiple * multiple;
+template <typename T>
+std::vector<uint8_t> rawBytes(const std::vector<T>& values) {
+  std::vector<uint8_t> bytes(values.size() * sizeof(T));
+  if (!bytes.empty()) {
+    std::memcpy(bytes.data(), values.data(), bytes.size());
+  }
+  return bytes;
 }
 
-// The channel a layer is stored in: its name, unless that is empty or one of
-// the record's own fields. Shared by maps and updates so both address the same
-// channel.
+// The layer's unit, and its "unknown" value as the channel's no-data marker
+// (NaN needs none: it is always "no data" in a float channel).
+PJ::sdk::ChannelInfo infoFor(const NavMapLayer& layer) {
+  PJ::sdk::ChannelInfo info;
+  info.unit = layer.unit;
+  if (layer.has_unknown && !std::isnan(layer.unknown_value)) {
+    info.no_data = layer.unknown_value;
+  }
+  return info;
+}
+
+// The channel a layer is stored in: its name, unless that is empty or the
+// `surface` channel this parser adds. Shared by maps and updates so both
+// address the same channel.
 std::string channelNameFor(const std::string& layer_name) {
   if (layer_name.empty()) {
     return "layer";
   }
-  if (layer_name == PJ::sdk::kMeshMapVertexIndicesField || layer_name == "surface" ||
-      layer_name == PJ::sdk::kMeshMapUpdateIndexField) {
-    return layer_name + "_layer";
+  if (layer_name == "surface") {
+    return "surface_layer";
   }
   return layer_name;
 }
@@ -193,7 +197,8 @@ NavMapLayer extractLayer(Node& node) {
     layer.frame_id = takeString(*header, "frame_id");
   }
   layer.name = takeString(node, "name");
-  layer.type = static_cast<LayerType>(static_cast<uint8_t>(numberOf(node, "type").value_or(1.0)));
+  const auto declared = static_cast<uint8_t>(numberOf(node, "type").value_or(1.0));
+  layer.type = declared <= 3 ? static_cast<LayerType>(declared) : LayerType::kF32;
   layer.unit = takeString(node, "unit");
   layer.has_unknown = numberOf(node, "has_unknown").value_or(0.0) != 0.0;
   if (const auto unknown = numberOf(node, "unknown_value")) {
@@ -205,26 +210,23 @@ NavMapLayer extractLayer(Node& node) {
   }
   layer.indices = takeArray<uint32_t>(node, "indices");
 
-  // The type tag names the data array; fall back to whichever array is filled.
-  const char* by_type = "data_f32";
-  switch (layer.type) {
-    case LayerType::kU8:
-      by_type = "data_u8";
-      break;
-    case LayerType::kF64:
-      by_type = "data_f64";
-      break;
-    case LayerType::kI16:
-      by_type = "data_i16";
-      break;
-    case LayerType::kF32:
-      break;
+  // The type tag names the data array; when that one is empty, fall back to
+  // whichever array is filled, and take the type from it so values always fit.
+  static constexpr std::pair<const char*, LayerType> kArrays[] = {
+      {"data_u8", LayerType::kU8},
+      {"data_f32", LayerType::kF32},
+      {"data_f64", LayerType::kF64},
+      {"data_i16", LayerType::kI16}};
+  for (const auto& [name, type] : kArrays) {
+    if (type == layer.type) {
+      layer.values = arrayAsDoubles(node.find(name));
+    }
   }
-  layer.values = arrayAsDoubles(node.find(by_type));
   if (layer.values.empty()) {
-    for (const char* name : {"data_u8", "data_f32", "data_f64", "data_i16"}) {
+    for (const auto& [name, type] : kArrays) {
       layer.values = arrayAsDoubles(node.find(name));
       if (!layer.values.empty()) {
+        layer.type = type;
         break;
       }
     }
@@ -305,6 +307,7 @@ PJ::Expected<NavMapData> extractNavMap(Node& root) {
       link.to_navcel = static_cast<uint32_t>(numberOf(node, "to_navcel").value_or(0.0));
       link.type = static_cast<uint8_t>(numberOf(node, "type").value_or(0.0));
       link.bidirectional = numberOf(node, "bidirectional").value_or(0.0) != 0.0;
+      link.length = numberOf(node, "length").value_or(std::numeric_limits<double>::quiet_NaN());
       // A link to a missing NavCel cannot be drawn; skip it rather than lose the map.
       if (link.from_navcel < navcel_count && link.to_navcel < navcel_count) {
         map.links.push_back(link);
@@ -315,93 +318,101 @@ PJ::Expected<NavMapData> extractNavMap(Node& root) {
 }
 
 PJ::sdk::MeshMap buildMeshMap(const NavMapData& map, int64_t timestamp_ns) {
+  using PJ::sdk::MeshChannel;
+  auto owned = std::make_shared<OwnedBlobs>();
   PJ::sdk::MeshMap mesh;
   mesh.timestamp_ns = timestamp_ns;
   mesh.frame_id = map.frame_id;
   mesh.geometry_id = geometryIdText(map.has_geometry_id, map.geometry_id);
   mesh.vertex_count = static_cast<uint32_t>(map.x.size());
   mesh.face_count = static_cast<uint32_t>(map.v0.size());
+  const size_t navcels = map.v0.size();
 
-  // Vertex record layout.
-  uint32_t vertex_stride = 0;
-  addField(mesh.vertex_fields, vertex_stride, "x", Datatype::kFloat32);
-  addField(mesh.vertex_fields, vertex_stride, "y", Datatype::kFloat32);
-  addField(mesh.vertex_fields, vertex_stride, "z", Datatype::kFloat32);
-  uint32_t color_offset = 0;
+  // Geometry: NavMap keeps one array per axis and per corner; MeshMap wants them interleaved.
+  std::vector<float> positions(map.x.size() * 3);
+  for (size_t v = 0; v < map.x.size(); ++v) {
+    positions[(3 * v) + 0] = map.x[v];
+    positions[(3 * v) + 1] = map.y[v];
+    positions[(3 * v) + 2] = map.z[v];
+  }
+  mesh.position_type = Datatype::kFloat32;
+  mesh.positions = owned->add(rawBytes(positions));
+  std::vector<uint32_t> indices(navcels * 3);
+  for (size_t f = 0; f < navcels; ++f) {
+    indices[(3 * f) + 0] = map.v0[f];
+    indices[(3 * f) + 1] = map.v1[f];
+    indices[(3 * f) + 2] = map.v2[f];
+  }
+  mesh.indices = owned->add(rawBytes(indices));
+
+  // Vertex colour: the arrays are already one per channel.
   if (map.has_vertex_rgba) {
-    color_offset = addField(mesh.vertex_fields, vertex_stride, "red", Datatype::kUint8);
-    addField(mesh.vertex_fields, vertex_stride, "green", Datatype::kUint8);
-    addField(mesh.vertex_fields, vertex_stride, "blue", Datatype::kUint8);
-    addField(mesh.vertex_fields, vertex_stride, "alpha", Datatype::kUint8);
+    const std::vector<uint8_t> opaque(map.x.size(), uint8_t{255});
+    for (const auto& [name, values] :
+         {std::pair<const char*, const std::vector<uint8_t>*>{"red", &map.r},
+          {"green", &map.g},
+          {"blue", &map.b},
+          {"alpha", map.a.empty() ? &opaque : &map.a}}) {
+      MeshChannel channel;
+      channel.name = name;
+      channel.target = MeshChannel::Target::kVertex;
+      channel.datatype = Datatype::kUint8;
+      channel.data = owned->add(*values);
+      mesh.channels.push_back(std::move(channel));
+    }
   }
-  mesh.vertex_stride = roundUp(vertex_stride, 4);
 
-  // Face record layout: indices, surface, then one channel per layer.
-  uint32_t face_stride = 0;
-  addField(mesh.face_fields, face_stride, std::string(PJ::sdk::kMeshMapVertexIndicesField), Datatype::kUint32, 3);
-  const uint32_t surface_offset = addField(mesh.face_fields, face_stride, "surface", Datatype::kUint32);
-  std::set<std::string> used_names{std::string(PJ::sdk::kMeshMapVertexIndicesField), "surface"};
-  std::vector<ChannelEncoding> encodings;
-  std::vector<uint32_t> layer_offsets;
-  uint32_t max_align = 4;
+  // The surface each NavCel belongs to, as a categorical channel labelled by frame.
+  if (!map.surfaces.empty()) {
+    std::vector<uint32_t> surface(navcels, 0U);
+    PJ::sdk::ChannelInfo info;
+    info.kind = PJ::sdk::ChannelKind::kCategorical;
+    for (uint32_t s = 0; s < map.surfaces.size(); ++s) {
+      for (const uint32_t f : map.surfaces[s].navcels) {
+        surface[f] = s;
+      }
+      const std::string& frame = map.surfaces[s].frame_id;
+      PJ::sdk::ChannelCategory category;
+      category.value = s;
+      category.label = frame.empty() ? "surface " + std::to_string(s) : frame;
+      info.categories.push_back(std::move(category));
+    }
+    mesh.channels.push_back(
+        {.name = "surface",
+         .target = MeshChannel::Target::kFace,
+         .datatype = Datatype::kUint32,
+         .data = owned->add(rawBytes(surface)),
+         .info = std::move(info)});
+  }
+
+  // One face channel per layer, in its own type.
+  std::set<std::string> used_names{"surface"};
   for (const NavMapLayer& layer : map.layers) {
-    encodings.push_back(encodingFor(layer, /*sparse_means_no_data=*/true));
-    max_align = std::max(max_align, PJ::sdk::bytesPerElement(encodings.back().datatype));
-    layer_offsets.push_back(addField(
-        mesh.face_fields, face_stride, uniqueChannelName(channelNameFor(layer.name), used_names),
-        encodings.back().datatype));
-  }
-  mesh.face_stride = roundUp(face_stride, max_align);
-  mesh.face_data_offset = roundUp(mesh.vertex_count * mesh.vertex_stride, 8);
-
-  auto buffer = std::make_shared<std::vector<uint8_t>>(
-      mesh.face_data_offset + (static_cast<size_t>(mesh.face_count) * mesh.face_stride), uint8_t{0});
-
-  for (uint32_t v = 0; v < mesh.vertex_count; ++v) {
-    uint8_t* record = buffer->data() + (static_cast<size_t>(v) * mesh.vertex_stride);
-    std::memcpy(record, &map.x[v], sizeof(float));
-    std::memcpy(record + 4, &map.y[v], sizeof(float));
-    std::memcpy(record + 8, &map.z[v], sizeof(float));
-    if (map.has_vertex_rgba) {
-      record[color_offset] = map.r[v];
-      record[color_offset + 1] = map.g[v];
-      record[color_offset + 2] = map.b[v];
-      record[color_offset + 3] = map.a.empty() ? uint8_t{255} : map.a[v];
-    }
-  }
-
-  uint8_t* faces = buffer->data() + mesh.face_data_offset;
-  for (uint32_t f = 0; f < mesh.face_count; ++f) {
-    uint8_t* record = faces + (static_cast<size_t>(f) * mesh.face_stride);
-    const uint32_t indices[3] = {map.v0[f], map.v1[f], map.v2[f]};
-    std::memcpy(record, indices, sizeof(indices));
-  }
-  for (uint32_t s = 0; s < map.surfaces.size(); ++s) {
-    for (const uint32_t f : map.surfaces[s].navcels) {
-      std::memcpy(faces + (static_cast<size_t>(f) * mesh.face_stride) + surface_offset, &s, sizeof(s));
-    }
-  }
-  for (size_t l = 0; l < map.layers.size(); ++l) {
-    const NavMapLayer& layer = map.layers[l];
-    const ChannelEncoding& encoding = encodings[l];
-    auto write = [&](uint32_t face, double value) {
-      writeValue(
-          faces + (static_cast<size_t>(face) * mesh.face_stride) + layer_offsets[l], encoding.datatype,
-          encodeValue(layer, encoding, value));
-    };
-    if (layer.indices.empty()) {
-      for (uint32_t f = 0; f < mesh.face_count; ++f) {
-        write(f, layer.values[f]);
+    Datatype datatype = datatypeOf(layer.type);
+    PJ::sdk::ChannelInfo info = infoFor(layer);
+    std::vector<double> values = layer.values;
+    if (!layer.indices.empty()) {
+      // Listed NavCels only: the rest have no data. An integer layer without an
+      // "unknown" value has nothing to mark them with, so it widens to float.
+      double fill = std::numeric_limits<double>::quiet_NaN();
+      if (!isFloat(datatype)) {
+        if (info.no_data.has_value()) {
+          fill = *info.no_data;
+        } else {
+          datatype = Datatype::kFloat32;
+        }
       }
-    } else {
-      // Unlisted NavCels have no data (the channel was widened to float).
-      for (uint32_t f = 0; f < mesh.face_count; ++f) {
-        writeValue(faces + (static_cast<size_t>(f) * mesh.face_stride) + layer_offsets[l], encoding.datatype, kNaN);
-      }
+      values.assign(navcels, fill);
       for (size_t k = 0; k < layer.indices.size(); ++k) {
-        write(layer.indices[k], layer.values[k]);
+        values[layer.indices[k]] = layer.values[k];
       }
     }
+    mesh.channels.push_back(
+        {.name = uniqueChannelName(channelNameFor(layer.name), used_names),
+         .target = MeshChannel::Target::kFace,
+         .datatype = datatype,
+         .data = owned->add(encode(values, datatype)),
+         .info = std::move(info)});
   }
 
   for (const NavMapLink& link : map.links) {
@@ -409,11 +420,10 @@ PJ::sdk::MeshMap buildMeshMap(const NavMapData& map, int64_t timestamp_ns) {
         {.from_face = link.from_navcel,
          .to_face = link.to_navcel,
          .kind = link.type,
-         .bidirectional = link.bidirectional});
+         .bidirectional = link.bidirectional,
+         .cost = link.length});
   }
-
-  mesh.data = PJ::Span<const uint8_t>(buffer->data(), buffer->size());
-  mesh.anchor = std::move(buffer);
+  mesh.anchor = std::move(owned);
   return mesh;
 }
 
@@ -421,28 +431,23 @@ PJ::Expected<PJ::sdk::MeshMapUpdate> buildMeshMapUpdate(const NavMapLayer& layer
   if (!layer.indices.empty() && layer.indices.size() != layer.values.size()) {
     return PJ::unexpected(std::string("NavMapLayer: indices and data have different lengths"));
   }
+  auto owned = std::make_shared<OwnedBlobs>();
   PJ::sdk::MeshMapUpdate update;
   update.timestamp_ns = timestamp_ns;
   update.frame_id = layer.frame_id;
   update.geometry_id = geometryIdText(layer.has_geometry_id, layer.geometry_id);
-  update.target = PJ::sdk::MeshMapUpdate::Target::kFaces;
-  update.count = static_cast<uint32_t>(layer.values.size());
-
-  const ChannelEncoding encoding = encodingFor(layer, /*sparse_means_no_data=*/false);
-  uint32_t stride = 0;
-  addField(update.fields, stride, std::string(PJ::sdk::kMeshMapUpdateIndexField), Datatype::kUint32);
-  const uint32_t value_offset = addField(update.fields, stride, channelNameFor(layer.name), encoding.datatype);
-  update.stride = roundUp(stride, std::max<uint32_t>(4, PJ::sdk::bytesPerElement(encoding.datatype)));
-
-  auto buffer = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(update.count) * update.stride, uint8_t{0});
-  for (uint32_t k = 0; k < update.count; ++k) {
-    uint8_t* record = buffer->data() + (static_cast<size_t>(k) * update.stride);
-    const uint32_t index = layer.indices.empty() ? k : layer.indices[k];
-    std::memcpy(record, &index, sizeof(index));
-    writeValue(record + value_offset, encoding.datatype, encodeValue(layer, encoding, layer.values[k]));
-  }
-  update.data = PJ::Span<const uint8_t>(buffer->data(), buffer->size());
-  update.anchor = std::move(buffer);
+  const Datatype datatype = datatypeOf(layer.type);
+  PJ::sdk::MeshChannelPatch patch;
+  patch.channel = {
+      .name = channelNameFor(layer.name),
+      .target = PJ::sdk::MeshChannel::Target::kFace,
+      .datatype = datatype,
+      .data = owned->add(encode(layer.values, datatype)),
+      .info = infoFor(layer)};
+  // No indices: a dense patch replacing the whole channel.
+  patch.indices = layer.indices.empty() ? PJ::Span<const uint8_t>{} : owned->add(rawBytes(layer.indices));
+  update.patches.push_back(std::move(patch));
+  update.anchor = std::move(owned);
   return update;
 }
 

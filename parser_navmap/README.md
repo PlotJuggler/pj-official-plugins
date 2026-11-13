@@ -36,30 +36,32 @@ therefore rejects every other type; keep it that way.
 
 ## Conversion
 
-NavMap stores one array per coordinate and per triangle corner; `MeshMap` wants
-interleaved records, so the parser transcodes once (`navmap_mesh.hpp`):
+`MeshMap` stores one array per channel, as NavMap does, so the layers pass
+through in their own type; only the geometry is repacked (`navmap_mesh.hpp`):
 
-- **Vertices:** `x`, `y`, `z` (float32), plus `red`, `green`, `blue`, `alpha`
-  (uint8) when the map has vertex colours (`alpha` 255 when it has none).
-- **Faces:** `vertex_indices`, `surface` (the surface index, 0 when the map has
-  no surfaces), then one channel per layer, named after it. A name that is empty
-  or clashes with `vertex_indices`, `surface` or `index` gets a `_layer` suffix,
-  and a repeated name a numeric one.
-- **Layer types:** a layer keeps its type unless it has an "unknown" value or
-  lists only some NavCels; it then becomes float32 with NaN for "no data",
-  because MeshMap has no integer "no data" value. An int16 layer with unit
-  `1/1000 log-odds` becomes the float32 occupancy probability. A layer whose data
-  does not match the NavCel count is dropped.
-- **Links** become `MeshFaceLink`s (`kind` = the NavMap link type).
+- **Geometry:** NavMap's per-axis positions and per-corner indices are
+  interleaved into float32 xyz and uint32 triplets.
+- **Vertex colour:** `red`, `green`, `blue`, `alpha` uint8 vertex channels when
+  the map has vertex colours (`alpha` 255 when it has none).
+- **Surfaces:** a categorical uint32 `surface` face channel holding each
+  NavCel's surface index, labelled by the surface frames. A map has one
+  `frame_id`, the header's: NavMap surfaces share the map frame in practice, so a
+  map whose surfaces use different frames is drawn in the header frame.
+- **Layers:** one face channel each, named after the layer (an empty name
+  becomes `layer`, `surface` becomes `surface_layer`, a repeated one gets a
+  numeric suffix), in the layer's own type, with its `unit` and its "unknown"
+  value as `info.no_data`. A layer listing only some NavCels marks the others
+  with that value: NaN for a float layer; an integer layer without one widens to
+  float32 with NaN. When a layer's data array differs from its declared type, the
+  array present decides the type. A layer whose data does not match the NavCel
+  count is dropped.
+- **Links** become `MeshFaceLink`s: `kind` = the NavMap link type, `cost` = its
+  length.
 - **`geometry_id`** becomes its decimal text; 0 or absent becomes "".
-- **Frame:** a MeshMap has one frame, the header's. NavMap surfaces share the
-  map frame in practice; a map whose surfaces use different frames is drawn in
-  the header frame.
 
-A NavMapLayer message becomes a `MeshMapUpdate` with `target = kFaces`: one
-record per listed NavCel (every NavCel when `indices` is empty), holding `index`
-and the layer channel, encoded as above (a sparse update is not widened: it only
-lists what it changes).
+A NavMapLayer message becomes a `MeshMapUpdate` with one face patch for the
+layer's channel, in the layer's own type and with the same `ChannelInfo`: dense
+(no indices) when it covers every NavCel, sparse with its indices otherwise.
 
 ## Message layouts
 
@@ -85,7 +87,8 @@ checker does not track builtin object types, so this floor is set by hand.
 
 `tests/navmap_parser_test.cpp` loads the built `.so` through the host loader and
 serializes messages by hand (current and first released layouts). It covers the
-claims and the bind guard, the mesh records and channels, every layer encoding,
+claims and the bind guard, the geometry and channels, every layer encoding (type,
+unit, unknown value, sparse coverage, a type/array mismatch),
 NavMapLayer updates, the scalar summaries, and malformed input: every truncated
 prefix of a message (run it under AddressSanitizer to catch an unchecked read),
 big-endian payloads and oversized sequence lengths.
