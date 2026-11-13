@@ -22,6 +22,6 @@
   "encoding": [
     "ros2msg"
   ],
-  "min_sdk_required": "0.41.0",
+  "min_sdk_required": "1.0.0-dev.1",
   "min_plotjuggler_version": "4.0.0"
 }
