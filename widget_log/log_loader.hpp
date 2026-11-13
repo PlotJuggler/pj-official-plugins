@@ -92,6 +92,8 @@ class LogLoader {
       uint32_t slot, Wire& wire, const PJ::Expected<Probe>& counted, const PJ::WidgetHostView& host, SyncResult& result,
       bool value_unresolved = false);
   void refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& host, SyncResult& result);
+  /// Whether the history the host holds is still the one loaded, as far as its count and ends tell.
+  static bool unchanged(uint32_t slot, const Wire& wire, const Probe& counted, const PJ::WidgetHostView& host);
   static void warnOnce(Wire& wire, std::string message, SyncResult& result);
 
   LogStore& store_;

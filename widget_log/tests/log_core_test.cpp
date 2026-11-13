@@ -338,6 +338,17 @@ TEST_F(LogLoaderTest, UndeliverableFirstSampleKeepsTheWire) {
   EXPECT_TRUE(loader_.wires()[0].is_log);
 }
 
+// The first sample tells an offset change from an unchanged history; without it, the last one does.
+TEST_F(LogLoaderTest, UndeliverableFirstSampleStillSeesAnOffsetShift) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 3.0});
+  host_.samples(0).front().undeliverable = true;
+  sync();
+  host_.display_offset -= std::chrono::seconds(10);
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{12.0, 13.0}));
+}
+
 TEST_F(LogLoaderTest, UnresolvedWireDoesNotWarnWhileItsValueIsNone) {
   host_.wire(0, "/rosout");
   fill(0, {1.0, 2.0});

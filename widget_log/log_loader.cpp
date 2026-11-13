@@ -244,9 +244,7 @@ void LogLoader::fullLoad(
 
 void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& host, SyncResult& result) {
   auto counted = probe(slot, kMaxTime, host);
-  // An undelivered first sample leaves the count alone to tell whether the history changed.
-  if (counted && counted->total == wire.host_total &&
-      (counted->total == 0 || !counted->first_time || *counted->first_time == wire.host_first)) {
+  if (counted && unchanged(slot, wire, *counted, host)) {
     return;
   }
   if (wire.missing > 0 || wire.host_total == 0) {
@@ -324,6 +322,26 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& hos
     wire.host_last = collect.last;
     wire.host_at_last = collect.at_last;
   }
+}
+
+bool LogLoader::unchanged(uint32_t slot, const Wire& wire, const Probe& counted, const PJ::WidgetHostView& host) {
+  if (counted.total != wire.host_total) {
+    return false;
+  }
+  if (counted.total == 0) {
+    return true;
+  }
+  if (counted.first_time) {
+    return *counted.first_time == wire.host_first;
+  }
+  // The first sample is not delivered: a read of two samples delivers the first and the last, and the last
+  // one moves with the display offset as well.
+  std::optional<double> last;
+  const auto read = host.queryHistory(kInput, slot, kMinTime, kMaxTime, 2, [&last](const PJ_widget_value_t& value) {
+    last = value.time;
+    return true;
+  });
+  return !read || !last || *last == wire.host_last;
 }
 
 void LogLoader::warnOnce(Wire& wire, std::string message, SyncResult& result) {
