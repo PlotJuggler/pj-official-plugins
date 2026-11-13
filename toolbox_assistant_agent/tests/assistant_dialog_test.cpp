@@ -1228,9 +1228,9 @@ TEST_F(AssistantDialogSettingsSwitchTest, WithoutTheMcpEndpointServiceATurnEndsW
 }
 
 // Every turn acquires the endpoint on the GUI thread, and the host hands back
-// the one it holds; the plugin never releases it (the host does, on plugin
-// destruction). (The CLI name does not resolve here, so each turn ends at the
-// CLI lookup.)
+// the one it holds; a turn that ends on its own never releases it (the host
+// does, on plugin destruction). (The CLI name does not resolve here, so each
+// turn ends at the CLI lookup.)
 TEST_F(AssistantDialogSettingsSwitchTest, EveryTurnAcquiresTheEndpointAndNoneReleasesIt) {
   PJ::sdk::testing::FakeMcpEndpointHost mcp;
   AssistantDialog dialog;
@@ -1244,6 +1244,30 @@ TEST_F(AssistantDialogSettingsSwitchTest, EveryTurnAcquiresTheEndpointAndNoneRel
   EXPECT_EQ(transcript.find("cannot serve the Assistant's tools"), std::string::npos) << transcript;
   EXPECT_NE(transcript.find("assistant-agent-test-missing-claude-cli"), std::string::npos)
       << "both turns got past the endpoint to the CLI lookup: " << transcript;
+}
+
+// Stop gives the endpoint back, so PlotJuggler revokes its token and stops what
+// the turn left running there; the next turn asks for a new one.
+TEST_F(AssistantDialogSettingsSwitchTest, StopReleasesTheEndpointAndTheNextTurnAcquiresAgain) {
+  PJ::sdk::testing::FakeMcpEndpointHost mcp;
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  dialog.setMcpEndpointHost(PJ::sdk::McpEndpointHostView(mcp.makeHost()));
+  ASSERT_TRUE(AssistantDialogTestPeer::runTurn(dialog, "first"));
+  ASSERT_EQ(mcp.releaseCalls(), 0);
+  dialog.onClicked("cancelButton");
+  EXPECT_EQ(mcp.releaseCalls(), 1);
+  ASSERT_TRUE(AssistantDialogTestPeer::runTurn(dialog, "second"));
+  EXPECT_EQ(mcp.acquireCalls(), 2);
+  EXPECT_EQ(mcp.releaseCalls(), 1);
+}
+
+// A host without the endpoint service has nothing to give back: Stop still works.
+TEST_F(AssistantDialogSettingsSwitchTest, StopWithoutTheMcpEndpointServiceDoesNothingMore) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  dialog.setMcpEndpointHost(PJ::sdk::McpEndpointHostView{});
+  EXPECT_FALSE(dialog.onClicked("cancelButton"));
 }
 
 // --- Feature awareness ------------------------------------------------------

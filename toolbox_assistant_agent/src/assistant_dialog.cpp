@@ -599,10 +599,16 @@ bool AssistantDialog::onClicked(std::string_view widget_name) {
     return true;
   }
   if (widget_name == "cancelButton") {
-    // Stops the CLI. A tool call it had in flight runs in PlotJuggler, whose
-    // MCP server decides what becomes of it once the client is gone.
+    // Stops the CLI, then gives the endpoint back: PlotJuggler revokes its
+    // token, which stops what the CLI left running there (an import or an
+    // evaluation that had gone to the background would otherwise carry on with
+    // nobody waiting for it). The next turn acquires a new endpoint. The turn
+    // holds its own copy of the old one, so the worker shares nothing with this.
     if (backend_) {
       backend_->cancel();
+    }
+    if (mcp_host_.valid()) {
+      mcp_host_.release();
     }
     return false;
   }

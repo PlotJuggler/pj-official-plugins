@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## [0.5.1] - 2026-11-13
+
+### Fixed
+- Stop now also stops what the assistant left running in PlotJuggler (a file
+  import, an evaluation, a stream it started): the panel gives its MCP endpoint
+  back, so PlotJuggler stops that work, and takes a new one on the next
+  message. Before, Stop only ended the agent CLI.
+
 ## [0.5.0] - 2026-11-08
 
 ### Changed
