@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
@@ -60,7 +61,8 @@ class CsvSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("no filepath configured"));
     }
 
-    std::ifstream file(filepath);
+    // Decode the host's UTF-8 path before opening it on Windows.
+    std::ifstream file(std::filesystem::path(std::u8string(filepath.begin(), filepath.end())));
     if (!file.is_open()) {
       return PJ::unexpected(std::string("cannot open file: ") + filepath);
     }
