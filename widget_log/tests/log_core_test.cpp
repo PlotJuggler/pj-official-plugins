@@ -195,7 +195,7 @@ TEST_F(LogLoaderTest, DecodesEveryField) {
   EXPECT_EQ(r.time, 1.5);
   EXPECT_EQ(r.level, Level::kWarning);
   EXPECT_EQ(r.message, "two\nlines");
-  EXPECT_EQ(store_.text(r.node), "/talker");
+  EXPECT_EQ(store_.text(r.source), "/talker");
   EXPECT_EQ(store_.text(r.category), "motion");
   EXPECT_EQ(store_.categories(), (std::vector<uint32_t>{r.category}));
   EXPECT_EQ(r.stamp_ns, 1'700'000'000'123'456'789);
@@ -421,10 +421,10 @@ class LogFilterTest : public ::testing::Test {
   }
 
   void add(
-      uint32_t wire, double time, Level level, const std::string& node, const std::string& message,
+      uint32_t wire, double time, Level level, const std::string& source, const std::string& message,
       const std::string& category = {}) {
     LogRow r = row(time, seq_++, message, level);
-    r.node = store_.internNode(node);
+    r.source = store_.internSource(source);
     r.category = store_.internCategory(category);
     store_.insert(wire, {r});
   }
@@ -443,7 +443,7 @@ class LogFilterTest : public ::testing::Test {
   uint64_t seq_ = 0;
 };
 
-TEST_F(LogFilterTest, LevelsNodeTextTopic) {
+TEST_F(LogFilterTest, LevelsSourceTextTopic) {
   LogFilter all;
   EXPECT_EQ(pass(all).size(), 6u);
 
@@ -452,11 +452,11 @@ TEST_F(LogFilterTest, LevelsNodeTextTopic) {
   levels.levels[static_cast<size_t>(Level::kInfo)] = false;
   EXPECT_EQ(pass(levels), (std::vector<double>{3.0, 4.0, 5.0, 6.0}));
 
-  LogFilter node;
-  node.node = "/b";
-  EXPECT_EQ(pass(node), (std::vector<double>{3.0, 4.0, 6.0}));
-  node.node = "/never-seen";
-  EXPECT_TRUE(pass(node).empty());
+  LogFilter by_source;
+  by_source.source = "/b";
+  EXPECT_EQ(pass(by_source), (std::vector<double>{3.0, 4.0, 6.0}));
+  by_source.source = "/never-seen";
+  EXPECT_TRUE(pass(by_source).empty());
 
   LogFilter text;
   text.text = "MOTOR";
@@ -470,14 +470,14 @@ TEST_F(LogFilterTest, LevelsNodeTextTopic) {
 
   LogFilter combined;
   combined.levels[static_cast<size_t>(Level::kError)] = false;
-  combined.node = "/a";
+  combined.source = "/a";
   combined.text = "motor";
   EXPECT_EQ(pass(combined), (std::vector<double>{1.0, 2.0}));
   combined.hidden_wires = {0};
   EXPECT_TRUE(pass(combined).empty());
 
   LogFilter error_on_b;
-  error_on_b.node = "/b";
+  error_on_b.source = "/b";
   error_on_b.text = "motor";
   EXPECT_EQ(pass(error_on_b), (std::vector<double>{4.0}));
 }
@@ -490,7 +490,7 @@ TEST_F(LogFilterTest, Category) {
   LogFilter category;
   category.category = "motion";
   EXPECT_EQ(pass(category), (std::vector<double>{7.0}));
-  category.node = "/b";
+  category.source = "/b";
   EXPECT_TRUE(pass(category).empty());
   category = {};
   category.category = "never-seen";
@@ -504,10 +504,10 @@ TEST_F(LogFilterTest, UnknownLevelIsAlwaysShown) {
 }
 
 TEST_F(LogFilterTest, RevealedCountOverTheFilteredRows) {
-  LogFilter node;
-  node.node = "/a";
+  LogFilter by_source;
+  by_source.source = "/a";
   std::vector<uint32_t> indices;
-  CompiledFilter(node, store_).collect(store_, 0, store_.size(), indices);  // times 1, 2, 5
+  CompiledFilter(by_source, store_).collect(store_, 0, store_.size(), indices);  // times 1, 2, 5
   EXPECT_EQ(log_viewer::revealedCount(store_, indices, 0.0), 0u);
   EXPECT_EQ(log_viewer::revealedCount(store_, indices, 2.0), 2u);
   EXPECT_EQ(log_viewer::revealedCount(store_, indices, 4.9), 2u);

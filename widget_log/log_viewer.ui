@@ -123,12 +123,12 @@
           </widget>
          </item>
          <item>
-          <widget class="QComboBox" name="nodeCombo">
+          <widget class="QComboBox" name="sourceCombo">
            <property name="minimumWidth">
             <number>140</number>
            </property>
            <property name="toolTip">
-            <string>Show only entries from one node</string>
+            <string>Show only entries from one source</string>
            </property>
            <property name="sizeAdjustPolicy">
             <enum>QComboBox::AdjustToMinimumContentsLengthWithIcon</enum>

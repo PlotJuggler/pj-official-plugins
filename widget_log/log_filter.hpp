@@ -1,4 +1,4 @@
-// Row filter of the log viewer: level, node, category, message text and topic. Qt-free.
+// Row filter of the log viewer: level, source, category, message text and topic. Qt-free.
 #pragma once
 
 #include <array>
@@ -43,8 +43,8 @@ inline constexpr std::array<Level, kLevelNames.size() - 1> kToggleLevels = [] {
 struct LogFilter {
   /// Indexed by the Level value; kUnknown is ignored (always shown).
   std::array<bool, 6> levels = {true, true, true, true, true, true};
-  /// Node name to keep; empty = every node.
-  std::string node;
+  /// Source to keep; empty = every source.
+  std::string source;
   /// Category to keep; empty = every category.
   std::string category;
   /// Case-insensitive (ASCII) substring of the message; empty = every message.
@@ -65,10 +65,10 @@ class CompiledFilter {
 
  private:
   std::array<bool, 6> levels_;
-  bool any_node_ = true;
-  std::optional<uint32_t> node_;  ///< nullopt with any_node_ false: the node was never seen, nothing passes
+  bool any_source_ = true;
+  std::optional<uint32_t> source_;  ///< nullopt with any_source_ false: the source was never seen, nothing passes
   bool any_category_ = true;
-  std::optional<uint32_t> category_;  ///< as node_
+  std::optional<uint32_t> category_;  ///< as source_
   std::string needle_;                ///< lower-cased
   std::vector<uint32_t> hidden_wires_;
 };

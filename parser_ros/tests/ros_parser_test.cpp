@@ -3399,7 +3399,7 @@ TEST(RosParserTest, RosLog2DecodesAllFields) {
   ASSERT_NE(log, nullptr);
   EXPECT_EQ(log->timestamp_ns, 12LL * 1000000000LL + 345);
   EXPECT_EQ(log->level, PJ::sdk::Log::Level::kError);
-  EXPECT_EQ(log->name, "/my_node");
+  EXPECT_EQ(log->source, "/my_node");
   EXPECT_EQ(log->message, "boom");
   EXPECT_TRUE(log->category.empty());  // ROS logs have none
 }
@@ -3470,7 +3470,7 @@ TEST(RosParserTest, RosLog1DecodesFieldsWithTopics) {
     ASSERT_NE(log, nullptr);
     EXPECT_EQ(log->timestamp_ns, 3LL * 1000000000LL + 500);
     EXPECT_EQ(log->level, expected) << "raw level " << static_cast<int>(raw);
-    EXPECT_EQ(log->name, "/talker");
+    EXPECT_EQ(log->source, "/talker");
     EXPECT_EQ(log->message, "hello");
   }
 }

@@ -25,7 +25,7 @@ using log_viewer::ViewState;
 // saveConfig keys. They share the load_config object with the manifest settings (`future_rows`), so none
 // of them may reuse a setting key.
 constexpr const char* kLevelsKey = "levels";
-constexpr const char* kNodeKey = "node_filter";
+constexpr const char* kSourceKey = "source_filter";
 constexpr const char* kCategoryKey = "category_filter";
 constexpr const char* kTextKey = "text_filter";
 constexpr const char* kHiddenTopicsKey = "hidden_topics";
@@ -42,7 +42,7 @@ nlohmann::json toJson(const ViewState& state) {
   }
   return nlohmann::json{
       {kLevelsKey, levels},
-      {kNodeKey, state.node},
+      {kSourceKey, state.source},
       {kCategoryKey, state.category},
       {kTextKey, state.text},
       {kHiddenTopicsKey, state.hidden_topics},
@@ -95,8 +95,9 @@ PJ::Status readState(const nlohmann::json& config, ViewState& state) {
 
   std::optional<std::vector<std::string>> levels;
   for (auto status :
-       {readList<std::string>(config, kLevelsKey, levels), text(kNodeKey, next.node), text(kCategoryKey, next.category),
-        text(kTextKey, next.text), readList<std::string>(config, kHiddenTopicsKey, next.hidden_topics),
+       {readList<std::string>(config, kLevelsKey, levels), text(kSourceKey, next.source),
+        text(kCategoryKey, next.category), text(kTextKey, next.text),
+        readList<std::string>(config, kHiddenTopicsKey, next.hidden_topics),
         readList<int>(config, kSplitterKey, next.splitter), readList<int>(config, kColumnsKey, next.columns)}) {
     if (!status) {
       return status;

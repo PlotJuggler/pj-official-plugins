@@ -32,9 +32,9 @@ bool containsCaseInsensitive(const std::string& haystack, const std::string& low
 CompiledFilter::CompiledFilter(const LogFilter& filter, const LogStore& store)
     : levels_(filter.levels), needle_(lowerNeedle(filter.text)), hidden_wires_(filter.hidden_wires) {
   levels_[static_cast<size_t>(Level::kUnknown)] = true;
-  if (!filter.node.empty()) {
-    any_node_ = false;
-    node_ = store.find(filter.node);
+  if (!filter.source.empty()) {
+    any_source_ = false;
+    source_ = store.find(filter.source);
   }
   if (!filter.category.empty()) {
     any_category_ = false;
@@ -48,7 +48,7 @@ bool CompiledFilter::accepts(const LogRow& row) const {
   if (level < levels_.size() && !levels_[level]) {
     return false;
   }
-  if (!any_node_ && (!node_ || row.node != *node_)) {
+  if (!any_source_ && (!source_ || row.source != *source_)) {
     return false;
   }
   if (!any_category_ && (!category_ || row.category != *category_)) {

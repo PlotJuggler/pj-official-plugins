@@ -22,7 +22,7 @@ namespace log_viewer {
 /// What the user set in the panel; persisted with the layout.
 struct ViewState {
   std::array<bool, kToggleLevels.size()> levels = {true, true, true, true, true};
-  std::string node;
+  std::string source;
   std::string category;
   std::string text;
   std::vector<std::string> hidden_topics;
@@ -59,7 +59,7 @@ class LogViewerWidget : public QWidget {
   [[nodiscard]] bool isPlaying() const;
   void applyFilters();
   void refreshTopics();
-  void refreshNodes();
+  void refreshSources();
   void refreshCategories();
   void refreshNotice();
   void updateDetail();
@@ -82,7 +82,7 @@ class LogViewerWidget : public QWidget {
 
   std::vector<std::string> hidden_topics_;
   std::vector<uint32_t> applied_hidden_wires_;
-  size_t nodes_listed_ = 0;
+  size_t sources_listed_ = 0;
   size_t categories_listed_ = 0;
   std::vector<int> column_widths_;
   std::vector<int> pending_splitter_;

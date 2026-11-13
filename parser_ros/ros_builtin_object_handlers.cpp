@@ -1052,7 +1052,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLogObject(PJ::Timestamp ts, 
     PJ::sdk::Log result;
     result.timestamp_ns = stamp_ns != 0 ? stamp_ns : static_cast<int64_t>(ts);
     result.level = mapRosLogLevel(readU8(*deserializer_), ros2);
-    deserializer_->deserializeString(result.name);
+    deserializer_->deserializeString(result.source);
     deserializer_->deserializeString(result.message);
     // The source location (file, function, line) is not part of the canonical Log; it is read only so a
     // truncated message is rejected instead of accepted.

@@ -43,16 +43,16 @@ uint32_t LogStore::intern(std::string_view text) {
   const auto id = static_cast<uint32_t>(strings_.size());
   strings_.emplace_back(text);
   string_ids_.emplace(strings_.back(), id);
-  is_node_.push_back(false);
+  is_source_.push_back(false);
   is_category_.push_back(false);
   return id;
 }
 
-uint32_t LogStore::internNode(std::string_view text) {
+uint32_t LogStore::internSource(std::string_view text) {
   const uint32_t id = intern(text);
-  if (id != 0 && !is_node_[id]) {
-    is_node_[id] = true;
-    nodes_.push_back(id);
+  if (id != 0 && !is_source_[id]) {
+    is_source_[id] = true;
+    sources_.push_back(id);
   }
   return id;
 }

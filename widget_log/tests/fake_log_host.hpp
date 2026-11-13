@@ -15,13 +15,13 @@
 namespace log_viewer_test {
 
 inline PJ::sdk::Log makeLog(
-    PJ::sdk::Log::Level level, std::string message, std::string node = "/node", std::string category = {},
+    PJ::sdk::Log::Level level, std::string message, std::string source = "/node", std::string category = {},
     int64_t stamp_ns = 0) {
   PJ::sdk::Log log;
   log.timestamp_ns = stamp_ns;
   log.level = level;
   log.message = std::move(message);
-  log.name = std::move(node);
+  log.source = std::move(source);
   log.category = std::move(category);
   return log;
 }

@@ -458,9 +458,9 @@ TEST_F(LogViewerTest, FiltersFromTheToolbar) {
   panel->widget->findChild<QToolButton*>("levelDebug")->setChecked(false);
   EXPECT_EQ(model->rowCount(), 3);
 
-  auto* nodes = panel->widget->findChild<QComboBox*>("nodeCombo");
-  ASSERT_EQ(nodes->count(), 3);  // All nodes, /a, /b
-  nodes->setCurrentIndex(nodes->findData(QStringLiteral("/b")));
+  auto* sources = panel->widget->findChild<QComboBox*>("sourceCombo");
+  ASSERT_EQ(sources->count(), 3);  // All sources, /a, /b
+  sources->setCurrentIndex(sources->findData(QStringLiteral("/b")));
   EXPECT_EQ(model->rowCount(), 2);
 
   // The text filter waits for typing to pause.
@@ -477,7 +477,7 @@ TEST_F(LogViewerTest, ConfigRoundTrip) {
   ASSERT_NE(panel, nullptr);
   const nlohmann::json config = {
       {"future_rows", "hide"},       {"levels", {"info", "warn", "fatal"}},
-      {"node_filter", "/talker"},    {"text_filter", "motor"},
+      {"source_filter", "/talker"},  {"text_filter", "motor"},
       {"hidden_topics", {"/b"}},     {"splitter_sizes", {300, 120}},
       {"category_filter", "motion"}, {"column_widths", {100, 70, 150, 120, 160}},
   };
@@ -490,12 +490,12 @@ TEST_F(LogViewerTest, ConfigRoundTrip) {
   const auto state = nlohmann::json::parse(saved);
   EXPECT_FALSE(state.contains("future_rows"));  // a setting: the host stores it
   for (const char* key :
-       {"levels", "node_filter", "category_filter", "text_filter", "hidden_topics", "column_widths"}) {
+       {"levels", "source_filter", "category_filter", "text_filter", "hidden_topics", "column_widths"}) {
     EXPECT_EQ(state.at(key), config.at(key)) << key;
   }
   EXPECT_EQ(panel->widget->findChild<QLineEdit*>("filterEdit")->text(), "motor");
   EXPECT_FALSE(panel->widget->findChild<QToolButton*>("levelDebug")->isChecked());
-  EXPECT_EQ(panel->widget->findChild<QComboBox*>("nodeCombo")->currentData().toString(), "/talker");
+  EXPECT_EQ(panel->widget->findChild<QComboBox*>("sourceCombo")->currentData().toString(), "/talker");
   EXPECT_EQ(panel->widget->findChild<QComboBox*>("categoryCombo")->currentData().toString(), "motion");
   EXPECT_EQ(panel->view()->header()->sectionSize(0), 100);
   const auto& splitter = state.at("splitter_sizes");
@@ -512,7 +512,7 @@ TEST_F(LogViewerTest, ConfigRoundTrip) {
   const auto restored = nlohmann::json::parse(again);
   // The splitter scales the saved sizes to its own height: equal between two panels of the same size.
   for (const char* key :
-       {"levels", "node_filter", "category_filter", "text_filter", "hidden_topics", "column_widths",
+       {"levels", "source_filter", "category_filter", "text_filter", "hidden_topics", "column_widths",
         "splitter_sizes"}) {
     EXPECT_EQ(restored.at(key), state.at(key)) << key;
   }

@@ -17,13 +17,13 @@ namespace log_viewer {
 
 using Level = PJ::sdk::Log::Level;
 
-/// One log entry. Strings that repeat (node, category) are interned in the store.
+/// One log entry. Strings that repeat (source, category) are interned in the store.
 struct LogRow {
   double time = 0.0;      ///< display-axis seconds of the sample
   int64_t stamp_ns = 0;   ///< Log::timestamp_ns, shown as metadata only
   uint64_t seq = 0;       ///< arrival order within the wire
   uint32_t wire = 0;      ///< wire id; orders rows of equal time
-  uint32_t node = 0;      ///< interned
+  uint32_t source = 0;    ///< interned
   uint32_t category = 0;  ///< interned; 0 = none
   Level level = Level::kUnknown;
   std::string message;
@@ -61,14 +61,14 @@ class LogStore {
 
   explicit LogStore(size_t capacity = kDefaultCapacity) : capacity_(capacity) {
     strings_.emplace_back();  // id 0 = ""
-    is_node_.push_back(false);
+    is_source_.push_back(false);
     is_category_.push_back(false);
   }
 
   /// Id of @p text in the string pool, adding it when new. Id 0 is the empty string.
   uint32_t intern(std::string_view text);
-  /// As intern(), and records the string as a node name.
-  uint32_t internNode(std::string_view text);
+  /// As intern(), and records the string as a source name.
+  uint32_t internSource(std::string_view text);
   /// Id of @p text when already pooled.
   [[nodiscard]] std::optional<uint32_t> find(std::string_view text) const;
   [[nodiscard]] const std::string& text(uint32_t id) const {
@@ -76,9 +76,9 @@ class LogStore {
   }
   /// As intern(), and records the string as a category.
   uint32_t internCategory(std::string_view text);
-  /// Node names seen so far, in first-seen order.
-  [[nodiscard]] const std::vector<uint32_t>& nodes() const {
-    return nodes_;
+  /// Source names seen so far, in first-seen order.
+  [[nodiscard]] const std::vector<uint32_t>& sources() const {
+    return sources_;
   }
   /// Non-empty categories seen so far, in first-seen order.
   [[nodiscard]] const std::vector<uint32_t>& categories() const {
@@ -132,8 +132,8 @@ class LogStore {
   };
 
   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> string_ids_;
-  std::vector<bool> is_node_;
-  std::vector<uint32_t> nodes_;
+  std::vector<bool> is_source_;
+  std::vector<uint32_t> sources_;
   std::vector<bool> is_category_;
   std::vector<uint32_t> categories_;
 };
