@@ -112,11 +112,50 @@ class UpdateRegistryTests(unittest.TestCase):
         result = update_registry({"extensions": [other]}, record("1.0.0", "0.28.0"))
         self.assertEqual(result["extensions"], [record("1.0.0", "0.28.0"), other])
 
-    def test_resubmitting_an_existing_version_is_rejected(self):
-        for version in ("1.0.0", "1.0.0+rebuild"):
-            with self.subTest(version=version), self.assertRaises(SystemExit) as raised:
-                update_registry({"extensions": [record("1.0.0", "0.28.0")]}, record(version, "0.28.0"))
-            self.assertIn("already", str(raised.exception.code))
+    def test_resubmitting_a_version_with_the_same_platforms_is_rejected(self):
+        with self.assertRaises(ValueError) as raised:
+            update_registry({"extensions": [record("1.0.0", "0.28.0")]}, record("1.0.0", "0.28.0"))
+        self.assertIn("already holds", str(raised.exception))
+
+    def test_resubmitting_a_version_may_add_a_platform(self):
+        stored = record("1.0.0", "0.28.0", platforms=(LINUX,))
+        stored["description"] = "edited in the registry"
+        result = update_registry({"extensions": [stored]}, record("1.0.0", "0.28.0", platforms=(MACOS, LINUX, WINDOWS)))
+        (merged,) = result["extensions"]
+        self.assertEqual(list(merged["platforms"]), [LINUX, MACOS, WINDOWS], "stored platforms keep their place")
+        self.assertEqual(merged["platforms"][LINUX], stored["platforms"][LINUX])
+        self.assertEqual(merged["description"], "edited in the registry", "only platforms are added")
+        self.assertEqual(list(stored["platforms"]), [LINUX], "the stored record must not be mutated")
+
+    def test_resubmitting_a_version_must_not_change_a_published_artifact(self):
+        changed = record("1.0.0", "0.28.0", platforms=(LINUX, MACOS))
+        changed["platforms"][LINUX] = {"url": "rebuilt"}
+        dropped = record("1.0.0", "0.28.0", platforms=(MACOS,))
+        other_floor = record("1.0.0", "0.31.0", platforms=(LINUX, MACOS))
+        other_build = record("1.0.0+rebuild", "0.28.0", platforms=(LINUX, MACOS))
+        for name, entry in (("changed", changed), ("dropped", dropped), ("floor", other_floor), ("build", other_build)):
+            with self.subTest(name), self.assertRaises(ValueError) as raised:
+                update_registry({"extensions": [record("1.0.0", "0.28.0", platforms=(LINUX,))]}, entry)
+            self.assertIn("already holds", str(raised.exception))
+
+    def test_resubmitting_a_trimmed_version_adds_only_the_platforms_it_serves(self):
+        trimmed = record("1.0.0", "0.31.0", platforms=(MACOS,))
+        newer = record("1.1.0", "0.31.0", platforms=(LINUX,))
+        self.assertEqual(submit([trimmed, newer], record("1.0.0", "0.31.0", platforms=(LINUX, MACOS, WINDOWS))),
+                         [("csv-loader", "1.0.0", [MACOS, WINDOWS]), ("csv-loader", "1.1.0", [LINUX])])
+
+    def test_resubmitting_a_version_whose_new_platforms_are_superseded_is_rejected(self):
+        trimmed = record("1.0.0", "0.31.0", platforms=(MACOS,))
+        newer = record("1.1.0", "0.31.0", platforms=(LINUX, WINDOWS))
+        with self.assertRaises(ValueError) as raised:
+            update_registry({"extensions": [trimmed, newer]}, record("1.0.0", "0.31.0", platforms=(LINUX, MACOS, WINDOWS)))
+        self.assertIn("already holds", str(raised.exception))
+
+    def test_a_rejected_submission_leaves_the_registry_untouched(self):
+        registry = {"extensions": [record("1.1.0", "0.28.0")]}
+        with self.assertRaises(ValueError):
+            update_registry(registry, record("1.0.0", "0.28.0"))
+        self.assertEqual(registry, {"extensions": [record("1.1.0", "0.28.0")]})
 
     def test_backfilling_an_older_version_keeps_only_what_it_still_serves(self):
         newer = record("1.1.0", "0.31.0", platforms=(LINUX,))
@@ -124,9 +163,9 @@ class UpdateRegistryTests(unittest.TestCase):
                          [("csv-loader", "1.0.0", [MACOS]), ("csv-loader", "1.1.0", [LINUX])])
 
     def test_submitting_a_version_that_serves_no_host_is_rejected(self):
-        with self.assertRaises(SystemExit) as raised:
+        with self.assertRaises(ValueError) as raised:
             update_registry({"extensions": [record("1.1.0", "0.28.0")]}, record("1.0.0", "0.28.0"))
-        self.assertIn("1.1.0", str(raised.exception.code))
+        self.assertIn("1.1.0", str(raised.exception))
 
 
 if __name__ == "__main__":

@@ -275,30 +275,48 @@ def prune_registry(extensions: list[dict]) -> list[dict]:
 def update_registry(registry: dict, entry: dict) -> dict:
     """Add a release to the registry, next to the older versions hosts on an older SDK still need.
 
-    Exits when the registry already holds that version of the extension (a
-    published record is immutable), or when a newer version already serves
-    every platform of the entry at the same or a lower min_sdk_required.
+    A published version is immutable, with one exception: submitting it again
+    may add platforms (a platform build recovered after the release). The
+    stored record then gains those platforms and changes in nothing else.
+
+    Raises ValueError, leaving the registry untouched, when the entry would
+    change a published version (another URL or checksum for a stored platform,
+    a stored platform gone, another min_sdk_required), when it adds nothing,
+    or when a newer version already serves every platform of the entry at the
+    same or a lower min_sdk_required.
     """
     extension_id, version = entry["id"], entry["version"]
     extensions = registry.get("extensions", [])
 
-    version_key = semver_sort_key(version)
-    for ext in extensions:
-        if ext.get("id") == extension_id and semver_sort_key(ext["version"]) == version_key:
-            sys.exit(
-                f"Error: the registry already holds {extension_id} v{ext['version']}. A published version is "
-                "immutable: release a new version, or edit registry.json by hand to pull a broken one."
+    def is_this_version(ext: dict) -> bool:
+        return ext.get("id") == extension_id and semver_sort_key(ext["version"]) == semver_sort_key(version)
+
+    stored = next((ext for ext in extensions if is_this_version(ext)), None)
+    if stored is not None:
+        if (
+            stored["version"] != version
+            or stored.get("min_sdk_required") != entry.get("min_sdk_required")
+            or any(entry["platforms"].get(platform) != data for platform, data in stored["platforms"].items())
+        ):
+            raise ValueError(
+                f"the registry already holds {extension_id} v{stored['version']} with different content. A published "
+                "version is immutable: release a new version, or edit registry.json by hand to pull a broken one."
             )
+        entry = {**stored, "platforms": {**stored["platforms"], **entry["platforms"]}}
+        extensions = [ext for ext in extensions if ext is not stored]
 
-    registry["extensions"] = prune_registry(extensions + [entry])
-
-    if entry["version"] not in [e["version"] for e in registry["extensions"] if e["id"] == extension_id]:
-        newer = max((e["version"] for e in registry["extensions"] if e["id"] == extension_id), key=semver_sort_key)
-        sys.exit(
-            f"Error: {extension_id} v{version} would serve no host: v{newer} already covers its platforms "
+    pruned = prune_registry(extensions + [entry])
+    kept = next((ext for ext in pruned if is_this_version(ext)), None)
+    if stored is not None and kept == stored:
+        raise ValueError(f"the registry already holds {extension_id} v{version}, and this submission adds no platform to it.")
+    if kept is None:
+        newer = max((ext["version"] for ext in pruned if ext["id"] == extension_id), key=semver_sort_key)
+        raise ValueError(
+            f"{extension_id} v{version} would serve no host: v{newer} already covers its platforms "
             "at the same or a lower min_sdk_required."
         )
 
+    registry["extensions"] = pruned
     return registry
 
 
@@ -312,7 +330,10 @@ def create_registry_pr(entry: dict, dry_run: bool = False, release_notes: str | 
     registry = fetch_registry_json()
 
     print(f"  Updating registry with {extension_id} v{version}...")
-    updated_registry = update_registry(registry, entry)
+    try:
+        updated_registry = update_registry(registry, entry)
+    except ValueError as e:
+        sys.exit(f"Error: {e}")
 
     if dry_run:
         print(f"\n  [dry-run] Would create PR to update registry")

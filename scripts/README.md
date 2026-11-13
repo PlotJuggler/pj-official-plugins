@@ -266,9 +266,13 @@ floor that is "latest only". A record keeps only the platforms it still serves (
 survives for macOS alone when the newer one shipped without macOS assets). Versions compare by
 SemVer precedence (`semver_sort_key`), pre-releases included.
 
-The script refuses to submit a version the registry already holds, and a version that would be
-pruned at once. Nothing else is removed automatically: pulling a broken release is a manual edit
-of `registry.json`. The registry's own validator rejects a file that is not pruned by this rule.
+A published version is immutable, with one exception: submitting it again may add platforms,
+which is what the "Recover a missing platform" dispatch does. The stored record gains the new
+platforms and changes in nothing else. The script refuses a re-submission that would change a
+stored URL or checksum or the `min_sdk_required`, one that adds nothing, and a version that would
+be pruned at once. Nothing else is removed automatically: pulling a broken release, or publishing
+the new checksums of a force-recreated tag, is a manual edit of `registry.json`. The registry's
+own validator rejects a file that is not pruned by this rule.
 
 **Registry entry format:**
 
