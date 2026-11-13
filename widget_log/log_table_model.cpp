@@ -76,11 +76,11 @@ QVariant LogTableModel::data(const QModelIndex& index, int role) const {
   if (!index.isValid() || index.row() < 0 || static_cast<size_t>(index.row()) >= filtered_.size()) {
     return {};
   }
-  const size_t store_index = filtered_[static_cast<size_t>(index.row())];
-  if (store_index >= store_.size()) {
-    return {};
+  const size_t old_index = filtered_[static_cast<size_t>(index.row())];
+  if (old_index < pending_drop_ || old_index - pending_drop_ >= store_.size()) {
+    return {};  // a row whose removal is being signalled
   }
-  const LogRow& row = store_.row(store_index);
+  const LogRow& row = store_.row(old_index - pending_drop_);
   switch (role) {
     case Qt::DisplayRole:
       switch (index.column()) {
@@ -165,8 +165,9 @@ void LogTableModel::applyStoreChange(const StoreChange& change) {
     setFilter(filter_);
     return;
   }
-  // The store has already changed. Removal signals go first, while the remaining entries still point
-  // at rows that exist; data() also guards the store bounds for the moment in between.
+  // The store has already changed. Removal signals go first; until the indices are shifted, data() reads
+  // the kept rows through pending_drop_, so they show the same entries throughout the signals.
+  pending_drop_ = change.dropped_front;
 
   // 1. Rows removed or replaced at the tail.
   const auto tail = std::lower_bound(filtered_.begin(), filtered_.end(), change.old_tail);
@@ -201,6 +202,7 @@ void LogTableModel::applyStoreChange(const StoreChange& change) {
     for (auto& index : filtered_) {
       index -= static_cast<uint32_t>(change.dropped_front);
     }
+    pending_drop_ = 0;
     if (visible_gone > 0) {
       endRemoveRows();
     }

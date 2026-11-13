@@ -70,6 +70,9 @@ class LogTableModel : public QAbstractTableModel {
   LogFilter filter_;
   std::vector<uint32_t> filtered_;  ///< store indices that pass the filter, ascending
   size_t revealed_ = 0;             ///< prefix of filtered_ with time <= tracker_
+  /// Store rows evicted while applyStoreChange() signals the removals: filtered_ still holds the indices
+  /// from before the eviction until then.
+  size_t pending_drop_ = 0;
   double tracker_ = 0.0;
   FutureRows future_rows_ = FutureRows::kGrey;
 };

@@ -110,6 +110,16 @@ if(TARGET GTest::gtest AND BUILD_TESTING)
   # The library loaded through PJ::WidgetLibrary, exactly as the host does, with a real QApplication on
   # the offscreen platform.
   find_package(Qt6 ${PJ_HOST_QT_MAJOR}.${PJ_HOST_QT_MINOR} REQUIRED COMPONENTS Test HINTS $ENV{QT_ROOT_DIR})
+
+  # The table model over a store small enough to evict, checked by QAbstractItemModelTester.
+  add_executable(log_table_model_test tests/log_table_model_test.cpp log_table_model.cpp)
+  set_target_properties(log_table_model_test PROPERTIES AUTOMOC ON)
+  target_compile_features(log_table_model_test PRIVATE cxx_std_20)
+  target_compile_options(log_table_model_test PRIVATE ${PJ_WARNING_FLAGS})
+  target_link_libraries(log_table_model_test PRIVATE log_viewer_core Qt6::Widgets Qt6::Test GTest::gtest)
+  add_test(NAME log_table_model_test COMMAND log_table_model_test)
+  set_tests_properties(log_table_model_test PROPERTIES ENVIRONMENT "${_log_viewer_test_env}")
+
   add_executable(log_viewer_test tests/log_viewer_test.cpp)
   target_compile_features(log_viewer_test PRIVATE cxx_std_20)
   target_compile_options(log_viewer_test PRIVATE ${PJ_WARNING_FLAGS})
