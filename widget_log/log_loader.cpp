@@ -216,7 +216,7 @@ void LogLoader::fullLoad(
     result.change.then(store_.removeWire(slot));
     return;
   }
-  if (!counted->first_is_log) {
+  if (counted->first_time && !counted->first_is_log) {
     wire.is_log = false;
     result.wires_changed = true;
     warnOnce(wire, wire.label + " is not a log topic", result);
@@ -243,7 +243,9 @@ void LogLoader::fullLoad(
 
 void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& host, SyncResult& result) {
   auto counted = probe(slot, kMaxTime, host);
-  if (counted && counted->total == wire.host_total && (counted->total == 0 || counted->first_time == wire.host_first)) {
+  // An undelivered first sample leaves the count alone to tell whether the history changed.
+  if (counted && counted->total == wire.host_total &&
+      (counted->total == 0 || !counted->first_time || *counted->first_time == wire.host_first)) {
     return;
   }
   if (wire.missing > 0 || wire.host_total == 0) {
@@ -263,9 +265,9 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& hos
   // A later first sample that the widget already holds means the host evicted old samples (streaming
   // buffer). Any other change of the first sample is a display offset change or an earlier insert.
   bool evicted = false;
-  if (counted->first_time != wire.host_first) {
-    if (counted->first_time > wire.host_first && counted->first_time <= wire.host_last &&
-        store_.wireHasTime(slot, counted->first_time)) {
+  if (counted->first_time && *counted->first_time != wire.host_first) {
+    const double first = *counted->first_time;
+    if (first > wire.host_first && first <= wire.host_last && store_.wireHasTime(slot, first)) {
       evicted = true;
     } else {
       fullLoad(slot, wire, counted, host, result);
@@ -278,7 +280,7 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& hos
   if (!up_to_last) {
     return;
   }
-  const size_t expected = evicted ? store_.wireRowsFrom(slot, counted->first_time) : wire.host_total;
+  const size_t expected = evicted ? store_.wireRowsFrom(slot, *counted->first_time) : wire.host_total;
   // The second guard keeps `fresh` below from wrapping if the host changed between the two reads.
   if (up_to_last->total != expected || up_to_last->total > counted->total) {
     fullLoad(slot, wire, probe(slot, kMaxTime, host), host, result);  // re-count: the host may have changed
@@ -287,7 +289,7 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& hos
   const uint32_t fresh = counted->total - up_to_last->total;
   if (fresh == 0) {
     wire.host_total = counted->total;
-    wire.host_first = counted->first_time;
+    wire.host_first = counted->first_time.value_or(wire.host_first);
     return;
   }
 
@@ -313,7 +315,7 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& hos
   }
   result.change.then(store_.insert(slot, std::move(collect.rows)));
   wire.host_total = counted->total;
-  wire.host_first = counted->first_time;
+  wire.host_first = counted->first_time.value_or(wire.host_first);
   if (collect.delivered < fresh) {
     wire.missing += fresh - collect.delivered;
   }

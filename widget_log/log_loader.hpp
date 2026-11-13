@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <pj_base/expected.hpp>
 #include <pj_base/span.hpp>
 #include <pj_plugins/sdk/widget_plugin_base.hpp>
@@ -78,7 +79,9 @@ class LogLoader {
 
   struct Probe {
     uint32_t total = 0;
-    double first_time = 0.0;
+    /// Time and type of the first sample, when the host delivered it: it may count an entry it cannot
+    /// deliver (a message its parser rejects, a failed fetch).
+    std::optional<double> first_time;
     bool first_is_log = false;
   };
 

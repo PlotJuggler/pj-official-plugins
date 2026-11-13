@@ -301,6 +301,28 @@ TEST_F(LogLoaderTest, NonLogWireWarnsOnceAndShowsNothing) {
   EXPECT_FALSE(loader_.wires()[0].is_log);
 }
 
+// The host counts an entry it cannot deliver (a message its parser rejects, a failed fetch): the wire is
+// still a log topic, and an unchanged history must not be reloaded or dropped.
+TEST_F(LogLoaderTest, UndeliverableFirstSampleKeepsTheWire) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 3.0});
+  host_.samples(0).front().undeliverable = true;
+  const auto first = sync();
+  EXPECT_TRUE(first.warnings.empty());
+  ASSERT_EQ(loader_.wires().size(), 1u);
+  EXPECT_TRUE(loader_.wires()[0].is_log);
+  EXPECT_EQ(times(store_), (std::vector<double>{2.0, 3.0}));
+
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{2.0, 3.0}));
+  EXPECT_EQ(loader_.fullLoads(), 1u);
+
+  fill(0, {4.0});
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{2.0, 3.0, 4.0}));
+  EXPECT_TRUE(loader_.wires()[0].is_log);
+}
+
 TEST_F(LogLoaderTest, UnresolvedWireDoesNotWarnWhileItsValueIsNone) {
   host_.wire(0, "/rosout");
   fill(0, {1.0, 2.0});
