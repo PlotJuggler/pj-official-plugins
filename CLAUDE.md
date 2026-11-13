@@ -231,7 +231,10 @@ version. Releases are **not** created manually on GitHub — pushing a tag creat
   released source. An empty `release_tag` retains the build-only cache-warming behavior.
 - **Registry submission:** if the tag's annotation has `"auto_submit_to_registry": true`, a follow-up
   `submit-to-registry` job runs `scripts/submit_to_registry.py` to open a PR against the extension
-  registry with the built artifact's checksums.
+  registry with the built artifact's checksums. The registry keeps several versions per extension:
+  the script appends the release and prunes the versions no host would pick any more (rule in
+  [`scripts/README.md`](scripts/README.md#stage-3-registry-submission-submit_to_registrypy)); it
+  refuses a version the registry already holds.
 - **Version format:** must be 3-part semver (`SEMVER_REGEX` in `scripts/release_tools.py`,
   `^\d+\.\d+\.\d+(-pre)?(+build)?$`) — a two-part string like `"1.0"` fails manifest validation and
   `release_extension.py` will refuse to tag it.

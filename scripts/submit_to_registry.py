@@ -31,6 +31,7 @@ from release_tools import (
     compute_sha256_bytes,
     normalize_platform,
     read_manifest,
+    semver_sort_key,
     validate_manifest_file,
     VALID_PLATFORMS,
 )
@@ -239,28 +240,64 @@ def fetch_registry_json() -> dict:
     return json.loads(content)
 
 
+def prune_registry(extensions: list[dict]) -> list[dict]:
+    """Drop the registry records no host would ever pick; sort the rest by (id, version).
+
+    A host admits a record when its min_sdk_required is at most the host SDK
+    version, with no upper bound, and installs the highest admitted version
+    that ships its platform. So version V is worth keeping for platform P only
+    if V's min_sdk_required is strictly lower than that of every newer version
+    of the same extension that ships P: one record per SDK floor level, per
+    platform. A record keeps only the platforms it still serves and is dropped
+    when none is left. A record without min_sdk_required is admitted by every
+    host, so it counts as the lowest floor.
+
+    The validator in pj-plugin-registry rejects a registry.json that is not
+    pruned by this rule; keep the two in step.
+    """
+    lowest_newer_floor: dict[tuple[str, str], tuple] = {}
+    kept = []
+    for ext in sorted(extensions, key=lambda e: (e["id"], semver_sort_key(e["version"])), reverse=True):
+        floor = semver_sort_key(ext.get("min_sdk_required", ""))
+        platforms = {
+            platform: data
+            for platform, data in ext["platforms"].items()
+            if (ext["id"], platform) not in lowest_newer_floor or floor < lowest_newer_floor[(ext["id"], platform)]
+        }
+        for platform in platforms:
+            lowest_newer_floor[(ext["id"], platform)] = floor
+        if platforms:
+            kept.append({**ext, "platforms": platforms})
+    kept.reverse()
+    return kept
+
+
 def update_registry(registry: dict, entry: dict) -> dict:
-    """Update registry with new entry (add or update existing)."""
+    """Add a release to the registry, next to the older versions hosts on an older SDK still need.
+
+    Exits when the registry already holds that version of the extension (a
+    published record is immutable), or when a newer version already serves
+    every platform of the entry at the same or a lower min_sdk_required.
+    """
+    extension_id, version = entry["id"], entry["version"]
     extensions = registry.get("extensions", [])
 
-    # Find existing entry by id
-    existing_idx = None
-    for i, ext in enumerate(extensions):
-        if ext.get("id") == entry["id"]:
-            existing_idx = i
-            break
+    version_key = semver_sort_key(version)
+    for ext in extensions:
+        if ext.get("id") == extension_id and semver_sort_key(ext["version"]) == version_key:
+            sys.exit(
+                f"Error: the registry already holds {extension_id} v{ext['version']}. A published version is "
+                "immutable: release a new version, or edit registry.json by hand to pull a broken one."
+            )
 
-    if existing_idx is not None:
-        # Update existing entry
-        extensions[existing_idx] = entry
-    else:
-        # Add new entry
-        extensions.append(entry)
+    registry["extensions"] = prune_registry(extensions + [entry])
 
-    # Sort extensions alphabetically by id
-    extensions.sort(key=lambda x: x.get("id", ""))
-
-    registry["extensions"] = extensions
+    if entry["version"] not in [e["version"] for e in registry["extensions"] if e["id"] == extension_id]:
+        newer = max((e["version"] for e in registry["extensions"] if e["id"] == extension_id), key=semver_sort_key)
+        sys.exit(
+            f"Error: {extension_id} v{version} would serve no host: v{newer} already covers its platforms "
+            "at the same or a lower min_sdk_required."
+        )
 
     return registry
 
