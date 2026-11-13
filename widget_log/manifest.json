@@ -12,7 +12,7 @@
   "category": "widget",
   "tags": ["widget", "log", "ros", "rosout"],
   "min_sdk_required": "0.41.0",
-  "min_plotjuggler_version": "4.1.0",
+  "min_plotjuggler_version": "4.2.0",
   "supported_platforms": ["linux-x86_64", "windows-x86_64"],
   "qt_modules": ["Core", "Gui", "Widgets"],
   "widgets": [
