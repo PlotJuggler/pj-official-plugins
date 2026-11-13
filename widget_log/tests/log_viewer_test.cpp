@@ -499,6 +499,9 @@ TEST_F(LogViewerTest, ConfigRoundTrip) {
   EXPECT_FALSE(panel->widget->findChild<QToolButton*>("levelDebug")->isChecked());
   EXPECT_EQ(panel->widget->findChild<QComboBox*>("nodeCombo")->currentData().toString(), "/talker");
   EXPECT_EQ(panel->view()->header()->sectionSize(0), 100);
+  const auto& splitter = state.at("splitter_sizes");
+  ASSERT_EQ(splitter.size(), 2u);
+  EXPECT_NEAR(splitter[0].get<double>() / splitter[1].get<double>(), 300.0 / 120.0, 0.1);
 
   // Through the plugin's own config: the same object restores the same state.
   auto other = bound();
@@ -508,7 +511,8 @@ TEST_F(LogViewerTest, ConfigRoundTrip) {
   std::string again;
   ASSERT_TRUE(other->handle.saveConfig(again));
   const auto restored = nlohmann::json::parse(again);
-  for (const char* key : {"levels", "node_filter", "text_filter", "hidden_topics", "column_widths"}) {
+  // The splitter scales the saved sizes to its own height: equal between two panels of the same size.
+  for (const char* key : {"levels", "node_filter", "text_filter", "hidden_topics", "column_widths", "splitter_sizes"}) {
     EXPECT_EQ(restored.at(key), state.at(key)) << key;
   }
 
