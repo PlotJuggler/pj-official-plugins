@@ -25,7 +25,28 @@ namespace log_viewer {
 namespace {
 
 constexpr int kTextDebounceMs = 150;
-const std::vector<int> kDefaultColumnWidths = {90, 60, 140, 140};
+const std::vector<int> kDefaultColumnWidths = {90, 60, 140, 110, 140};
+
+/// Refill @p combo with @p all_label, then the names of @p ids sorted, keeping its current choice.
+void refillCombo(QComboBox* combo, const QString& all_label, const std::vector<uint32_t>& ids, const LogStore& store) {
+  QStringList names;
+  for (uint32_t id : ids) {
+    names.push_back(QString::fromStdString(store.text(id)));
+  }
+  names.sort(Qt::CaseInsensitive);
+
+  const QString current = combo->currentData().toString();
+  const QSignalBlocker blocker(combo);
+  combo->clear();
+  combo->addItem(all_label, QString());
+  for (const QString& name : names) {
+    combo->addItem(name, name);
+  }
+  if (!current.isEmpty() && combo->findData(current) < 0) {
+    combo->addItem(current, current);  // a restored choice not seen in the log yet
+  }
+  combo->setCurrentIndex(std::max(0, combo->findData(current)));
+}
 
 QString formatStamp(int64_t ns) {
   const int64_t seconds = ns / 1'000'000'000;
@@ -81,6 +102,8 @@ LogViewerWidget::LogViewerWidget(
   ui_.topicsButton->hide();
   ui_.copyButton->setEnabled(false);
   ui_.nodeCombo->addItem(QStringLiteral("All nodes"), QString());
+  ui_.categoryCombo->addItem(QStringLiteral("All categories"), QString());
+  ui_.categoryCombo->hide();  // until an entry has a category
   ui_.splitter->setStretchFactor(0, 1);
   ui_.splitter->setStretchFactor(1, 0);
   ui_.detailText->setMinimumHeight(ui_.detailText->fontMetrics().lineSpacing() * 3);
@@ -95,6 +118,7 @@ LogViewerWidget::LogViewerWidget(
   for (int column = 0; column < static_cast<int>(column_widths_.size()); ++column) {
     header->resizeSection(column, column_widths_[static_cast<size_t>(column)]);
   }
+  ui_.logView->setColumnHidden(LogTableModel::kCategory, true);
   ui_.logView->setColumnHidden(LogTableModel::kTopic, true);
   connect(header, &QHeaderView::sectionResized, this, [this](int column, int /*old*/, int size) {
     if (column >= 0 && column < static_cast<int>(column_widths_.size()) && size > 0) {
@@ -111,6 +135,7 @@ LogViewerWidget::LogViewerWidget(
     connect(toggle, &QToolButton::toggled, this, &LogViewerWidget::applyFilters);
   }
   connect(ui_.nodeCombo, &QComboBox::currentIndexChanged, this, &LogViewerWidget::applyFilters);
+  connect(ui_.categoryCombo, &QComboBox::currentIndexChanged, this, &LogViewerWidget::applyFilters);
   text_timer_.setSingleShot(true);
   text_timer_.setInterval(kTextDebounceMs);
   connect(&text_timer_, &QTimer::timeout, this, &LogViewerWidget::applyFilters);
@@ -156,6 +181,9 @@ void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double 
   }
   if (store_.nodes().size() != nodes_listed_) {
     refreshNodes();
+  }
+  if (store_.categories().size() != categories_listed_) {
+    refreshCategories();
   }
   refreshNotice();
 
@@ -220,6 +248,7 @@ LogFilter LogViewerWidget::currentFilter() const {
     filter.levels[static_cast<size_t>(kToggleLevels[i])] = toggles[i]->isChecked();
   }
   filter.node = ui_.nodeCombo->currentData().toString().toStdString();
+  filter.category = ui_.categoryCombo->currentData().toString().toStdString();
   filter.text = ui_.filterEdit->text().trimmed().toStdString();
   for (const WireInfo& wire : loader_.wires()) {
     if (std::find(hidden_topics_.begin(), hidden_topics_.end(), wire.label) != hidden_topics_.end()) {
@@ -295,25 +324,16 @@ void LogViewerWidget::refreshTopics() {
 }
 
 void LogViewerWidget::refreshNodes() {
-  QStringList names;
-  for (uint32_t id : store_.nodes()) {
-    names.push_back(QString::fromStdString(store_.text(id)));
-  }
   nodes_listed_ = store_.nodes().size();
-  names.sort(Qt::CaseInsensitive);
+  refillCombo(ui_.nodeCombo, QStringLiteral("All nodes"), store_.nodes(), store_);
+}
 
-  QComboBox* combo = ui_.nodeCombo;
-  const QString current = combo->currentData().toString();
-  const QSignalBlocker blocker(combo);
-  combo->clear();
-  combo->addItem(QStringLiteral("All nodes"), QString());
-  for (const QString& name : names) {
-    combo->addItem(name, name);
-  }
-  if (!current.isEmpty() && combo->findData(current) < 0) {
-    combo->addItem(current, current);  // a restored choice whose node has not logged yet
-  }
-  combo->setCurrentIndex(std::max(0, combo->findData(current)));
+void LogViewerWidget::refreshCategories() {
+  categories_listed_ = store_.categories().size();
+  refillCombo(ui_.categoryCombo, QStringLiteral("All categories"), store_.categories(), store_);
+  // ROS logs have no category: the column and the filter appear once an entry has one.
+  ui_.categoryCombo->setVisible(ui_.categoryCombo->count() > 1);
+  ui_.logView->setColumnHidden(LogTableModel::kCategory, store_.categories().empty());
 }
 
 void LogViewerWidget::refreshNotice() {
@@ -344,17 +364,8 @@ void LogViewerWidget::updateDetail() {
     lines << QStringLiteral("Level: %1").arg(LogTableModel::levelName(row.level));
     lines << QStringLiteral("Node: %1").arg(QString::fromStdString(store_.text(row.node)));
     lines << QStringLiteral("Topic: %1").arg(QString::fromStdString(loader_.label(row.wire)));
-    const QString file = QString::fromStdString(store_.text(row.file));
-    const QString function = QString::fromStdString(store_.text(row.function));
-    if (!file.isEmpty() || !function.isEmpty()) {
-      QString source = file;
-      if (row.line > 0) {
-        source += QStringLiteral(":%1").arg(row.line);
-      }
-      if (!function.isEmpty()) {
-        source += source.isEmpty() ? function : QStringLiteral(" (%1)").arg(function);
-      }
-      lines << QStringLiteral("Source: %1").arg(source);
+    if (row.category != 0) {
+      lines << QStringLiteral("Category: %1").arg(QString::fromStdString(store_.text(row.category)));
     }
     text = lines.join(QLatin1Char('\n')) + QStringLiteral("\n\n") + QString::fromStdString(row.message);
   }
@@ -469,6 +480,7 @@ ViewState LogViewerWidget::state() const {
     state.levels[i] = toggles[i]->isChecked();
   }
   state.node = ui_.nodeCombo->currentData().toString().toStdString();
+  state.category = ui_.categoryCombo->currentData().toString().toStdString();
   state.text = ui_.filterEdit->text().toStdString();
   state.hidden_topics = hidden_topics_;
   if (splitter_sized_) {
@@ -495,6 +507,16 @@ void LogViewerWidget::applyState(const ViewState& state) {
     }
     ui_.nodeCombo->setCurrentIndex(std::max(0, ui_.nodeCombo->findData(node)));
   }
+  refreshNodes();  // drops a placeholder an earlier restore added
+  {
+    const QSignalBlocker blocker(ui_.categoryCombo);
+    const QString category = QString::fromStdString(state.category);
+    if (!category.isEmpty() && ui_.categoryCombo->findData(category) < 0) {
+      ui_.categoryCombo->addItem(category, category);
+    }
+    ui_.categoryCombo->setCurrentIndex(std::max(0, ui_.categoryCombo->findData(category)));
+  }
+  refreshCategories();  // drops an earlier placeholder; a restored choice keeps the combo visible
   {
     const QSignalBlocker blocker(ui_.filterEdit);
     ui_.filterEdit->setText(QString::fromStdString(state.text));

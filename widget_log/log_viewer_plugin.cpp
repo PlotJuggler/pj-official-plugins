@@ -26,6 +26,7 @@ using log_viewer::ViewState;
 // of them may reuse a setting key.
 constexpr const char* kLevelsKey = "levels";
 constexpr const char* kNodeKey = "node_filter";
+constexpr const char* kCategoryKey = "category_filter";
 constexpr const char* kTextKey = "text_filter";
 constexpr const char* kHiddenTopicsKey = "hidden_topics";
 constexpr const char* kSplitterKey = "splitter_sizes";
@@ -40,9 +41,13 @@ nlohmann::json toJson(const ViewState& state) {
     }
   }
   return nlohmann::json{
-      {kLevelsKey, levels},           {kNodeKey, state.node},
-      {kTextKey, state.text},         {kHiddenTopicsKey, state.hidden_topics},
-      {kSplitterKey, state.splitter}, {kColumnsKey, state.columns},
+      {kLevelsKey, levels},
+      {kNodeKey, state.node},
+      {kCategoryKey, state.category},
+      {kTextKey, state.text},
+      {kHiddenTopicsKey, state.hidden_topics},
+      {kSplitterKey, state.splitter},
+      {kColumnsKey, state.columns},
   };
 }
 
@@ -90,8 +95,8 @@ PJ::Status readState(const nlohmann::json& config, ViewState& state) {
 
   std::optional<std::vector<std::string>> levels;
   for (auto status :
-       {readList<std::string>(config, kLevelsKey, levels), text(kNodeKey, next.node), text(kTextKey, next.text),
-        readList<std::string>(config, kHiddenTopicsKey, next.hidden_topics),
+       {readList<std::string>(config, kLevelsKey, levels), text(kNodeKey, next.node), text(kCategoryKey, next.category),
+        text(kTextKey, next.text), readList<std::string>(config, kHiddenTopicsKey, next.hidden_topics),
         readList<int>(config, kSplitterKey, next.splitter), readList<int>(config, kColumnsKey, next.columns)}) {
     if (!status) {
       return status;

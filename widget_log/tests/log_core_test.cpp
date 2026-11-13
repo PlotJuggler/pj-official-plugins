@@ -188,8 +188,7 @@ TEST_F(LogLoaderTest, FullLoadAsksForTheWholeCount) {
 
 TEST_F(LogLoaderTest, DecodesEveryField) {
   host_.wire(0, "/rosout");
-  host_.add(
-      0, 1.5, makeLog(Level::kWarning, "two\nlines", "/talker", "talker.cpp", "main", 42, 1'700'000'000'123'456'789));
+  host_.add(0, 1.5, makeLog(Level::kWarning, "two\nlines", "/talker", "motion", 1'700'000'000'123'456'789));
   sync();
   ASSERT_EQ(store_.size(), 1u);
   const LogRow& r = store_.row(0);
@@ -197,9 +196,8 @@ TEST_F(LogLoaderTest, DecodesEveryField) {
   EXPECT_EQ(r.level, Level::kWarning);
   EXPECT_EQ(r.message, "two\nlines");
   EXPECT_EQ(store_.text(r.node), "/talker");
-  EXPECT_EQ(store_.text(r.file), "talker.cpp");
-  EXPECT_EQ(store_.text(r.function), "main");
-  EXPECT_EQ(r.line, 42u);
+  EXPECT_EQ(store_.text(r.category), "motion");
+  EXPECT_EQ(store_.categories(), (std::vector<uint32_t>{r.category}));
   EXPECT_EQ(r.stamp_ns, 1'700'000'000'123'456'789);
 }
 
@@ -422,9 +420,12 @@ class LogFilterTest : public ::testing::Test {
     add(1, 6.0, Level::kUnknown, "/b", "no level");
   }
 
-  void add(uint32_t wire, double time, Level level, const std::string& node, const std::string& message) {
+  void add(
+      uint32_t wire, double time, Level level, const std::string& node, const std::string& message,
+      const std::string& category = {}) {
     LogRow r = row(time, seq_++, message, level);
     r.node = store_.internNode(node);
+    r.category = store_.internCategory(category);
     store_.insert(wire, {r});
   }
 
@@ -479,6 +480,21 @@ TEST_F(LogFilterTest, LevelsNodeTextTopic) {
   error_on_b.node = "/b";
   error_on_b.text = "motor";
   EXPECT_EQ(pass(error_on_b), (std::vector<double>{4.0}));
+}
+
+TEST_F(LogFilterTest, Category) {
+  add(0, 7.0, Level::kInfo, "/a", "joint limit", "motion");
+  add(1, 8.0, Level::kInfo, "/b", "link up", "net");
+  EXPECT_EQ(store_.categories().size(), 2u);  // the empty category of the others is not one
+
+  LogFilter category;
+  category.category = "motion";
+  EXPECT_EQ(pass(category), (std::vector<double>{7.0}));
+  category.node = "/b";
+  EXPECT_TRUE(pass(category).empty());
+  category = {};
+  category.category = "never-seen";
+  EXPECT_TRUE(pass(category).empty());
 }
 
 TEST_F(LogFilterTest, UnknownLevelIsAlwaysShown) {

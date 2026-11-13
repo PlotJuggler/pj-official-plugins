@@ -112,7 +112,7 @@ struct Panel {
     return rect.isValid() && view()->viewport()->rect().intersects(rect);
   }
   [[nodiscard]] QString message(int row) const {
-    return model()->index(row, 4).data().toString();
+    return model()->index(row, 5).data().toString();
   }
 
   FakeLogHost host;
@@ -186,7 +186,7 @@ void doubleClick(QTreeView* view, const QPoint& point) {
 TEST_F(LogViewerTest, ManifestAndInputs) {
   const auto manifest = nlohmann::json::parse(library_->vtable()->manifest_json);
   EXPECT_EQ(manifest.at("id"), "log-widget");
-  EXPECT_EQ(manifest.at("min_sdk_required"), "0.41.0");
+  EXPECT_EQ(manifest.at("min_sdk_required"), "0.39.0");
   ASSERT_EQ(manifest.at("widgets").size(), 1u);
   EXPECT_EQ(manifest.at("widgets")[0].at("type"), "log_viewer");
   EXPECT_EQ(manifest.at("widgets")[0].at("name"), "Log");
@@ -221,12 +221,12 @@ TEST_F(LogViewerTest, EmptyStateAndTopicColumn) {
   fill(*panel, 0, "/rosout", 3);
   panel->update(10.0);
   EXPECT_EQ(pages->currentWidget()->objectName(), "contentPage");
-  EXPECT_TRUE(panel->view()->isColumnHidden(3));
+  EXPECT_TRUE(panel->view()->isColumnHidden(4));
   EXPECT_FALSE(topics->isVisibleTo(panel->widget));
 
   fill(*panel, 1, "/other/rosout", 2);
   panel->update(10.0);
-  EXPECT_FALSE(panel->view()->isColumnHidden(3));
+  EXPECT_FALSE(panel->view()->isColumnHidden(4));
   EXPECT_TRUE(topics->isVisibleTo(panel->widget));
   EXPECT_EQ(panel->model()->rowCount(), 5);
 
@@ -297,7 +297,7 @@ TEST_F(LogViewerTest, PausedDoubleClickSeeksToTheRowAndKeepsTheView) {
   const int scrolled = view->verticalScrollBar()->value();
   ASSERT_TRUE(panel->rowVisible(105));
 
-  const QRect rect = view->visualRect(panel->model()->index(105, 4));
+  const QRect rect = view->visualRect(panel->model()->index(105, 5));
   // A single click selects and shows the entry, and leaves the tracker alone.
   QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());
   EXPECT_TRUE(panel->playback.seeks.empty());
@@ -339,7 +339,7 @@ TEST_F(LogViewerTest, DoubleClickedRowStaysPutAmongEqualTimes) {
   const int scrolled = view->verticalScrollBar()->value();
   ASSERT_FALSE(panel->rowVisible(159));
 
-  const QRect rect = view->visualRect(panel->model()->index(100, 4));
+  const QRect rect = view->visualRect(panel->model()->index(100, 5));
   doubleClick(view, rect.center());
   ASSERT_EQ(panel->playback.seeks.size(), 1u);
   EXPECT_DOUBLE_EQ(panel->playback.seeks[0], 100.0);
@@ -356,8 +356,8 @@ TEST_F(LogViewerTest, WithoutPlaybackServiceDoubleClickDoesNothing) {
   panel->update(20.0);
   QTreeView* view = panel->view();
   EXPECT_TRUE(view->verticalScrollBar()->isEnabled());
-  view->scrollTo(panel->model()->index(3, 4));  // the list is shorter now that the detail pane is taller
-  const QRect rect = view->visualRect(panel->model()->index(3, 4));
+  view->scrollTo(panel->model()->index(3, 5));  // the list is shorter now that the detail pane is taller
+  const QRect rect = view->visualRect(panel->model()->index(3, 5));
   doubleClick(view, rect.center());
   EXPECT_TRUE(panel->playback.seeks.empty());
   EXPECT_EQ(view->currentIndex().row(), 3);
@@ -384,8 +384,8 @@ TEST_F(LogViewerTest, FutureRowsGreyOrHidden) {
   QAbstractItemModel* model = panel->model();
   EXPECT_EQ(model->rowCount(), 100);
   const QColor grey = panel->view()->palette().color(QPalette::PlaceholderText);
-  EXPECT_EQ(model->index(60, 4).data(Qt::ForegroundRole).value<QColor>(), grey);
-  EXPECT_FALSE(model->index(40, 4).data(Qt::ForegroundRole).isValid());
+  EXPECT_EQ(model->index(60, 5).data(Qt::ForegroundRole).value<QColor>(), grey);
+  EXPECT_FALSE(model->index(40, 5).data(Qt::ForegroundRole).isValid());
   // Only the row the tracker is at (the last one at or before it) is tinted, and it follows the tracker.
   EXPECT_TRUE(model->index(49, 0).data(Qt::BackgroundRole).isValid());
   EXPECT_FALSE(model->index(48, 0).data(Qt::BackgroundRole).isValid());
@@ -476,13 +476,10 @@ TEST_F(LogViewerTest, ConfigRoundTrip) {
   auto panel = bound();
   ASSERT_NE(panel, nullptr);
   const nlohmann::json config = {
-      {"future_rows", "hide"},
-      {"levels", {"info", "warn", "fatal"}},
-      {"node_filter", "/talker"},
-      {"text_filter", "motor"},
-      {"hidden_topics", {"/b"}},
-      {"splitter_sizes", {300, 120}},
-      {"column_widths", {100, 70, 150, 160}},
+      {"future_rows", "hide"},       {"levels", {"info", "warn", "fatal"}},
+      {"node_filter", "/talker"},    {"text_filter", "motor"},
+      {"hidden_topics", {"/b"}},     {"splitter_sizes", {300, 120}},
+      {"category_filter", "motion"}, {"column_widths", {100, 70, 150, 120, 160}},
   };
   // Before the widget exists, as the host restores a layout; then after creation the state is shown.
   ASSERT_TRUE(panel->handle.loadConfig(config.dump()));
@@ -492,12 +489,14 @@ TEST_F(LogViewerTest, ConfigRoundTrip) {
   ASSERT_TRUE(panel->handle.saveConfig(saved));
   const auto state = nlohmann::json::parse(saved);
   EXPECT_FALSE(state.contains("future_rows"));  // a setting: the host stores it
-  for (const char* key : {"levels", "node_filter", "text_filter", "hidden_topics", "column_widths"}) {
+  for (const char* key :
+       {"levels", "node_filter", "category_filter", "text_filter", "hidden_topics", "column_widths"}) {
     EXPECT_EQ(state.at(key), config.at(key)) << key;
   }
   EXPECT_EQ(panel->widget->findChild<QLineEdit*>("filterEdit")->text(), "motor");
   EXPECT_FALSE(panel->widget->findChild<QToolButton*>("levelDebug")->isChecked());
   EXPECT_EQ(panel->widget->findChild<QComboBox*>("nodeCombo")->currentData().toString(), "/talker");
+  EXPECT_EQ(panel->widget->findChild<QComboBox*>("categoryCombo")->currentData().toString(), "motion");
   EXPECT_EQ(panel->view()->header()->sectionSize(0), 100);
   const auto& splitter = state.at("splitter_sizes");
   ASSERT_EQ(splitter.size(), 2u);
@@ -512,7 +511,9 @@ TEST_F(LogViewerTest, ConfigRoundTrip) {
   ASSERT_TRUE(other->handle.saveConfig(again));
   const auto restored = nlohmann::json::parse(again);
   // The splitter scales the saved sizes to its own height: equal between two panels of the same size.
-  for (const char* key : {"levels", "node_filter", "text_filter", "hidden_topics", "column_widths", "splitter_sizes"}) {
+  for (const char* key :
+       {"levels", "node_filter", "category_filter", "text_filter", "hidden_topics", "column_widths",
+        "splitter_sizes"}) {
     EXPECT_EQ(restored.at(key), state.at(key)) << key;
   }
 
@@ -545,6 +546,50 @@ TEST_F(LogViewerTest, StreamingAppendsKeepTheSelection) {
   EXPECT_EQ(panel->model()->rowCount(), 30);
   EXPECT_EQ(panel->view()->currentIndex().row(), 5);
   EXPECT_EQ(panel->message(29), "/rosout #29");
+}
+
+// ROS logs have no category: the Category column and filter appear once an entry has one.
+TEST_F(LogViewerTest, CategoryColumnAndFilterAppearWithTheFirstCategory) {
+  auto panel = open();
+  ASSERT_NE(panel, nullptr);
+  auto* combo = panel->widget->findChild<QComboBox*>("categoryCombo");
+  ASSERT_NE(combo, nullptr);
+  fill(*panel, 0, "/rosout", 3);
+  panel->update(10.0);
+  EXPECT_TRUE(panel->view()->isColumnHidden(3));
+  EXPECT_FALSE(combo->isVisibleTo(panel->widget));
+
+  panel->host.add(0, 3.0, makeLog(Level::kInfo, "joint limit", "/arm", "motion"));
+  panel->host.add(0, 4.0, makeLog(Level::kInfo, "link up", "/net", "net"));
+  panel->update(10.0);
+  EXPECT_FALSE(panel->view()->isColumnHidden(3));
+  EXPECT_TRUE(combo->isVisibleTo(panel->widget));
+  EXPECT_EQ(panel->model()->index(3, 3).data().toString(), "motion");
+  ASSERT_EQ(combo->count(), 3);  // all, motion, net
+
+  combo->setCurrentIndex(combo->findData(QStringLiteral("net")));
+  ASSERT_EQ(panel->model()->rowCount(), 1);
+  EXPECT_EQ(panel->message(0), "link up");
+  panel->view()->setCurrentIndex(panel->model()->index(0, 0));
+  EXPECT_TRUE(panel->widget->findChild<QPlainTextEdit*>("detailText")->toPlainText().contains("Category: net"));
+}
+
+TEST_F(LogViewerTest, ARestoredCategoryNotSeenYetIsDroppedByTheNextRestore) {
+  auto panel = open();
+  ASSERT_NE(panel, nullptr);
+  auto* combo = panel->widget->findChild<QComboBox*>("categoryCombo");
+  ASSERT_NE(combo, nullptr);
+  fill(*panel, 0, "/rosout", 3);  // entries without a category: the content page is up, the combo hidden
+  panel->update(10.0);
+  ASSERT_FALSE(combo->isVisibleTo(panel->widget));
+
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"category_filter":"ghost"})"));
+  EXPECT_EQ(combo->count(), 2);  // all, ghost: the choice stays reachable before any entry has it
+  EXPECT_TRUE(combo->isVisibleTo(panel->widget));
+
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"category_filter":""})"));
+  EXPECT_EQ(combo->count(), 1);
+  EXPECT_FALSE(combo->isVisibleTo(panel->widget));
 }
 
 TEST_F(LogViewerTest, UnwiringAHiddenTopicKeepsTheSelection) {
@@ -634,7 +679,7 @@ TEST_F(LogViewerTest, DISABLED_Perf170kEntries) {
         0, i * 0.01,
         makeLog(
             level, "message number " + std::to_string(i) + (i % 7 == 0 ? " motor fault" : " all nominal"),
-            "/node_" + std::to_string(i % 13), "file.cpp", "function", static_cast<uint32_t>(i % 500)));
+            "/node_" + std::to_string(i % 13), "category_" + std::to_string(i % 5)));
   }
   QElapsedTimer timer;
   timer.start();

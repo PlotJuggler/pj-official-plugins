@@ -1,4 +1,4 @@
-// Row filter of the log viewer: level, node, message text and topic. Qt-free.
+// Row filter of the log viewer: level, node, category, message text and topic. Qt-free.
 #pragma once
 
 #include <array>
@@ -45,6 +45,8 @@ struct LogFilter {
   std::array<bool, 6> levels = {true, true, true, true, true, true};
   /// Node name to keep; empty = every node.
   std::string node;
+  /// Category to keep; empty = every category.
+  std::string category;
   /// Case-insensitive (ASCII) substring of the message; empty = every message.
   std::string text;
   /// Wire ids whose rows are hidden.
@@ -65,7 +67,9 @@ class CompiledFilter {
   std::array<bool, 6> levels_;
   bool any_node_ = true;
   std::optional<uint32_t> node_;  ///< nullopt with any_node_ false: the node was never seen, nothing passes
-  std::string needle_;            ///< lower-cased
+  bool any_category_ = true;
+  std::optional<uint32_t> category_;  ///< as node_
+  std::string needle_;                ///< lower-cased
   std::vector<uint32_t> hidden_wires_;
 };
 

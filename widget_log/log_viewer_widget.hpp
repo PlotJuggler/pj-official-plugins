@@ -23,6 +23,7 @@ namespace log_viewer {
 struct ViewState {
   std::array<bool, kToggleLevels.size()> levels = {true, true, true, true, true};
   std::string node;
+  std::string category;
   std::string text;
   std::vector<std::string> hidden_topics;
   std::vector<int> splitter;  ///< empty = default sizes
@@ -59,6 +60,7 @@ class LogViewerWidget : public QWidget {
   void applyFilters();
   void refreshTopics();
   void refreshNodes();
+  void refreshCategories();
   void refreshNotice();
   void updateDetail();
   void selectStoreRow(std::optional<size_t> store_index);
@@ -81,6 +83,7 @@ class LogViewerWidget : public QWidget {
   std::vector<std::string> hidden_topics_;
   std::vector<uint32_t> applied_hidden_wires_;
   size_t nodes_listed_ = 0;
+  size_t categories_listed_ = 0;
   std::vector<int> column_widths_;
   std::vector<int> pending_splitter_;
   bool splitter_sized_ = false;

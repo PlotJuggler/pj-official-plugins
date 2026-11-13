@@ -136,6 +136,19 @@
           </widget>
          </item>
          <item>
+          <widget class="QComboBox" name="categoryCombo">
+           <property name="minimumWidth">
+            <number>120</number>
+           </property>
+           <property name="toolTip">
+            <string>Show only entries of one category</string>
+           </property>
+           <property name="sizeAdjustPolicy">
+            <enum>QComboBox::AdjustToMinimumContentsLengthWithIcon</enum>
+           </property>
+          </widget>
+         </item>
+         <item>
           <widget class="QLineEdit" name="filterEdit">
            <property name="placeholderText">
             <string>Filter messages...</string>

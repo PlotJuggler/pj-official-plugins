@@ -90,6 +90,8 @@ QVariant LogTableModel::data(const QModelIndex& index, int role) const {
           return levelName(row.level);
         case kNode:
           return QString::fromStdString(store_.text(row.node));
+        case kCategory:
+          return QString::fromStdString(store_.text(row.category));
         case kTopic:
           return topic_label_ ? topic_label_(row.wire) : QString();
         case kMessage:
@@ -142,6 +144,8 @@ QVariant LogTableModel::headerData(int section, Qt::Orientation orientation, int
       return QStringLiteral("Level");
     case kNode:
       return QStringLiteral("Node");
+    case kCategory:
+      return QStringLiteral("Category");
     case kTopic:
       return QStringLiteral("Topic");
     case kMessage:

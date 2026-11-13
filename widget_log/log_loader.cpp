@@ -74,9 +74,7 @@ class Collector {
     row.seq = next_seq_++;
     row.level = log->level;  // deserializeLog maps unknown wire levels to kUnknown
     row.node = store_.internNode(log->name);
-    row.file = store_.intern(log->file);
-    row.function = store_.intern(log->function);
-    row.line = log->line;
+    row.category = store_.internCategory(log->category);
     row.message = std::move(log->message);
     stripTerminalEscapes(row.message);
     return true;

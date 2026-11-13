@@ -22,7 +22,7 @@ class LogTableModel : public QAbstractTableModel {
   Q_OBJECT
 
  public:
-  enum Column { kTime = 0, kLevel, kNode, kTopic, kMessage, kColumnCount };
+  enum Column { kTime = 0, kLevel, kNode, kCategory, kTopic, kMessage, kColumnCount };
 
   /// @p palette_source supplies the colours of greyed rows; @p topic_label names a wire.
   LogTableModel(

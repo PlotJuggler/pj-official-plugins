@@ -36,6 +36,10 @@ CompiledFilter::CompiledFilter(const LogFilter& filter, const LogStore& store)
     any_node_ = false;
     node_ = store.find(filter.node);
   }
+  if (!filter.category.empty()) {
+    any_category_ = false;
+    category_ = store.find(filter.category);
+  }
   std::sort(hidden_wires_.begin(), hidden_wires_.end());
 }
 
@@ -45,6 +49,9 @@ bool CompiledFilter::accepts(const LogRow& row) const {
     return false;
   }
   if (!any_node_ && (!node_ || row.node != *node_)) {
+    return false;
+  }
+  if (!any_category_ && (!category_ || row.category != *category_)) {
     return false;
   }
   if (!hidden_wires_.empty() && std::binary_search(hidden_wires_.begin(), hidden_wires_.end(), row.wire)) {

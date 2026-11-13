@@ -26,11 +26,12 @@ A wired topic that does not carry `kLog` objects is reported as a warning and sh
   selects the entry and shows it in the detail pane. Without the service the list always scrolls
   freely and a double click does nothing.
 - Filters: level toggles (Debug, Info, Warn, Error, Fatal; entries without a level are always
-  shown), node, message text (case-insensitive for ASCII letters, applied 150 ms after typing
-  stops) and, with more than one topic, a Topics menu. The Topic column appears only with more
-  than one topic.
+  shown), node, category, message text (case-insensitive for ASCII letters, applied 150 ms after
+  typing stops) and, with more than one topic, a Topics menu. The Topic column appears only with
+  more than one topic; the Category column and filter only once an entry has a category (ROS logs
+  have none).
 - The detail pane shows the selected entry: display time, the message stamp, level, node, topic,
-  source location and the full message. Copy puts that text on the clipboard.
+  category (when set) and the full message. Copy puts that text on the clipboard.
 - At most 1,000,000 entries are kept; the oldest are dropped first.
 - A host that delivers fewer samples than asked (older hosts cap a history read) leaves a notice
   "Showing N of M log entries".

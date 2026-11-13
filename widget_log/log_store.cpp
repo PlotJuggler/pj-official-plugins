@@ -44,6 +44,7 @@ uint32_t LogStore::intern(std::string_view text) {
   strings_.emplace_back(text);
   string_ids_.emplace(strings_.back(), id);
   is_node_.push_back(false);
+  is_category_.push_back(false);
   return id;
 }
 
@@ -52,6 +53,15 @@ uint32_t LogStore::internNode(std::string_view text) {
   if (id != 0 && !is_node_[id]) {
     is_node_[id] = true;
     nodes_.push_back(id);
+  }
+  return id;
+}
+
+uint32_t LogStore::internCategory(std::string_view text) {
+  const uint32_t id = intern(text);
+  if (id != 0 && !is_category_[id]) {
+    is_category_[id] = true;
+    categories_.push_back(id);
   }
   return id;
 }
