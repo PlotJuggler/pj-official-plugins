@@ -235,9 +235,9 @@ version. Releases are **not** created manually on GitHub — pushing a tag creat
   the script appends the release and prunes the versions no host would pick any more (rule in
   [`scripts/README.md`](scripts/README.md#stage-3-registry-submission-submit_to_registrypy)).
   Submitting a version the registry already holds may only add platforms to it.
-- **Version format:** must be 3-part semver (`SEMVER_REGEX` in `scripts/release_tools.py`,
-  `^\d+\.\d+\.\d+(-pre)?(+build)?$`) — a two-part string like `"1.0"` fails manifest validation and
-  `release_extension.py` will refuse to tag it.
+- **Version format:** must be SemVer 2.0.0 (`SEMVER_REGEX` in `scripts/release_tools.py`, the grammar
+  the host and the registry validator enforce) — a two-part string like `"1.0"` or a leading zero
+  like `"1.02.0"` fails manifest validation and `release_extension.py` will refuse to tag it.
 - **Force-recreating a tag** (`--force`) invalidates existing registry checksums and breaks
   installations pinned to the old artifact — treat as a last resort, not a routine fix.
 

@@ -564,6 +564,13 @@ def main():
     tag = f"{source_dir}/v{version}"
     print(f"Tag: {tag}")
 
+    # The registry entry takes its version and min_sdk_required from the manifest on disk.
+    if version != manifest["version"]:
+        sys.exit(
+            f"Error: release v{version} does not match the manifest version {manifest['version']} in "
+            f"{manifest_path}. Check out the release tag first: git checkout {tag}"
+        )
+
     # Check if tag exists locally (warning only, not required)
     local_commit = get_local_tag(tag)
     if local_commit:
