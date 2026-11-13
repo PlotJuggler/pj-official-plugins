@@ -126,6 +126,15 @@ TEST(LogStore, DefaultCapacityIsOneMillion) {
   EXPECT_EQ(store.row(0).time, 10.0);
 }
 
+TEST(LogStore, KeptRowsMoveByTheEvictionAndOthersAreNotKept) {
+  const log_viewer::StoreChange change{2, 6, false};  // rows 0..1 evicted, 2..5 unchanged, 6.. rebuilt
+  EXPECT_FALSE(change.kept(1).has_value());
+  EXPECT_EQ(change.kept(2), 0u);
+  EXPECT_EQ(change.kept(5), 3u);
+  EXPECT_FALSE(change.kept(6).has_value());
+  EXPECT_FALSE((log_viewer::StoreChange{0, 6, true}.kept(3).has_value()));
+}
+
 TEST(LogStore, ChangesCompose) {
   LogStore store;
   store.insert(0, {row(1.0, 0), row(2.0, 1), row(3.0, 2)});

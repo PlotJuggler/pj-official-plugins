@@ -78,9 +78,13 @@ TEST_P(LogTableModelEviction, EveryRowFollowsTheStore) {
   ASSERT_EQ(store_.size(), 5u);
   EXPECT_EQ(model_.revealedRows(), 2);  // t=4, t=5
   EXPECT_EQ(model_.rowCount(), GetParam() == FutureRows::kGrey ? 5 : 2);
+  for (int row = 0; row < model_.rowCount(); ++row) {
+    const auto index = static_cast<size_t>(row);  // nothing filtered: model rows are store rows
+    EXPECT_EQ(message(model_, row).toStdString(), store_.row(index).message) << row;
+    EXPECT_EQ(model_.storeIndex(row), index) << row;
+    EXPECT_EQ(model_.rowOf(index), row) << row;
+  }
   EXPECT_EQ(message(model_, 0), "t=4");
-  EXPECT_EQ(model_.storeIndex(0), 0u);
-  EXPECT_EQ(model_.rowOf(1), 1);
 }
 
 TEST_P(LogTableModelEviction, FilteredRowsShiftByTheEvictedStoreRows) {

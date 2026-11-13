@@ -128,10 +128,11 @@ LogViewerWidget::LogViewerWidget(
 }
 
 void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double time) {
-  // The model rebuilds the changed tail of the list, which drops the selection inside it: find the selected
-  // entry again by key once the store changed.
+  // The model rebuilds the changed tail of the list, which drops the selection inside it: an entry there is
+  // found again by key once the store changed and the tracker revealed the new rows.
+  const std::optional<size_t> selected = selectedStoreRow();
   std::optional<LogStore::RowKey> selected_key;
-  if (const std::optional<size_t> selected = selectedStoreRow()) {
+  if (selected) {
     selected_key = store_.keyOf(*selected);
   }
   SyncResult result = loader_.sync(values, host_);
@@ -153,11 +154,6 @@ void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double 
   if (result.wires_changed && currentFilter().hidden_wires != applied_hidden_wires_) {
     applyFilters();  // a returning topic the user hid: its new rows must stay hidden
   }
-  if (selected_key) {
-    if (const std::optional<size_t> now = store_.indexOf(*selected_key); now != selectedStoreRow()) {
-      selectStoreRow(now);
-    }
-  }
   if (store_.nodes().size() != nodes_listed_) {
     refreshNodes();
   }
@@ -166,6 +162,16 @@ void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double 
   const bool moved = !tracker_ || !sameTime(time, *tracker_);
   tracker_ = time;
   model_->setTracker(time);
+  if (selected) {
+    // A row the change left in place moves by the eviction alone; its rank among equal times may not hold.
+    std::optional<size_t> now = result.change.kept(*selected);
+    if (!now && (result.change.reset || *selected >= result.change.old_tail)) {
+      now = store_.indexOf(*selected_key);
+    }
+    if (now && now != selectedStoreRow()) {
+      selectStoreRow(now);
+    }
+  }
 
   const bool playing = isPlaying();
   setScrollLocked(playing);

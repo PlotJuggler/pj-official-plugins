@@ -47,6 +47,14 @@ struct StoreChange {
   }
   /// The change of applying @p next after this one, both expressed against the state before this one.
   void then(const StoreChange& next);
+  /// New index of the row at @p old_index, when the change left it in place; nullopt when it was evicted,
+  /// removed or rebuilt.
+  [[nodiscard]] std::optional<size_t> kept(size_t old_index) const {
+    if (reset || old_index < dropped_front || old_index >= old_tail) {
+      return std::nullopt;
+    }
+    return old_index - dropped_front;
+  }
 };
 
 class LogStore {

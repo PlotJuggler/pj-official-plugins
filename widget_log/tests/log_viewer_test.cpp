@@ -567,6 +567,26 @@ TEST_F(LogViewerTest, UnwiringAHiddenTopicKeepsTheSelection) {
   EXPECT_TRUE(panel->widget->findChild<QPlainTextEdit*>("detailText")->toPlainText().contains("/a #7"));
 }
 
+// With future rows hidden, the reloaded rows appear only once the tracker reveals them: the selection
+// is found again after that.
+TEST_F(LogViewerTest, ALateInsertKeepsTheSelectionWithFutureRowsHidden) {
+  auto panel = open();
+  ASSERT_NE(panel, nullptr);
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"future_rows":"hide"})"));
+  fill(*panel, 0, "/a", 10);
+  panel->update(100.0);
+  ASSERT_EQ(panel->model()->rowCount(), 10);
+  panel->view()->setCurrentIndex(panel->model()->index(7, 0));
+  ASSERT_EQ(panel->message(7), "/a #7");
+
+  panel->host.add(0, 2.5, makeLog(Level::kInfo, "late"));  // before the selection: the topic reloads
+  panel->update(100.0);
+  ASSERT_EQ(panel->model()->rowCount(), 11);
+  ASSERT_TRUE(panel->view()->currentIndex().isValid());
+  EXPECT_EQ(panel->message(panel->view()->currentIndex().row()), "/a #7");
+  EXPECT_TRUE(panel->widget->findChild<QPlainTextEdit*>("detailText")->toPlainText().contains("/a #7"));
+}
+
 // At epoch display times (the default, without "use time offset") a tracker step of a second or two is
 // a move like any other.
 TEST_F(LogViewerTest, PausedTrackerStepAtEpochTimesBringsItsRowIntoView) {
