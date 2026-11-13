@@ -6,7 +6,7 @@ server and streams real-time data via delegated ingest.
 ## Features
 
 - WebSocket connection with configurable address and port
-- Works with current servers (`foxglove.sdk.v1` subprotocol) and older ones (`foxglove.websocket.v1`); nothing to configure
+- Connects to current servers (`foxglove.sdk.v1` subprotocol) and older ones (`foxglove.websocket.v1`); nothing to configure
 - Automatic channel discovery via Foxglove `advertise` protocol
 - Topic filtering by name in the dialog
 - Per-channel parser delegation by encoding:
@@ -34,6 +34,4 @@ channels, and lets you select which topics to subscribe to. Parser options
 ## Known Limitations
 
 - No pause/resume support (requires host-side streamer controls)
-- Unadvertise messages from server not handled
-- No reconnection on unexpected disconnect
-- Server status/warning messages not processed
+- ROS 1 channels (`ros1` encoding, `ros1msg` schemas) are not decoded: a ROS 1 bridge connects and lists its topics, but they produce no data

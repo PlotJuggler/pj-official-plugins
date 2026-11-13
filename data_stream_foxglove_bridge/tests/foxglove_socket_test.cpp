@@ -52,6 +52,7 @@ std::string offeredSubprotocols() {
   }
   client->stop();
   server.stop();
+  std::erase(result, ' ');  // the list may be joined with or without a space
   return result;
 }
 

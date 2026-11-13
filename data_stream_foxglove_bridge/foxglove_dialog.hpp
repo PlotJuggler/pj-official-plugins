@@ -9,7 +9,6 @@
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/endpoint.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
