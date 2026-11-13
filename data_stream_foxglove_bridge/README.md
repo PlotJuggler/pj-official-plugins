@@ -6,6 +6,7 @@ server and streams real-time data via delegated ingest.
 ## Features
 
 - WebSocket connection with configurable address and port
+- Works with current servers (`foxglove.sdk.v1` subprotocol) and older ones (`foxglove.websocket.v1`); nothing to configure
 - Automatic channel discovery via Foxglove `advertise` protocol
 - Topic filtering by name in the dialog
 - Per-channel parser delegation by encoding:

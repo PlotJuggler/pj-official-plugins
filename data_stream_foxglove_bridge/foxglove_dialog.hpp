@@ -19,6 +19,7 @@
 #include "foxglove_client_ui.hpp"
 #include "foxglove_manifest.hpp"
 #include "foxglove_protocol.hpp"
+#include "foxglove_socket.hpp"
 
 namespace {
 
@@ -285,9 +286,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   }
 
   void connectToServer() {
-    socket_ = std::make_unique<ix::WebSocket>();
-    socket_->setUrl(PJ::sdk::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
-    socket_->addSubProtocol("foxglove.sdk.v1");
+    socket_ = PJ::FoxgloveProtocol::makeSocket(address_, static_cast<uint16_t>(port_));
 
     socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
       if (msg->type == ix::WebSocketMessageType::Open) {
