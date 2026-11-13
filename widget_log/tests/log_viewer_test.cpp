@@ -543,6 +543,43 @@ TEST_F(LogViewerTest, StreamingAppendsKeepTheSelection) {
   EXPECT_EQ(panel->message(29), "/rosout #29");
 }
 
+TEST_F(LogViewerTest, UnwiringAHiddenTopicKeepsTheSelection) {
+  auto panel = open();
+  ASSERT_NE(panel, nullptr);
+  fill(*panel, 0, "/a", 10);
+  fill(*panel, 1, "/b", 10, 0.5);  // interleaved with /a
+  panel->update(100.0);
+  auto* topics = panel->widget->findChild<QToolButton*>("topicsButton");
+  ASSERT_EQ(topics->menu()->actions().size(), 2);
+  topics->menu()->actions()[1]->setChecked(false);  // hide /b
+  ASSERT_EQ(panel->model()->rowCount(), 10);
+  panel->view()->setCurrentIndex(panel->model()->index(7, 0));
+  ASSERT_EQ(panel->message(7), "/a #7");
+
+  panel->host.wires.erase({FakeLogHost::kInput, 1});
+  panel->update(100.0);
+  ASSERT_TRUE(panel->view()->currentIndex().isValid());
+  EXPECT_EQ(panel->message(panel->view()->currentIndex().row()), "/a #7");
+  EXPECT_TRUE(panel->widget->findChild<QPlainTextEdit*>("detailText")->toPlainText().contains("/a #7"));
+}
+
+// At epoch display times (the default, without "use time offset") a tracker step of a second or two is
+// a move like any other.
+TEST_F(LogViewerTest, PausedTrackerStepAtEpochTimesBringsItsRowIntoView) {
+  auto panel = open();
+  ASSERT_NE(panel, nullptr);
+  constexpr double kEpoch = 1'731'500'000.0;
+  panel->host.wire(0, "/rosout");
+  for (int i = 0; i < 500; ++i) {
+    panel->host.add(0, kEpoch + i * 0.01, makeLog(Level::kInfo, "/rosout #" + std::to_string(i)));
+  }
+  panel->update(kEpoch);
+  ASSERT_TRUE(panel->rowVisible(0));
+  ASSERT_FALSE(panel->rowVisible(150));
+  panel->update(kEpoch + 1.5);
+  EXPECT_TRUE(panel->rowVisible(150));
+}
+
 TEST_F(LogViewerTest, DestroyBeforeUnloadIsClean) {
   {
     auto panel = open();

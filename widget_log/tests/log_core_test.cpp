@@ -98,6 +98,21 @@ TEST(LogStore, CapacityDropsTheOldest) {
   EXPECT_EQ(wireRows(store, 1), 4u);
 }
 
+TEST(LogStore, RowKeySurvivesAReloadThatRenumbersTheWire) {
+  LogStore store;
+  store.insert(0, {row(1.0, 0, "w0 a"), row(2.0, 1, "w0 b"), row(2.0, 2, "w0 c")});
+  store.insert(1, {row(2.0, 0, "w1 a")});
+  const LogStore::RowKey key = store.keyOf(2);  // "w0 c", the second wire-0 row at 2.0
+  ASSERT_EQ(store.row(2).message, "w0 c");
+  // A late insert before it: the reload numbers every row anew, so its seq moves from 2 to 3.
+  store.replaceWire(0, {row(0.5, 0, "w0 late"), row(1.0, 1, "w0 a"), row(2.0, 2, "w0 b"), row(2.0, 3, "w0 c")});
+  const auto found = store.indexOf(key);
+  ASSERT_TRUE(found.has_value());
+  EXPECT_EQ(store.row(*found).message, "w0 c");
+  store.removeWire(0);
+  EXPECT_FALSE(store.indexOf(key).has_value());
+}
+
 TEST(LogStore, DefaultCapacityIsOneMillion) {
   LogStore store;
   std::vector<LogRow> rows;

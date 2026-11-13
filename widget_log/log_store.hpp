@@ -91,6 +91,16 @@ class LogStore {
   /// Rows of @p wire with time >= @p time.
   [[nodiscard]] size_t wireRowsFrom(uint32_t wire, double time) const;
 
+  /// Identity of a row that survives a reload of its wire: arrival numbers (seq) restart on a reload.
+  struct RowKey {
+    double time = 0.0;
+    uint32_t wire = 0;
+    size_t rank = 0;  ///< among the rows of the wire with this time
+  };
+  [[nodiscard]] RowKey keyOf(size_t index) const;
+  /// Index of the row with @p key, if the store holds it.
+  [[nodiscard]] std::optional<size_t> indexOf(const RowKey& key) const;
+
  private:
   void evictOverflow(StoreChange& change);
 

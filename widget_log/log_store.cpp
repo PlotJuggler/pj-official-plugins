@@ -134,6 +134,28 @@ size_t LogStore::wireRowsFrom(uint32_t wire, double time) const {
   return static_cast<size_t>(std::distance(first, times->second.end()));
 }
 
+LogStore::RowKey LogStore::keyOf(size_t index) const {
+  const LogRow& row = rows_[index];
+  LogRow probe;
+  probe.time = row.time;
+  probe.wire = row.wire;
+  const auto end = rows_.begin() + static_cast<std::ptrdiff_t>(index);
+  const auto first = std::lower_bound(rows_.begin(), end, probe, before);
+  return RowKey{row.time, row.wire, static_cast<size_t>(std::distance(first, end))};
+}
+
+std::optional<size_t> LogStore::indexOf(const RowKey& key) const {
+  LogRow probe;
+  probe.time = key.time;
+  probe.wire = key.wire;
+  const auto first = std::lower_bound(rows_.begin(), rows_.end(), probe, before);
+  const size_t index = static_cast<size_t>(std::distance(rows_.begin(), first)) + key.rank;
+  if (index >= rows_.size() || rows_[index].time != key.time || rows_[index].wire != key.wire) {
+    return std::nullopt;
+  }
+  return index;
+}
+
 void LogStore::evictOverflow(StoreChange& change) {
   while (rows_.size() > capacity_) {
     auto times = wire_times_.find(rows_.front().wire);

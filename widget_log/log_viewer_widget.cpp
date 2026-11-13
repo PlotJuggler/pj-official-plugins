@@ -14,8 +14,10 @@
 #include <QStyle>
 #include <QTextDocument>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <utility>
 
 namespace log_viewer {
@@ -32,8 +34,12 @@ QString formatStamp(int64_t ns) {
   return QStringLiteral("%1%2.%3").arg(sign).arg(seconds).arg(fraction, 9, 10, QLatin1Char('0'));
 }
 
+/// Equal up to the host's conversion through nanoseconds: a nanosecond, or a few double steps at epoch
+/// display times, where one step is ~238 ns. A relative tolerance would swallow real moves there.
 bool sameTime(double a, double b) {
-  return std::abs(a - b) <= 1e-9 * std::max(1.0, std::abs(a));
+  constexpr double kNanosecond = std::chrono::duration<double>(std::chrono::nanoseconds(1)).count();
+  const double steps = 4.0 * std::numeric_limits<double>::epsilon() * std::abs(a);
+  return std::abs(a - b) <= std::max(kNanosecond, steps);
 }
 
 bool isNavigationKey(int key) {
@@ -122,6 +128,12 @@ LogViewerWidget::LogViewerWidget(
 }
 
 void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double time) {
+  // The model rebuilds the changed tail of the list, which drops the selection inside it: find the selected
+  // entry again by key once the store changed.
+  std::optional<LogStore::RowKey> selected_key;
+  if (const std::optional<size_t> selected = selectedStoreRow()) {
+    selected_key = store_.keyOf(*selected);
+  }
   SyncResult result = loader_.sync(values, host_);
   for (const std::string& warning : result.warnings) {
     if (warn_) {
@@ -137,10 +149,14 @@ void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double 
   if (result.wires_changed) {
     refreshTopics();
   }
+  model_->applyStoreChange(result.change);
   if (result.wires_changed && currentFilter().hidden_wires != applied_hidden_wires_) {
     applyFilters();  // a returning topic the user hid: its new rows must stay hidden
-  } else {
-    model_->applyStoreChange(result.change);
+  }
+  if (selected_key) {
+    if (const std::optional<size_t> now = store_.indexOf(*selected_key); now != selectedStoreRow()) {
+      selectStoreRow(now);
+    }
   }
   if (store_.nodes().size() != nodes_listed_) {
     refreshNodes();
