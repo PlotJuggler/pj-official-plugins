@@ -263,5 +263,6 @@ class Mf4Source : public PJ::FileSourceBase {
 
 }  // namespace
 
-PJ_DIALOG_PLUGIN(mf4_detail::Mf4Dialog)
+// Namespaced dialog class: the static (WASM) build needs an unqualified getter name.
+PJ_DIALOG_PLUGIN_NAMED(mf4_detail::Mf4Dialog, Mf4Dialog, nullptr)
 PJ_DATA_SOURCE_PLUGIN(Mf4Source, kMf4Manifest)

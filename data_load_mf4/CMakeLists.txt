@@ -19,14 +19,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 # ---------------------------------------------------------------------------
 # mdflib (ihedvall/mdflib, MIT) via CPM — DOWNLOAD_ONLY.
 #
-# We build the `mdf` static library ourselves from its globbed sources instead
-# of add_subdirectory'ing mdflib's own CMake, for two verified reasons (Phase 0):
-#   1. mdflib's CMakeLists uses ${CMAKE_SOURCE_DIR} for script/{zlib,expat}.cmake
-#      and its include dir — under add_subdirectory that resolves to the PARENT
-#      project and fails hard.
-#   2. mdflib does not compile on gcc 15: its public header idatawriter.h
-#      (std::reverse) and sr4block.h (std::copy_n) rely on transitive
-#      <algorithm>/<cstdint> that gcc 15 dropped — force-included below.
+# Built as the `mdf` static library by cmake/mdflib.cmake (which says why).
 # Pinned to the exact commit validated in Phase 0 (untagged upstream HEAD).
 # ---------------------------------------------------------------------------
 CPMAddPackage(
@@ -36,21 +29,8 @@ CPMAddPackage(
   DOWNLOAD_ONLY YES
 )
 
-file(GLOB _mdf_sources CONFIGURE_DEPENDS ${mdflib_SOURCE_DIR}/mdflib/src/*.cpp)
-add_library(mdf STATIC ${_mdf_sources})
-set_target_properties(mdf PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_features(mdf PRIVATE cxx_std_17)
-# SYSTEM so mdflib's headers don't trip the plugin's -Werror.
-target_include_directories(mdf SYSTEM PUBLIC ${mdflib_SOURCE_DIR}/include)
-target_include_directories(mdf PRIVATE ${mdflib_SOURCE_DIR}/mdflib/src)
-target_link_libraries(mdf PRIVATE ZLIB::ZLIB EXPAT::EXPAT)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  # gcc-15 transitive-include workaround (see note above).
-  target_compile_options(mdf PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
-endif()
-if(MSVC)
-  target_compile_definitions(mdf PRIVATE _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS _CRT_SECURE_NO_WARNINGS)
-endif()
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/mdflib.cmake)
+pj_add_mdflib_library(mdf ${mdflib_SOURCE_DIR})
 
 # The CAN/DBC decoder now lives in the shared common/can_dbc lib (target
 # pj_can_dbc), added by the root CMakeLists for its consumers.
@@ -64,9 +44,6 @@ add_library(mf4_core STATIC mf4_reader.cpp)
 set_target_properties(mf4_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(mf4_core PRIVATE cxx_std_20)
 target_compile_options(mf4_core PRIVATE ${PJ_WARNING_FLAGS})
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(mf4_core PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
-endif()
 target_link_libraries(mf4_core PUBLIC plotjuggler_sdk::base mdf)
 
 # ---------------------------------------------------------------------------
@@ -75,10 +52,6 @@ target_link_libraries(mf4_core PUBLIC plotjuggler_sdk::base mdf)
 add_library(mf4_source_plugin SHARED mf4_source.cpp mf4_dialog.cpp)
 target_compile_features(mf4_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mf4_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  # Our TUs include mdflib public headers (idatawriter.h) — same gcc-15 fix.
-  target_compile_options(mf4_source_plugin PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
-endif()
 target_link_libraries(mf4_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
   mf4_core
@@ -122,9 +95,6 @@ target_compile_options(mf4_source_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(mf4_source_test PRIVATE MF4_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mf4_source_plugin>")
 # mf4_layout_paths_test drives the built plugin.
 add_dependencies(mf4_source_test mf4_source_plugin)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(mf4_source_test PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
-endif()
 # mf4_dialog.cpp includes the headers generated for the plugin target above.
 # common/can_dbc/tests: source_import_harness.hpp (shared layout-path test harness).
 target_include_directories(mf4_source_test PRIVATE

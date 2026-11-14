@@ -364,5 +364,6 @@ class CandumpSource : public PJ::FileSourceBase {
 
 }  // namespace
 
-PJ_DIALOG_PLUGIN(candump_detail::CandumpDialog)
+// Namespaced dialog class: the static (WASM) build needs an unqualified getter name.
+PJ_DIALOG_PLUGIN_NAMED(candump_detail::CandumpDialog, CandumpDialog, nullptr)
 PJ_DATA_SOURCE_PLUGIN(CandumpSource, kCandumpManifest)
