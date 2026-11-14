@@ -257,6 +257,23 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kLog,
         .parse_scalars = &RosParser::parseScalarsGeneric,
         .parse_object = &RosParser::parseLogObject}},
+      // Other log-equivalent messages (they carry a severity), same dual route.
+      {"foxglove_msgs/Log",
+       {.object_type = ObjectType::kLog,
+        .parse_scalars = &RosParser::parseScalarsGeneric,
+        .parse_object = &RosParser::parseFoxgloveLogObject}},
+      {"mavros_msgs/StatusText",
+       {.object_type = ObjectType::kLog,
+        .parse_scalars = &RosParser::parseScalarsGeneric,
+        .parse_object = &RosParser::parseStatusTextLogObject}},
+      {"px4_msgs/LogMessage",
+       {.object_type = ObjectType::kLog,
+        .parse_scalars = &RosParser::parseScalarsGeneric,
+        .parse_object = &RosParser::parsePx4LogMessageObject}},
+      {"px4_msgs/MavlinkLog",
+       {.object_type = ObjectType::kLog,
+        .parse_scalars = &RosParser::parseScalarsGeneric,
+        .parse_object = &RosParser::parsePx4MavlinkLogObject}},
       // foxglove_msgs/CompressedPointCloud — opaque compressed cloud (draco/cloudini/…).
       // The parser repackages the blob + format; it does not decode. Its scalar
       // route reads the BARE builtin_interfaces/Time head (this schema has no

@@ -456,6 +456,14 @@ class RosParser : public PJ::MessageParserPluginBase {
   // route: keeps the generic scalar flatten alongside the object.
   PJ::Expected<PJ::sdk::ObjectRecord> parseLogObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // foxglove_msgs/Log, mavros_msgs/StatusText, px4_msgs/LogMessage and
+  // px4_msgs/MavlinkLog -> sdk::Log. Same dual route as parseLogObject.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseFoxgloveLogObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parseStatusTextLogObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parsePx4LogMessageObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parsePx4MavlinkLogObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+  PJ::Expected<PJ::sdk::ObjectRecord> parsePx4Log(PJ::Timestamp ts, PJ::sdk::PayloadView payload, bool severity_first);
+
   // geometry_msgs/PoseStamped -> sdk::PosesInFrame (single element). Dual route:
   // keeps its per-axis scalar flatten (handlePoseStamped) alongside the object.
   PJ::Expected<PJ::sdk::ObjectRecord> parsePoseStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload);

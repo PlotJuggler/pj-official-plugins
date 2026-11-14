@@ -8,6 +8,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/builtin/log_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <set>
 #include <string>
@@ -52,6 +53,27 @@ PJ::PrimitiveType ulogTypeToPrimitive(ulog_cpp::Field::BasicType type) {
     default:
       return PJ::PrimitiveType::kFloat64;
   }
+}
+
+/// ULog logged-message level ('0'..'7', syslog-style) -> canonical log level.
+PJ::sdk::Log::Level toLogLevel(ulog_cpp::Logging::Level level) {
+  using L = ulog_cpp::Logging::Level;
+  switch (level) {
+    case L::Emergency:
+    case L::Alert:
+    case L::Critical:
+      return PJ::sdk::Log::Level::kFatal;
+    case L::Error:
+      return PJ::sdk::Log::Level::kError;
+    case L::Warning:
+      return PJ::sdk::Log::Level::kWarning;
+    case L::Notice:
+    case L::Info:
+      return PJ::sdk::Log::Level::kInfo;
+    case L::Debug:
+      return PJ::sdk::Log::Level::kDebug;
+  }
+  return PJ::sdk::Log::Level::kUnknown;
 }
 
 /// How one leaf of a record becomes one cell of the row handed to the host.
@@ -559,6 +581,7 @@ class ULogSource : public PJ::FileSourceBase {
                  {.name = "message", .value = std::string_view(msg)}});
           }
         }
+        writeLogObjects(logs);
       }
     }
 
@@ -569,6 +592,41 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
  private:
+  // The same log messages as kLog objects for the log viewer, on an object topic
+  // also named `_log` (the object store and the scalar store are separate, like
+  // a parser's /rosout). Skipped with a warning when the host has no object store.
+  void writeLogObjects(const std::vector<ulog_cpp::Logging>& logs) {
+    const auto* owh = objectWriteHost();
+    if (owh == nullptr) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning,
+          "ULog: ObjectStore write host unavailable; log messages imported as scalars only");
+      return;
+    }
+    auto topic = owh->registerTopic("_log", PJ::sdk::BuiltinObjectType::kLog);
+    if (!topic) {
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "ULog: log objects skipped: " + topic.error());
+      return;
+    }
+    for (const auto& log : logs) {
+      PJ::sdk::Log entry;
+      entry.timestamp_ns = static_cast<int64_t>(log.timestamp()) * 1000;
+      entry.level = toLogLevel(log.logLevel());
+      entry.message = log.message();
+      if (log.hasTag()) {
+        entry.category = std::to_string(log.tag());
+      }
+      const auto payload = PJ::serializeLog(entry);
+      if (auto status = owh->pushOwned(
+              *topic, PJ::Timestamp{entry.timestamp_ns}, PJ::Span<const uint8_t>(payload.data(), payload.size()));
+          !status) {
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kWarning, "ULog: log objects stopped: " + status.error());
+        return;
+      }
+    }
+  }
+
   std::string filepath_;
   ulog_detail::ULogParamsDialog dialog_;
 };

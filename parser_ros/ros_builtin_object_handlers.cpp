@@ -34,6 +34,7 @@
  * scalar columns while the data[] blob is dropped automatically.
  */
 
+#include <algorithm>
 #include <cstring>
 #include <pj_grid_map/grid_map_transcoder.hpp>
 #include <pj_pointcloud_color/pointcloud_color.hpp>
@@ -1065,6 +1066,138 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLogObject(PJ::Timestamp ts, 
         .object = PJ::sdk::BuiltinObject{std::move(result)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("Log: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Other log-equivalent messages -> sdk::Log (scalar route: generic flatten).
+//
+// Wire layouts:
+//   foxglove_msgs/Log:      builtin_interfaces/Time (ROS 1: time) timestamp; uint8 level
+//                           (0..5 = Foxglove Log.Level, same as sdk::Log::Level);
+//                           string message; string name; string file; uint32 line
+//   mavros_msgs/StatusText: std_msgs/Header header; uint8 severity; string text
+//   px4_msgs/LogMessage:    uint64 timestamp; uint8 severity; char[127] text
+//   px4_msgs/MavlinkLog:    uint64 timestamp; char[127] text; uint8 severity
+// StatusText and the PX4 messages use syslog severities 0..7 (EMERGENCY..DEBUG).
+// The PX4 timestamp is microseconds since boot, not wall time, so the record
+// timestamp is used instead.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+PJ::sdk::Log::Level mapSyslogSeverity(uint8_t severity) {
+  using Level = PJ::sdk::Log::Level;
+  switch (severity) {
+    case 0:  // EMERGENCY
+    case 1:  // ALERT
+    case 2:  // CRITICAL
+      return Level::kFatal;
+    case 3:
+      return Level::kError;
+    case 4:
+      return Level::kWarning;
+    case 5:  // NOTICE
+    case 6:  // INFO
+      return Level::kInfo;
+    case 7:
+      return Level::kDebug;
+    default:
+      return Level::kUnknown;
+  }
+}
+
+/// Reads a fixed char[N] array and returns its text up to the first NUL.
+std::string readFixedText(RosMsgParser::Deserializer& d, size_t length) {
+  if (d.bytesLeft() < length) {
+    throw std::runtime_error("text array exceeds message payload");
+  }
+  const auto* begin = reinterpret_cast<const char*>(d.getCurrentPtr());
+  std::string text(begin, std::find(begin, begin + length, '\0'));
+  d.jump(length);
+  return text;
+}
+
+}  // namespace
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveLogObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    const int64_t stamp_ns = readBareTime();
+    PJ::sdk::Log result;
+    result.timestamp_ns = stamp_ns != 0 ? stamp_ns : static_cast<int64_t>(ts);
+    const uint8_t level = readU8(*deserializer_);
+    result.level = level <= 5 ? static_cast<PJ::sdk::Log::Level>(level) : PJ::sdk::Log::Level::kUnknown;
+    deserializer_->deserializeString(result.message);
+    deserializer_->deserializeString(result.source);
+    std::string file;  // read only so a truncated message is rejected
+    deserializer_->deserializeString(file);
+    (void)deserializer_->deserializeUInt32();  // line
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("Log: CDR read error: ") + e.what());
+  }
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseStatusTextLogObject(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    const HeaderData header = readHeader();
+    const int64_t stamp_ns = header.sec * 1000000000LL + static_cast<int64_t>(header.nsec);
+    PJ::sdk::Log result;
+    result.timestamp_ns = stamp_ns != 0 ? stamp_ns : static_cast<int64_t>(ts);
+    result.level = mapSyslogSeverity(readU8(*deserializer_));
+    deserializer_->deserializeString(result.message);
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("StatusText: CDR read error: ") + e.what());
+  }
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePx4LogMessageObject(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  return parsePx4Log(ts, payload, /*severity_first=*/true);
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePx4MavlinkLogObject(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  return parsePx4Log(ts, payload, /*severity_first=*/false);
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePx4Log(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload, bool severity_first) {
+  constexpr size_t kTextLength = 127;
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    (void)deserializer_->deserialize(RosMsgParser::UINT64);  // timestamp: microseconds since boot
+    PJ::sdk::Log result;
+    result.timestamp_ns = ts;
+    if (severity_first) {
+      result.level = mapSyslogSeverity(readU8(*deserializer_));
+      result.message = readFixedText(*deserializer_, kTextLength);
+    } else {
+      result.message = readFixedText(*deserializer_, kTextLength);
+      result.level = mapSyslogSeverity(readU8(*deserializer_));
+    }
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("PX4 log: CDR read error: ") + e.what());
   }
 }
 

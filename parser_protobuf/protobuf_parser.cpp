@@ -10,7 +10,9 @@
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <pj_base/builtin/builtin_object.hpp>
+#include <pj_base/builtin/log_codec.hpp>
 #include <pj_base/builtin/point_cloud.hpp>
 #include <pj_base/builtin/poses_in_frame_codec.hpp>
 #include <pj_base/builtin/video_frame_codec.hpp>
@@ -389,11 +391,18 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
+    // Log messages keep the generic descriptor-pool path below for their scalar
+    // route and add a kLog object route on top (registerLogHandler).
+    const bool is_log = type_name == PJ::kSchemaLog || type_name == "foxglove.Log";
+
     // When schema bytes are empty (e.g. UDP/stream sources that have no schema),
     // the schema was already bound via loadConfig()'s compiled_schema_base64 path.
     // Just record the type name and keep the existing descriptor.
     if (schema.empty()) {
       MessageParserPluginBase::bindSchema(type_name, schema);
+      if (is_log) {
+        registerLogHandler(type_name);
+      }
       return PJ::okStatus();
     }
 
@@ -449,6 +458,12 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       preRegisterFields(descriptor_, "", writeHost(), field_cache_);
     }
 
+    // Record the bound type for the handler dispatch, so a parser re-bound from a
+    // Log schema to a generic one never dispatches to the stale Log handler.
+    MessageParserPluginBase::bindSchema(type_name, schema);
+    if (is_log) {
+      registerLogHandler(type_name);
+    }
     return PJ::okStatus();
   }
 
@@ -466,28 +481,15 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::unexpected(std::string("no schema bound"));
     }
 
-    const gp::Message* prototype = factory_->GetPrototype(descriptor_);
-    std::unique_ptr<gp::Message> msg(prototype->New());
-    if (!msg->ParseFromArray(payload.data(), static_cast<int>(payload.size()))) {
-      return PJ::unexpected("failed to deserialize protobuf message (" + std::to_string(payload.size()) + " bytes)");
+    auto msg = decodeAndFlatten(payload);
+    if (!msg) {
+      return PJ::unexpected(std::move(msg).error());
     }
 
     // Extract embedded timestamp if available (overrides the provided timestamp)
     if (timestamp_field_ != nullptr) {
-      double ts_seconds = msg->GetReflection()->GetDouble(*msg, timestamp_field_);
+      double ts_seconds = (*msg)->GetReflection()->GetDouble(**msg, timestamp_field_);
       timestamp_ns = static_cast<PJ::Timestamp>(ts_seconds * 1e9);
-    }
-
-    owned_fields_.clear();
-    flattenMessage(*msg, "", false, array_limit_.max_size, array_limit_.clamp(), owned_fields_);
-
-    // Fix up string_view entries now that the vector won't reallocate.
-    // During flattenMessage, push_back may have reallocated the vector,
-    // invalidating earlier string_view pointers. Re-point them now.
-    for (auto& f : owned_fields_) {
-      if (!f.owned_string.empty()) {
-        f.value = std::string_view(f.owned_string);
-      }
     }
 
     bound_fields_.clear();
@@ -509,6 +511,78 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   }
 
  private:
+  // Decodes the payload with the bound descriptor and flattens it into
+  // owned_fields_ (the generic scalar route).
+  PJ::Expected<std::unique_ptr<gp::Message>> decodeAndFlatten(PJ::Span<const uint8_t> payload) {
+    const gp::Message* prototype = factory_->GetPrototype(descriptor_);
+    std::unique_ptr<gp::Message> msg(prototype->New());
+    if (!msg->ParseFromArray(payload.data(), static_cast<int>(payload.size()))) {
+      return PJ::unexpected("failed to deserialize protobuf message (" + std::to_string(payload.size()) + " bytes)");
+    }
+
+    owned_fields_.clear();
+    flattenMessage(*msg, "", false, array_limit_.max_size, array_limit_.clamp(), owned_fields_);
+
+    // Fix up string_view entries now that the vector won't reallocate.
+    // During flattenMessage, push_back may have reallocated the vector,
+    // invalidating earlier string_view pointers. Re-point them now.
+    for (auto& f : owned_fields_) {
+      if (!f.owned_string.empty()) {
+        f.value = std::string_view(f.owned_string);
+      }
+    }
+    return msg;
+  }
+
+  // Register the SchemaHandler for foxglove.Log / PJ.Log -> kLog. Unlike the
+  // other fast paths the descriptor pool is still built: the scalar route keeps
+  // the generic flatten exactly as before (level, message, name, ... stay
+  // plottable), so it needs a bound descriptor. The object route decodes the
+  // wire with the SDK codec (PJ.Log is wire-compatible with foxglove.Log), which
+  // keeps messages of any length; the flatten skips strings of 100 bytes or more.
+  void registerLogHandler(std::string_view type_name) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kLog;
+
+    handler.parse_scalars =
+        [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+      if (descriptor_ == nullptr) {
+        return PJ::unexpected(std::string("no schema bound"));
+      }
+      if (auto msg = decodeAndFlatten(payload); !msg) {
+        return PJ::unexpected(std::move(msg).error());
+      }
+      PJ::sdk::ScalarRecord record;
+      // Match the object route's timestamp policy so the scalar columns and the
+      // object entry land on the same timeline.
+      if (use_embedded_timestamp_) {
+        if (auto log = PJ::deserializeLog(payload.data(), payload.size()); log && log->timestamp_ns > 0) {
+          record.ts = log->timestamp_ns;
+        }
+      }
+      record.fields.reserve(owned_fields_.size());
+      for (const auto& f : owned_fields_) {
+        record.fields.push_back({.name = f.name, .value = f.value});
+      }
+      return record;
+    };
+
+    handler.parse_object =
+        [this](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      auto log = PJ::deserializeLog(payload.bytes.data(), payload.bytes.size());
+      if (!log) {
+        return PJ::unexpected(std::move(log).error());
+      }
+      std::optional<PJ::Timestamp> ts;
+      if (use_embedded_timestamp_ && log->timestamp_ns > 0) {
+        ts = log->timestamp_ns;
+      }
+      return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*log)}};
+    };
+
+    registerSchemaHandler(type_name, std::move(handler));
+  }
+
   // Register the SchemaHandler for the canonical VideoFrame fast path. The
   // object route decodes one PJ.VideoFrame / foxglove.CompressedVideo per
   // message zero-copy; the scalar route emits a slim metadata row so the

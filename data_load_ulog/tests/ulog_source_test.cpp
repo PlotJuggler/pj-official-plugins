@@ -88,6 +88,25 @@ class ULogBuilder {
     writeMessage('D', payload);
   }
 
+  // Logged string ('L'): level '0'..'7', timestamp, text.
+  void writeLogging(char level, uint64_t timestamp_us, const std::string& text) {
+    std::vector<uint8_t> payload;
+    payload.push_back(static_cast<uint8_t>(level));
+    appendLe(payload, timestamp_us);
+    payload.insert(payload.end(), text.begin(), text.end());
+    writeMessage('L', payload);
+  }
+
+  // Tagged logged string ('C'): level, tag, timestamp, text.
+  void writeTaggedLogging(char level, uint16_t tag, uint64_t timestamp_us, const std::string& text) {
+    std::vector<uint8_t> payload;
+    payload.push_back(static_cast<uint8_t>(level));
+    appendLe(payload, tag);
+    appendLe(payload, timestamp_us);
+    payload.insert(payload.end(), text.begin(), text.end());
+    writeMessage('C', payload);
+  }
+
   const std::vector<uint8_t>& data() const {
     return buf_;
   }
@@ -1417,6 +1436,37 @@ std::vector<uint8_t> manyDummyRecords(uint64_t count) {
 }
 
 // 20000 records span several 64 KiB read chunks; the stop is polled per chunk.
+// Logged messages keep their scalar `_log` topic. This harness has no object
+// store, so the kLog objects are skipped with a warning (the fallback path).
+TEST(ULogImportTest, LoggedMessagesKeepTheScalarLogTopic) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeLogging('3', 1500000, "Arming denied");
+  builder.writeTaggedLogging('6', 7, 2500000, "Takeoff");
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const std::vector<std::string> expected_fields = {"level", "message"};
+  EXPECT_EQ(host.fields["_log"], expected_fields);
+  const auto& rows = host.rows["_log"];
+  ASSERT_EQ(rows.size(), 2u);
+  EXPECT_EQ(rows[0].timestamp_ns, 1500000LL * 1000);
+  EXPECT_EQ(rows[0].cells.at(0).text, "Error");
+  EXPECT_EQ(rows[0].cells.at(1).text, "Arming denied");
+  EXPECT_EQ(rows[1].timestamp_ns, 2500000LL * 1000);
+  EXPECT_EQ(rows[1].cells.at(0).text, "Info");
+  EXPECT_EQ(rows[1].cells.at(1).text, "Takeoff");
+  EXPECT_TRUE(std::any_of(host.warnings.begin(), host.warnings.end(), [](const std::string& w) {
+    return w.find("log messages imported as scalars only") != std::string::npos;
+  }));
+}
+
 TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {
   RecordingHost host;
   host.stop_after_records = 1;

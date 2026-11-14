@@ -14,6 +14,8 @@
 #include <pj_laser_scan/laser_scan_projector.hpp>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include "../../common/builtin_object_compat.hpp"
@@ -3615,4 +3617,172 @@ TEST(ProtobufParserTest, FoxgloveGridScalarRoute) {
   expectNumeric(*row, "cell_stride", 4.0);
   expectNumeric(*row, "data_size", 48.0);
   EXPECT_EQ(row->fields.size(), 7u);
+}
+
+// ---------------------------------------------------------------------------
+// foxglove.Log / PJ.Log -> kLog
+//
+// The object route decodes with the SDK Log codec (PJ.Log is wire-compatible
+// with foxglove.Log); the scalar route keeps the generic reflection flatten, so
+// it needs the real FileDescriptorSet. Wire layout (foxglove/Log.proto):
+//   Log { timestamp=1 (Timestamp), level=2 (enum), message=3, name=4,
+//         file=5, line=6 (fixed32) }
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct LogWire {
+  std::string schema;   // serialized FileDescriptorSet
+  std::string payload;  // serialized Log message
+};
+
+LogWire buildLogWire(const std::string& package, int level, const std::string& message) {
+  gp::FileDescriptorProto file;
+  file.set_name("log.proto");
+  file.set_syntax("proto3");
+  file.set_package(package);
+
+  auto add_field = [](gp::DescriptorProto* m, const char* name, int num, gp::FieldDescriptorProto::Type type,
+                      const std::string& type_name = {}) {
+    auto* f = m->add_field();
+    f->set_name(name);
+    f->set_number(num);
+    f->set_type(type);
+    f->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+    if (!type_name.empty()) {
+      f->set_type_name(type_name);
+    }
+  };
+
+  auto* ts = file.add_message_type();
+  ts->set_name("Timestamp");
+  add_field(ts, "seconds", 1, gp::FieldDescriptorProto::TYPE_INT64);
+  add_field(ts, "nanos", 2, gp::FieldDescriptorProto::TYPE_INT32);
+
+  auto* log = file.add_message_type();
+  log->set_name("Log");
+  auto* level_enum = log->add_enum_type();
+  level_enum->set_name("Level");
+  for (const char* name : {"UNKNOWN", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL"}) {
+    auto* v = level_enum->add_value();
+    v->set_name(name);
+    v->set_number(level_enum->value_size() - 1);
+  }
+  const std::string prefix = "." + package + ".";
+  add_field(log, "timestamp", 1, gp::FieldDescriptorProto::TYPE_MESSAGE, prefix + "Timestamp");
+  add_field(log, "level", 2, gp::FieldDescriptorProto::TYPE_ENUM, prefix + "Log.Level");
+  add_field(log, "message", 3, gp::FieldDescriptorProto::TYPE_STRING);
+  add_field(log, "name", 4, gp::FieldDescriptorProto::TYPE_STRING);
+  add_field(log, "file", 5, gp::FieldDescriptorProto::TYPE_STRING);
+  add_field(log, "line", 6, gp::FieldDescriptorProto::TYPE_FIXED32);
+
+  gp::DescriptorPool pool;
+  const gp::FileDescriptor* fd = pool.BuildFile(file);
+  const gp::Descriptor* desc = fd->FindMessageTypeByName("Log");
+  gp::DynamicMessageFactory factory;
+  std::unique_ptr<gp::Message> msg(factory.GetPrototype(desc)->New());
+  const gp::Reflection* ref = msg->GetReflection();
+
+  gp::Message* tsm = ref->MutableMessage(msg.get(), desc->FindFieldByName("timestamp"), &factory);
+  tsm->GetReflection()->SetInt64(tsm, tsm->GetDescriptor()->FindFieldByName("seconds"), 7);
+  tsm->GetReflection()->SetInt32(tsm, tsm->GetDescriptor()->FindFieldByName("nanos"), 25);
+  ref->SetEnumValue(msg.get(), desc->FindFieldByName("level"), level);
+  ref->SetString(msg.get(), desc->FindFieldByName("message"), message);
+  ref->SetString(msg.get(), desc->FindFieldByName("name"), "/planner");
+  ref->SetString(msg.get(), desc->FindFieldByName("file"), "planner.cpp");
+  ref->SetUInt32(msg.get(), desc->FindFieldByName("line"), 42);
+
+  LogWire out;
+  gp::FileDescriptorSet fd_set;
+  *fd_set.add_file() = file;
+  fd_set.SerializeToString(&out.schema);
+  msg->SerializeToString(&out.payload);
+  return out;
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> parseLogObject(ProtobufParserFixture& f, const std::string& payload) {
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  const PJ::sdk::PayloadView view{
+      PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(payload.data()), payload.size()), {}};
+  return base->parseObject(1234, view);
+}
+
+}  // namespace
+
+TEST(ProtobufParserTest, FoxgloveLogObjectRouteKeepsLongMessages) {
+  const std::string long_message(250, 'x');  // the scalar flatten drops strings >= 100 bytes
+  for (const char* type : {"foxglove.Log", "PJ.Log"}) {
+    const std::string type_name(type);
+    const std::string package = type_name.substr(0, type_name.find('.'));
+    ProtobufParserFixture f;
+    f.setUp();
+    const auto wire = buildLogWire(package, 4, long_message);
+    ASSERT_TRUE(f.bindSchema(type, wire.schema)) << type;
+    const PJ::Span<const uint8_t> schema_span(reinterpret_cast<const uint8_t*>(wire.schema.data()), wire.schema.size());
+    EXPECT_EQ(f.handle.classifySchema(type, schema_span), PJ::sdk::BuiltinObjectType::kLog) << type;
+
+    auto rec = parseLogObject(f, wire.payload);
+    ASSERT_TRUE(rec.has_value()) << type << ": " << rec.error();
+    const auto* log = pj_compat::getBuiltinObject<PJ::sdk::Log>(rec->object);
+    ASSERT_NE(log, nullptr) << type;
+    EXPECT_EQ(log->timestamp_ns, 7'000'000'025LL);
+    EXPECT_EQ(log->level, PJ::sdk::Log::Level::kError);
+    EXPECT_EQ(log->message, long_message);
+    EXPECT_EQ(log->source, "/planner");
+    EXPECT_TRUE(log->category.empty());
+    EXPECT_FALSE(rec->ts.has_value());  // embedded-ts option off by default
+  }
+}
+
+TEST(ProtobufParserTest, FoxgloveLogLevelMapping) {
+  using Level = PJ::sdk::Log::Level;
+  const std::vector<std::pair<int, Level>> table = {{0, Level::kUnknown}, {1, Level::kDebug}, {2, Level::kInfo},
+                                                    {3, Level::kWarning}, {4, Level::kError}, {5, Level::kFatal}};
+  for (const auto& [raw, expected] : table) {
+    ProtobufParserFixture f;
+    f.setUp();
+    const auto wire = buildLogWire("foxglove", raw, "m");
+    ASSERT_TRUE(f.bindSchema("foxglove.Log", wire.schema));
+    auto rec = parseLogObject(f, wire.payload);
+    ASSERT_TRUE(rec.has_value()) << rec.error();
+    const auto* log = pj_compat::getBuiltinObject<PJ::sdk::Log>(rec->object);
+    ASSERT_NE(log, nullptr);
+    EXPECT_EQ(log->level, expected) << "raw level " << raw;
+  }
+}
+
+TEST(ProtobufParserTest, FoxgloveLogScalarRouteKeepsGenericFlatten) {
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto wire = buildLogWire("foxglove", 3, "careful");
+  ASSERT_TRUE(f.bindSchema("foxglove.Log", wire.schema));
+
+  // Functional scalar route (what the host runs next to the object route).
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  const PJ::Span<const uint8_t> payload(reinterpret_cast<const uint8_t*>(wire.payload.data()), wire.payload.size());
+  auto record = base->parseScalars(1000, payload);
+  ASSERT_TRUE(record.has_value()) << record.error();
+  EXPECT_FALSE(record->ts.has_value());
+  auto find = [&](std::string_view name) -> const PJ::sdk::NamedFieldValue* {
+    for (const auto& field : record->fields) {
+      if (field.name == name) {
+        return &field;
+      }
+    }
+    return nullptr;
+  };
+  for (const char* name : {"timestamp/seconds", "level", "message", "name", "file", "line"}) {
+    EXPECT_NE(find(name), nullptr) << name;
+  }
+  ASSERT_NE(find("level"), nullptr);
+  EXPECT_EQ(std::get<std::string_view>(find("level")->value), "WARNING");
+  ASSERT_NE(find("message"), nullptr);
+  EXPECT_EQ(std::get<std::string_view>(find("message")->value), "careful");
+
+  // Legacy parse() writes the same generic row.
+  ASSERT_TRUE(f.parse(wire.payload, 555));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto* level = PJ::sdk::testing::ParserWriteRecorder::findField(f.recorder.rows()[0], "level");
+  ASSERT_NE(level, nullptr);
+  EXPECT_EQ(level->string_value, "WARNING");
 }

@@ -33,6 +33,7 @@ objects (instead of flattened scalars), so PlotJuggler can render them:
 | `foxglove.PointCloud` | `kPointCloud` (3D point cloud) |
 | `foxglove.LaserScan` | `kPointCloud` (3D point cloud, eagerly projected) |
 | `foxglove.Grid` | `kGridMap` (2D grid of per-cell channels: elevation maps, layered costmaps) |
+| `PJ.Log` / `foxglove.Log` | `kLog` (log viewer) |
 
 These bypass the descriptor pool: their wire layout is known, so they are
 decoded directly and **zero-copy** (the packed-point / bitstream span aliases
@@ -63,6 +64,14 @@ to ROS/SDK) and the row count, which Foxglove omits, is derived as
 for both `Grid` and the nested `PackedElementField` are resolved by name from
 the embedded descriptor. The scalar route emits `timestamp`, `frame_id`,
 `column_count`, `row_count`, `row_stride`, `cell_stride` and `data_size`.
+
+`PJ.Log` and `foxglove.Log` are the exception to bypassing the descriptor pool:
+their scalar route stays the generic flatten (`level`, `message`, `name`, `file`,
+`line`, ...), so they still need the embedded `FileDescriptorSet`. The object
+route decodes with the SDK codec (`deserializeLog`; `PJ.Log` is wire-compatible
+with `foxglove.Log`), which keeps messages of any length; the flatten drops
+strings of 100 bytes or more. `name` becomes the log source; `file` and `line`
+are not kept in the object.
 
 `PJ.PosesInFrame` and `foxglove.PosesInFrame` are wire-identical (the SDK proto
 mirrors Foxglove field-for-field), so both names bind to the same SDK codec

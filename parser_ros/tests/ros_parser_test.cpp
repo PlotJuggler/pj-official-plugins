@@ -3521,6 +3521,134 @@ TEST(RosParserTest, RosLogTruncatedPayloadIsRejected) {
   EXPECT_FALSE(parseRosLogObject(f, payload, 5).has_value());
 }
 
+// ===== foxglove_msgs/Log, mavros_msgs/StatusText, px4_msgs logs -> sdk::Log =====
+
+static const char* kFoxgloveLogDef =
+    "builtin_interfaces/Time timestamp\n"
+    "uint8 level\nstring message\nstring name\nstring file\nuint32 line\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+static const char* kStatusTextDef =
+    "std_msgs/Header header\nuint8 severity\nstring text\n"
+    "================\nMSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+static const char* kPx4LogMessageDef = "uint64 timestamp\nuint8 severity\nchar[127] text\n";
+static const char* kPx4MavlinkLogDef = "uint64 timestamp\nchar[127] text\nuint8 severity\n";
+
+std::vector<uint8_t> serializeStatusText(int32_t sec, uint8_t severity, const std::string& text) {
+  return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(sec));
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(uint32_t{7}));
+    enc.serializeString("base_link");
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(severity));
+    enc.serializeString(text);
+  });
+}
+
+std::vector<uint8_t> serializePx4Log(uint8_t severity, const std::string& text, bool severity_first) {
+  return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::UINT64, RosMsgParser::Variant(uint64_t{123456}));
+    auto put_text = [&] {
+      for (size_t i = 0; i < 127; ++i) {
+        const uint8_t c = i < text.size() ? static_cast<uint8_t>(text[i]) : uint8_t{0};
+        enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(c));
+      }
+    };
+    if (severity_first) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(severity));
+      put_text();
+    } else {
+      put_text();
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(severity));
+    }
+  });
+}
+
+TEST(RosParserTest, FoxgloveLogDecodesAllFields) {
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kFoxgloveLogDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("foxglove_msgs/msg/Log", kFoxgloveLogDef));
+  EXPECT_EQ(f.handle.classifySchema("foxglove_msgs/msg/Log", def_span), PJ::sdk::BuiltinObjectType::kLog);
+
+  for (uint8_t raw = 0; raw <= 6; ++raw) {
+    auto payload = serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+      enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(int32_t{12}));
+      enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(uint32_t{345}));
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(raw));
+      enc.serializeString("boom");
+      enc.serializeString("/my_node");
+      enc.serializeString("node.cpp");
+      enc.serializeUInt32(77);
+    });
+    auto rec = parseRosLogObject(f, payload, 999);
+    ASSERT_TRUE(rec.has_value()) << rec.error();
+    const auto* log = pj_compat::getBuiltinObject<PJ::sdk::Log>(rec->object);
+    ASSERT_NE(log, nullptr);
+    EXPECT_EQ(log->timestamp_ns, 12LL * 1000000000LL + 345);
+    EXPECT_EQ(log->level, raw <= 5 ? static_cast<PJ::sdk::Log::Level>(raw) : PJ::sdk::Log::Level::kUnknown);
+    EXPECT_EQ(log->message, "boom");
+    EXPECT_EQ(log->source, "/my_node");
+  }
+}
+
+TEST(RosParserTest, StatusTextDecodesWithSyslogSeverity) {
+  using Level = PJ::sdk::Log::Level;
+  const std::vector<std::pair<uint8_t, Level>> table = {{0, Level::kFatal}, {1, Level::kFatal},   {2, Level::kFatal},
+                                                        {3, Level::kError}, {4, Level::kWarning}, {5, Level::kInfo},
+                                                        {6, Level::kInfo},  {7, Level::kDebug},   {8, Level::kUnknown}};
+  RosParserFixture f;
+  f.setUp();
+  const std::string def(kStatusTextDef);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("mavros_msgs/msg/StatusText", kStatusTextDef));
+  EXPECT_EQ(f.handle.classifySchema("mavros_msgs/msg/StatusText", def_span), PJ::sdk::BuiltinObjectType::kLog);
+
+  for (const auto& [raw, expected] : table) {
+    auto rec = parseRosLogObject(f, serializeStatusText(3, raw, "GPS lost"), 5);
+    ASSERT_TRUE(rec.has_value()) << rec.error();
+    const auto* log = pj_compat::getBuiltinObject<PJ::sdk::Log>(rec->object);
+    ASSERT_NE(log, nullptr);
+    EXPECT_EQ(log->timestamp_ns, 3LL * 1000000000LL + 7);
+    EXPECT_EQ(log->level, expected) << "raw severity " << static_cast<int>(raw);
+    EXPECT_EQ(log->message, "GPS lost");
+  }
+
+  // Scalar route still runs (generic flatten).
+  ASSERT_TRUE(f.parse(serializeStatusText(3, 4, "GPS lost"), 99));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto* severity = PJ::sdk::testing::ParserWriteRecorder::findField(f.recorder.rows()[0], "/severity");
+  ASSERT_NE(severity, nullptr);
+  EXPECT_DOUBLE_EQ(severity->numeric, 4.0);
+}
+
+TEST(RosParserTest, Px4LogMessagesDecodeFixedText) {
+  for (const auto& [type, def, severity_first] :
+       {std::tuple{"px4_msgs/msg/LogMessage", kPx4LogMessageDef, true},
+        std::tuple{"px4_msgs/msg/MavlinkLog", kPx4MavlinkLogDef, false}}) {
+    RosParserFixture f;
+    f.setUp();
+    const std::string def_text(def);
+    const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def_text.data()), def_text.size());
+    ASSERT_TRUE(f.bindSchema(type, def)) << type;
+    EXPECT_EQ(f.handle.classifySchema(type, def_span), PJ::sdk::BuiltinObjectType::kLog) << type;
+
+    auto payload = serializePx4Log(3, "[commander] Arming denied", severity_first);
+    auto rec = parseRosLogObject(f, payload, 4242);
+    ASSERT_TRUE(rec.has_value()) << type << ": " << rec.error();
+    const auto* log = pj_compat::getBuiltinObject<PJ::sdk::Log>(rec->object);
+    ASSERT_NE(log, nullptr);
+    EXPECT_EQ(log->timestamp_ns, 4242) << type;  // boot-relative stamp is not used
+    EXPECT_EQ(log->level, PJ::sdk::Log::Level::kError) << type;
+    EXPECT_EQ(log->message, "[commander] Arming denied") << type;
+
+    payload.resize(40);  // cut into the text array
+    EXPECT_FALSE(parseRosLogObject(f, payload, 5).has_value()) << type;
+  }
+}
+
 // ===== /header/stamp diagnostic timeseries =====
 
 // Any std_msgs/Header topic on the generic-flatten route gains a single combined

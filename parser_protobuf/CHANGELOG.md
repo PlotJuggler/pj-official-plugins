@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_protobuf/`.
 
+## [1.3.0] - 2026-11-14
+
+### Added
+- `foxglove.Log` and `PJ.Log` messages are published as log objects (level,
+  message and the `name` field as source) for the log viewer. Messages of 100
+  characters or more, which the plottable columns leave out, are kept whole.
+  The plottable columns are unchanged.
+
 ## [1.2.1] - 2026-11-03
 
 ### Fixed

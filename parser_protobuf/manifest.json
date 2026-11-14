@@ -1,7 +1,7 @@
 {
   "id": "protobuf-parser",
   "name": "Protobuf Parser",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Decodes Protocol Buffers messages into plottable fields. Standard Foxglove message types (point clouds, images and compressed video, image annotations, scene entities, transforms, poses, camera calibration, voxel grids and grids) are shown in the 2D image and 3D scene views.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
