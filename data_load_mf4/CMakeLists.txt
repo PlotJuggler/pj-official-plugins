@@ -36,21 +36,8 @@ CPMAddPackage(
   DOWNLOAD_ONLY YES
 )
 
-file(GLOB _mdf_sources CONFIGURE_DEPENDS ${mdflib_SOURCE_DIR}/mdflib/src/*.cpp)
-add_library(mdf STATIC ${_mdf_sources})
-set_target_properties(mdf PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_compile_features(mdf PRIVATE cxx_std_17)
-# SYSTEM so mdflib's headers don't trip the plugin's -Werror.
-target_include_directories(mdf SYSTEM PUBLIC ${mdflib_SOURCE_DIR}/include)
-target_include_directories(mdf PRIVATE ${mdflib_SOURCE_DIR}/mdflib/src)
-target_link_libraries(mdf PRIVATE ZLIB::ZLIB EXPAT::EXPAT)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  # gcc-15 transitive-include workaround (see note above).
-  target_compile_options(mdf PRIVATE "SHELL:-include algorithm" "SHELL:-include cstdint")
-endif()
-if(MSVC)
-  target_compile_definitions(mdf PRIVATE _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS _CRT_SECURE_NO_WARNINGS)
-endif()
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/mdflib.cmake)
+pj_add_mdflib_library(mdf ${mdflib_SOURCE_DIR})
 
 # The CAN/DBC decoder now lives in the shared common/can_dbc lib (target
 # pj_can_dbc), added by the root CMakeLists for its consumers.

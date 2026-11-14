@@ -170,5 +170,6 @@ class BlfSource : public PJ::FileSourceBase {
 
 }  // namespace
 
-PJ_DIALOG_PLUGIN(blf_detail::BlfDialog)
+// Namespaced dialog class: the static (WASM) build needs an unqualified getter name.
+PJ_DIALOG_PLUGIN_NAMED(blf_detail::BlfDialog, BlfDialog, nullptr)
 PJ_DATA_SOURCE_PLUGIN(BlfSource, kBlfManifest)
