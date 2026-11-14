@@ -1059,7 +1059,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLogObject(PJ::Timestamp ts, 
     std::string skipped;
     deserializer_->deserializeString(skipped);
     deserializer_->deserializeString(skipped);
-    deserializer_->deserializeUInt32();
+    (void)deserializer_->deserializeUInt32();  // line
     return PJ::sdk::ObjectRecord{
         .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
         .object = PJ::sdk::BuiltinObject{std::move(result)}};

@@ -9,6 +9,10 @@ below; for earlier releases see the git history of `parser_ros/`.
 - ROS 2 `rcl_interfaces/msg/Log` and ROS 1 `rosgraph_msgs/Log` messages are
   published as log objects (level, text, and the logger name as source) for the log viewer. The scalar columns (`level`, `line`, ...) are still emitted.
 
+### Fixed
+- A `robot_description` topic in a recorded file reaches the 3D view again;
+  it was dropped on import, so no robot was shown.
+
 ## [1.3.1] - 2026-11-03
 
 ### Fixed
