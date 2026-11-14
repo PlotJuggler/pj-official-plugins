@@ -1,0 +1,27 @@
+{
+  "id": "navmap-parser",
+  "name": "NavMap Parser",
+  "version": "0.1.0",
+  "description": "Shows EasyNavigation NavMap maps (navmap_ros_interfaces/msg/NavMap), the triangle-mesh navigation maps, in the 3D scene with their per-cell layers, and applies the NavMapLayer updates published beside them.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "message_parser",
+  "tags": [
+    "ros2",
+    "navmap",
+    "navigation",
+    "mesh",
+    "map",
+    "3d",
+    "parser"
+  ],
+  "encoding": [
+    "ros2msg"
+  ],
+  "min_sdk_required": "1.0.0-dev.1",
+  "min_plotjuggler_version": "4.0.0"
+}
