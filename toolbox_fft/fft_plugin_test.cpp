@@ -1,15 +1,18 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <numbers>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "../toolbox_assistant_agent/tests/support/fake_multi_dataset_host.hpp"
 #include "fft_algorithm.hpp"
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/toolbox_plugin_base.hpp"
@@ -61,6 +64,12 @@ struct PluginFixture {
 
   void bind() {
     registry.registerService<PJ::sdk::ToolboxHostService>(store.makeHost());
+    registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
+    ASSERT_TRUE(handle.bind(registry.view()));
+  }
+
+  void bindTo(PJ_toolbox_host_t host) {
+    registry.registerService<PJ::sdk::ToolboxHostService>(host);
     registry.registerService<PJ::sdk::ToolboxRuntimeHostService>(store.makeRuntimeHost());
     ASSERT_TRUE(handle.bind(registry.view()));
   }
@@ -143,6 +152,44 @@ TEST(FftAlgorithmTest, RejectsInvalidSamplingAndValues) {
   values[8] = std::numeric_limits<double>::quiet_NaN();
   computation = PJ::fft::computeFft(timestamps.data(), values.data(), values.size(), false);
   EXPECT_EQ(computation.error, PJ::fft::FftError::kNonFiniteValue);
+}
+
+TEST(FftAlgorithmTest, PrimeHalfLengthStaysFastAndAccurate) {
+  // n/2 = 100003 is prime: an O(n*p) backend (the old kissfft) took ~14 s here.
+  constexpr std::size_t count = 200006;
+  constexpr std::size_t bin = 20001;
+  auto timestamps = regularTimestamps(count);
+  auto values = sinusoid(count, static_cast<double>(bin) * kSampleRateHz / static_cast<double>(count), 10.0);
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto computation = PJ::fft::computeFft(
+      timestamps.data(), values.data(), values.size(), false, PJ::fft::WindowFunction::kRectangular);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  ASSERT_TRUE(computation) << computation.message;
+  EXPECT_NEAR(computation.result.amplitudes[bin], 10.0, 1e-5);  // float FFT: ~1e-7 relative
+  EXPECT_LT(elapsed, std::chrono::seconds(2));
+}
+
+TEST(FftAlgorithmTest, LengthIsTrimmedToASmoothSizeOnlyAboveTheMemoryBudget) {
+  EXPECT_EQ(PJ::fft::fftLength(200007, 1'000'000'000), 200006u);  // within budget: only made even
+  EXPECT_EQ(PJ::fft::fftLength(200007, 1'000'000), 200000u);      // 2^6 * 5^5
+  EXPECT_EQ(PJ::fft::fftLength(4620, 1'000), 4620u);              // already 11-smooth: kept
+  EXPECT_EQ(PJ::fft::fftLength(18000017, 0), 18000000u);
+}
+
+TEST(FftAlgorithmTest, OverBudgetInputAnalyzesTheTrimmedLengthAccurately) {
+  constexpr std::size_t count = 200006;  // n/2 prime: Bluestein unless trimmed
+  constexpr std::size_t bin = 20000;
+  auto timestamps = regularTimestamps(count);
+  auto values = sinusoid(count, static_cast<double>(bin) * kSampleRateHz / 200000.0, 10.0);
+
+  const auto computation = PJ::fft::computeFft(
+      timestamps.data(), values.data(), values.size(), false, PJ::fft::WindowFunction::kRectangular, 0.01, 1'000'000);
+
+  ASSERT_TRUE(computation) << computation.message;
+  EXPECT_EQ(computation.result.sample_count, 200000u);
+  EXPECT_NEAR(computation.result.amplitudes[bin], 10.0, 1e-5);
 }
 
 TEST(FftAlgorithmTest, DropsOneTrailingSampleForOddInput) {
@@ -308,6 +355,165 @@ TEST(FftPluginTest, DataChangeInvalidatesAComputedResult) {
   EXPECT_TRUE(data.at("chart_fft").at("chart_series").empty());
   EXPECT_FALSE(data.at("btn_save").at("enabled").get<bool>());
   EXPECT_NE(data.at("status_label").at("text").get<std::string>().find("Input data changed"), std::string::npos);
+}
+
+using assistant_agent::testing::FakeMultiDatasetHost;
+
+// The fake numbers its data sources from 1, in addDataset order.
+constexpr uint32_t kRunA = 1;
+constexpr uint32_t kRunB = 2;
+
+std::string selectedText(const PJ::DialogHandle& dialog) {
+  return widgetData(dialog).at("selected_value").at("text").get<std::string>();
+}
+
+std::string statusText(const PJ::DialogHandle& dialog) {
+  return widgetData(dialog).at("status_label").at("text").get<std::string>();
+}
+
+TEST(FftSameNamedSeriesTest, ADropReadsTheRecordingItWasDraggedFrom) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", {"/imu"}).addDataset("run_b.mcap", {"/imu"});
+  auto fixture = makeFixture();
+  fixture.bindTo(host.makeHost());
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/imu/value"}, {kRunB})));
+  EXPECT_EQ(selectedText(dialog), "/imu/value (run_b.mcap)");
+  (void)host.takeReadTopics();
+  ASSERT_TRUE(dialog.sendEvent("btn_compute", PJ::WidgetEventBuilder::clicked()));
+  EXPECT_EQ(host.takeReadTopics(), std::set<std::size_t>{1});
+
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/imu/value"}, {kRunA})));
+  EXPECT_EQ(selectedText(dialog), "/imu/value (run_a.mcap)");
+  (void)host.takeReadTopics();
+  ASSERT_TRUE(dialog.sendEvent("btn_compute", PJ::WidgetEventBuilder::clicked()));
+  EXPECT_EQ(host.takeReadTopics(), std::set<std::size_t>{0});
+}
+
+TEST(FftSameNamedSeriesTest, ADropWithoutASourceIsRefusedOnlyWhenTheNameIsShared) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", {"/imu"}).addDataset("run_b.mcap", {"/imu", "/gps"});
+  auto fixture = makeFixture();
+  fixture.bindTo(host.makeHost());
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/imu/value"})));
+  EXPECT_EQ(selectedText(dialog), "No input selected");
+  EXPECT_NE(statusText(dialog).find("several recordings"), std::string::npos);
+
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/gps/value"})));
+  EXPECT_EQ(selectedText(dialog), "/gps/value");
+}
+
+TEST(FftSameNamedSeriesTest, ADropNamingASourceWithoutTheSeriesIsRefused) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", {"/imu"}).addDataset("run_b.mcap", {"/gps"});
+  auto fixture = makeFixture();
+  fixture.bindTo(host.makeHost());
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/imu/value"}, {kRunB})));
+  EXPECT_EQ(selectedText(dialog), "No input selected");
+  EXPECT_NE(statusText(dialog).find("unavailable"), std::string::npos);
+}
+
+TEST(FftSameNamedSeriesTest, ADropSeesARecordingLoadedUnderTheOpenPanel) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", {"/imu"});
+  auto fixture = makeFixture();
+  fixture.bindTo(host.makeHost());
+  auto dialog = fixture.dialog();
+
+  host.addDataset("run_b.mcap", {"/imu"});
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/imu/value"}, {kRunB})));
+  EXPECT_EQ(selectedText(dialog), "/imu/value (run_b.mcap)");
+}
+
+TEST(FftSameNamedSeriesTest, ASelectionStaysWithItsRecordingWhenAnotherLoads) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", {"/imu"});
+  auto fixture = makeFixture();
+  fixture.bindTo(host.makeHost());
+  auto dialog = fixture.dialog();
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/imu/value"}, {kRunA})));
+  EXPECT_EQ(selectedText(dialog), "/imu/value");
+
+  host.addDataset("run_b.mcap", {"/imu"});
+  ASSERT_TRUE(dialog.tick());
+  EXPECT_EQ(selectedText(dialog), "/imu/value (run_a.mcap)");
+  (void)host.takeReadTopics();
+  ASSERT_TRUE(dialog.sendEvent("btn_compute", PJ::WidgetEventBuilder::clicked()));
+  EXPECT_EQ(host.takeReadTopics(), std::set<std::size_t>{0});
+}
+
+TEST(FftSameNamedSeriesTest, AnUnloadedRecordingIsNotReplacedByAnother) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", {"/imu"}).addDataset("run_b.mcap", {"/imu"});
+  auto fixture = makeFixture();
+  fixture.bindTo(host.makeHost());
+  auto dialog = fixture.dialog();
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/imu/value"}, {kRunB})));
+
+  host.clearDatasets();
+  host.addDataset("run_a.mcap", {"/imu"});
+  ASSERT_TRUE(dialog.tick());
+  EXPECT_EQ(selectedText(dialog), "No input selected");
+  EXPECT_NE(statusText(dialog).find("drop the series again"), std::string::npos);
+}
+
+TEST(FftSameNamedSeriesTest, ARestoredNameBindsOnlyWhenOneRecordingCarriesIt) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", {"/imu"}).addDataset("run_b.mcap", {"/imu", "/gps"});
+  auto fixture = makeFixture();
+  fixture.bindTo(host.makeHost());
+
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"selected_fields":["/imu/value"]})"));
+  auto dialog = fixture.dialog();
+  EXPECT_EQ(selectedText(dialog), "No input selected");
+  EXPECT_NE(statusText(dialog).find("drop the one you want"), std::string::npos);
+
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"selected_fields":["/gps/value"]})"));
+  dialog = fixture.dialog();
+  EXPECT_EQ(selectedText(dialog), "/gps/value");
+}
+
+TEST(FftSameNamedSeriesTest, ATickKeepsAnAmbiguousRestoreFromOverwritingTheStatus) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", {"/imu"}).addDataset("run_b.mcap", {"/imu"});
+  auto fixture = makeFixture();
+  fixture.bindTo(host.makeHost());
+  ASSERT_TRUE(fixture.handle.loadConfig(R"({"selected_fields":["/imu/value"]})"));
+  auto dialog = fixture.dialog();
+  ASSERT_NE(statusText(dialog).find("drop the one you want"), std::string::npos);
+
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/nope/value"})));
+  ASSERT_NE(statusText(dialog).find("unavailable"), std::string::npos);
+  ASSERT_TRUE(dialog.tick());
+  EXPECT_NE(statusText(dialog).find("unavailable"), std::string::npos);
+}
+
+TEST(FftSameNamedSeriesTest, TheOutputSourceNamesTheRecordingOnlyWhenTheNameIsShared) {
+  FakeMultiDatasetHost host;
+  host.addDataset("run_a.mcap", {"/imu"}).addDataset("run_b.mcap", {"/imu", "/gps"});
+  auto fixture = makeFixture();
+  fixture.addSignal(regularTimestamps(128), sinusoid(128, 62.5, 2.0));
+  const auto samples = PJ::sdk::ToolboxHostView(fixture.store.makeHost()).catalogSnapshot();
+  ASSERT_TRUE(samples);
+  const PJ_field_handle_t signal = samples->fields().front().handle;
+  host.servedBy(fixture.store.makeHost(), {signal, signal, signal});
+  fixture.bindTo(host.makeHost());
+  auto dialog = fixture.dialog();
+
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/imu/value"}, {kRunB})));
+  ASSERT_TRUE(dialog.sendEvent("btn_compute", PJ::WidgetEventBuilder::clicked()));
+  ASSERT_TRUE(dialog.sendEvent("btn_save", PJ::WidgetEventBuilder::clicked()));
+  EXPECT_EQ(host.lastCreatedSource(), "fft_output (run_b.mcap)");
+
+  ASSERT_TRUE(dialog.sendEvent("inputFrame", PJ::WidgetEventBuilder::itemsDropped({"/gps/value"}, {kRunB})));
+  ASSERT_TRUE(dialog.sendEvent("btn_compute", PJ::WidgetEventBuilder::clicked()));
+  ASSERT_TRUE(dialog.sendEvent("btn_save", PJ::WidgetEventBuilder::clicked()));
+  EXPECT_EQ(host.lastCreatedSource(), "fft_output");
 }
 
 }  // namespace

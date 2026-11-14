@@ -161,6 +161,16 @@ class ArrowParser : public PJ::MessageParserPluginBase {
     ontology_tag_ = std::string(type_name);
     PJ::sdk::SchemaHandler handler;
     handler.object_type = mosaico::objectType(ontology_tag_);
+    video_ = false;
+    if (ontology_tag_ == "compressed_image") {
+      // A schema that cannot be read here is not a video topic: it keeps the image route.
+      if (const auto schema = pj::parser_arrow::decodeIpcSchema(schema_bytes)) {
+        video_ = mosaico::isVideoTopic((*schema)->metadata());
+      }
+      if (video_) {
+        handler.object_type = PJ::sdk::BuiltinObjectType::kVideoFrame;
+      }
+    }
     if (handler.object_type != PJ::sdk::BuiltinObjectType::kNone) {
       handler.parse_object = [this](PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
         return parseMosaicoObject(ts, std::move(payload));
@@ -310,10 +320,11 @@ class ArrowParser : public PJ::MessageParserPluginBase {
       }
     }
     return mosaico::decodeMosaicoObject(
-        {ontology_tag_, axis, timestamp, config_.timestamp_unit, std::move(anchor)}, *flat);
+        {ontology_tag_, axis, timestamp, config_.timestamp_unit, std::move(anchor), video_}, *flat);
   }
 
   std::string ontology_tag_;
+  bool video_ = false;
   std::string last_object_error_;
   ArrowParserConfig config_;
   std::vector<ShapeWarning> last_diagnostics_;

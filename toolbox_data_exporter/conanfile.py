@@ -18,7 +18,7 @@ class ToolboxDataExporterConan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
-        "arrow/23.0.1",
+        "arrow/26.0.1",
     )
     default_options = {
         "*:shared": False,
@@ -27,6 +27,9 @@ class ToolboxDataExporterConan(ConanFile):
         # mimalloc uses initial-exec TLS, making every .so linking it require static
         # TLS and fail to dlopen once the process's static-TLS surplus is exhausted.
         "arrow/*:with_mimalloc": False,
+        # This Arrow/Thrift configuration uses only Boost headers. Avoid building
+        # unused Boost libraries, including the failing Windows ARM64 build.
+        "boost/*:header_only": True,
         "boost/*:without_test": True,
         "boost/*:without_cobalt": True,
     }

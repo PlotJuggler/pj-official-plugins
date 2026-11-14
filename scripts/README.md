@@ -159,6 +159,10 @@ git push origin "data_load_csv/v1.0.6"
 python3 scripts/submit_to_registry.py csv-loader --version 1.0.6
 ```
 
+The registry entry takes its `version` and `min_sdk_required` from the manifest on disk, so the
+script refuses a release whose version is not the checked-out manifest's. To submit an older
+release, check out its tag first.
+
 Tag format: `{source_dir}/v{version}` (e.g., `data_load_csv/v1.0.6`)
 
 ---
@@ -200,15 +204,15 @@ Triggered by tags matching `*/v*` pattern.
 | Linux x86_64 | ubuntu-22.04 | x86_64 |
 | Linux ARM64 | ubuntu-22.04-arm | aarch64 |
 | macOS Intel | macos-15-intel | x86_64 |
-| macOS Apple Silicon | macos-14 | arm64 |
+| macOS Apple Silicon | macos-15 | arm64 |
 | Windows x64 | windows-2022 | x64 |
 | Windows ARM64 | windows-11-arm | arm64 |
 
 > **Note:** Windows x64 is pinned to `windows-2022` (not `windows-latest`). The newer
-> `windows-latest` (VS18 / MSVC 14.5x) image breaks the `libsodium/1.0.20` build with
+> `windows-latest` (VS18 / MSVC 14.5x) image broke the `libsodium/1.0.20` build with
 > `MSB8052` (default toolset 14.44 vs the v145 platform toolset its bundled solution
-> selects). Revert to `windows-latest` once libsodium's recipe supports v145 or the
-> 1.0.20 pin is lifted.
+> selects). Not re-tested since the move to `libsodium/1.0.22`: revert to
+> `windows-latest` once that is confirmed to build there.
 
 **Per-platform steps:**
 
@@ -236,7 +240,7 @@ Triggered by tags matching `*/v*` pattern.
 
 Release notes are intentionally generated from non-merge commits touching only the tagged plugin directory, with release bookkeeping commits omitted. This keeps a CSV release from inheriting a ROS, MQTT, or toolbox changelog entry just because both live in the same repository. Shared build, packaging, or runtime commits can be included manually with `--include-shared` when they are genuinely useful for a specific release.
 
-Tagged releases keep the existing one-tag-per-plugin strategy. The source directory before `/v` selects both the dependency graph and the CMake target scope. For example, `data_load_csv/v1.2.0` runs `./build.sh data_load_csv`, which installs `data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so Arrow, MQTT, CPython, and other unrelated plugin dependencies are not installed for that release.
+Tagged releases keep the existing one-tag-per-plugin strategy. The source directory before `/v` selects both the dependency graph and the CMake target scope. For example, `data_load_csv/v1.2.0` runs `./build.sh data_load_csv`, which installs `data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so Arrow, MQTT, and other unrelated plugin dependencies are not installed for that release.
 
 ---
 
@@ -253,9 +257,28 @@ Tagged releases keep the existing one-tag-per-plugin strategy. The source direct
 | Build registry entry | Creates JSON with download URLs and checksums |
 | Attach release notes | Copies the plugin-scoped release notes into the registry PR body |
 | Fetch registry JSON | Reads the current registry via the GitHub API |
-| Update registry.json | Adds or updates extension entry |
+| Update registry.json | Appends the release, then prunes superseded versions (see below) |
 | Create PR branch | `update-{extension_id}-{version}` |
 | Push and create PR | Opens PR on pj-plugin-registry |
+
+**Several versions per extension.** The registry keeps more than one record per `id`, so a host
+on an older SDK still finds a release it can load after a newer release raises
+`min_sdk_required`. `update_registry()` appends the new record and `prune_registry()` then keeps
+version V for platform P only if V's `min_sdk_required` is strictly lower than that of every
+newer version that ships P: one record per SDK floor level, per platform. With an unchanged
+floor that is "latest only". A record keeps only the platforms it still serves (an older version
+survives for macOS alone when the newer one shipped without macOS assets). Versions compare by
+SemVer precedence (`semver_sort_key`), pre-releases included.
+
+A published version is immutable, with one exception: submitting it again may add platforms,
+which is what the "Recover a missing platform" dispatch does. The stored record gains the new
+platforms and changes in nothing else, so metadata corrected by hand in the registry survives.
+A re-submission that adds nothing succeeds without opening a PR. The script refuses one that
+would change a stored URL or checksum, and a new version that would be pruned at once. The
+registry PR lists every record or platform entry it removes. Nothing else is removed
+automatically: pulling a broken release, or publishing
+the new checksums of a force-recreated tag, is a manual edit of `registry.json`. The registry's
+own validator rejects a file that is not pruned by this rule.
 
 **Registry entry format:**
 

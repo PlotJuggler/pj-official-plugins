@@ -4,19 +4,19 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <mutex>
-#include <nlohmann/json.hpp>
-#include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "llm_backend.hpp"    // BackendEvent, LlmBackend, TurnTools
 #include "platform_util.hpp"  // pathToUtf8, utf8ToPath
-#include "tool_registry.hpp"  // ToolRegistry, ToolContext
+#include "test_endpoint.hpp"  // kTestEndpoint, toolsFor (same directory)
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>  // mkstemp/close/chmod for the fake CLI script
@@ -73,6 +73,50 @@ inline std::string writeFakeCliScript(const std::vector<std::string>& stdout_lin
   return tmpl;
 }
 
+// A fresh path prefix under /tmp for writeRecordingCliScript's two files.
+inline std::string makeRecordPrefix(const char* tag) {
+  std::string tmpl = std::string("/tmp/pj_assistant_record_") + tag + "_XXXXXX";
+  const int fd = mkstemp(tmpl.data());
+  if (fd < 0) {
+    return {};
+  }
+  close(fd);
+  unlink(tmpl.c_str());
+  return tmpl;
+}
+
+// writeFakeCliScript's twin that also RECORDS what the backend handed it:
+// stdin goes to `<record_prefix>.stdin`, and each argv entry to
+// `<record_prefix>.argv`, one per line. POSIX only -- the offline tests that
+// pin what a turn sends (the composed payload, the instructions) need no
+// Windows twin, because composePayload and the instruction strings are
+// platform-independent.
+inline std::string writeRecordingCliScript(
+    const std::vector<std::string>& stdout_lines, int exit_code, const std::string& record_prefix) {
+  char tmpl[] = "/tmp/pj_assistant_fake_cli_XXXXXX";
+  const int fd = mkstemp(tmpl);
+  if (fd < 0) {
+    return {};
+  }
+  close(fd);
+  {
+    std::ofstream script(tmpl);
+    script << "#!/bin/sh\n"
+           << "cat > '" << record_prefix << ".stdin'\n"
+           << "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '" << record_prefix << ".argv'\n";
+    if (!stdout_lines.empty()) {
+      script << "cat <<'EOF'\n";
+      for (const auto& line : stdout_lines) {
+        script << line << "\n";
+      }
+      script << "EOF\n";
+    }
+    script << "exit " << exit_code << "\n";
+  }
+  chmod(tmpl, 0700);
+  return tmpl;
+}
+
 // Removes a fake CLI writeFakeCliScript created. POSIX's is a single file;
 // kept for parity with the Windows overload below so call sites never need
 // an #ifdef of their own.
@@ -81,6 +125,42 @@ inline void removeFakeCli(const std::string& cli_path) {
     unlink(cli_path.c_str());
   }
 }
+
+// The listings every backend-payload test (claude_smoke_test.cpp,
+// codex_backend_test.cpp) hands its turns.
+inline constexpr const char* kTestFeatures = "PlotJuggler features (test):\n- one";
+inline constexpr const char* kTestCatalog = "Loaded data: nothing is loaded yet.";
+
+// The TurnTools of a payload test: kTestEndpoint and kTestFeatures/kTestCatalog.
+inline TurnTools payloadTestTools() {
+  TurnTools tools = toolsFor();
+  tools.features = kTestFeatures;
+  tools.catalog = kTestCatalog;
+  return tools;
+}
+
+// Removes the fake CLIs and writeRecordingCliScript's record files when the
+// test leaves scope, including through an early ASSERT_* return.
+class RecordingCliCleanup {
+ public:
+  RecordingCliCleanup(std::vector<std::string> clis, std::string record_prefix)
+      : clis_(std::move(clis)), record_prefix_(std::move(record_prefix)) {}
+  RecordingCliCleanup(const RecordingCliCleanup&) = delete;
+  RecordingCliCleanup& operator=(const RecordingCliCleanup&) = delete;
+  ~RecordingCliCleanup() {
+    for (const auto& cli : clis_) {
+      removeFakeCli(cli);
+    }
+    if (!record_prefix_.empty()) {
+      std::remove((record_prefix_ + ".stdin").c_str());
+      std::remove((record_prefix_ + ".argv").c_str());
+    }
+  }
+
+ private:
+  std::vector<std::string> clis_;
+  std::string record_prefix_;
+};
 
 #elif defined(_WIN32)
 
@@ -157,36 +237,27 @@ inline void removeFakeCli(const std::string& cli_path) {
 
 // The shared body of ClaudeSmoke.ListTopicsThroughMcp and
 // CodexSmoke.ListTopicsThroughMcp: drive one live turn asking the model to
-// call list_topics, against a fake host with exactly one topic, and check it
-// did. Each call site keeps its own ASSISTANT_*_SMOKE env-var gate and
-// backend construction (the CLI path override differs per backend) and hands
-// the already-built backend here. `label` names the backend in the failure
+// call list_topics on the PlotJuggler `endpoint` points at, and check the
+// call ran and PlotJuggler answered it without an error (a ToolResult that is
+// not tool_failed; the ToolActivity row is emitted before the call executes).
+// Each call site keeps its own ASSISTANT_*_SMOKE env-var gate and backend
+// construction (the CLI path override differs per backend) and hands the
+// already-built backend here. `label` names the backend in the failure
 // message only ("Claude"/"Codex").
-inline void runListTopicsSmoke(LlmBackend& backend, const char* label) {
-  ToolRegistry reg;
-  PJ::testing::ToolboxTestStore store;
-  store.addTopic("/imu/accel");
-  store.addField("/imu/accel", "x", {0}, {1.0});
-  ToolContext ctx;
-  ctx.host = PJ::sdk::ToolboxHostView(store.makeHost());
-
-  TurnTools tools;
-  tools.registry = &reg;
-  // Direct execution (no GuiExecutor): the MCP server thread runs the tool.
-  tools.invoke = [&](const std::string& n, const nlohmann::json& a) { return reg.execute(n, a, ctx); };
-
+inline void runListTopicsSmoke(LlmBackend& backend, const PJ::sdk::McpEndpoint& endpoint, const char* label) {
   std::vector<BackendEvent> events;
   std::mutex mu;
   backend.sendUserMessage(
-      "Call the list_topics tool and tell me the exact topic name it returns.", tools, [&](BackendEvent e) {
+      "Call the list_topics tool and tell me how many topics it reports.", toolsFor(endpoint), [&](BackendEvent e) {
         std::lock_guard<std::mutex> lk(mu);
         std::cerr << "[event " << static_cast<int>(e.kind) << "] " << e.text << "\n";
         events.push_back(std::move(e));
       });
 
   bool complete = false;
-  bool mentioned_topic = false;
   bool called_tool = false;
+  bool tool_succeeded = false;
+  bool tool_failed = false;
   for (const auto& e : events) {
     if (e.kind == BackendEvent::Kind::TurnComplete) {
       complete = true;
@@ -194,13 +265,17 @@ inline void runListTopicsSmoke(LlmBackend& backend, const char* label) {
     if (e.kind == BackendEvent::Kind::ToolActivity && e.text.find("list_topics") != std::string::npos) {
       called_tool = true;
     }
-    if (e.text.find("/imu/accel") != std::string::npos) {
-      mentioned_topic = true;
+    if (e.kind == BackendEvent::Kind::ToolResult && e.text.find("list_topics") != std::string::npos) {
+      (e.tool_failed ? tool_failed : tool_succeeded) = true;
     }
   }
   EXPECT_TRUE(complete) << "backend never signalled TurnComplete";
-  EXPECT_TRUE(called_tool) << label << " did not call list_topics via MCP";
-  EXPECT_TRUE(mentioned_topic) << "answer did not mention the topic the tool returned";
+  EXPECT_TRUE(called_tool) << label << " did not call list_topics on PlotJuggler's MCP server";
+  EXPECT_FALSE(tool_failed) << label << "'s list_topics call came back as an error";
+  EXPECT_TRUE(tool_succeeded) << label << " got no successful list_topics result from PlotJuggler's MCP server";
+  if (const BackendEvent* err = firstError(events)) {
+    ADD_FAILURE() << label << " turn failed: " << err->text;
+  }
 }
 
 }  // namespace assistant_agent::testing

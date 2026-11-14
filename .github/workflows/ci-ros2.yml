@@ -185,8 +185,9 @@ jobs:
   # RoboStack payloads: the same subscriber built against RoboStack's
   # conda-built rclcpp, for PlotJuggler installed from conda (see
   # data_stream_ros2/robostack/build.sh). Shipped as dist/<distro>-robostack/.
-  # The release build packages each Linux arch natively, so both are built here;
-  # only the x86_64 payloads feed the (x86_64) test zip below.
+  # The release build packages each Linux arch natively, so both are built here,
+  # plus macos-arm64 (not packaged yet); only the x86_64 payloads feed the
+  # (x86_64) test zip below.
   build-robostack:
     name: robostack / ${{ matrix.distro }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -194,24 +195,37 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: [jazzy, kilted]
-        arch: [x86_64, aarch64]
+        distro: [jazzy, kilted, lyrical]
+        arch: [x86_64, aarch64, macos-arm64]
         include:
           - arch: x86_64
             runner: ubuntu-22.04
           - arch: aarch64
             runner: ubuntu-22.04-arm
+          # Built to keep the macOS payloads compiling; not packaged yet.
+          - arch: macos-arm64
+            runner: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - uses: prefix-dev/setup-pixi@v0.8.14
         with:
+          # Pinned: pixi deprecates the [system-requirements] table robostack/pixi.toml
+          # uses (0.84.2 warns); migrate it before bumping, or a removal breaks this job.
+          pixi-version: v0.84.2
           run-install: false
           cache: false
 
       - name: Build payload
         run: data_stream_ros2/robostack/build.sh ${{ matrix.distro }} robostack-out
+
+      # No artifact carries a macOS proxy yet; compile its macOS code so it keeps building.
+      - name: Build proxy (macOS)
+        if: matrix.arch == 'macos-arm64'
+        run: >-
+          pixi run --manifest-path data_stream_ros2/robostack/pixi.toml -e ${{ matrix.distro }}
+          cmake --build build_ros2_${{ matrix.distro }}_robostack_work/plugin-build --target ros2_stream_plugin
 
       - name: Upload payload
         if: matrix.arch == 'x86_64'

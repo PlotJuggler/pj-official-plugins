@@ -83,6 +83,7 @@ Each plugin is a shared library (`.so`) loaded at runtime:
 
 - **DataSource plugins** — file importers (`FileSourceBase`) or streaming sources (`StreamSourceBase`)
 - **MessageParser plugins** — decode raw bytes into named fields (`MessageParserPluginBase`)
+- **Widget plugins** — dockable Qt widgets (`WidgetPluginBase`, `PJ_WIDGET_PLUGIN`), the only family that links Qt (`widget_basic/`). Every other plugin is gated Qt-free: `pj_harden_plugin_exports` runs `cmake/CheckElfPluginExports.cmake` with `FORBID_QT=ON` on Linux, which fails on any `libQt6*` DT_NEEDED unless `REQUIRED_EXPORTS` contains `PJ_get_widget_vtable`. Widgets build against the official Qt matching the host's major.minor (`QT_ROOT_DIR`, see `widget_basic/CMakeLists.txt`), not Conan; the repo-root `QT_VERSION` file pins that Qt for CMake and CI; the aggregate build skips them unless `-DPJ_BUILD_WIDGETS=ON`; CI is `ci-widgets.yml` (Ubuntu 22.04 and windows-2022 only).
 
 Export macros: `PJ_DATA_SOURCE_PLUGIN(Class, manifest_json)`, `PJ_MESSAGE_PARSER_PLUGIN(Class, manifest_json)`, `PJ_DIALOG_PLUGIN(DialogClass, manifest_json)` (two-arg form requires plotjuggler_sdk >= 0.18.0 on MSVC).
 
@@ -199,7 +200,7 @@ Plugins with UI subclass `PJ::DialogPluginTyped` and use real `.ui` files (Qt Cr
 | Source | Packages |
 |--------|----------|
 | Conan (JFrog), source fallback via `scripts/ensure_core.sh` | plotjuggler_sdk (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
-| Conan (JFrog cache → ConanCenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, kissfft, lua, sol2, libsodium, pybind11, cpython, gtest, libcurl (`anomaly_runner` webhook/email notifications) |
+| Conan (JFrog cache → ConanCenter) | nlohmann_json, mcap, arrow/parquet, paho-mqtt-cpp, cppzmq, protobuf, zstd, date, ixwebsocket, asio, pocketfft, lua, sol2, libsodium, gtest, libcurl (`anomaly_runner` webhook/email notifications) |
 | Conan (JFrog) | pj_scripting_core (the shared Luau marker engine; carries Luau + kissfft) — linked by the Anomaly Detector toolbox + `anomaly_runner` |
 | CPM | ulog_cpp, rosx_introspection, data_tamer (plugin-private deps only) |
 | Optional | Qt 6 (WebSockets, Network) — only for foxglove_bridge and pj_bridge |
@@ -212,23 +213,31 @@ version. Releases are **not** created manually on GitHub — pushing a tag creat
 - **Cut a release:** `python3 scripts/release_extension.py <source_dir|extension_id> [--bump patch|minor|major | --version X.Y.Z] [--submit-to-registry]`.
   It reads/updates `manifest.json`, commits the bump (`chore(<dir>): bump version to X.Y.Z`),
   creates an **annotated** tag `<source_dir>/vX.Y.Z` whose message is JSON metadata
-  (`{"extension_id", "version", "auto_submit_to_registry"}`), and pushes both the commit and the tag.
-  The manifest-bump commit and the tag push are two separate git operations — if only the tag lands
-  upstream (e.g. a rejected/reverted commit push), the in-tree manifest silently drifts behind the
-  already-released version. Always confirm the bump commit is actually on the target branch, not
-  just the tag.
+  (`{"extension_id", "version", "auto_submit_to_registry"}`), and pushes the tag. **It does not push
+  the branch commit.** Prepare the manifest version and matching changelog entry, commit and push
+  them to the target branch first, then invoke the script without `--bump` / `--version` to tag
+  that published commit. Otherwise the in-tree manifest can silently drift behind the already
+  released version. Always confirm the bump commit is on the target branch, not just the tag.
 - **What pushing the tag does:** any tag matching `*/v*` triggers `.github/workflows/build-release.yml`,
   which resolves the specific plugin from the tag name (`scripts/release_tools.py resolve-build-scope`),
   builds+tests just that plugin across linux/macos/windows (x86_64 + arm), verifies the built
   artifact's version against the tag (`verify-version-consistency`), packages a zip + sha256, and
   uploads them via `softprops/action-gh-release@v2` — **this step is what creates the GitHub Release**;
   there is no separate manual release-creation step.
+- **Recover a missing platform:** dispatch `build-release.yml` on the current `main` with
+  `release_tag=<source_dir>/vX.Y.Z` and one canonical `platform` (for example `windows-arm64`).
+  It checks out the original tag, builds only that platform, and refuses to replace an existing
+  ZIP or checksum. Use this when runner/toolchain infrastructure needs repairing without changing
+  released source. An empty `release_tag` retains the build-only cache-warming behavior.
 - **Registry submission:** if the tag's annotation has `"auto_submit_to_registry": true`, a follow-up
   `submit-to-registry` job runs `scripts/submit_to_registry.py` to open a PR against the extension
-  registry with the built artifact's checksums.
-- **Version format:** must be 3-part semver (`SEMVER_REGEX` in `scripts/release_tools.py`,
-  `^\d+\.\d+\.\d+(-pre)?(+build)?$`) — a two-part string like `"1.0"` fails manifest validation and
-  `release_extension.py` will refuse to tag it.
+  registry with the built artifact's checksums. The registry keeps several versions per extension:
+  the script appends the release and prunes the versions no host would pick any more (rule in
+  [`scripts/README.md`](scripts/README.md#stage-3-registry-submission-submit_to_registrypy)).
+  Submitting a version the registry already holds may only add platforms to it.
+- **Version format:** must be SemVer 2.0.0 (`SEMVER_REGEX` in `scripts/release_tools.py`, the grammar
+  the host and the registry validator enforce) — a two-part string like `"1.0"` or a leading zero
+  like `"1.02.0"` fails manifest validation and `release_extension.py` will refuse to tag it.
 - **Force-recreating a tag** (`--force`) invalidates existing registry checksums and breaks
   installations pinned to the old artifact — treat as a last resort, not a routine fix.
 

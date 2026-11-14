@@ -27,12 +27,12 @@ class PjOfficialPluginsConan(ConanFile):
     requires = (
         "nlohmann_json/3.12.0",
         "nanoarrow/0.7.0",
-        "arrow/23.0.1",
+        "arrow/26.0.1",
         "fmt/12.1.0",
-        "paho-mqtt-cpp/1.5.3",
+        "paho-mqtt-cpp/1.6.0",
         "cppzmq/4.11.0",
         "protobuf/6.33.5",
-        # Pinned to lz4/1.9.4 to match arrow/23.0.1's exact lz4 dependency: arrow's
+        # Pinned to lz4/1.9.4 to match arrow/26.0.1's exact lz4 dependency: arrow's
         # recipe hard-requires lz4/1.9.4 once with_lz4=True, which configure() turns
         # on for the Linux Flight build. They MUST stay equal there — a newer lz4
         # collides with arrow's pin (Conan version conflict) and re-splits Arrow into
@@ -44,29 +44,26 @@ class PjOfficialPluginsConan(ConanFile):
         "zstd/1.5.7",
         "date/3.0.4",
         "gtest/1.17.0",
-        "ixwebsocket/11.4.6",
+        "ixwebsocket/12.0.0",
         "libdatachannel/0.24.0",
         "asio/1.28.2",
         "liblsl/1.16.2",
         # data_load_mp4 / data_load_lerobot (via common/pj_video_demux).
-        "ffmpeg/8.1",
-        "kissfft/131.1.0",
+        "ffmpeg/8.1.2",
+        "pocketfft/0.0.0.cci.20240801",
         "lua/5.4.6",
         "sol2/3.5.0",
         # libcurl powers anomaly_runner's notification sinks. (pj_scripting_core — the
         # Luau engine — is NOT required here: the GUI Anomaly Detector is host-driven /
         # Luau-free, and the headless runner is built separately via its own recipe with
         # -DPJ_BUILD_ANOMALY_RUNNER=ON.)
-        "libcurl/8.10.1",
-        # Pin libsodium to 1.0.20: 1.0.21 has broken ARM NEON code that fails with
-        # GCC on aarch64.
-        "libsodium/1.0.20",
-        "pybind11/2.13.6",
-        "cpython/3.12.7",
+        "libcurl/8.23.0",
+        # Not 1.0.21: its ARM NEON code fails with GCC on aarch64 (fixed in 1.0.22).
+        "libsodium/1.0.22",
         # data_load_mf4: mdflib (vendored via CPM) links zlib + expat, provided
-        # here from Conan. zlib/1.3.1 matches arrow/23.0.1's pin (no conflict).
-        "zlib/1.3.1",
-        "expat/2.6.4",
+        # here from Conan. zlib/1.3.2 is inside arrow/26.0.1's zlib range (no conflict).
+        "zlib/1.3.2",
+        "expat/2.10.0",
         f"plotjuggler_sdk/{_SDK_VERSION}",
     )
 
@@ -88,14 +85,7 @@ class PjOfficialPluginsConan(ConanFile):
         "boost/*:without_test": True,
         "boost/*:without_cobalt": True,
         "lua/*:compile_as_cpp": True,
-        # cpython built static on Linux/macOS: libpython3.12.a links into the plugin
-        # .so directly. Windows/MSVC disables static cpython >=3.10, so ci-windows.yml
-        # overrides to shared=True via -o flag; the CMakeLists.txt then copies
-        # python3XX.dll.
-        "cpython/*:shared": False,
-        # Tkinter requires X11 system libs (libx11-dev, libxcb-*-dev) which are not
-        # available on CI runners. We do not need Tkinter for scripting.
-        "cpython/*:with_tkinter": False,
+        "pocketfft/*:multithreading": False,
         # WebRTC streaming client (data_stream_webrtc): media/SRTP/WebSocket on,
         # libnice off (use the bundled libjuice ICE agent).
         "libdatachannel/*:with_websocket": True,
@@ -180,7 +170,7 @@ class PjOfficialPluginsConan(ConanFile):
         # Enable Arrow's Flight stack on Linux AND Windows. toolbox_mosaico's Arrow
         # Flight client (the Mosaico server connection) needs a real Flight target or
         # its CMakeLists self-skips. Turning Flight on for the single shared
-        # arrow/23.0.1 here is what lets toolbox_mosaico build inside the AGGREGATE
+        # arrow/26.0.1 here is what lets toolbox_mosaico build inside the AGGREGATE
         # (./build.sh with no arg) in ONE pass, instead of needing a second,
         # standalone Arrow-with-Flight build. These options are a strict superset of
         # the lean parquet/snappy options, so the other Arrow consumers

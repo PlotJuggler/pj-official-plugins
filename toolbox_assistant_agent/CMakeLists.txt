@@ -1,12 +1,11 @@
 find_package(nlohmann_json REQUIRED)
-find_package(ixwebsocket REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 if(MSVC)
   # Conformant preprocessor for the SDK's variadic plugin macros; keep windows.h
-  # (pulled in by ixwebsocket) from defining min/max. Directory scope = this
+  # from defining min/max. Directory scope = this
   # plugin and its tests only (add_subdirectory). subprocess.hpp, private_file.hpp
   # and cli_locator.hpp each carry a real Windows implementation (kernel32 only,
   # no bcrypt/shell32), so this is a functional Windows build, not a
@@ -21,10 +20,8 @@ endif()
 # ${PJ_WARNING_FLAGS} and the tests do not, so each target must still compile
 # its own copies of these translation units under its own flags.
 set(ASSISTANT_AGENT_COMMON_SOURCES
-  src/mcp_http_server.cpp
-  src/mcp_loopback.cpp
   src/harness_workdir.cpp
-  src/tools.cpp
+  src/features_digest.cpp
   src/claude_sessions.cpp
   src/codex_sessions.cpp
   src/codex_models.cpp
@@ -33,6 +30,7 @@ set(ASSISTANT_AGENT_COMMON_SOURCES
 add_library(toolbox_assistant_agent_plugin SHARED
   src/assistant_toolbox.cpp
   src/assistant_dialog.cpp
+  src/catalog_digest.cpp
   src/conversation_state.cpp
   src/settings_store.cpp
   src/claude_backend.cpp
@@ -43,11 +41,11 @@ add_library(toolbox_assistant_agent_plugin SHARED
 target_compile_features(toolbox_assistant_agent_plugin PRIVATE cxx_std_20)
 target_compile_options(toolbox_assistant_agent_plugin PRIVATE ${PJ_WARNING_FLAGS})
 
+# pj_derived_recipes: the catalog digest's dataset and object-topic listing.
 target_link_libraries(toolbox_assistant_agent_plugin PRIVATE
   pj_derived_recipes
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
-  ixwebsocket::ixwebsocket
 )
 
 target_include_directories(toolbox_assistant_agent_plugin PRIVATE
@@ -174,31 +172,38 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_model_picker_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentModelPickerTest COMMAND toolbox_assistant_agent_model_picker_test)
 
-  # SeriesStats: stats + min/max-preserving bucket decimation. Pure, std-only.
-  add_executable(toolbox_assistant_agent_series_stats_test
-    tests/series_stats_test.cpp
+  # catalogDigest: the listing of loaded data every turn carries, against the
+  # SDK test store and the fake catalog hosts.
+  add_executable(toolbox_assistant_agent_catalog_digest_test
+    tests/catalog_digest_test.cpp
+    src/catalog_digest.cpp
   )
-  target_link_libraries(toolbox_assistant_agent_series_stats_test PRIVATE GTest::gtest_main)
-  target_include_directories(toolbox_assistant_agent_series_stats_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  target_compile_features(toolbox_assistant_agent_series_stats_test PRIVATE cxx_std_20)
-  add_test(NAME ToolboxAssistantAgentSeriesStatsTest COMMAND toolbox_assistant_agent_series_stats_test)
-
-  # ToolRegistry executors against a fake C-ABI toolbox host (read tools) and a
-  # recording fake data-processors host (write tools).
-  add_executable(toolbox_assistant_agent_tool_registry_test
-    tests/tool_registry_test.cpp
-    src/tools.cpp
-  )
-  target_link_libraries(toolbox_assistant_agent_tool_registry_test PRIVATE
+  target_link_libraries(toolbox_assistant_agent_catalog_digest_test PRIVATE
     pj_derived_recipes pj_test_support plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
-  target_include_directories(toolbox_assistant_agent_tool_registry_test PRIVATE
+  target_include_directories(toolbox_assistant_agent_catalog_digest_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
-  target_compile_features(toolbox_assistant_agent_tool_registry_test PRIVATE cxx_std_20)
-  add_test(NAME ToolboxAssistantAgentToolRegistryTest COMMAND toolbox_assistant_agent_tool_registry_test)
+  target_compile_features(toolbox_assistant_agent_catalog_digest_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentCatalogDigestTest COMMAND toolbox_assistant_agent_catalog_digest_test)
+
+  # featuresDigest / featuresBlock and the built-in reference, rendered
+  # against the feature-catalog benchmark fixtures.
+  add_executable(toolbox_assistant_agent_features_digest_test
+    tests/features_digest_test.cpp
+    src/features_digest.cpp
+  )
+  target_link_libraries(toolbox_assistant_agent_features_digest_test PRIVATE
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_features_digest_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(toolbox_assistant_agent_features_digest_test PRIVATE
+    ASSISTANT_FEATURES_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs/benchmarks/features/fixtures"
+  )
+  target_compile_features(toolbox_assistant_agent_features_digest_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentFeaturesDigestTest COMMAND toolbox_assistant_agent_features_digest_test)
 
   # Claude stream-json parser + NDJSON splitter. Pure, std + nlohmann only.
   add_executable(toolbox_assistant_agent_stream_json_test
@@ -213,30 +218,16 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_stream_json_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentStreamJsonTest COMMAND toolbox_assistant_agent_stream_json_test)
 
-  # MCP HTTP server driven by a loopback ix::HttpClient simulating Claude's
-  # JSON-RPC: initialize / tools/list / tools/call, plus bearer-token auth.
-  add_executable(toolbox_assistant_agent_mcp_server_test
-    tests/mcp_server_test.cpp
-    src/mcp_http_server.cpp
-    src/tools.cpp
-  )
-  target_link_libraries(toolbox_assistant_agent_mcp_server_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
-  )
-  target_include_directories(toolbox_assistant_agent_mcp_server_test PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  target_compile_features(toolbox_assistant_agent_mcp_server_test PRIVATE cxx_std_20)
-  add_test(NAME ToolboxAssistantAgentMcpServerTest COMMAND toolbox_assistant_agent_mcp_server_test)
-
   # AssistantDialog end-to-end: the conversations drawer against a REAL
   # ClaudeBackend pointed at a throwaway HOME (fixtures copied into its
   # ~/.claude/projects/<slug>/ store) — opening the drawer, switching to a
-  # resumed conversation, and deleting the active one. No `claude` CLI is
-  # spawned: none of these paths call sendUserMessage/testConnection.
+  # resumed conversation, and deleting the active one — plus turns with and
+  # without pj.mcp_endpoint.v1. No `claude` CLI is spawned: a turn ends before
+  # the CLI lookup (no endpoint) or at it (a CLI name that does not resolve).
   add_executable(toolbox_assistant_agent_assistant_dialog_test
     tests/assistant_dialog_test.cpp
     src/assistant_dialog.cpp
+    src/catalog_digest.cpp
     src/claude_backend.cpp
     src/codex_backend.cpp
     src/conversation_state.cpp
@@ -244,7 +235,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_assistant_dialog_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_assistant_dialog_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -274,8 +265,9 @@ if(TARGET GTest::gtest_main)
   target_include_directories(toolbox_assistant_agent_child_helper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_features(toolbox_assistant_agent_child_helper PRIVATE cxx_std_20)
 
-  # Live Claude Code smoke — spawns the real `claude` CLI + MCP server. Opt-in
-  # (ASSISTANT_CLAUDE_SMOKE=1); skips otherwise so CI stays offline. Also
+  # Live Claude Code smoke — spawns the real `claude` CLI against a running
+  # PlotJuggler's MCP server. Opt-in (ASSISTANT_CLAUDE_SMOKE=1 plus
+  # ASSISTANT_MCP_URL/ASSISTANT_MCP_TOKEN); skips otherwise so CI stays offline. Also
   # carries the offline fake-CLI resume/translation tests, whose Windows half
   # needs ASSISTANT_CHILD_HELPER (see backend_test_helpers.hpp's
   # writeFakeCliScript).
@@ -285,7 +277,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_claude_smoke_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_claude_smoke_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -309,7 +301,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_codex_backend_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json ixwebsocket::ixwebsocket GTest::gtest_main
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_codex_backend_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -320,6 +312,29 @@ if(TARGET GTest::gtest_main)
   add_dependencies(toolbox_assistant_agent_codex_backend_test toolbox_assistant_agent_child_helper)
   target_compile_features(toolbox_assistant_agent_codex_backend_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentCodexBackendTest COMMAND toolbox_assistant_agent_codex_backend_test)
+
+  # Feature-awareness benchmark runner: asks the real CLI the product
+  # questions in docs/benchmarks/features/questions.json against each fixture
+  # and writes the replies as JSONL for score.py. Opt-in
+  # (ASSISTANT_FEATURES_EVAL=claude|codex); skips otherwise, so CI stays
+  # offline and spends nothing.
+  add_executable(toolbox_assistant_agent_features_eval_test
+    tests/features_eval_test.cpp
+    src/claude_backend.cpp
+    src/codex_backend.cpp
+    ${ASSISTANT_AGENT_COMMON_SOURCES}
+  )
+  target_link_libraries(toolbox_assistant_agent_features_eval_test PRIVATE
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+  )
+  target_include_directories(toolbox_assistant_agent_features_eval_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(toolbox_assistant_agent_features_eval_test PRIVATE
+    ASSISTANT_FEATURES_BENCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs/benchmarks/features"
+  )
+  target_compile_features(toolbox_assistant_agent_features_eval_test PRIVATE cxx_std_20)
+  add_test(NAME ToolboxAssistantAgentFeaturesEvalTest COMMAND toolbox_assistant_agent_features_eval_test)
 
   # CodexSessions: the CLI's own ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
   # store — listing/ordering/titles, transcript replay, the cwd filter, and
@@ -349,14 +364,11 @@ if(TARGET GTest::gtest_main)
   # `#!/usr/bin/env node` shebang needs to find its own interpreter, and
   # cannotFindCliMessage's npm_shim wording (cli_probe.hpp). cli_locator.hpp
   # itself is header-only, so there is no extra source to list here.
-  # plotjuggler_sdk::plugin_sdk (not just ::base) and nlohmann_json are
-  # needed transitively through cli_probe.hpp -> llm_backend.hpp ->
-  # tool_registry.hpp/tool_context.hpp, same as tool_registry_test below.
   add_executable(toolbox_assistant_agent_cli_locator_test
     tests/cli_locator_test.cpp
   )
   target_link_libraries(toolbox_assistant_agent_cli_locator_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_cli_locator_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src

@@ -121,6 +121,18 @@ PJ::Expected<PJ::sdk::ArrowStreamHolder> decodeIpcStream(PJ::Span<const uint8_t>
   return stream;
 }
 
+PJ::Expected<std::shared_ptr<arrow::Schema>> decodeIpcSchema(PJ::Span<const uint8_t> bytes) {
+  if (bytes.empty()) {
+    return PJ::unexpected(parserError("empty Arrow IPC schema"));
+  }
+  auto buffer = std::make_shared<arrow::Buffer>(bytes.data(), static_cast<int64_t>(bytes.size()));
+  auto reader = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(buffer));
+  if (!reader.ok()) {
+    return PJ::unexpected(parserError(reader.status().ToString()));
+  }
+  return (*reader)->schema();
+}
+
 PJ::Expected<std::shared_ptr<arrow::Table>> decodeIpcTable(PJ::Span<const uint8_t> bytes) {
   auto stream = decodeIpcStream(bytes);
   if (!stream) {

@@ -11,6 +11,7 @@
 | [![parser_protobuf](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_protobuf.json)](parser_protobuf/) | MessageParser | Protobuf message parsing |
 | [![parser_ros](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_ros.json)](parser_ros/) | MessageParser | ROS 1/2 message parsing |
 | [![parser_data_tamer](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_data_tamer.json)](parser_data_tamer/) | MessageParser | DataTamer schema/snapshot parsing |
+| [![parser_influx](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_influx.json)](parser_influx/) | MessageParser | InfluxDB line protocol parsing (Telegraf) |
 | [![parser_arrow](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/parser_arrow.json)](parser_arrow/) | MessageParser | Arrow IPC stream parsing |
 | [![data_load_csv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_csv.json)](data_load_csv/) | DataSource | CSV file loading |
 | [![data_load_mcap](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mcap.json)](data_load_mcap/) | DataSource | MCAP file loading |
@@ -33,10 +34,12 @@
 | [![data_stream_lsl](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_stream_lsl.json)](data_stream_lsl/) | DataSource | Lab Streaming Layer (LSL) streaming |
 | [![toolbox_fft](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_fft.json)](toolbox_fft/) | Toolbox | FFT frequency-domain transform |
 | [![toolbox_quaternion](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_quaternion.json)](toolbox_quaternion/) | Toolbox | Quaternion → roll/pitch/yaw |
+| [![toolbox_data_exporter](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_data_exporter.json)](toolbox_data_exporter/) | Toolbox | Export selected series to CSV or Parquet |
 | [![toolbox_mosaico](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_mosaico.json)](toolbox_mosaico/) | Toolbox | Mosaico cloud server browsing (Arrow Flight) |
 | [![toolbox_transform_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_transform_editor.json)](toolbox_transform_editor/) | Toolbox | Lua-based editor for derived series and 2D/3D objects |
 | [toolbox_anomaly_detector](toolbox_anomaly_detector/) | Toolbox | Lua anomaly detection → plot markers (shares its engine with the headless runner) |
-| [toolbox_assistant_agent](toolbox_assistant_agent/) | Toolbox | LLM assistant driving the plugin SDK through your Claude Code / Codex CLI (Linux/macOS runtime) |
+| [toolbox_assistant_agent](toolbox_assistant_agent/) | Toolbox | LLM assistant driving PlotJuggler's own MCP tools through your Claude Code / Codex CLI (Linux/macOS runtime; PlotJuggler 4.2+) |
+| [widget_basic](widget_basic/) | Widget | Gauge, numeric indicator, traffic light and value table dock widgets (links Qt; Linux x86_64 and Windows x64 only) |
 
 In addition to the plugins above, [`tools/anomaly_runner`](tools/anomaly_runner/) is a
 standalone **headless CLI** that runs the same anomaly-detection rules without a GUI (CSV/MCAP
@@ -223,27 +226,27 @@ is available (`scripts/ensure_core.sh`).
 |---------|---------|---------|
 | **plotjuggler_sdk** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
 | nlohmann_json | 3.12.0 | Most plugins |
-| arrow + parquet | 23.0.1 | data_load_parquet, data_load_rerun, parser_arrow, toolbox_mosaico |
+| arrow + parquet | 26.0.1 | data_load_parquet, data_load_lerobot, parser_arrow, toolbox_data_exporter, toolbox_mosaico |
 | nanoarrow | 0.7.0 | parser_arrow (C Data column shaping) |
-| paho-mqtt-cpp | 1.5.3 | data_stream_mqtt |
+| paho-mqtt-cpp | 1.6.0 | data_stream_mqtt |
 | cppzmq | 4.11.0 | data_stream_zmq |
 | protobuf | 6.33.5 | parser_protobuf |
 | zstd | 1.5.7 | data_load_mcap, data_stream_pj_bridge |
 | lz4 | 1.10.0 | data_load_mcap |
 | date | 3.0.4 | data_load_csv, data_load_mp4, data_load_parquet |
-| ffmpeg | 8.1 | data_load_lerobot, data_load_mp4 |
-| ixwebsocket | 11.4.6 | data_stream_foxglove_bridge, data_stream_pj_bridge |
+| ffmpeg | 8.1.2 | data_load_lerobot, data_load_mp4 |
+| ixwebsocket | 12.0.0 | data_stream_foxglove_bridge, data_stream_pj_bridge, data_stream_webrtc |
 | asio | 1.28.2 | data_stream_udp |
 | liblsl | 1.16.2 | data_stream_lsl |
-| kissfft | 131.1.0 | toolbox_fft |
+| pocketfft | 0.0.0.cci.20240801 | toolbox_fft |
 | lua | 5.4.6 | toolbox_mosaico |
 | sol2 | 3.5.0 | toolbox_mosaico |
 | libdatachannel | 0.24.0 | data_stream_webrtc |
 | fmt | 12.1.0 | data_load_mp4, toolbox_mosaico |
-| zlib | 1.3.1 | data_load_mf4 (mdflib; matches arrow's pin) |
-| expat | 2.6.4 | data_load_mf4 (mdflib) |
+| zlib | 1.3.2 | data_load_mf4 (mdflib), data_load_blf |
+| expat | 2.10.0 | data_load_mf4 (mdflib) |
 | gtest | 1.17.0 | All plugin tests |
-| libcurl | 8.10.1 | tools/anomaly_runner (webhook/email notifications) |
+| libcurl | 8.23.0 | tools/anomaly_runner (webhook/email notifications) |
 | pj_scripting_core | 0.1.0 | tools/anomaly_runner — shared Luau marker engine (carries Luau + kissfft) |
 
 ### Via CPM (plugin-private deps only)
@@ -261,5 +264,5 @@ is available (`scripts/ensure_core.sh`).
 
 | Package | Version | Reason |
 |---------|---------|--------|
-| libsodium | 1.0.20 | 1.0.21 has broken ARM NEON code that fails with GCC on aarch64 |
-| lz4 (root aggregate build only) | 1.9.4 | Must equal arrow/23.0.1's own lz4 pin on Linux (Flight build), or Conan splits Arrow into a second build; data_load_mcap's own standalone recipe still pins lz4/1.10.0 unaffected |
+| libsodium | 1.0.22 | Not 1.0.21: its ARM NEON code fails with GCC on aarch64 |
+| lz4 (root aggregate build only) | 1.9.4 | Must equal arrow/26.0.1's own lz4 pin on Linux (Flight build), or Conan splits Arrow into a second build; data_load_mcap's own standalone recipe still pins lz4/1.10.0 unaffected |

@@ -26,6 +26,8 @@ class Mf4Dialog : public PJ::DialogPluginTyped {
   const std::string& filePath() const {
     return filepath_;
   }
+  // Resolved paths to open (relative entries already joined to the current data
+  // file's directory); the saved config stores the portable form instead.
   const std::vector<std::string>& dbcPaths() const {
     return dbc_paths_;
   }

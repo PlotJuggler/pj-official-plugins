@@ -2,10 +2,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <clocale>
 #include <cstdlib>
+#include <iomanip>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -485,3 +489,177 @@ TEST_F(CsvCommaDecimalLocale, Issue238CsvLoadsCompletely) {
 }
 
 }  // namespace
+
+// --- ForEachRecord ---
+
+namespace {
+
+struct Cell {
+  size_t column;
+  std::string value;  // the number printed, or the text
+  bool operator==(const Cell&) const = default;
+};
+using Record = std::pair<int64_t, std::vector<Cell>>;
+
+std::string printNumber(double v) {
+  std::ostringstream os;
+  os << std::setprecision(17) << v;
+  return os.str();
+}
+
+// The merge every CSV import wrote records with: copy every cell, stable-sort by nanosecond timestamp, and group equal
+// timestamps into one record.
+std::vector<Record> referenceRecords(
+    const std::vector<CsvColumnData>& columns, const std::vector<size_t>& numeric, const std::vector<size_t>& text) {
+  struct Point {
+    int64_t ts;
+    Cell cell;
+  };
+  std::vector<Point> all;
+  for (size_t c : numeric) {
+    for (const auto& [t, v] : columns[c].numeric_points) {
+      all.push_back({static_cast<int64_t>(t * 1e9), {c, printNumber(v)}});
+    }
+  }
+  for (size_t c : text) {
+    for (const auto& [t, v] : columns[c].string_points) {
+      all.push_back({static_cast<int64_t>(t * 1e9), {c, v}});
+    }
+  }
+  std::stable_sort(all.begin(), all.end(), [](const Point& a, const Point& b) { return a.ts < b.ts; });
+  std::vector<Record> records;
+  for (const auto& point : all) {
+    if (records.empty() || records.back().first != point.ts) {
+      records.push_back({point.ts, {}});
+    }
+    records.back().second.push_back(point.cell);
+  }
+  return records;
+}
+
+std::vector<Record> mergedRecords(
+    std::vector<CsvColumnData> columns, const std::vector<size_t>& numeric, const std::vector<size_t>& text) {
+  std::vector<Record> records;
+  const bool complete = ForEachRecord(columns, numeric, text, [&](int64_t ts, const std::vector<RecordCell>& cells) {
+    Record record{ts, {}};
+    for (const auto& cell : cells) {
+      EXPECT_NE(cell.number == nullptr, cell.text == nullptr);
+      record.second.push_back({cell.column, cell.text != nullptr ? *cell.text : printNumber(*cell.number)});
+    }
+    records.push_back(std::move(record));
+    return true;
+  });
+  EXPECT_TRUE(complete);
+  return records;
+}
+
+CsvColumnData numericColumn(std::vector<std::pair<double, double>> points) {
+  CsvColumnData column;
+  column.numeric_points = std::move(points);
+  return column;
+}
+
+CsvColumnData textColumn(std::vector<std::pair<double, std::string>> points) {
+  CsvColumnData column;
+  column.string_points = std::move(points);
+  return column;
+}
+
+}  // namespace
+
+TEST(CsvForEachRecord, MonotonicSparseColumnsMatchTheSortedMerge) {
+  std::vector<CsvColumnData> columns = {
+      numericColumn({{0.0, 1}, {1.0, 2}, {2.0, 3}}),
+      numericColumn({{1.0, 20}, {3.0, 40}}),
+      textColumn({{0.0, "a"}, {2.0, "c"}, {3.0, "d"}}),
+      numericColumn({}),
+  };
+  EXPECT_EQ(mergedRecords(columns, {0, 1, 3}, {2}), referenceRecords(columns, {0, 1, 3}, {2}));
+}
+
+TEST(CsvForEachRecord, BackwardsAndDuplicateTimestampsMatchTheSortedMerge) {
+  std::vector<CsvColumnData> columns = {
+      numericColumn({{2.0, 1}, {1.0, 2}, {1.0, 3}, {3.0, 4}, {0.5, 5}}),
+      textColumn({{1.0, "x"}, {1.0, "y"}, {0.5, "z"}}),
+      numericColumn({{3.0, 9}, {1.0, 8}}),
+  };
+  EXPECT_EQ(mergedRecords(columns, {2, 0}, {1}), referenceRecords(columns, {2, 0}, {1}));
+}
+
+TEST(CsvForEachRecord, TimestampsEqualInNanosecondsShareARecord) {
+  std::vector<CsvColumnData> columns = {
+      numericColumn({{1.0 + 1e-12, 1}, {1.0, 2}}),
+      numericColumn({{1.0, 3}}),
+  };
+  const auto records = mergedRecords(columns, {0, 1}, {});
+  EXPECT_EQ(records, referenceRecords(columns, {0, 1}, {}));
+  EXPECT_EQ(records.size(), 1u);
+}
+
+TEST(CsvForEachRecord, RandomColumnsMatchTheSortedMerge) {
+  std::srand(7);
+  for (int round = 0; round < 200; ++round) {
+    std::vector<CsvColumnData> columns(static_cast<size_t>(1 + std::rand() % 6));
+    std::vector<size_t> numeric;
+    std::vector<size_t> text;
+    for (size_t c = 0; c < columns.size(); ++c) {
+      const bool is_text = std::rand() % 3 == 0;
+      (is_text ? text : numeric).push_back(c);
+      const int n = std::rand() % 12;
+      double t = 0;
+      for (int i = 0; i < n; ++i) {
+        t = round % 2 == 0 ? t + (std::rand() % 3) * 0.5 : (std::rand() % 8) * 0.25;  // monotonic or shuffled
+        if (is_text) {
+          columns[c].string_points.emplace_back(t, "s" + std::to_string(i));
+        } else {
+          columns[c].numeric_points.emplace_back(t, i);
+        }
+      }
+    }
+    std::reverse(numeric.begin(), numeric.end());
+    ASSERT_EQ(mergedRecords(columns, numeric, text), referenceRecords(columns, numeric, text)) << "round " << round;
+  }
+}
+
+TEST(CsvForEachRecord, StopsWhenTheVisitorDoes) {
+  std::vector<CsvColumnData> columns = {numericColumn({{0.0, 1}, {1.0, 2}, {2.0, 3}})};
+  int visits = 0;
+  EXPECT_FALSE(ForEachRecord(columns, {0}, {}, [&](int64_t, const std::vector<RecordCell>&) { return ++visits < 2; }));
+  EXPECT_EQ(visits, 2);
+}
+
+TEST(CsvForEachRecord, StopsMidStreamAcrossColumns) {
+  std::vector<CsvColumnData> columns = {
+      numericColumn({{0.0, 1}, {2.0, 2}}),
+      numericColumn({{1.0, 3}, {2.0, 4}}),
+      textColumn({{0.0, "a"}, {3.0, "b"}}),
+  };
+  const auto expected = referenceRecords(columns, {0, 1}, {2});
+  std::vector<Record> received;
+  EXPECT_FALSE(ForEachRecord(columns, {0, 1}, {2}, [&](int64_t ts, const std::vector<RecordCell>& cells) {
+    Record record{ts, {}};
+    for (const auto& cell : cells) {
+      record.second.push_back({cell.column, cell.text != nullptr ? *cell.text : printNumber(*cell.number)});
+    }
+    received.push_back(std::move(record));
+    return received.size() < 2;
+  }));
+  ASSERT_EQ(received.size(), 2u);
+  EXPECT_EQ(received, std::vector<Record>(expected.begin(), expected.begin() + 2));
+}
+
+TEST(CsvForEachRecord, ParsedCsvMatchesTheSortedMerge) {
+  // Unsorted time, a sparse numeric column and a text column, straight from the parser.
+  const std::string csv = "time,x,label,y\n2,1.5,b,\n0,2.5,a,7\n1,,c,8\n1,3.5,,\n";
+  CsvParseConfig config;
+  config.delimiter = ',';
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+  ASSERT_TRUE(result.success);
+  ASSERT_EQ(result.columns.size(), 4u);
+  const std::vector<size_t> numeric = {1, 3};
+  const std::vector<size_t> text = {2};
+  const auto expected = referenceRecords(result.columns, numeric, text);
+  ASSERT_EQ(expected.size(), 3u);
+  EXPECT_EQ(mergedRecords(result.columns, numeric, text), expected);
+}

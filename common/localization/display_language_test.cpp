@@ -73,9 +73,6 @@ int main(int argc, char** argv) {
   session.setState(assistant_agent::TurnState::WaitingForLlm);
   require(session.statusText() == expectedText("Thinking…", "正在思考…", "正在思考…"),
           "assistant waiting status must use display language");
-  session.setState(assistant_agent::TurnState::ExecutingTool);
-  require(session.statusText() == expectedText("Running a tool…", "正在运行工具…", "正在執行工具…"),
-          "assistant tool status must use display language");
   session.setState(assistant_agent::TurnState::Idle);
   require(rendered.find(expectedText("**System:**", "**系统：**", "**系統：**")) != std::string::npos,
           "system role must use display language");

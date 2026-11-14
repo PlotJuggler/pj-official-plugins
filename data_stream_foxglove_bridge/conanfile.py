@@ -18,6 +18,6 @@ class DataStreamFoxgloveBridgeConan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
-        "ixwebsocket/11.4.6",
+        "ixwebsocket/12.0.0",
     )
     default_options = {"*:shared": False}

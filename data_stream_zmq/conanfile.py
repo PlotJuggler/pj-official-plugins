@@ -19,6 +19,6 @@ class DataStreamZmqConan(ConanFile):
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
         "cppzmq/4.11.0",
-        "libsodium/1.0.20",
+        "libsodium/1.0.22",
     )
     default_options = {"*:shared": False}

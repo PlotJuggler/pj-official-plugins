@@ -5,7 +5,11 @@
 [workspace]
 name = "data-stream-ros2-robostack"
 channels = ["conda-forge"]
-platforms = ["linux-64", "linux-aarch64"]
+platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
+
+# RoboStack lyrical builds for macOS 14 and newer.
+[system-requirements]
+macos = "14.0"
 
 [dependencies]
 cmake = ">=3.28"
@@ -32,6 +36,14 @@ gxx_linux-aarch64 = "14.*"
 gcc_linux-aarch64 = "14.*"
 sysroot_linux-aarch64 = "2.28.*"
 
+# macOS: clang 21, RoboStack's macOS compiler pin (newer libc++ drops the
+# std::wstring_convert that jazzy's rosidl_runtime_cpp headers use). The payload's
+# ROS libraries resolve through @executable_path/../lib, i.e. the environment of
+# the plotjuggler4 executable.
+[target.osx-arm64.dependencies]
+clangxx_osx-arm64 = "21.*"
+clang_osx-arm64 = "21.*"
+
 [feature.jazzy]
 channels = ["robostack-jazzy"]
 [feature.jazzy.dependencies]
@@ -46,6 +58,14 @@ ros-kilted-rclcpp = "*"
 ros-kilted-rosidl-typesupport-cpp = "*"
 ros-kilted-rosidl-typesupport-introspection-cpp = "*"
 
+[feature.lyrical]
+channels = ["robostack-lyrical"]
+[feature.lyrical.dependencies]
+ros-lyrical-rclcpp = "*"
+ros-lyrical-rosidl-typesupport-cpp = "*"
+ros-lyrical-rosidl-typesupport-introspection-cpp = "*"
+
 [environments]
 jazzy = ["jazzy"]
 kilted = ["kilted"]
+lyrical = ["lyrical"]

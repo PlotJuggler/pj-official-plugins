@@ -9,17 +9,20 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/sdk/platform.hpp>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "codex_stream.hpp"
 #include "support/backend_test_helpers.hpp"
-#include "tool_registry.hpp"
+#include "support/file_io.hpp"
+#include "system_prompt.hpp"
 
 namespace {
 
@@ -28,9 +31,9 @@ using assistant_agent::CodexBackend;
 using assistant_agent::CodexEvent;
 using assistant_agent::HarnessMemory;
 using assistant_agent::parseCodexLine;
-using assistant_agent::ToolRegistry;
 using assistant_agent::TurnTools;
 using assistant_agent::testing::runListTopicsSmoke;
+using assistant_agent::testing::toolsFor;
 
 // The one thing about this backend that is not a preference.
 //
@@ -170,12 +173,42 @@ TEST(ParseCodexLine, ToolCallStarted) {
   EXPECT_EQ(ev.tool_name, "ping");
 }
 
-TEST(ParseCodexLine, ToolCallCompletedSuccessfullyIsIgnored) {
+TEST(ParseCodexLine, ToolCallCompletedSuccessfullyNamesTheTool) {
   const CodexEvent ev = parseCodexLine(
       R"({"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"pj","tool":"ping",)"
       R"("arguments":{"echo":"hello"},"result":{"content":[{"type":"text","text":"pong: hello"}],)"
       R"("structured_content":null},"error":null,"status":"completed"}})");
+  ASSERT_EQ(ev.kind, CodexEvent::Kind::ToolCallCompleted);
+  EXPECT_EQ(ev.tool_name, "ping");
+}
+
+// Only a call the CLI reports as completed counts as one: anything else is not positive evidence.
+TEST(ParseCodexLine, ToolCallWithoutACompletedStatusIsNotACompletion) {
+  const CodexEvent ev = parseCodexLine(
+      R"({"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"pj","tool":"ping",)"
+      R"("arguments":{},"result":null,"error":null}})");
   EXPECT_EQ(ev.kind, CodexEvent::Kind::Ignored);
+}
+
+// The server's own isError reply: Codex reports status "failed" with a null error and the
+// reason in the result.
+TEST(ParseCodexLine, ToolCallTheServerFailedIsAFailureWithItsReason) {
+  const CodexEvent ev = parseCodexLine(
+      R"({"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"pj","tool":"list_topics",)"
+      R"("arguments":{},"result":{"content":[{"type":"text","text":"no dataset loaded"}],"isError":true},)"
+      R"("error":null,"status":"failed"}})");
+  ASSERT_EQ(ev.kind, CodexEvent::Kind::ToolCallFailed);
+  EXPECT_EQ(ev.tool_name, "list_topics");
+  EXPECT_EQ(ev.text, "no dataset loaded");
+}
+
+// An error wins even if the status claims completion.
+TEST(ParseCodexLine, ToolCallWithAnErrorIsAFailureWhateverItsStatus) {
+  const CodexEvent ev = parseCodexLine(
+      R"({"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"pj","tool":"ping",)"
+      R"("arguments":{},"result":null,"error":{"message":"boom"},"status":"completed"}})");
+  ASSERT_EQ(ev.kind, CodexEvent::Kind::ToolCallFailed);
+  EXPECT_EQ(ev.text, "boom");
 }
 
 TEST(ParseCodexLine, ToolCallFailedCapturesToolAndError) {
@@ -247,12 +280,7 @@ using assistant_agent::testing::writeFakeCliScript;
 std::vector<BackendEvent> runOneCodexTurnAgainst(const std::vector<std::string>& lines, int exit_code, bool resuming) {
   const std::string cli = writeFakeCliScript(lines, exit_code);
   EXPECT_FALSE(cli.empty()) << "could not create the fake CLI script";
-  ToolRegistry reg;
-  TurnTools tools;
-  tools.registry = &reg;
-  tools.invoke = [](const std::string&, const nlohmann::json&) {
-    return assistant_agent::ToolResult::failure("no tool runs in this test");
-  };
+  const TurnTools tools = toolsFor();
   auto memory = std::make_shared<HarnessMemory>();
   if (resuming) {
     memory->session_id = "sess-gone";
@@ -312,12 +340,7 @@ TEST(CodexBackendSuccess, ACleanTurnEmitsToolActivityAssistantTextMetricsThenCom
   const auto events = [&] {
     const std::string cli = writeFakeCliScript(lines, /*exit_code=*/0);
     EXPECT_FALSE(cli.empty());
-    ToolRegistry reg;
-    TurnTools tools;
-    tools.registry = &reg;
-    tools.invoke = [](const std::string&, const nlohmann::json&) {
-      return assistant_agent::ToolResult::failure("no tool runs in this test");
-    };
+    const TurnTools tools = toolsFor();
     CodexBackend backend(cli, "", memory);
     std::vector<BackendEvent> out;
     backend.sendUserMessage("hi", tools, [&](BackendEvent e) { out.push_back(std::move(e)); });
@@ -336,8 +359,8 @@ TEST(CodexBackendSuccess, ACleanTurnEmitsToolActivityAssistantTextMetricsThenCom
   }
   ASSERT_GE(kinds.size(), 4u);
   // ToolActivity (started), AssistantText (pong), Metrics, TurnComplete, in
-  // that relative order -- the completed-successfully tool call carries no
-  // event of its own (Ignored), so exactly one ToolActivity is expected.
+  // that relative order -- the completed tool call is a ToolResult, not a
+  // second ToolActivity.
   const auto tool_at = std::find(kinds.begin(), kinds.end(), BackendEvent::Kind::ToolActivity);
   const auto text_at = std::find(kinds.begin(), kinds.end(), BackendEvent::Kind::AssistantText);
   const auto metrics_at = std::find(kinds.begin(), kinds.end(), BackendEvent::Kind::Metrics);
@@ -350,8 +373,52 @@ TEST(CodexBackendSuccess, ACleanTurnEmitsToolActivityAssistantTextMetricsThenCom
   EXPECT_LT(text_at, metrics_at);
   EXPECT_LT(metrics_at, complete_at);
   EXPECT_EQ(std::count(kinds.begin(), kinds.end(), BackendEvent::Kind::ToolActivity), 1);
+  EXPECT_EQ(std::count(kinds.begin(), kinds.end(), BackendEvent::Kind::ToolResult), 1);
+  for (const auto& e : events) {
+    if (e.kind == BackendEvent::Kind::ToolResult) {
+      EXPECT_EQ(e.text, "ping");
+      EXPECT_FALSE(e.tool_failed);
+    }
+  }
 
   EXPECT_EQ(memory->session_id, "sess-new");
+}
+
+// The live smoke's own verdict, against the stream a CLI that got an answer prints: it passes.
+TEST(CodexBackendSuccess, TheSmokeVerdictAcceptsAnAnsweredListTopicsCall) {
+  const std::string cli = writeFakeCliScript(
+      {R"({"type":"thread.started","thread_id":"sess-new"})", R"({"type":"turn.started"})",
+       R"({"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"pj","tool":"list_topics",)"
+       R"("arguments":{},"result":null,"error":null,"status":"in_progress"}})",
+       R"({"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"pj","tool":"list_topics",)"
+       R"("arguments":{},"result":{"content":[{"type":"text","text":"{}"}],"structured_content":null},)"
+       R"("error":null,"status":"completed"}})",
+       R"({"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"none"}})"},
+      /*exit_code=*/0);
+  ASSERT_FALSE(cli.empty());
+  CodexBackend backend(cli, "", std::make_shared<HarnessMemory>());
+  runListTopicsSmoke(backend, assistant_agent::testing::kTestEndpoint, "Codex");
+  removeFakeCli(cli);
+}
+
+// A call the CLI could not make is both the visible "tool: reason" row and a failed ToolResult.
+TEST(CodexBackendSuccess, AFailedToolCallIsAFailedToolResult) {
+  const auto events = runOneCodexTurnAgainst(
+      {R"({"type":"thread.started","thread_id":"sess-new"})", R"({"type":"turn.started"})",
+       R"({"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"pj","tool":"ping",)"
+       R"("arguments":{},"result":null,"error":null,"status":"in_progress"}})",
+       R"({"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"pj","tool":"ping",)"
+       R"("arguments":{},"result":null,"error":{"message":"denied"},"status":"failed"}})"},
+      /*exit_code=*/0, /*resuming=*/false);
+  const auto result = std::find_if(
+      events.begin(), events.end(), [](const BackendEvent& e) { return e.kind == BackendEvent::Kind::ToolResult; });
+  ASSERT_NE(result, events.end());
+  EXPECT_EQ(result->text, "ping");
+  EXPECT_TRUE(result->tool_failed);
+  const auto activity = std::find_if(events.begin(), events.end(), [](const BackendEvent& e) {
+    return e.kind == BackendEvent::Kind::ToolActivity && e.text == "ping: denied";
+  });
+  EXPECT_NE(activity, events.end());
 }
 
 #endif  // POSIX / Windows
@@ -369,6 +436,20 @@ TEST(CodexBackend, ConversationMemorySurvivesARebuild) {
   EXPECT_EQ(memory->session_id, "sess-42");
 }
 
+// A PlotJuggler that cannot serve the tools fails the turn before any CLI is
+// looked up, with the reason the dialog got when it acquired the endpoint.
+TEST(CodexBackend, ATurnWithoutAnEndpointFailsWithItsReasonAndRunsNoCli) {
+  TurnTools tools;
+  tools.mcp = PJ::unexpected("This PlotJuggler cannot serve the Assistant's tools: test");
+  CodexBackend backend("codex-never-spawned", "");
+  std::vector<BackendEvent> events;
+  backend.sendUserMessage("hi", tools, [&](BackendEvent e) { events.push_back(std::move(e)); });
+  ASSERT_EQ(events.size(), 2u);
+  EXPECT_EQ(events[0].kind, BackendEvent::Kind::Error);
+  EXPECT_EQ(events[0].text, "This PlotJuggler cannot serve the Assistant's tools: test");
+  EXPECT_EQ(events[1].kind, BackendEvent::Kind::TurnComplete);
+}
+
 // --- Live opt-in smoke ------------------------------------------------------
 
 // Guarded like the fake-CLI cases above: it spawns the real `codex`, and
@@ -379,9 +460,104 @@ TEST(CodexSmoke, ListTopicsThroughMcp) {
   if (!enabled) {
     GTEST_SKIP() << "set ASSISTANT_CODEX_SMOKE=1 (needs a logged-in `codex` CLI) to run";
   }
+  const auto endpoint = assistant_agent::testing::liveEndpoint();
+  if (!endpoint) {
+    GTEST_SKIP() << assistant_agent::testing::kNoLiveEndpoint;
+  }
   const std::optional<std::string> cli = PJ::sdk::getEnv("ASSISTANT_CODEX_CLI");
   CodexBackend backend(cli.value_or("codex"), "");
-  runListTopicsSmoke(backend, "Codex");
+  runListTopicsSmoke(backend, *endpoint, "Codex");
+}
+#endif
+
+// The same recording as ClaudeBackendPayload (claude_smoke_test.cpp): the
+// composed payload on stdin, and the instructions -- written to the file
+// model_instructions_file names -- carrying the product policy.
+#if defined(__unix__) || defined(__APPLE__)
+using assistant_agent::testing::kTestCatalog;
+using assistant_agent::testing::kTestFeatures;
+using assistant_agent::testing::payloadTestTools;
+using assistant_agent::testing::RecordingCliCleanup;
+
+// The instructions file a recorded argv names, read while the backend that
+// wrote it is still alive (its destructor unlinks it).
+std::string instructionsFrom(const std::string& argv) {
+  const std::string key = "model_instructions_file=\"";
+  const std::size_t at = argv.find(key);
+  if (at == std::string::npos) {
+    return {};
+  }
+  const std::size_t begin = at + key.size();
+  return assistant_agent::testing::readFileToString(argv.substr(begin, argv.find('"', begin) - begin));
+}
+
+TEST(CodexBackendPayload, TheCliReceivesTheFeaturesBlockAheadOfTheCatalogAndThePolicy) {
+  const std::string record = assistant_agent::testing::makeRecordPrefix("codex");
+  const std::string cli = assistant_agent::testing::writeRecordingCliScript(
+      {R"({"type":"thread.started","thread_id":"sess-1"})", R"({"type":"turn.started"})",
+       R"({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}})"},
+      0, record);
+  const RecordingCliCleanup cleanup({cli}, record);
+  ASSERT_FALSE(cli.empty());
+  const TurnTools tools = payloadTestTools();
+
+  {
+    CodexBackend backend(cli, "");
+    backend.sendUserMessage("hi", tools, [](BackendEvent) {});
+    EXPECT_EQ(
+        assistant_agent::testing::readFileToString(record + ".stdin"),
+        std::string(kTestFeatures) + "\n\n" + kTestCatalog + "\n\nhi");
+    const std::string argv = assistant_agent::testing::readFileToString(record + ".argv");
+    const std::string instructions = instructionsFrom(argv);
+    EXPECT_NE(instructions.find(assistant_agent::kProductPolicy), std::string::npos) << instructions;
+    EXPECT_NE(argv.find(R"(mcp_servers.pj.url="http://127.0.0.1:8765/mcp")"), std::string::npos) << argv;
+    EXPECT_EQ(argv.find(assistant_agent::testing::kTestEndpoint.bearer_token), std::string::npos)
+        << "the token travels in the env, never argv";
+
+    backend.sendUserMessage("again", tools, [](BackendEvent) {});
+    EXPECT_EQ(assistant_agent::testing::readFileToString(record + ".stdin"), "again") << "neither listing changed";
+  }
+  {
+    CodexBackend baseline(cli, "");
+    baseline.setInstructions(assistant_agent::assistantInstructions(/*with_product_policy=*/false));
+    baseline.sendUserMessage("hi", tools, [](BackendEvent) {});
+    const std::string instructions = instructionsFrom(assistant_agent::testing::readFileToString(record + ".argv"));
+    EXPECT_NE(instructions.find(assistant_agent::kSystemPrompt), std::string::npos) << instructions;
+    EXPECT_EQ(instructions.find(assistant_agent::kProductPolicy), std::string::npos);
+  }
+}
+
+// A first turn whose CLI exits 1 with empty stdout (not logged in, say) never
+// reached the model, so the retry must carry both listings again.
+TEST(CodexBackendPayload, AFailedTurnThatProducedNoAnswerLeavesTheListingsUnsent) {
+  const std::string record = assistant_agent::testing::makeRecordPrefix("codex_retry");
+  const std::string failing = assistant_agent::testing::writeRecordingCliScript({}, 1, record);
+  const std::string working = assistant_agent::testing::writeRecordingCliScript(
+      {R"({"type":"thread.started","thread_id":"sess-1"})", R"({"type":"turn.started"})",
+       R"({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}})"},
+      0, record);
+  const RecordingCliCleanup cleanup({failing, working}, record);
+  ASSERT_FALSE(failing.empty());
+  ASSERT_FALSE(working.empty());
+  const TurnTools tools = payloadTestTools();
+  const std::string both = std::string(kTestFeatures) + "\n\n" + kTestCatalog + "\n\n";
+  auto memory = std::make_shared<HarnessMemory>();
+
+  std::vector<BackendEvent> events;
+  CodexBackend(failing, "", memory).sendUserMessage("hi", tools, [&](BackendEvent e) {
+    events.push_back(std::move(e));
+  });
+  ASSERT_NE(assistant_agent::testing::firstError(events), nullptr);
+  EXPECT_TRUE(memory->sent_features_hash.empty());
+  EXPECT_TRUE(memory->sent_catalog_hash.empty());
+
+  CodexBackend backend(working, "", memory);
+  backend.sendUserMessage("hi again", tools, [](BackendEvent) {});
+  EXPECT_EQ(assistant_agent::testing::readFileToString(record + ".stdin"), both + "hi again");
+
+  // A successful turn is never rolled back, even one with no assistant text.
+  backend.sendUserMessage("third", tools, [](BackendEvent) {});
+  EXPECT_EQ(assistant_agent::testing::readFileToString(record + ".stdin"), "third");
 }
 #endif
 

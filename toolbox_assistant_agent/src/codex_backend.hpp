@@ -5,12 +5,12 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "claude_sessions.hpp"  // ConversationSummary, for listConversations()
 #include "harness_memory.hpp"   // HarnessMemory + composePayload
 #include "llm_backend.hpp"
-#include "mcp_loopback.hpp"
 #include "turn_metrics.hpp"
 
 namespace assistant_agent {
@@ -45,10 +45,10 @@ inline constexpr const char* kCodexMcpTokenEnvVar = "PJ_ASSISTANT_MCP_TOKEN";
 // Remote backend driving the user's Codex CLI subscription headlessly, the
 // Codex counterpart to ClaudeBackend. Per turn it spawns `codex exec --json
 // ...` and parses the streamed events (codex_stream.hpp) for the transcript.
-// Shares the loopback MCP server (mcp_loopback.hpp) and the stable work dir
-// (harness_workdir.hpp) with ClaudeBackend, but reaches the server through a
-// `-c mcp_servers.pj.*` config plus an env-var bearer token rather than a
-// `--mcp-config` file — Codex has no such flag.
+// Shares the endpoint on PlotJuggler's MCP server (TurnTools::mcp) and the
+// stable work dir (harness_workdir.hpp) with ClaudeBackend, but reaches the
+// server through a `-c mcp_servers.pj.*` config plus an env-var bearer token
+// rather than a `--mcp-config` file — Codex has no such flag.
 //
 // Three deliberate deviations from Claude, all measured (docs/ARCHITECTURE.md):
 //  - Code Mode (Codex's JS tool-call host) cannot be disabled without also
@@ -67,6 +67,14 @@ class CodexBackend : public LlmBackend {
   void sendUserMessage(const std::string& text, const TurnTools& tools, const EventSink& sink) override;
   void cancel() override;
   [[nodiscard]] std::string name() const override;
+
+  // The instructions written to model_instructions_file (plus the
+  // no-sub-agents addendum); assistantInstructions() unless replaced. Only the
+  // benchmark runner replaces them, to measure without the product policy.
+  // Must be called before the first turn: the file is written once.
+  void setInstructions(std::string instructions) {
+    instructions_ = std::move(instructions);
+  }
 
   // Probe: `<cli> --version` exits 0.
   [[nodiscard]] BackendTestResult testConnection() const override;
@@ -94,7 +102,7 @@ class CodexBackend : public LlmBackend {
 
  private:
   bool ensureWorkDir(std::string& error);
-  // Lazily writes kSystemPrompt, plus the no-sub-agents addendum, to a
+  // Lazily writes instructions_, plus the no-sub-agents addendum, to a
   // private mkstemp 0600 file, memoized for the life of this backend and
   // unlinked in the destructor. `model_instructions_file` is Codex's
   // replacement for its own "You are Codex" persona, the same job
@@ -103,9 +111,9 @@ class CodexBackend : public LlmBackend {
 
   std::string cli_path_;
   std::string model_;
+  std::string instructions_;
   std::shared_ptr<HarnessMemory> memory_;  // never null after construction
   TurnMetrics last_metrics_;
-  McpLoopback mcp_;
   std::string work_dir_;
   std::string instructions_path_;
   std::atomic<bool> cancel_{false};

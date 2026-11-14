@@ -6,9 +6,9 @@
 // into the harness store that ClaudeBackend would read from
 // (~/.claude/projects/<slug>/), so listConversations/loadTranscript/
 // deleteConversation exercise the real claude_sessions.hpp parser, not a
-// mock. None of the paths this file drives (conversationList's selection,
-// delete, rename) ever call sendUserMessage or testConnection, so no `claude`
-// CLI is spawned — this stays fully offline. The conversations drawer is
+// mock. The turns this file sends point the CLI at a name that does not
+// resolve, or fail earlier for want of an MCP endpoint, so no `claude` CLI is
+// spawned — this stays fully offline. The conversations drawer is
 // always visible now (no menuButton toggle), so a refresh happens on bind,
 // on a backend switch, after a delete, and after every completed turn.
 #include "assistant_dialog.hpp"
@@ -17,21 +17,28 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <pj_base/sdk/feature_catalog_host.hpp>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_base/sdk/settings_store_host.hpp>
+#include <pj_base/sdk/testing/fake_mcp_endpoint_host.hpp>
 #include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "catalog_digest.hpp"
 #include "claude_sessions.hpp"
 #include "codex_sessions.hpp"
 #include "conversation_state.hpp"
+#include "fallback_features.hpp"
+#include "features_digest.hpp"
 #include "harness_memory.hpp"
 #include "settings_store.hpp"
 #include "support/scoped_env.hpp"
@@ -53,6 +60,42 @@ class AssistantDialogTestPeer {
     dialog.applyBackendEvent({BackendEvent::Kind::Error, error});
     dialog.applyBackendEvent({BackendEvent::Kind::TurnComplete, {}});
   }
+
+  // The features block sendCurrentInput() hands the backend this turn.
+  static std::string featuresForTurn(AssistantDialog& dialog) {
+    return dialog.featuresForTurn();
+  }
+
+  // Sends `text` as the user would and pumps onTick() until the turn is over.
+  // False if it is still running after a few seconds (a hang).
+  static bool runTurn(AssistantDialog& dialog, const std::string& text) {
+    dialog.onTextChanged("inputEdit", text);
+    if (!dialog.onClicked("sendButton")) {
+      return false;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline) {
+      dialog.onTick();
+      {
+        std::lock_guard<std::mutex> lock(dialog.state_.mu);
+        if (!dialog.state_.session.busy()) {
+          return true;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return false;
+  }
+
+  // Every transcript row's text, one per line.
+  static std::string transcript(AssistantDialog& dialog) {
+    std::lock_guard<std::mutex> lock(dialog.state_.mu);
+    std::string out;
+    for (const auto& m : dialog.state_.session.messages()) {
+      out += m.text + "\n";
+    }
+    return out;
+  }
 };
 
 }  // namespace assistant_agent
@@ -66,6 +109,7 @@ using assistant_agent::claudeSessionsDir;
 using assistant_agent::loadActiveSessionId;
 using assistant_agent::loadConversationTitles;
 using assistant_agent::resolveCatalogBudgetChars;
+using assistant_agent::resolveFeaturesBudgetChars;
 using assistant_agent::SettingsStore;
 using nlohmann::json;
 
@@ -1141,7 +1185,7 @@ TEST(AssistantDialogCatalogBudget, FeedsCatalogDigestWithATighterBudget) {
   SettingsStore settings{PJ::sdk::SettingsView{host.view()}};
   settings.setString("assistant.catalog_budget_chars", "1000");
 
-  // Mirrors CatalogDigest.SaysSoWhenTruncated (tool_registry_test.cpp): the
+  // Mirrors CatalogDigest.SaysSoWhenTruncated (catalog_digest_test.cpp): the
   // body is kept within budget_chars, but the header/footer sentences that
   // explain the truncation are added on top of it, so the total stays well
   // under a small multiple of the budget rather than under the budget itself.
@@ -1167,6 +1211,85 @@ TEST(AssistantDialogCatalogBudget, AbsentKeyReproducesTheDefaultBudgetDigestByte
       catalogDigest(PJ::sdk::ToolboxHostView(data_store.makeHost()), resolveCatalogBudgetChars(settings));
   const std::string digest_default_arg = catalogDigest(PJ::sdk::ToolboxHostView(data_store.makeHost()));
   EXPECT_EQ(digest_via_settings, digest_default_arg);
+}
+
+// A host that loads the plugin but offers no pj.mcp_endpoint.v1 (registration
+// failed) binds an empty view. A turn ends — it does not hang — with a message
+// in the chat saying why.
+TEST_F(AssistantDialogSettingsSwitchTest, WithoutTheMcpEndpointServiceATurnEndsWithAMessageSayingWhy) {
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  dialog.setMcpEndpointHost(PJ::sdk::McpEndpointHostView{});
+  ASSERT_TRUE(AssistantDialogTestPeer::runTurn(dialog, "hello"));
+  const std::string transcript = AssistantDialogTestPeer::transcript(dialog);
+  EXPECT_NE(transcript.find("Error: This PlotJuggler cannot serve the Assistant's tools"), std::string::npos)
+      << transcript;
+  EXPECT_NE(transcript.find("offers no MCP endpoint"), std::string::npos) << transcript;
+}
+
+// Every turn acquires the endpoint on the GUI thread, and the host hands back
+// the one it holds; the plugin never releases it (the host does, on plugin
+// destruction). (The CLI name does not resolve here, so each turn ends at the
+// CLI lookup.)
+TEST_F(AssistantDialogSettingsSwitchTest, EveryTurnAcquiresTheEndpointAndNoneReleasesIt) {
+  PJ::sdk::testing::FakeMcpEndpointHost mcp;
+  AssistantDialog dialog;
+  dialog.setSettings(settings_view_);
+  dialog.setMcpEndpointHost(PJ::sdk::McpEndpointHostView(mcp.makeHost()));
+  ASSERT_TRUE(AssistantDialogTestPeer::runTurn(dialog, "first"));
+  ASSERT_TRUE(AssistantDialogTestPeer::runTurn(dialog, "second"));
+  EXPECT_EQ(mcp.acquireCalls(), 2);
+  EXPECT_EQ(mcp.releaseCalls(), 0);
+  const std::string transcript = AssistantDialogTestPeer::transcript(dialog);
+  EXPECT_EQ(transcript.find("cannot serve the Assistant's tools"), std::string::npos) << transcript;
+  EXPECT_NE(transcript.find("assistant-agent-test-missing-claude-cli"), std::string::npos)
+      << "both turns got past the endpoint to the CLI lookup: " << transcript;
+}
+
+// --- Feature awareness ------------------------------------------------------
+
+// A host that omits pj.feature_catalog.v1: services.get<FeatureCatalogService>()
+// fails and assistant_toolbox.cpp binds an empty FeatureCatalogView, which is
+// exactly what this provider returns. The turn must still carry a features block --
+// the reference built into the plugin -- and nothing may crash.
+TEST(AssistantDialogFeatures, WithoutTheHostServiceEveryTurnCarriesTheBuiltInReference) {
+  AssistantDialog dialog;
+  dialog.setFeatureCatalogProvider([]() { return PJ::sdk::FeatureCatalogView{}; });
+  const std::string features = AssistantDialogTestPeer::featuresForTurn(dialog);
+  EXPECT_EQ(features, assistant_agent::fallbackFeatures());
+  EXPECT_EQ(features.rfind("PlotJuggler features (PlotJuggler 4.1, built into this assistant):", 0), 0u);
+}
+
+TEST(AssistantDialogFeatures, WithTheHostServiceTheTurnCarriesTheHostListing) {
+  const std::string doc =
+      R"({"schema": 1, "host_version": "4.1.0", "core": [{"id": "layouts", "name": "Layouts", "summary": "Save it.",)"
+      R"( "entry_point": "File → Save Layout..."}], "registry": {"state": "fetched"}})";
+  PJ::sdk::FeatureCatalogHost host([&doc]() { return doc; });
+  AssistantDialog dialog;
+  dialog.setFeatureCatalogProvider([&host]() { return PJ::sdk::FeatureCatalogView(host.view()); });
+  EXPECT_EQ(AssistantDialogTestPeer::featuresForTurn(dialog), assistant_agent::featuresDigest(doc));
+}
+
+TEST(AssistantDialogFeatures, NoProviderMeansNoFeaturesBlock) {
+  AssistantDialog dialog;
+  EXPECT_TRUE(AssistantDialogTestPeer::featuresForTurn(dialog).empty());
+}
+
+TEST(AssistantDialogFeaturesBudget, DefaultsAndClamps) {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost host{backend};
+  SettingsStore store{PJ::sdk::SettingsView{host.view()}};
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 20000);
+  store.setString("assistant.features_budget_chars", "5000");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 5000);
+  store.setString("assistant.features_budget_chars", "10");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 5000);
+  store.setString("assistant.features_budget_chars", "2000");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 5000) << "below the built-in reference's length";
+  store.setString("assistant.features_budget_chars", "999999999");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 200000);
+  store.setString("assistant.features_budget_chars", "lots");
+  EXPECT_EQ(resolveFeaturesBudgetChars(store), 20000);
 }
 
 }  // namespace

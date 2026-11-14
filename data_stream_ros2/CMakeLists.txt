@@ -69,6 +69,29 @@ target_link_libraries(ros2_topic_subscription_test PRIVATE
 )
 add_test(NAME ros2_topic_subscription_test COMMAND ros2_topic_subscription_test)
 
+# Exercise optional-runtime admission without ROS, including a real dlopen
+# failure whose missing dependency is present outside the loader search path.
+add_library(ros2_proxy_test_dependency SHARED tests/proxy_dependency.cpp)
+add_library(ros2_proxy_test_inner SHARED tests/proxy_inner.cpp)
+target_compile_definitions(ros2_proxy_test_inner PRIVATE PJ_TEST_ROS2_DEPENDENCY)
+target_link_libraries(ros2_proxy_test_inner PRIVATE ros2_proxy_test_dependency)
+set_target_properties(ros2_proxy_test_inner PROPERTIES SKIP_BUILD_RPATH ON)
+add_library(ros2_proxy_test_missing_exports SHARED tests/proxy_inner.cpp)
+set_target_properties(ros2_proxy_test_dependency ros2_proxy_test_inner ros2_proxy_test_missing_exports PROPERTIES
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+
+add_executable(ros2_proxy_test tests/ros2_proxy_test.cpp)
+target_compile_features(ros2_proxy_test PRIVATE cxx_std_20)
+target_compile_options(ros2_proxy_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(ros2_proxy_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/proxy")
+target_link_libraries(ros2_proxy_test PRIVATE plotjuggler_sdk::plugin_host GTest::gtest_main ${CMAKE_DL_LIBS})
+target_compile_definitions(ros2_proxy_test PRIVATE
+  ROS2_TEST_INNER="$<TARGET_FILE:ros2_proxy_test_inner>"
+  ROS2_TEST_DEPENDENCY="$<TARGET_FILE:ros2_proxy_test_dependency>"
+  ROS2_TEST_MISSING_EXPORTS="$<TARGET_FILE:ros2_proxy_test_missing_exports>")
+add_dependencies(ros2_proxy_test ros2_proxy_test_inner ros2_proxy_test_missing_exports)
+add_test(NAME ros2_proxy_test COMMAND ros2_proxy_test)
+
 # ---------------------------------------------------------------------------
 # Per-distro target — per-distro ROS 2 subscriber, opt-in
 # ---------------------------------------------------------------------------

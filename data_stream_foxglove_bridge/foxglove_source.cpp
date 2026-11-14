@@ -21,6 +21,7 @@
 #include "foxglove_dialog.hpp"
 #include "foxglove_manifest.hpp"
 #include "foxglove_protocol.hpp"
+#include "foxglove_socket.hpp"
 #include "foxglove_topic_subscription.hpp"
 
 namespace {
@@ -120,9 +121,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
     if (!socket_ || socket_->getReadyState() != ix::ReadyState::Open) {
       // Fallback: connect fresh (e.g. when started without dialog via saved config)
-      socket_ = std::make_unique<ix::WebSocket>();
-      socket_->setUrl(PJ::sdk::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)));
-      socket_->addSubProtocol("foxglove.sdk.v1");
+      socket_ = makeSocket(address_, static_cast<uint16_t>(port_));
       socket_->disableAutomaticReconnection();
       // Install BEFORE start(): the server sends its one-shot serverInfo +
       // "advertise" burst the moment the connection opens, and a callback-less

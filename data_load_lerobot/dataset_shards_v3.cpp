@@ -127,11 +127,11 @@ PJ::Expected<std::shared_ptr<arrow::Table>> readShardTable(const fs::path& shard
     return PJ::unexpected("cannot read parquet " + shard_path.string() + ": " + reader_or.status().message());
   }
   std::unique_ptr<parquet::arrow::FileReader> reader = std::move(*reader_or);
-  std::shared_ptr<arrow::Table> table;
-  if (auto st = reader->ReadTable(&table); !st.ok()) {
-    return PJ::unexpected("cannot read table " + shard_path.string() + ": " + st.message());
+  auto table_or = reader->ReadTable();
+  if (!table_or.ok()) {
+    return PJ::unexpected("cannot read table " + shard_path.string() + ": " + table_or.status().message());
   }
-  return table;
+  return std::move(table_or).ValueUnsafe();
 }
 
 /// Walk `root/meta/episodes/` and return the shard parquets in (chunk, file)

@@ -1,8 +1,8 @@
 {
   "id": "data-tamer-parser",
   "name": "DataTamer Parser",
-  "version": "0.9.2",
-  "description": "Message parser for DataTamer encoded data. Efficient serialization for robotics.",
+  "version": "0.10.0",
+  "description": "Decodes data recorded or streamed with the DataTamer logging library into plottable series.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",

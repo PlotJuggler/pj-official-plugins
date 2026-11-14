@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <iomanip>
 #include <limits>
+#include <queue>
 #include <set>
 #include <sstream>
 
@@ -423,6 +425,83 @@ CsvParseResult ParseCsvData(std::istream& input, const CsvParseConfig& config, s
   result.lines_processed = samplecount;
   result.success = true;
   return result;
+}
+
+namespace {
+
+int64_t toNanoseconds(double seconds) {
+  return static_cast<int64_t>(seconds * 1e9);
+}
+
+template <typename Points>
+void sortByNanoseconds(Points& points) {
+  const auto earlier = [](const auto& a, const auto& b) { return toNanoseconds(a.first) < toNanoseconds(b.first); };
+  if (!std::is_sorted(points.begin(), points.end(), earlier)) {
+    std::stable_sort(points.begin(), points.end(), earlier);
+  }
+}
+
+}  // namespace
+
+bool ForEachRecord(
+    std::vector<CsvColumnData>& columns, const std::vector<size_t>& numeric_columns,
+    const std::vector<size_t>& string_columns,
+    const std::function<bool(int64_t ts_ns, const std::vector<RecordCell>& cells)>& emit) {
+  // One cursor per column; its index is the column's rank inside a record.
+  struct Cursor {
+    size_t column;
+    bool text;
+    size_t next = 0;
+    size_t size = 0;
+  };
+  std::vector<Cursor> cursors;
+  cursors.reserve(numeric_columns.size() + string_columns.size());
+  for (size_t column : numeric_columns) {
+    sortByNanoseconds(columns[column].numeric_points);
+    cursors.push_back({column, false, 0, columns[column].numeric_points.size()});
+  }
+  for (size_t column : string_columns) {
+    sortByNanoseconds(columns[column].string_points);
+    cursors.push_back({column, true, 0, columns[column].string_points.size()});
+  }
+  const auto timestampAt = [&columns](const Cursor& cursor) {
+    const CsvColumnData& data = columns[cursor.column];
+    return toNanoseconds(cursor.text ? data.string_points[cursor.next].first : data.numeric_points[cursor.next].first);
+  };
+
+  // Min-heap on (timestamp, rank): equal timestamps pop in rank order, and a column's next cell at the same timestamp
+  // re-enters ahead of every later rank, which keeps its row order.
+  using Head = std::pair<int64_t, size_t>;
+  std::priority_queue<Head, std::vector<Head>, std::greater<>> heads;
+  for (size_t rank = 0; rank < cursors.size(); ++rank) {
+    if (cursors[rank].size > 0) {
+      heads.emplace(timestampAt(cursors[rank]), rank);
+    }
+  }
+
+  std::vector<RecordCell> cells;
+  while (!heads.empty()) {
+    const int64_t timestamp = heads.top().first;
+    cells.clear();
+    while (!heads.empty() && heads.top().first == timestamp) {
+      const size_t rank = heads.top().second;
+      heads.pop();
+      Cursor& cursor = cursors[rank];
+      CsvColumnData& data = columns[cursor.column];
+      if (cursor.text) {
+        cells.push_back({.column = cursor.column, .text = &data.string_points[cursor.next].second});
+      } else {
+        cells.push_back({.column = cursor.column, .number = &data.numeric_points[cursor.next].second});
+      }
+      if (++cursor.next < cursor.size) {
+        heads.emplace(timestampAt(cursor), rank);
+      }
+    }
+    if (!emit(timestamp, cells)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 CsvParseResult ParseCsvData(

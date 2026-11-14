@@ -5,126 +5,81 @@ How the Assistant Agent is put together, and why the awkward parts are the way t
 ## The shape of a turn
 
 ```
-GUI thread                      worker thread                 model
-────────────                    ─────────────                 ─────
+GUI thread                         worker thread                     agent CLI
+────────────                       ─────────────                     ─────────
 user presses Enter
-  ├─ build catalog digest ──┐
-  └─ post command ──────────┼──▶ backend.sendUserMessage()
-                            │      ├─ spawn `claude -p` ──────▶ reads catalog + prompt
-                            │      │                            decides to call a tool
-      onTick() drains ◀─────┼──────┤◀── MCP tools/call ─────────┘
-      runs the tool         │      │
-      ──────────────────────┼──────▶ result back to the model
-                            │      │
-   transcript updated ◀─────┴──────┴── AssistantText / TurnComplete
+  ├─ build catalog + features
+  ├─ acquire the MCP endpoint
+  └─ post command ───────────────▶ backend.sendUserMessage()
+                                     └─ spawn `claude -p` ─────────▶ reads listings + prompt
+                                        or `codex exec`              decides to call a tool
+PlotJuggler's MCP server ◀─────────── tools/call over HTTP, Bearer ──┘
+  runs the tool, owner = this plugin ── result ─────────────────────▶ answers
+transcript updated ◀────────────── AssistantText / ToolActivity / TurnComplete
 ```
 
 Three rules fall out of this and explain most of the code:
 
 **A backend never touches host services.** Backends run on the worker thread; the SDK views are
-only legal on the GUI thread. Everything a model asks for is marshalled back through
-`GuiExecutor`, which blocks the worker until `onTick` finishes the call across one or more ticks. That is also why the
-catalog digest is built on the GUI thread *before* the turn is handed over — the worker could
-not build it itself.
+only legal on the GUI thread. So the GUI thread builds the catalog digest and the features listing,
+and acquires the MCP endpoint, *before* the turn is handed over; the worker only reads what it was
+given. The tools themselves never run in this plugin (next section).
 
-**Nothing throws across a thread or the ABI.** Untrusted JSON arrives from two directions
-(the model's stream and the MCP request body) and the typed getters throw on the wrong
-shape, so each entry point has an exception barrier. An escaped exception on the worker thread
-would `std::terminate` the whole application.
+**Nothing throws across a thread or the ABI.** Untrusted JSON arrives from the CLI's event stream
+and from the harness's session files, and the typed getters throw on the wrong shape, so each entry
+point has an exception barrier. An escaped exception on the worker thread would `std::terminate`
+the whole application.
 
 **Teardown order is load-bearing.** The plugin persists its settings in its destructor, so it
 must be destroyed while the settings backend it writes through is still alive.
 
-## The tool layer
+## The tools
 
-`ToolRegistry` is the single source of truth for the tool set. It serializes to MCP's
-`tools/list` *and* to OpenAI-style function specs (`toFunctionSpecs`, kept for the harness
-backends to come) from the same definitions, so the backends and the unit tests can never
-drift apart.
+PlotJuggler serves them, not this plugin. The panel asks the host for this instance's private
+endpoint on PlotJuggler's own MCP server (`pj.mcp_endpoint.v1`, SDK 0.40.0): a loopback URL and a
+bearer token. It hands both to the CLI, and the CLI calls PlotJuggler directly. The host runs every
+call on its GUI thread, against the same services a toolbox plugin gets, with this plugin as the
+owner. Deferred results, a modal dialog the user has open, and a call abandoned by a cancelled turn
+are the host's to handle. So is the boundary that keeps the assistant to its own work: the series
+and markers it created, the plot and scene tabs it composed. The tool set, its descriptions and its
+behavior live in PlotJuggler's `pj_runtime` agent tools; PlotJuggler's `pj_app/docs/ARCHITECTURE.md`
+("MCP server") describes the server.
 
-Tools receive a `ToolContext`: a catalog+read view, a data-processors view, an object-read view for
-verifying what was created, the playback and plot-tab views that let it drive the application, and a
-`notify_data_changed` callback. Each host view is optional — an unbound one degrades to a tool that
-says which service the host did not expose, never to a tool that pretends.
+The SDK's `McpEndpointHostView` is the plugin's whole side of it. The dialog calls `acquire()` on
+the GUI thread before every turn and hands the backend a copy of the result (`TurnTools::mcp`), so
+a panel that is never used opens nothing and the worker shares nothing with the GUI thread. The
+plugin never releases: the host hands back the same endpoint while it is held and releases it when
+the plugin instance is destroyed. A compatible host (SDK 0.40.0 or newer; an older one cannot load
+the plugin) that omits the service, or whose server cannot start, fails the turn with a chat message
+saying which, before any CLI is looked up, and the next turn tries again.
 
-Related verbs share one tool with an `action` argument rather than standing alone (`playback`,
-`plot_tab`). Two reasons: the whole surface is sent ahead of every message of every conversation and
-each separate tool costs 73 characters of JSON envelope before a word of prose; and verbs that share
-a frame — "this tab is yours, the user's are not" — should state it once instead of once each.
+Each backend gives its CLI the endpoint in the form that harness takes: Claude a `--mcp-config`
+file, rewritten only when the endpoint changes and removed with the backend; Codex the URL plus the
+token in an environment variable. The token never reaches argv, a log or the settings.
 
-What that surface cannot do is the structural part. Every write goes through
-`pj.data_processors.v1`, addressed by node id, and `dp.list()` enumerates only nodes *this plugin*
-created — so removal is bounded to its own work by construction rather than by instruction. There is
-no reachable operation that edits or deletes a loaded series. (`remove_derived_series` checks
-membership against `dp.list()` before asking the host, so an unknown name is refused here with a
-useful message instead of being forwarded.)
-
-### Object topics
-
-`list_topics`, `describe_topic`, `report_status` and the catalog digest prefer
-`ctx.host.catalogSnapshotV2()` over the plain `catalogSnapshot()`: the v2 snapshot carries every
-object topic (point clouds, scene entities, images…) alongside the scalar catalog, each with its
-builtin type, entry count, raw time range and owning dataset. A host that predates the v2 slot
-(gated by `PJ_HAS_TAIL_SLOT`, same pattern as every other tail-slot service) degrades to the scalar
-listing plus an explicit note — never a silent undercount. Marker topics (`__markers__/` prefix)
-are filtered out everywhere: they are drawn by the plot overlay, not read by a script, so a model
-that saw them in `list_topics` could never do anything useful with the entry.
-
-`describe_topic` on an object topic never hands the model bytes. It walks the type's field table —
-`sdk::describe(BuiltinObjectType)`, the same compile-time registry `pj_scripting`'s Luau binder
-reads from in PJ4 — into a bounded JSON tree (depth capped at 3; a raw record buffer, e.g.
-`PointCloud::data`, states only its name and kind), and lists the operations a script may call on
-it from a static table in `object_ops_catalog.hpp` that mirrors PJ4's `object_binder.cpp` by hand.
-Keeping that table hand-written rather than derived is deliberate: the SDK's field table describes
-*data shape*, not the native methods a Luau binder layers on top of it, so there is no single source
-to generate operations from — the mirror has to be maintained, and object_ops_catalog.hpp's own
-comment says so. Image/DepthImage decoding, projection, video lookup and annotation builders
-are included; CameraInfo and FrameTransforms expose their field tables without object methods.
-`report_status` reads this assistant's own recipes to count pinned findings and bytes, and
-returns available readiness fields. Failed recipe reads make accounting explicitly incomplete.
-
-### Path resolution
-
-Models produce paths that are close but not exact. `resolveSeriesPath` therefore:
-
-1. tries an exact match first — it always wins;
-2. otherwise matches whole `/`-separated segments, so `sin`, `test/sin` and `sin/value` all
-   resolve to `test/sin/value`, while `test/si` resolves to nothing;
-3. refuses to guess when several series match, returning the candidates instead.
-
-`read_series` additionally accepts a bare topic (no field): a path that fails step 1 but names a
-whole topic expands to every numeric field of that topic, in catalog order.
-
-`create_derived_series` and `create_markers` resolve their inputs *before* installing anything.
-This is not politeness: a transform whose input does not exist installs happily and produces an
-empty curve with no error at all, which looks like success to everyone involved.
-
-Step 3 is weaker in practice than it looks. Because the model is handed the full catalog up
-front, it usually resolves an under-specified name itself and calls with a concrete path already
-chosen — so the tool is never given the ambiguity to refuse. The guard catches a model that
-passes the ambiguous string through; it cannot catch one that decided beforehand. Requiring the
-choice to be *disclosed* has to live in the system prompt.
+The backends also report each call's outcome as a `ToolResult` event (Claude's `tool_result` block,
+paired with its `tool_use` by id; Codex's completed or failed `mcp_tool_call` item). The panel does
+not render it, since the call already has its `ToolActivity` row, which is emitted before the call
+runs and so says nothing about whether it succeeded. The live smoke test asserts on it.
 
 ## The Claude backend
 
 Per turn it spawns `claude -p --output-format stream-json`, with:
 
-- `--tools ""` — disables every built-in tool. This is the safety spine: `--strict-mcp-config`
+- `--tools ""`: disables every built-in tool. This is the safety spine: `--strict-mcp-config`
   only restricts which MCP *servers* load, not whether Bash and Write are available.
-- `--mcp-config <file>` — a `0600` temp file, because the bearer token would otherwise be
-  visible in `/proc/<pid>/cmdline` to any local user. On Windows there is no mode bit and no
-  `/proc`; the file lives under `%TEMP%`, inside the signed-in user's own profile, so the
-  per-user ACL that already guards everything there is the stand-in.
-- `--resume <session_id>` — continuity across turns.
+- `--restricted`: ignores the machine's user, project and local settings files, so the panel does
+  not inherit the user's own coding setup (their `CLAUDE.md` included).
+- `--mcp-config <file>` + `--strict-mcp-config`: PlotJuggler's endpoint as the one server, `pj`,
+  and no other. The file is `0600`, because the bearer token would otherwise be visible in
+  `/proc/<pid>/cmdline` to any local user. On Windows there is no mode bit and no `/proc`; the file
+  lives under `%TEMP%`, inside the signed-in user's own profile, so the per-user ACL that already
+  guards everything there is the stand-in.
+- `--allowedTools mcp__pj`: every tool of that server, so PlotJuggler alone decides which tools a
+  turn may call. It names a server, never a built-in, so it cannot let one back in.
+- `--resume <session_id>`: continuity across turns.
 
 The message goes in over **stdin**, never as an argument, for the same reason.
-
-### The MCP server
-
-A loopback HTTP server the plugin starts on first use and keeps for the life of the backend. It
-binds `127.0.0.1` on a scanned port, guards every request with a random per-session bearer
-token, and answers `initialize`, `tools/list` and `tools/call`. Replies are immediate JSON;
-there is no SSE channel because no tool here is long-running.
 
 ### Catalog injection
 
@@ -141,6 +96,23 @@ more of the catalog is stated once in the header and left off individual fields.
 tight even for bare counts falls back to the older two-step degradation (full tree, then topic
 names only), and it says so explicitly when truncated. That last part matters — a model that
 believes an incomplete listing is complete will confidently tell the user a signal does not exist.
+
+When more than one dataset is loaded the digest groups topics by dataset, and it says nothing about
+datasets when there is only one, because naming it every turn buys nothing but tokens. Without the
+grouping the model can neither offer to compare two runs nor avoid mixing them: it does not know
+there are two.
+
+A second block rides ahead of it: the "PlotJuggler features" listing (README, "Feature
+awareness"). It has its own hash in `HarnessMemory`, so loading a file does not re-send the plugin
+list and enabling a plugin does not re-send the loaded data; a changed listing carries
+"(The PlotJuggler features listing changed.)". Neither block may contain a blank line, because
+`stripCatalogPrefix` (`session_text.hpp`) finds the end of each by the first one when it replays a
+transcript; host strings are flattened to one line for that reason. It recognizes a features block
+by its whole header line (`isFeaturesHeader`, the same constants the producers use), so a message of
+the user's that merely opens with "PlotJuggler features" is kept. A turn that fails before the model
+answers with text or a tool call (the CLI not logged in, say) restores both hashes and
+`resumed_pending` (`restoreSentListings`), so the retry carries both blocks again.
+
 
 ## The Codex backend
 
@@ -208,228 +180,22 @@ ship.
 | | Claude Code | Codex (measured on 0.153) | OpenCode (from its docs; spike pending) |
 |---|---|---|---|
 | Built-in tools withheld | `--tools ""` | `features.shell_tool=false`, `features.unified_exec=false`, `web_search="disabled"`, `tools.view_image=false` + `--disable view_image`, `sandbox_mode="read-only"`, `approval_policy="never"`. Every call, ours included, runs inside Code Mode, a JavaScript host with no `require`, `process` or `fetch`; disabling that host would also disable our tools, so it stays on | `tools: { bash, read, write, edit, glob, grep, list, patch, webfetch, todowrite, todoread, task: false }` in a config file of ours |
-| Our tools reach the model | `--mcp-config <0600 file, %TEMP%-ACL on Windows>` + `--strict-mcp-config` + `--allowedTools mcp__pj__*` | `-c mcp_servers.pj.url=…`, the bearer token through `bearer_token_env_var` (never on the command line), `required=true`, and `default_tools_approval_mode="approve"` — without it every call fails with "requires approval, but approval policy is never" | `mcp.pj = { type: "remote", url, headers }` |
+| Our tools reach the model | `--mcp-config <0600 file, %TEMP%-ACL on Windows>` + `--strict-mcp-config` + `--allowedTools mcp__pj` | `-c mcp_servers.pj.url=…`, the bearer token through `bearer_token_env_var` (never on the command line), `required=true`, and `default_tools_approval_mode="approve"` — without it every call fails with "requires approval, but approval policy is never" | `mcp.pj = { type: "remote", url, headers }` |
 | Isolated from the machine | `--restricted` + the private cwd | `--ignore-user-config` (sign-in kept), `--ignore-rules`, `-C <workdir>`, `--disable memories shell_snapshot multi_agent plugins apps skill_search`; `model_instructions_file` replaces the "You are Codex" persona with ours | `OPENCODE_CONFIG` pointing at our file — the open question is whether it wins over the user's global file, which OpenCode merges rather than replaces |
 | Resume | `--resume <id>`; the cwd must match | `codex exec resume <uuid>` — no `-C` on `resume`, the process cwd is the workdir; any cwd works | `--session <id>` |
 | Cost | `total_cost_usd` + tokens in `result` | tokens only, in `turn.completed.usage` | `step_finish.cost` (USD) + tokens |
 | Conversation store | `~/.claude/projects/<cwd slug>/*.jsonl`, `ai-title` records | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; line 1 is `session_meta` with `id` and `cwd`; no title | `~/.local/share/opencode/` (layout version-dependent), or `opencode session list` / `export` / `session delete` |
 | Failed resume | `result` with `is_error` and `num_turns == 0` | exit 1 with no `thread.started` event; the reason is on stderr only | to measure |
 
-With the Codex backend, what the three share moves into three small files: `harness_workdir` (the fixed private cwd every
-harness is pinned to), `mcp_loopback` (the HTTP server plus its token, handed to each harness in
-the form that harness takes) and `harness_memory` (session id, the hash of the catalog already
-sent, the resumed-conversation flag) — one instance per backend, held by the panel, so switching
-backends never silently restarts a chat.
+
+What the harnesses share lives in two small files: `harness_workdir` (the fixed private cwd every
+harness is pinned to) and `harness_memory` (session id, the hash of the catalog already sent, the
+resumed-conversation flag; one per backend, held by the panel, so switching backends never silently
+restarts a chat). PlotJuggler's endpoint reaches each of them per turn, in `TurnTools::mcp`.
 
 One residue on Codex, accepted: `collaboration.spawn_agent` still works with `multi_agent`
 disabled. A sub-agent is the same process with the same configuration, so the spine holds; the
 instructions forbid it anyway.
-
-## Closing the loop on what it creates
-
-The model never sees the plot. Handed `{"created_markers_on": ...}` and nothing else, it cannot
-distinguish twelve shaded regions from four thousand vertical lines that merge into a wall at any
-zoom-out — and it reports both as a success, because from where it sits they are identical. That is
-not a reasoning failure; it is a missing sensor, and no amount of instruction fixes it.
-
-So the creation tools report facts rather than intentions:
-
-- `create_markers` reads the published set back out of the ObjectStore and returns the count and the
-  breakdown by kind. `{"regions": 12}` and `{"events": 4182}` are the difference between an
-  annotation and a wall. The tool description states the ~50 rule and this is what makes it
-  checkable — a rule the model has no way to evaluate is decoration.
-
-  It also returns `covered_s`: the **union** of the region intervals, the log time the regions
-  actually cover, omitted when the set has no regions. Its predecessor `span_s` was a trap — the
-  envelope, first marker's start to last marker's end. Marking speed above 15 m/s on a 231.5 s
-  drive produced two regions, `[99.3, 185.4]` and `[212.1, 221.1]`: 95.1 s covered, 41 % of the
-  log, and `span_s = 121.8` because the 26.7 s of *slow* driving between them sat inside the
-  envelope. The model read it as coverage and told the user "about 122 s, roughly half the drive"
-  — three times, in two separate sessions. That was the section's own principle turning on itself:
-  a true fact, named in a way that reads as a different fact, is worse than no fact. `covered_s`
-  merges overlaps rather than summing durations for the same reason — the name promises coverage,
-  so the number has to be coverage.
-- `create_derived_series` reports `points`: how many samples the new series has. With one input that
-  is the input's length, read from the Arrow header without decoding values; with several it is the
-  size of the timestamp intersection, which is what the join will actually produce.
-- `create_derived_object` reports a `bundle`: the same on-demand evaluation `evaluate`'s object path
-  returns, but for the node it just installed, read back immediately after the create — at the pin,
-  or the current playhead when there is none. "Created" alone tells the model nothing about an object
-  computation any more than it does about a marker set; the difference is that objects have no
-  `entryCount()`-shaped read-back to lean on at all, so the bundle IS the read-back, not an
-  approximation of one. A failed read-back does not fail the tool call — the node is installed either
-  way — it degrades the response (`bundle_unavailable`) instead.
-
-### Facts, never instructions
-
-A tool result states what happened. It does not say what to do next. The distinction sounds
-pedantic and is worth about a third of the round trips in a turn.
-
-`create_derived_series` used to append `verify_with: "read_series on <name>/value"`. It was added
-after watching models re-read what they had just created — the reasoning being that if they were
-going to do it anyway, we may as well name the right path. The effect was the opposite of helpful:
-the models were not going to do it anyway, they were doing it *because we suggested it*, and the
-suggestion fired on every create whether or not the result warranted a second look. Measured across
-the creation scenarios it cost 47 extra `read_series` calls and pulled the model into a
-check-and-retry loop that dragged 34 `list_created` and 25 `list_topics` calls along with it —
-each one a full round trip re-sending the whole conversation, to learn a number this response
-already had. Replacing the string with the number took total round trips from 44 to 31 (-30%) and
-tokens by 21%.
-
-The general rule, and the reason it is a rule rather than a one-off fix: **this code cannot make
-that decision well.** Whether a result deserves a closer look depends on what the user asked for,
-and the tool layer has not read the question. The model has. An `if` here is a guess competing with
-something that has the context — and it is a guess that fires unconditionally, which is worse than
-guessing occasionally.
-
-Note where the boundary falls. Explaining a *mechanism the model cannot discover* is a fact, not an
-instruction: the join-refusal message says multi-input transforms join on exact timestamp equality,
-because nothing in the catalog would ever reveal that. And a refusal is already a dead end, so
-naming what does work costs no extra call. The expensive mistake is prescribing a next step on a
-**success** path, where the model had nothing left to do until we invented an errand for it.
-
-Two things about the read-back are easy to get wrong. A marker topic holds **one** serialized
-`PlotMarkers` blob — `MarkerService` pushes the whole set at `Timestamp{0}` and republishes it on
-every change — so `entryCount()` returns 1 regardless of how many markers exist; the payload has to
-be decoded with `deserializePlotMarkers`. And the read service (`pj.toolbox_object_read.v1`) is
-optional: when the host omits it the answer simply carries no count, which is strictly better than
-the tool failing.
-
-## Evaluating without creating
-
-`evaluate` uses the same Luau transform contract and input resolution as `create_derived_series`,
-but installs a uniquely named `EPHEMERAL` transform, reads its numeric output once, and removes it
-on every return path with an RAII guard. It never calls `notify_data_changed`. The output is absent
-from the GUI catalog and layout, while the plugin-facing catalog ABI still enumerates it; that
-separation is what lets `readOne` return statistics and optional buckets without exposing a Custom
-Series row or triggering a catalog rebuild.
-
-### The object path: submit/poll/release instead of create/read/remove
-
-`evaluate` gains a second path, routed to before any of the scalar-path code above runs: selected
-when any input resolves as an object topic (`resolveObjectTopic` against `catalogSnapshotV2()`), or
-when the model passed `at_s`/`window` at all — even over scalar inputs, since those still need a
-CONSUMER-requested time rather than the whole series. Objects never round-trip through the catalog
-as bytes, so this path does not create-then-read like the scalar one; it goes straight at
-`pj.data_processors.v1`'s typed evaluation surface: `validateScript("on_demand", ...)`, then
-`submitEvaluation` of an `EPHEMERAL` `kind="on_demand"` request (id `__evaluate_N`, the same counter
-the scalar path uses, so both share one namespace). `pollEvaluation` runs once per GUI tick.
-A `PENDING` result returns a `ToolResult` continuation, which `GuiExecutor` requeues without
-waking the waiting backend. The next tick supplies a fresh `ToolContext`; no catalog snapshot
-or stack-local context is retained across ticks. The deadline is the evaluation budget plus
-one second of headroom.
-
-`PendingEvaluation` owns the handle and releases it exactly once on completion, host failure,
-cancellation, timeout, or destruction. Cancel and shutdown destroy queued continuations on the
-GUI thread while host services remain valid; abandoned worker requests are released at the next
-GUI tick. The same continuation serves `create_derived_object`'s post-create readback, so polling
-never repeats the persistent installation or its notification.
-
-The script itself is a different shape too: not a per-sample `T:calculate` closure
-(`buildTransformScript`) but a single chunk evaluated once per requested instant
-(`buildOnDemandChunk`, in `common/derived_recipes`, shared with the Transform Editor; `luau_transform.hpp` re-exports it) — `local inputs, params = ...` bound at the top, the
-model's `body` reading `inputs["<topic>"]` by its literal name and returning a table of the
-declared, TYPED `outputs`.
-
-Display seconds go in and come back out through the same per-source AFFINE offset
-`applyDisplayWindow` already uses for `t_start_s`/`t_end_s` (`display(raw) = raw*1e-9 + offset`, a
-per-DATASET constant): `toRawNs` derives it from ONE forward conversion of raw `0` — any raw value on
-the source works, since the offset does not depend on which sample it came from — then inverts it.
-The anchor source is the FIRST resolved input's dataset. Coming back out, `convertBundleTimes`
-converts every bundle's `requested_ns`/`stamp_ns`/`inputs[].resolved_ns` to `*_s` the same way,
-keeping the untouched nanoseconds under `raw_ns` only when the model passed `debug: true`; `coverage`
-rides back verbatim, and `bundles` is capped to the LAST 50 (`renderBundles`) with `"truncated": true`
-when the host produced more.
-
-## Installing an object computation: `create_derived_object`
-
-Mirrors `create_derived_series`'s persisted-node shape (`createHistoryExempt`, the same
-already-exists guard, `notify_data_changed` on success) but through `createV2` with a typed
-`DataProcessorRequest` instead of `createTransform`'s bare string arrays — objects need typed
-outputs and, for a pin, an `instant_ns` `create_data_processor` itself has no field for. Without
-`pin_at_s` the installed node stays live, re-evaluated wherever a later consumer (`scene_view`,
-below) asks; with it, `instant_ns` is set on the create request itself, which is
-what makes a pin a FINDING rather than a live node that happens to be looked at once. Either way the
-tool then calls `submitEvaluation` on the node it just installed (`id` naming it, an EMPTY script —
-`request->id naming an installed on_demand node ... with an empty script evaluates that node`, per
-the ABI doc-comment) at the pin or the current playhead, through the same `submitAndPoll` +
-`renderBundles` evaluate's object path uses, and returns the first bundle: a finding is worth
-nothing if the model has to ask twice to see what it made.
-
-## Where the assistant is allowed to draw
-
-It composes plot tabs of its own, through `pj.plot_tabs.v1`, and those are the only plots it can
-touch. This is not a rule it is asked to follow. The host builds one bridge per bound plugin and
-every callback behind it captures that plugin's identity, so the identity never crosses the wire
-and cannot be named, guessed or forged; a tab the assistant did not compose is rejected exactly as
-an unknown one is. It cannot even discover that the user's tabs exist.
-
-`pj.viewport.v1` narrows to the same set, which is what removed the assistant's old reach into the
-user's plots — `zoom_to_time_range` and `zoom_reset` are gone. Asked to reframe a tab it does not
-own, it says so and offers the same view in one of its own. The boundary is the VIEW, though:
-playback stays global, because the application has one time cursor shared by every plot and no tab
-can contain it.
-
-Every model-created tab carries a permanent "AI" mark in the corner of its canvas. It is painted by
-the host, not requested by the plugin — a mark the drawer could suppress would not be worth reading.
-
-On supporting hosts, owned tabs are persistent but outside history authority. A full layout capture
-writes their `owner_plugin` and `tab_id`; a layout restore replaces the workspace and reconstructs
-them, including the ownership map and watermark. A history capture omits them, so undo/redo neither
-removes nor recreates one. If the owning plugin is absent while loading a layout, the host keeps the
-tab and its metadata and marks the plugin unavailable instead of discarding the view. Closing an
-owned tab still closes the view, never a series. Older hosts may keep owned tabs only for the
-session, which is why `plot_tab list` remains the authority after resuming.
-
-Persistent transforms and marker generators follow the same split between a full layout restore
-and history restore. When compiled with `PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT`, creation requests
-that scope and reads the stored recipe back; an absent or false `history_exempt`, a read failure, or
-a reserved-bit fallback is disclosed as unavailable undo protection. The repository pins SDK
-0.34.0, the release that carries the flag, so a build at the pin requests history exemption; a
-host older than that refuses the bit and the same disclosure applies.
-
-Each action answers with the tab as the host holds it, and the verdict is read from those contents
-rather than from what the calls returned. The host may accept a curve and resolve it to nothing, so
-"the call succeeded" is not yet "the curve is drawn" — the same reason `create_markers` reads its
-own output back out of the store instead of reporting an intention.
-
-`scene_view` (block 3.3) draws the same boundary over the scene tabs of `pj.plot_tabs.v1` for the 3D/2D
-object viewer: `PlotTabHostView`'s tail slots (`create_tab_v2`/`attach_topic`/`detach_topic`/
-`focus_tab`, each reporting a missing slot as an error) serve them, the host lists plot and scene tabs together
-(a scene tab's config carries a `kind` of `3d`/`2d`, a plot tab's does not, which is how `plot_tab`
-and `scene_view` each list only their own), the same per-plugin
-bridge identity scopes it to tabs this assistant composed, and a tab it did not create is
-unreachable exactly as a foreign tab is — the host enforces it, `sceneViewTool` never sees the
-user's scene docks at all. `attach`/`detach` resolve their `topics` argument through
-`resolveObjectTopic` against `catalogSnapshotV2()` (the same object-topic resolution `evaluate`'s
-object path and `create_derived_object` use), then hand the host the bare topic name and its
-resolved dataset source; the tool's answer is `tab_config` read back per topic, not the call's own
-verdict, for the identical reason `plot_tab`'s `add`/`remove` read the tab back — the host may accept
-`attach_topic` and place the topic nowhere (a kind the view's `"3d"`/`"2d"` does not accept, or a
-name it cannot resolve), and that has to show as "did not land", not as a drawing that never
-happened. Requires the scene tabs of `pj.plot_tabs.v1` (SDK >= 0.38.0), a newer surface than `plot_tab`'s own
-floor (0.34.0); an older host gets a clean "not exposed" instead of the tool silently doing
-nothing.
-
-## Refusing to build an empty curve
-
-Multi-input transforms join on **exact timestamp equality**. Inputs that share no timestamps produce
-a series with zero points, created "successfully" and drawn as nothing. That is not an exotic case:
-two recordings of the same robot are exactly that.
-
-Before installing anything, the tool measures the real intersection of the inputs' timestamps — not
-their sample rates, because two 100 Hz series offset by half a sample share nothing while looking
-perfectly compatible. An empty intersection is refused with both halves of the answer: why, and what
-does work instead (read each series and compare statistics, or plot them together). Wanting to
-relate two runs is legitimate even when a joined series cannot express it.
-
-## Several datasets at once
-
-`PJ_topic_info_t` carries the data source each topic belongs to, and the catalog lists the sources
-by name. The digest groups by dataset whenever more than one is loaded — and says nothing when there
-is only one, because naming it every turn buys nothing but tokens. `list_topics` takes a `dataset`
-filter, and `describe_topic` names the owner. Without this the model can neither offer to compare
-two runs nor avoid mixing them, for the same reason: it does not know there are two.
 
 ## Where the conversation lives
 
@@ -469,8 +235,8 @@ file this plugin does not own and whose format carries no contract:
   an error the caller has to special-case.
 
 **The conversation belongs to its backend.** `LlmBackend` exposes
-`listConversations()`/`loadTranscript()`/`deleteConversation()` with empty defaults, so `Echo` and
-`Fake` simply have none; `ClaudeBackend` and `CodexBackend` each resolve their own `work_dir_` the
+`listConversations()`/`loadTranscript()`/`deleteConversation()` with empty defaults, so `Echo`
+simply has none; `ClaudeBackend` and `CodexBackend` each resolve their own `work_dir_` the
 same way `sendUserMessage` does (through the same `ensureWorkDir`, `harness_workdir.hpp`) and read
 their own harness's store (`claude_sessions.hpp` / `codex_sessions.hpp`). Now that a second harness
 actually exists: `AssistantDialog` holds one `HarnessMemory` per backend key
@@ -515,8 +281,8 @@ after a turn completes) would silently drop every row's trash can.
 **A resumed conversation refreshes current state.** The loaded layout and the set of tabs owned by
 this plugin may differ from what the transcript describes; `--resume` still replays that earlier
 history. So `switchToConversation` sets `HarnessMemory::resumed_pending`, which forces
-`composePayload` (`harness_memory.hpp`, shared by every backend) to re-send the catalog on the very
-next turn with a note instead of silence:
+`composePayload` (`harness_memory.hpp`, shared by every backend) to re-send both listings (features
+and catalog) on the very next turn, the catalog with a note instead of silence:
 *"Resumed conversation. The tabs you composed earlier may no longer exist; plot_tab with action list reports the ones that do. The listing above is the
 data loaded now."* Consumed once, the same way the ordinary "the loaded data changed" note is.
 
@@ -531,8 +297,8 @@ Three boundaries carried over unchanged from the old design:
   itself), so `--resume`/`resume` across a restart (and the drawer listing anything at all) depends
   on every instance running in the same place.
 - **"New chat" clears the pointer, not the harness's file.** It clears the transcript, the cost
-  ledger and the ACTIVE backend's `HarnessMemory` in place (no backend rebuild, so the MCP server
-  stays up and the next turn sends no `--resume`), and clears that backend's
+  ledger and the ACTIVE backend's `HarnessMemory` in place (no backend rebuild, so the next turn
+  sends no `--resume`), and clears that backend's
   `assistant.conv.<key>.session_id` — but it does not delete anything on disk, and it does not
   touch the OTHER backend's memory or pointer. The old conversation stays in the harness's store
   and in the drawer; the trash-can icon on a drawer row is the only gesture that deletes.
@@ -577,6 +343,6 @@ literally says: a header row with the Settings button and the drawer beside the 
 
 ## Threading of the panel
 
-`PanelEngine` ticks at 20 Hz. `onTick` drains the `GuiExecutor` queue and pushes any dirty
-widget state. The transcript render keeps everything but the last message frozen, because a
+`PanelEngine` ticks at 20 Hz. `onTick` drains the events the backend posted from the worker and
+pushes any dirty widget state; it runs no tool, because PlotJuggler does. The transcript render keeps everything but the last message frozen, because a
 streaming reply would otherwise re-render the whole history once per chunk.

@@ -18,10 +18,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <map>
-#include <optional>
+#include <memory>
 #include <string>
 #include <ulog_cpp/data_container.hpp>
+#include <ulog_cpp/reader.hpp>
 #include <vector>
 
 namespace ulog_container {
@@ -33,7 +35,10 @@ struct TimedParameter {
 
 class ULogContainer : public ulog_cpp::DataContainer {
  public:
-  ULogContainer();
+  /// `keep_samples = false` parses everything except the data records
+  /// themselves (the parameter clock still follows them): for readers that only
+  /// want the header, parameters and log messages.
+  explicit ULogContainer(bool keep_samples = true);
 
   // Overriding the setter would otherwise hide the base's fileHeader() getter.
   using ulog_cpp::DataContainer::fileHeader;
@@ -57,9 +62,39 @@ class ULogContainer : public ulog_cpp::DataContainer {
  private:
   uint64_t file_start_us_{0};
   uint64_t clock_us_{0};
-  std::map<uint16_t, std::optional<size_t>> timestamp_offsets_;
+  bool keep_samples_;
+  // Indexed by msg_id; kUnknownOffset until first seen, kNoTimestamp if absent.
+  std::vector<int64_t> timestamp_offsets_;
   std::map<std::string, uint64_t> last_stamp_us_;
   std::vector<TimedParameter> timed_changes_;
 };
+
+/// Reads `path` through `container` in 64 KiB chunks. `after_chunk(bytes_read)`
+/// returns false to stop early. Returns false if the file cannot be opened.
+template <typename AfterChunk>
+bool readLog(
+    const std::string& path, const std::shared_ptr<ulog_cpp::DataContainer>& container, AfterChunk&& after_chunk) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file.is_open()) {
+    return false;
+  }
+  ulog_cpp::Reader reader{container};
+  static constexpr size_t kChunkSize = 65536;
+  std::vector<uint8_t> buffer(kChunkSize);
+  uint64_t bytes_read = 0;
+  while (file) {
+    file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(kChunkSize));
+    auto count = static_cast<size_t>(file.gcount());
+    if (count == 0) {
+      break;
+    }
+    reader.readChunk(buffer.data(), static_cast<int>(count));
+    bytes_read += count;
+    if (!after_chunk(bytes_read)) {
+      break;
+    }
+  }
+  return true;
+}
 
 }  // namespace ulog_container

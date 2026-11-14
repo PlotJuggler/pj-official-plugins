@@ -18,6 +18,10 @@ class ToolboxFftConan(ConanFile):
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",
         "nlohmann_json/3.12.0",
-        "kissfft/131.1.0",
+        "pocketfft/0.0.0.cci.20240801",
     )
-    default_options = {"*:shared": False}
+    default_options = {
+        "*:shared": False,
+        # One FFT per click: no worker pool (and no pthread dependency) in the plugin.
+        "pocketfft/*:multithreading": False,
+    }

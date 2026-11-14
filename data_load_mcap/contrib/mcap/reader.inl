@@ -57,7 +57,8 @@ FileReader::FileReader(std::FILE* file)
 #if defined _WIN32 || defined __CYGWIN__
   offset_type s = _ftelli64(file_);
 #else
-  offset_type s = std::ftell(file_);
+  // PJ4 local patch: 64-bit offsets (see FileReader::offset_type).
+  offset_type s = ftello(file_);
 #endif
   if (s < 0) {
     throw std::system_error(errno, std::generic_category());
@@ -89,7 +90,8 @@ uint64_t FileReader::read(std::byte** output, uint64_t offset, uint64_t size) {
 #if defined _WIN32 || defined __CYGWIN__
     int status = _fseeki64(file_, (offset_type)offset, SEEK_SET);
 #else
-    int status = std::fseek(file_, (offset_type)offset, SEEK_SET);
+    // PJ4 local patch: 64-bit offsets (see FileReader::offset_type).
+    int status = fseeko(file_, (offset_type)offset, SEEK_SET);
 #endif
     if (status < 0) {
       throw std::system_error(errno, std::generic_category());
@@ -909,6 +911,12 @@ Status McapReader::ParseChunk(const Record& record, Chunk* chunk) {
   chunk->messageEndTime = internal::ParseUint64(record.data + 8);
   chunk->uncompressedSize = internal::ParseUint64(record.data + 8 + 8);
   chunk->uncompressedCrc = internal::ParseUint32(record.data + 8 + 8 + 8);
+  // PJ4 local patch: see McapReader::MaxChunkUncompressedSize.
+  if (chunk->uncompressedSize > MaxChunkUncompressedSize) {
+    const auto msg = internal::StrCat("invalid Chunk.uncompressed_size: ", chunk->uncompressedSize, " exceeds ",
+                                      MaxChunkUncompressedSize);
+    return Status{StatusCode::InvalidRecord, msg};
+  }
 
   size_t offset = 8 + 8 + 8 + 4;
 
@@ -928,6 +936,14 @@ Status McapReader::ParseChunk(const Record& record, Chunk* chunk) {
   offset += 8;
   if (chunk->compressedSize > record.dataSize - offset) {
     const auto msg = internal::StrCat("invalid Chunk.records length: ", chunk->compressedSize);
+    return Status{StatusCode::InvalidRecord, msg};
+  }
+  // PJ4 local patch (not upstream; re-apply on any mcap re-vendor).
+  // Uncompressed records ARE the decompressed chunk: readers copy uncompressedSize bytes from them, so a larger
+  // declared size would read past the record.
+  if (chunk->compression.empty() && chunk->uncompressedSize != chunk->compressedSize) {
+    const auto msg = internal::StrCat("invalid uncompressed Chunk: uncompressed_size ", chunk->uncompressedSize,
+                                      " != records length ", chunk->compressedSize);
     return Status{StatusCode::InvalidRecord, msg};
   }
   // records

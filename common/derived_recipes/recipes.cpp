@@ -284,9 +284,7 @@ SeriesLookup resolveSeriesPath(const PJ::sdk::CatalogSnapshot& catalog, const st
   return resolveSeriesPath(catalog, series, datasetByTopicIndex(catalog));
 }
 
-// The error a failed lookup should produce: self-contained, so the model can
-// fix the path from the message alone.
-std::string seriesLookupError(const std::string& series, const SeriesLookup& lookup, Audience audience) {
+std::string seriesLookupError(const std::string& series, const SeriesLookup& lookup) {
   if (lookup.ambiguous) {
     std::string msg = "'" + series + "' is ambiguous; it matches ";
     for (std::size_t i = 0; i < lookup.candidates.size(); ++i) {
@@ -296,18 +294,13 @@ std::string seriesLookupError(const std::string& series, const SeriesLookup& loo
     msg += ". Use the full path.";
     return msg;
   }
-  if (audience == Audience::kUser) {
-    return "unknown series '" + series + "'; pick a series or object topic from the list.";
-  }
-  return "unknown series '" + series +
-         "'. If you expected it to exist, call list_topics (with a filter) or describe_topic once to check before "
-         "concluding it is missing.";
+  return "unknown series '" + series + "'; pick a series or object topic from the list.";
 }
 
 // The DataSourceHandle a resolved series' dataset qualifies to, for
 // toDisplayTimeForSource — which needs a handle, while ResolvedSeries only
-// carries the dataset's NAME (empty when at most one dataset is loaded, see
-// tool_registry.hpp). Matches the name against the catalog's data sources; an
+// carries the dataset's NAME (empty when at most one dataset is loaded).
+// Matches the name against the catalog's data sources; an
 // empty name with exactly one loaded source is that source, unambiguously.
 std::optional<PJ::sdk::DataSourceHandle> dataSourceHandleFor(
     const PJ::sdk::CatalogSnapshot& catalog, const std::string& dataset_name) {
@@ -423,8 +416,7 @@ std::string objectLookupError(const std::string& want, const ObjectLookup& looku
 }
 
 ResolvedEvalInputs resolveEvalInputs(
-    PJ::sdk::ToolboxHostView& host, const PJ::sdk::CatalogSnapshotV2& v2, const std::vector<std::string>& raw_inputs,
-    Audience audience) {
+    PJ::sdk::ToolboxHostView& host, const PJ::sdk::CatalogSnapshotV2& v2, const std::vector<std::string>& raw_inputs) {
   ResolvedEvalInputs out;
   for (const auto& in : raw_inputs) {
     ObjectLookup obj_lookup = resolveObjectTopic(v2, in);
@@ -447,7 +439,7 @@ ResolvedEvalInputs resolveEvalInputs(
     }
     auto lookup = resolveSeriesPath(*catalog, in);
     if (!lookup.resolved) {
-      out.error = seriesLookupError(in, lookup, audience);
+      out.error = seriesLookupError(in, lookup);
       return out;
     }
     ResolvedEvalInput r;
@@ -627,30 +619,6 @@ BuiltScript buildTransformScript(
   src += "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n";
   src += "return T\n";
   out.script = std::move(src);
-  return out;
-}
-
-ParsedOutputs parseTypedOutputs(const nlohmann::json& arr) {
-  ParsedOutputs out;
-  for (const auto& o : arr) {
-    if (!o.is_string()) {
-      out.error = "'outputs' entries must be strings \"name:type\"";
-      return out;
-    }
-    const std::string spec = o.get<std::string>();
-    const std::size_t colon = spec.find(':');
-    if (colon == std::string::npos || colon == 0 || colon + 1 == spec.size()) {
-      out.error =
-          "'outputs' entries must be \"name:type\" (type is 'number', 'string', or a builtin object type "
-          "like 'kPointCloud'), got '" +
-          spec + "'";
-      return out;
-    }
-    out.outputs.push_back({spec.substr(0, colon), spec.substr(colon + 1)});
-  }
-  if (out.outputs.empty()) {
-    out.error = "'outputs' must declare at least one \"name:type\"";
-  }
   return out;
 }
 

@@ -38,7 +38,7 @@ target_link_libraries(pj_video_demux PUBLIC
   ffmpeg::avutil
 )
 
-# ffmpeg/8.1's ConanCenter recipe compiles avformat with the udp/tcp protocol
+# ffmpeg/8.1.2's ConanCenter recipe compiles avformat with the udp/tcp protocol
 # and the Windows Schannel TLS backend unconditionally on Windows (the
 # `disable_all_protocols=True` option is honoured for the on-disk demuxer
 # selection but not for the linker symbol footprint). Consumers therefore

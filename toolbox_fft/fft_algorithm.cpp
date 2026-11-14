@@ -1,17 +1,15 @@
 #include "fft_algorithm.hpp"
 
+#include <pocketfft_hdronly.h>
+
 #include <algorithm>
-#include <climits>
 #include <cmath>
 #include <iomanip>
 #include <limits>
+#include <new>
 #include <numbers>
 #include <sstream>
 #include <utility>
-
-extern "C" {
-#include <kissfft/kiss_fftr.h>
-}
 
 namespace PJ::fft {
 namespace {
@@ -35,20 +33,34 @@ double windowWeight(WindowFunction window, std::size_t index, std::size_t count)
 
 }  // namespace
 
+std::size_t fftLength(std::size_t count, std::size_t budget_bytes) {
+  std::size_t n = count & ~std::size_t{1};          // An even length keeps an exact Nyquist bin.
+  constexpr std::size_t kWorstBytesPerSample = 80;  // measured ~76 on pocketfft's float Bluestein path
+  if (n <= budget_bytes / kWorstBytesPerSample) {
+    return n;
+  }
+  const auto smooth = [](std::size_t m) {
+    for (const std::size_t p : {2U, 3U, 5U, 7U, 11U}) {
+      while (m % p == 0) {
+        m /= p;
+      }
+    }
+    return m == 1;
+  };
+  while (!smooth(n)) {  // 11-smooth lengths are dense: a few thousand steps at most
+    n -= 2;
+  }
+  return n;
+}
+
 FftComputation computeFft(
     const std::int64_t* timestamps, const double* values, std::size_t count, bool remove_dc, WindowFunction window,
-    double max_relative_interval_deviation) {
+    double max_relative_interval_deviation, std::size_t memory_budget_bytes) {
   if (timestamps == nullptr || values == nullptr || count < 8) {
     return failure(FftError::kTooFewSamples, "Need at least 8 samples");
   }
 
-  std::size_t n = count;
-  if ((n & 1U) != 0U) {
-    --n;  // kiss_fftr requires an even input length.
-  }
-  if (n > static_cast<std::size_t>(INT_MAX)) {
-    return failure(FftError::kInputTooLarge, "Input is too large for the FFT backend");
-  }
+  const std::size_t n = fftLength(count, memory_budget_bytes);
 
   long double span_ns = 0.0L;
   long double max_interval_deviation_ns = 0.0L;
@@ -91,25 +103,26 @@ FftComputation computeFft(
     average /= static_cast<long double>(n);
   }
 
-  std::vector<kiss_fft_scalar> input(n);
+  // Float, like the kissfft build this replaces: ~1e-7 relative to the peak, and half the
+  // memory of double on pocketfft's Bluestein path (~76 vs ~152 bytes per sample).
+  std::vector<float> input(n);
   long double coherent_sum = 0.0L;
   for (std::size_t i = 0; i < n; ++i) {
     const double weight = windowWeight(window, i, n);
     coherent_sum += static_cast<long double>(weight);
-    input[i] = static_cast<kiss_fft_scalar>((static_cast<long double>(values[i]) - average) * weight);
+    input[i] = static_cast<float>((static_cast<long double>(values[i]) - average) * weight);
   }
   if (!(coherent_sum > std::numeric_limits<long double>::epsilon())) {
     return failure(FftError::kAllocationFailed, "FFT window has zero coherent gain");
   }
 
-  std::vector<kiss_fft_cpx> output(n / 2 + 1);
-  kiss_fftr_cfg config = kiss_fftr_alloc(static_cast<int>(n), 0, nullptr, nullptr);
-  if (config == nullptr) {
+  try {
+    // pocketfft stays O(n log n) for any n (Bluestein for large prime factors). In place, the
+    // output is FFTPACK half-complex: re0, re1, im1, ..., re(n/2-1), im(n/2-1), re(n/2) (n even).
+    pocketfft::detail::pocketfft_r<float>(n).exec(input.data(), 1.0f, true);
+  } catch (const std::bad_alloc&) {
     return failure(FftError::kAllocationFailed, "FFT backend allocation failed");
   }
-
-  kiss_fftr(config, input.data(), output.data());
-  KISS_FFT_FREE(config);
 
   FftComputation computation;
   auto& result = computation.result;
@@ -122,9 +135,12 @@ FftComputation computeFft(
   const double coherent_gain = static_cast<double>(coherent_sum);
   for (std::size_t i = 0; i <= n / 2; ++i) {
     result.frequencies_hz.push_back(static_cast<double>(i) * sample_rate_hz / static_cast<double>(n));
-    double amplitude = std::hypot(static_cast<double>(output[i].r), static_cast<double>(output[i].i)) / coherent_gain;
-    if (i != 0 && i != n / 2) {
-      amplitude *= 2.0;
+    double amplitude = 0.0;
+    if (i == 0 || i == n / 2) {
+      amplitude = std::abs(static_cast<double>(input[i == 0 ? 0 : n - 1])) / coherent_gain;
+    } else {
+      amplitude =
+          2.0 * std::hypot(static_cast<double>(input[2 * i - 1]), static_cast<double>(input[2 * i])) / coherent_gain;
     }
     result.amplitudes.push_back(amplitude);
   }

@@ -40,7 +40,7 @@ DISTROS_FILE="${SCRIPT_DIR}/distros.env"
 # Distros that also get a RoboStack payload (dist/<distro>-robostack/), built
 # natively with pixi rather than in Docker. Keep in sync with the environments
 # in ../robostack/pixi.toml.
-ROBOSTACK_DISTROS=(jazzy kilted)
+ROBOSTACK_DISTROS=(jazzy kilted lyrical)
 
 MODE=""
 DISTRO=""
@@ -282,6 +282,8 @@ case "${MODE}" in
     build_proxy
     ;;
   bundle)
+    # The zip is a Linux artifact; on macOS robostack/build.sh would stage Mach-O payloads into it.
+    [[ "$(uname)" == Linux ]] || { echo "error: --bundle runs on Linux only" >&2; exit 2; }
     build_all_distros
     build_robostack_distros
     build_proxy

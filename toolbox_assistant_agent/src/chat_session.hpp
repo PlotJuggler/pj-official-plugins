@@ -10,13 +10,12 @@
 namespace assistant_agent {
 
 // Where a conversation turn is in its lifecycle. The panel is single-turn:
-// the user sends one message, the backend thinks (WaitingForLlm), optionally
-// runs tools (ExecutingTool), then returns to Idle. The input box + Send are
-// only enabled in Idle; Cancel is only enabled otherwise.
+// the user sends one message, the backend works on it (WaitingForLlm), then
+// it returns to Idle. The input box + Send are only enabled in Idle; Cancel is
+// only enabled otherwise.
 enum class TurnState {
   Idle,           // ready to accept a new user message
   WaitingForLlm,  // request in flight to the backend
-  ExecutingTool,  // a tool call is running (on the GUI thread via GuiExecutor)
 };
 
 // One rendered message in the transcript. `Tool` rows carry the model's tool
@@ -109,8 +108,6 @@ class ChatSession {
         return pj::localization::text("Ready", "就绪", "就緒");
       case TurnState::WaitingForLlm:
         return pj::localization::text("Thinking…", "正在思考…", "正在思考…");
-      case TurnState::ExecutingTool:
-        return pj::localization::text("Running a tool…", "正在运行工具…", "正在執行工具…");
     }
     return {};
   }

@@ -16,6 +16,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -30,6 +31,7 @@
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/poses_in_frame.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
+#include "pj_base/builtin/video_frame.hpp"
 
 namespace mosaico {
 
@@ -98,6 +100,14 @@ namespace {
     }
   }
   return ctx.fallback_timestamp;
+}
+
+[[nodiscard]] bool hasValueAt(const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
+  if (!col || row < 0 || row >= col->length()) {
+    return false;
+  }
+  const auto scalar = col->GetScalar(row);
+  return scalar.ok() && (*scalar)->is_valid;
 }
 
 // Read a UTF-8 string handling STRING / LARGE_STRING / STRING_VIEW.
@@ -813,6 +823,65 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeImage(
   return PJ::sdk::ObjectRecord{ts_ns, std::move(img)};
 }
 
+// Writers name the H.265 codec "hevc" (FFmpeg) or "h265"; the SDK names it "h265".
+[[nodiscard]] std::optional<std::string> videoFormatName(std::string_view format) {
+  if (format == "h264") {
+    return "h264";
+  }
+  if (format == "hevc" || format == "h265") {
+    return "h265";
+  }
+  return std::nullopt;
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> decodeVideo(
+    const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::Table>& table) {
+  const std::string& topic_name = ctx.ontology_tag;
+  if (!table) {
+    return PJ::unexpected(std::string("video topic '") + topic_name + "': null table");
+  }
+  const auto data_col = table->GetColumnByName("data");
+  if (!data_col) {
+    return PJ::unexpected(std::string("video topic '") + topic_name + "' missing 'data' column");
+  }
+  constexpr std::int64_t row = 0;
+  const auto bytes_span = arrowBinaryAt(data_col, row);
+  if (bytes_span.empty()) {
+    return PJ::unexpected(std::string("video topic '") + topic_name + "': missing/empty 'data'");
+  }
+  const std::string codec = arrowStringAt(table->GetColumnByName("format"), row);
+  const auto format = videoFormatName(codec);
+  if (!format) {
+    return PJ::unexpected(
+        std::string("video topic '") + topic_name + "': unsupported codec '" + codec +
+        "' (expected h264, hevc or h265)");
+  }
+
+  // The store key is the decode-order message time; the display time is the presentation time carried by the header,
+  // which differs from it when the stream has B-frames.
+  const auto ts_col = !ctx.ts_field ? nullptr : table->GetColumnByName(*ctx.ts_field);
+  const auto key = objectTimestampNs(ctx, ts_col, row);
+  if (!key) {
+    return PJ::unexpected(key.error());
+  }
+  std::int64_t presentation_ns = *key;
+  const auto seconds_col = table->GetColumnByName("header/timestamp/seconds");
+  const auto nanos_col = table->GetColumnByName("header/timestamp/nanoseconds");
+  if (hasValueAt(seconds_col, row) && hasValueAt(nanos_col, row)) {
+    presentation_ns = static_cast<std::int64_t>(arrowI32At(seconds_col, row)) * 1'000'000'000 +
+                      static_cast<std::int64_t>(arrowI32At(nanos_col, row));
+  }
+
+  PJ::sdk::VideoFrame frame;
+  frame.timestamp_ns = presentation_ns;
+  frame.frame_id = arrowStringAt(table->GetColumnByName("header/frame_id"), row);
+  frame.format = *format;
+  frame.data = bytes_span;
+  frame.anchor =
+      std::make_shared<std::pair<std::shared_ptr<arrow::Table>, PJ::sdk::BufferAnchor>>(table, ctx.payload_anchor);
+  return PJ::sdk::ObjectRecord{*key, std::move(frame)};
+}
+
 PJ::Expected<PJ::sdk::ObjectRecord> decodePointCloud(
     const MosaicoObjectOptions& ctx, const std::shared_ptr<arrow::Table>& table) {
   const std::string& topic_name = ctx.ontology_tag;
@@ -1310,6 +1379,22 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeColumnarCloud(
   return PJ::sdk::ObjectRecord{ts_ns, std::move(cloud)};
 }
 
+bool isVideoTopic(const std::shared_ptr<const arrow::KeyValueMetadata>& metadata) {
+  if (!metadata) {
+    return false;
+  }
+  const auto raw = metadata->Get("mosaico:user_metadata");
+  if (!raw.ok()) {
+    return false;
+  }
+  const auto user = nlohmann::json::parse(*raw, nullptr, false);
+  if (!user.is_object()) {
+    return false;
+  }
+  const auto codec = user.find("video_codec");
+  return codec != user.end() && codec->is_string() && videoFormatName(codec->get<std::string>()).has_value();
+}
+
 PJ::Expected<PJ::sdk::ObjectRecord> decodeMosaicoObject(
     const MosaicoObjectOptions& options, const std::shared_ptr<arrow::Table>& table) {
   if (!table || table->num_rows() != 1) {
@@ -1321,6 +1406,9 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeMosaicoObject(
   }
   const auto& tag = options.ontology_tag;
   if (isImageOntology(tag)) {
+    if (options.video) {
+      return decodeVideo(options, *flat);
+    }
     return decodeImage(options, *flat);
   }
   if (isPointCloudOntology(tag)) {

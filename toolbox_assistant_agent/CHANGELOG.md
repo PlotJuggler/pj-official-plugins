@@ -3,6 +3,36 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## [0.5.0] - 2026-11-08
+
+### Changed
+- The assistant's tools now run in PlotJuggler itself: the panel connects
+  its agent CLI to PlotJuggler's own MCP server, on an endpoint private to
+  the panel, instead of serving the tools from the plugin. What the tools can
+  do now follows your PlotJuggler version.
+- Requires PlotJuggler 4.2 or newer (host SDK 0.40.0): an older PlotJuggler
+  cannot load this release. On a PlotJuggler that meets that but does not
+  provide the assistant's MCP endpoint, or whose MCP server cannot start, the
+  panel still opens and each message ends with a note saying why.
+
+## [0.4.0] - 2026-10-26
+
+### Added
+- The assistant now answers questions about PlotJuggler itself ("how do I
+  show an image?", "how do I use MQTT?") from what this PlotJuggler offers:
+  its built-in features, the plugins loaded, installed but disabled, or
+  available in the Extensions Marketplace, and its known limitations. It
+  names the feature and where to start it, says when a plugin has to be
+  installed or enabled first, and no longer sends you to another tool for
+  something PlotJuggler can do. The list comes from PlotJuggler itself when it
+  provides one (SDK 0.39.0 and later); otherwise the assistant uses a short
+  reference for PlotJuggler 4.1 that it carries itself.
+
+### Fixed
+- When a message failed before any answer (the CLI not logged in, for
+  example), the next message went out without the list of loaded data, so
+  the model never saw it. The retry now carries it again.
+
 ## [0.3.0] - 2026-10-05
 
 ### Added
@@ -59,6 +89,12 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 ### Fixed
 - The crop and pin examples handed to the model use the positional coordinate arrays the Luau
   binder accepts.
+- `create_derived_object` evaluated the node it had just installed with a language on the request,
+  which the host rejects for an installed node (its stored recipe is used), so the first bundle was
+  always reported as unavailable. The evaluation now carries only the id, kind and time. If that
+  evaluation fails and the host reports the node in the `error` state, the node is removed and the
+  tool fails with the host's detail, so the model corrects the script instead of being told it was
+  created.
 
 ### Requires
 - `create_derived_object`, the object path of `evaluate`, and `scene_view`

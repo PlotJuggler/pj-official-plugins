@@ -214,64 +214,27 @@ class CsvSource : public PJ::FileSourceBase {
       column_handles[col_idx] = *field;
     }
 
-    // --- Build merged timeline and write records ---
-    // Each data point is (timestamp_ns, column_index, is_string, numeric_value, string_value).
-    // We sort by timestamp and group all fields at the same timestamp into one record.
-    struct DataPoint {
-      int64_t ts_ns;
-      size_t col_idx;
-      bool is_string;
-      double numeric_val;
-      std::string string_val;
-    };
-
-    std::vector<DataPoint> all_points;
-    for (size_t col_idx : numeric_col_indices) {
-      const auto& col = result.columns[col_idx];
-      for (const auto& [t, v] : col.numeric_points) {
-        all_points.push_back({static_cast<int64_t>(t * 1e9), col_idx, false, v, {}});
-      }
-    }
-    for (size_t col_idx : string_col_indices) {
-      const auto& col = result.columns[col_idx];
-      for (const auto& [t, v] : col.string_points) {
-        all_points.push_back({static_cast<int64_t>(t * 1e9), col_idx, true, 0.0, v});
-      }
-    }
-    std::stable_sort(
-        all_points.begin(), all_points.end(), [](const DataPoint& a, const DataPoint& b) { return a.ts_ns < b.ts_ns; });
-
-    // Group by timestamp and write multi-field records
+    // --- Write one record per timestamp, straight from the parsed columns ---
     std::vector<PJ::sdk::BoundFieldValue> row_fields;
-    size_t i = 0;
-    while (i < all_points.size()) {
-      int64_t ts = all_points[i].ts_ns;
-      row_fields.clear();
-
-      // Collect all fields at this timestamp
-      // String values need to stay alive until appendBoundRecord completes,
-      // so we reference directly into all_points (stable since we don't modify it).
-      while (i < all_points.size() && all_points[i].ts_ns == ts) {
-        const auto& pt = all_points[i];
-        if (pt.is_string) {
-          row_fields.push_back({
-              .field = column_handles[pt.col_idx],
-              .value = std::string_view(pt.string_val),
-          });
-        } else {
-          row_fields.push_back({
-              .field = column_handles[pt.col_idx],
-              .value = pt.numeric_val,
-          });
-        }
-        i++;
-      }
-
-      auto status = writeHost().appendBoundRecord(
-          *topic, PJ::Timestamp{ts}, PJ::Span<const PJ::sdk::BoundFieldValue>(row_fields.data(), row_fields.size()));
-      if (!status) {
-        return status;
-      }
+    PJ::Status write_status = PJ::okStatus();
+    PJ::CSV::ForEachRecord(
+        result.columns, numeric_col_indices, string_col_indices,
+        [&](int64_t ts, const std::vector<PJ::CSV::RecordCell>& cells) {
+          row_fields.clear();
+          for (const auto& cell : cells) {
+            if (cell.text != nullptr) {
+              row_fields.push_back({.field = column_handles[cell.column], .value = std::string_view(*cell.text)});
+            } else {
+              row_fields.push_back({.field = column_handles[cell.column], .value = *cell.number});
+            }
+          }
+          write_status = writeHost().appendBoundRecord(
+              *topic, PJ::Timestamp{ts},
+              PJ::Span<const PJ::sdk::BoundFieldValue>(row_fields.data(), row_fields.size()));
+          return write_status.has_value();
+        });
+    if (!write_status) {
+      return write_status;
     }
 
     runtimeHost().reportMessage(

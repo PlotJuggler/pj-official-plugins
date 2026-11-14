@@ -46,6 +46,7 @@ import argparse
 import ctypes
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -61,7 +62,11 @@ from pathlib import Path
 # =============================================================================
 
 REQUIRED_MANIFEST_FIELDS = ["id", "name", "version", "category"]
-OPTIONAL_MANIFEST_FIELDS = ["description", "author", "publisher", "license"]
+# Optional free-text fields: when present they must be strings.
+# entry_point: where the user starts the extension in the host UI, as live
+# label strings (e.g. "Toolbox menu → FFT"); overrides the host's default
+# derived from category/tags.
+OPTIONAL_MANIFEST_FIELDS = ["description", "author", "publisher", "license", "entry_point"]
 
 VALID_PLATFORMS = [
     "linux-x86_64",
@@ -72,7 +77,7 @@ VALID_PLATFORMS = [
     "windows-arm64",
 ]
 
-VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox"]
+VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox", "widget"]
 
 # Semantic versioning regex (simplified: major.minor.patch with optional pre-release)
 import sys as _sys
@@ -80,7 +85,15 @@ import sys as _sys
 _sys.path.insert(0, str(Path(__file__).resolve().parent / "vendor"))
 import feature_floor_check as floor_core  # noqa: E402
 
-SEMVER_REGEX = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?(?:\+([a-zA-Z0-9.-]+))?$")
+# SemVer 2.0.0 grammar (semver.org), the one the PlotJuggler host and the registry
+# validator enforce; match it with fullmatch(). Groups: major, minor, patch, pre-release.
+_SEMVER_IDENTIFIER = r"(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+SEMVER_REGEX = re.compile(
+    rf"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    rf"(?:-({_SEMVER_IDENTIFIER}(?:\.{_SEMVER_IDENTIFIER})*))?"
+    r"(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?",
+    re.ASCII,
+)
 SDK_VERSION_REGEX = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}(?:-dev\.(?:0|[1-9][0-9]*))?")
 
 
@@ -92,9 +105,9 @@ SDK_VERSION_REGEX = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}(?:-
 class PluginVtable(ctypes.Structure):
     """
     Partial vtable structure matching PJ_data_source_vtable_t, PJ_message_parser_vtable_t,
-    and PJ_toolbox_vtable_t.
+    PJ_toolbox_vtable_t and PJ_widget_vtable_t.
 
-    All three vtable types have the same initial fields up to manifest_json:
+    All four vtable types have the same initial fields up to manifest_json:
     - protocol_version (uint32_t) at offset +0
     - struct_size (uint32_t) at offset +4
     - create (void* function pointer) at offset +8
@@ -129,13 +142,24 @@ def extract_binary_manifest(plugin_path: Path) -> dict | None:
     Returns:
         Manifest dict if found, None if extraction failed
     """
+    # Widget-family DLLs depend on Qt. Since Python 3.8 Windows does not resolve a ctypes-loaded
+    # DLL's dependencies through PATH, so point the loader at Qt's bin dir when the build exported it.
+    if sys.platform == "win32" and os.environ.get("QT_ROOT_DIR"):
+        qt_bin = Path(os.environ["QT_ROOT_DIR"]) / "bin"
+        if qt_bin.is_dir():
+            os.add_dll_directory(str(qt_bin))
     try:
         lib = ctypes.CDLL(str(plugin_path))
     except OSError:
         return None
 
     vtable = None
-    for func_name in ["PJ_get_data_source_vtable", "PJ_get_message_parser_vtable", "PJ_get_toolbox_vtable"]:
+    for func_name in [
+        "PJ_get_data_source_vtable",
+        "PJ_get_message_parser_vtable",
+        "PJ_get_toolbox_vtable",
+        "PJ_get_widget_vtable",
+    ]:
         try:
             get_vtable = getattr(lib, func_name)
             get_vtable.restype = ctypes.POINTER(PluginVtable)
@@ -238,6 +262,10 @@ def validate_manifest(manifest: dict) -> list[str]:
         if manifest["category"] not in VALID_CATEGORIES:
             errors.append(f"Invalid category: {manifest['category']} (valid: {VALID_CATEGORIES})")
 
+    for field in OPTIONAL_MANIFEST_FIELDS:
+        if field in manifest and not isinstance(manifest[field], str):
+            errors.append(f"Optional field {field} must be a string, got {type(manifest[field]).__name__}")
+
     return errors
 
 
@@ -295,16 +323,12 @@ def validate_manifest_file(manifest_path: Path) -> tuple[dict | None, list[str]]
 
 
 def validate_semver(version: str) -> bool:
-    """
-    Validate that a version string follows semantic versioning.
+    """Whether `version` is SemVer 2.0.0: X.Y.Z[-pre-release][+build], no leading zeros.
 
-    Args:
-        version: Version string to validate
-
-    Returns:
-        True if valid semver format, False otherwise
+    The registry and the host refuse anything else, so a release must fail here,
+    before its tag exists.
     """
-    return SEMVER_REGEX.match(version) is not None
+    return SEMVER_REGEX.fullmatch(version) is not None
 
 
 def parse_tag_version(tag: str) -> tuple[str, str] | None:
@@ -325,38 +349,22 @@ def parse_tag_version(tag: str) -> tuple[str, str] | None:
     return None
 
 
-def compare_versions(v1: str, v2: str) -> int:
+def semver_sort_key(version: str) -> tuple:
+    """Sort key with SemVer 2.0.0 precedence, the order the PlotJuggler host uses.
+
+    A pre-release sorts before its release (X.Y.Z-dev.N < X.Y.Z), numeric
+    pre-release identifiers compare as numbers and sort before alphanumeric
+    ones, and build metadata is ignored. A string that is not a version sorts
+    below every version.
     """
-    Compare two semantic version strings.
-
-    Args:
-        v1: First version
-        v2: Second version
-
-    Returns:
-        -1 if v1 < v2, 0 if equal, 1 if v1 > v2
-    """
-    def parse(v: str) -> tuple:
-        match = SEMVER_REGEX.match(v)
-        if not match:
-            return (0, 0, 0)
-        return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
-
-    p1, p2 = parse(v1), parse(v2)
-    if p1 < p2:
-        return -1
-    elif p1 > p2:
-        return 1
-    return 0
-
-
-def semver_sort_key(version: str) -> tuple[int, int, int, str]:
-    """Return a stable sort key for supported semantic versions."""
-    match = SEMVER_REGEX.match(version)
+    match = SEMVER_REGEX.fullmatch(version)
     if not match:
-        return (0, 0, 0, "")
-    prerelease = match.group(4) or ""
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3)), prerelease)
+        return ((0, 0, 0), 0, ())
+    core = tuple(int(match.group(i)) for i in (1, 2, 3))
+    if not match.group(4):
+        return (core, 1, ())
+    identifiers = tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in match.group(4).split("."))
+    return (core, 0, identifiers)
 
 
 # =============================================================================
@@ -732,7 +740,7 @@ def find_previous_release_tag(root: Path, source_name: str, current_tag: str) ->
         if not tag_info:
             continue
         _, version = tag_info
-        if compare_versions(version, current_version) < 0:
+        if semver_sort_key(version) < semver_sort_key(current_version):
             candidates.append((version, tag))
 
     if not candidates:
@@ -1335,10 +1343,15 @@ def cmd_resolve_build_scope(args) -> int:
     Outputs (key=value lines on stdout, redirected by the workflow into
     $GITHUB_OUTPUT):
       build_dir, build_script_args, conan_hash, scope, plugin_name,
-      platform, skip, use_release_override
+      platform, skip, use_release_override, needs_qt
 
     Notices and errors go to stderr where Actions still parses them as
     `::notice::` / `::error::` annotations.
+
+    A plugin whose manifest category is "widget" links Qt: it reports needs_qt=true so the workflow
+    installs the official Qt on that leg only. The host loads a widget library only when it was
+    built against the same Qt major.minor, so a widget manifest limits supported_platforms to where
+    CI installs the official Qt (linux-x86_64 and windows-x86_64).
 
     Optional per-plugin manifest fields honoured for plugin tags:
       supported_platforms  list of canonical "os-arch" strings (see
@@ -1360,6 +1373,7 @@ def cmd_resolve_build_scope(args) -> int:
     conan_hash_path = Path("conanfile.py")
     skip = False
     use_release_override = False
+    needs_qt = False
 
     is_plugin_tag = args.tag_type == "tag" and "/" in args.tag
 
@@ -1376,6 +1390,7 @@ def cmd_resolve_build_scope(args) -> int:
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text())
             platforms = manifest.get("supported_platforms")
+            needs_qt = manifest.get("category") == "widget"
             if platforms is not None and canonical_platform not in platforms:
                 skip = True
                 print(
@@ -1429,6 +1444,7 @@ def cmd_resolve_build_scope(args) -> int:
         "platform": canonical_platform,
         "skip": "true" if skip else "false",
         "use_release_override": "true" if use_release_override else "false",
+        "needs_qt": "true" if needs_qt and not skip else "false",
     }
     for key, value in outputs.items():
         print(f"{key}={value}")

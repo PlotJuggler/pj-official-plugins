@@ -21,9 +21,7 @@
 #include "chat_session.hpp"
 #include "claude_sessions.hpp"     // ConversationSummary
 #include "conversation_state.hpp"  // ConversationTitles
-#include "gui_executor.hpp"
 #include "llm_backend.hpp"
-#include "tool_registry.hpp"
 #include "usage_ledger.hpp"
 
 namespace assistant_agent {
@@ -32,7 +30,7 @@ class AssistantDialogTestPeer;
 class SettingsStore;
 
 // Character budget for the catalog digest handed to the model at the top of
-// every turn (catalogDigest, tool_registry.hpp), read from the settings key
+// every turn (catalogDigest, catalog_digest.hpp), read from the settings key
 // "assistant.catalog_budget_chars" and clamped to [1000, 200000]. An absent
 // or unparsable value falls back to catalogDigest's own default (10000) via
 // SettingsStore::getInt, so an install that never touched the key sees
@@ -41,6 +39,14 @@ class SettingsStore;
 // AssistantDialog + host; sendCurrentInput() calls it fresh every turn (no
 // caching), so a value written to the conf before the app starts takes effect.
 [[nodiscard]] int resolveCatalogBudgetChars(const SettingsStore& store);
+
+// The same for the "PlotJuggler features" block (featuresBlock,
+// features_digest.hpp): settings key "assistant.features_budget_chars",
+// default kDefaultFeaturesBudgetChars, clamped to [kMinFeaturesBudgetChars,
+// kMaxFeaturesBudgetChars] (features_digest.hpp / assistant_dialog.cpp; the
+// minimum holds the built-in reference, which is never trimmed), read fresh
+// every turn.
+[[nodiscard]] int resolveFeaturesBudgetChars(const SettingsStore& store);
 
 // Per-conversation state a backend borrows (harness_memory.hpp).
 // Forward-declared so this header does not pull the backend implementations —
@@ -144,8 +150,9 @@ struct DialogState {
 };
 
 // The chat panel. A non-modal DialogPluginTyped whose input drives a worker
-// thread; results hop back through an event queue drained in onTick(). M1 wires
-// an EchoBackend to prove the plumbing before real backends land.
+// thread; results hop back through an event queue drained in onTick(). The
+// agent CLI a backend spawns calls its tools on PlotJuggler's MCP server, at
+// the endpoint each turn acquires from mcp_host_.
 class AssistantDialog : public PJ::DialogPluginTyped {
  public:
   AssistantDialog();
@@ -163,15 +170,17 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   bool onItemContextAction(std::string_view widget_name, int index, std::string_view action_id) override;
   bool onTick() override;
 
-  // Host wiring, mirroring toolbox_mosaico. Providers are captured lazily so the
-  // tool layer can obtain a fresh view each call (on the GUI thread, in onTick).
-  void setHostProvider(std::function<PJ::sdk::ToolboxHostView()> provider);
-  void setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostView()> provider);
-  void setDataProcessorsProvider(std::function<PJ::sdk::DataProcessorsHostView()> provider);
-  void setObjectReadProvider(std::function<PJ::sdk::ToolboxObjectReadHostView()> provider);
-  void setPlaybackProvider(std::function<PJ::sdk::PlaybackHostView()> provider);
-  void setViewportProvider(std::function<PJ::sdk::ViewportHostView()> provider);
-  void setPlotTabsProvider(std::function<PJ::sdk::PlotTabHostView()> provider);
+  // Host wiring for the catalog digest (catalog_digest.hpp), built on the GUI
+  // thread before every turn. An unbound toolbox host means no digest; an
+  // unbound playback view, object time ranges in raw seconds.
+  void setCatalogHosts(PJ::sdk::ToolboxHostView host, PJ::sdk::PlaybackHostView playback);
+  // pj.mcp_endpoint.v1, optional: an unbound view (a compatible host that omits
+  // the service) makes every turn fail with a message saying so.
+  void setMcpEndpointHost(PJ::sdk::McpEndpointHostView host);
+  // pj.feature_catalog.v1, optional: an unbound view (a host that omits it)
+  // makes every turn carry the built-in reference instead (fallback_features.hpp).
+  // With no provider at all, no features block is sent.
+  void setFeatureCatalogProvider(std::function<PJ::sdk::FeatureCatalogView()> provider);
   void setSettings(PJ::sdk::SettingsView settings);
 
  private:
@@ -184,6 +193,10 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // GUI thread: take input_text, append it as a user turn, flip to
   // WaitingForLlm, and enqueue the backend call on the worker thread.
   void sendCurrentInput();
+
+  // GUI thread: this turn's "PlotJuggler features" block (TurnTools::features),
+  // empty when no provider is bound.
+  [[nodiscard]] std::string featuresForTurn();
 
   // Apply a BackendEvent to the ChatSession. Runs on the GUI thread (posted by
   // the worker's sink through the event queue).
@@ -198,10 +211,7 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // — the row falls back to the harness's own title, the house behavior for
   // renames elsewhere in PlotJuggler.
   void commitRename();
-  // Build a ToolContext from the currently-bound host providers (GUI thread).
-  ToolContext makeToolContext();
-  // Select the backend implementation from settings + the ASSISTANT_FAKE_BACKEND
-  // env override. Rebuilt whenever the backend choice changes. Returns whether
+  // Select the backend implementation from settings. Rebuilt whenever the backend choice changes. Returns whether
   // active_backend_key_ actually changed as a result of this call -- the
   // signal both call sites (commitSettings(), onTick's deferred branch) use to
   // decide whether to also call activateBackendConversation(), since a
@@ -220,7 +230,7 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   // resume what the user explicitly walked away from. No backend rebuild: the
   // memory is cleared in place and the live backend reads through the same
   // pointer, so the next turn sends no --resume and re-sends the catalog —
-  // genuinely fresh, with the MCP server left up. This does NOT delete
+  // genuinely fresh, with the MCP endpoint kept. This does NOT delete
   // anything on disk: the old conversation stays in the harness's store and
   // in the drawer, just no longer active (New chat is not the trash can —
   // see onItemDeleteRequested for that). The OTHER backend's memory (and
@@ -287,8 +297,10 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   [[nodiscard]] std::string listTextForIdLocked(const std::string& id) const;
 
   DialogState state_;
-  ToolRegistry registry_;
-  GuiExecutor gui_executor_;
+  // Acquired on the GUI thread every turn (sendCurrentInput); the host hands
+  // back the same endpoint while it is held and releases it when the plugin
+  // instance is destroyed.
+  PJ::sdk::McpEndpointHostView mcp_host_;
   // shared_ptr, not unique_ptr: the worker thread captures its own reference
   // for the duration of a turn, so a Settings commit that rebuilds the backend
   // mid-turn swaps this member without destroying the object under the worker.
@@ -313,13 +325,9 @@ class AssistantDialog : public PJ::DialogPluginTyped {
   std::mutex evt_mu_;
   std::deque<std::function<void()>> evt_queue_;
 
-  std::function<PJ::sdk::ToolboxHostView()> host_provider_;
-  std::function<PJ::ToolboxRuntimeHostView()> runtime_host_provider_;
-  std::function<PJ::sdk::DataProcessorsHostView()> dp_provider_;
-  std::function<PJ::sdk::ToolboxObjectReadHostView()> object_read_provider_;
-  std::function<PJ::sdk::PlaybackHostView()> playback_provider_;
-  std::function<PJ::sdk::ViewportHostView()> viewport_provider_;
-  std::function<PJ::sdk::PlotTabHostView()> plot_tabs_provider_;
+  PJ::sdk::ToolboxHostView toolbox_host_;
+  PJ::sdk::PlaybackHostView playback_host_;
+  std::function<PJ::sdk::FeatureCatalogView()> feature_catalog_provider_;
   PJ::sdk::SettingsView settings_;
   // One restore per instance: setSettings can in principle be re-bound, and a
   // second load would duplicate the transcript on top of the live one.

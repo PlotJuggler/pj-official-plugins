@@ -2,11 +2,30 @@ name: Build & Release
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Recover an existing release tag; empty builds without publishing'
+        type: string
+        default: ''
+      platform:
+        description: 'Release recovery requires one specific missing platform'
+        type: choice
+        default: all
+        options:
+          - all
+          - linux-x86_64
+          - linux-arm64
+          - macos-arm64
+          - windows-x86_64
+          - windows-arm64
   push:
     tags: ['*/v*']
   schedule:
     # Keep the full-build Conan cache warm — runs weekly (cache expires after 7 days of no access)
     - cron: '0 3 * * 1'  # Monday 3am UTC
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -30,41 +49,79 @@ jobs:
           - runner: ubuntu-22.04
             arch: x86_64
             os_label: linux
+            platform: linux-x86_64
             lib_ext: so
           - runner: ubuntu-22.04-arm
             arch: aarch64
             os_label: linux
+            platform: linux-arm64
             lib_ext: so
           # macOS x86_64 is intentionally absent: Intel Macs are not a supported
           # target for the time being. The runners are also the scarcest and
-          # slowest in the matrix (15-25 min builds vs ~40 s on macos-14).
-          - runner: macos-14
+          # slowest in the matrix (15-25 min builds vs ~40 s on macos-15).
+          - runner: macos-15
             arch: arm64
             os_label: macos
+            platform: macos-arm64
             lib_ext: dylib
           # Pinned to windows-2022: see ci-windows.yml — the VS18/MSVC 14.5x image
-          # breaks the libsodium/1.0.20 build (MSB8052, toolset 14.44 vs v145).
-          # windows-11-arm below is left as-is (the failure is x64-toolset-specific).
+          # broke the libsodium/1.0.20 build (MSB8052, toolset 14.44 vs v145).
+          # The ARM runner uses its installed 14.44 compatibility toolset below.
           - runner: windows-2022
             arch: x64
             os_label: windows
+            platform: windows-x86_64
             lib_ext: dll
           - runner: windows-11-arm
             arch: arm64
             os_label: windows
+            platform: windows-arm64
             lib_ext: dll
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Resolve build scope
         id: build-scope
         shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+          REQUESTED_PLATFORM: ${{ inputs.platform || 'all' }}
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          if [[ "$REQUESTED_PLATFORM" != all && "$REQUESTED_PLATFORM" != "$MATRIX_PLATFORM" ]]; then
+            printf 'skip=true\nscope=skipped\nconan_hash=skipped\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag_type="${GITHUB_REF_TYPE:-}"
+          if [[ -n "$REQUESTED_TAG" ]]; then
+            [[ "$REQUESTED_PLATFORM" != all ]] || { echo '::error::Select one missing platform for release recovery'; exit 1; }
+            [[ "$REQUESTED_TAG" =~ ^[a-zA-Z0-9_-]+/v[0-9]+\.[0-9]+\.[0-9]+([.+-][a-zA-Z0-9.+-]+)?$ ]] || {
+              echo '::error::Invalid extension release tag'; exit 1;
+            }
+            [[ "$(git rev-parse HEAD)" == "$(git rev-parse "refs/tags/$REQUESTED_TAG^{commit}")" ]] || {
+              echo '::error::Recovery checkout does not match the release tag'; exit 1;
+            }
+            # Recover only missing files. Existing ZIPs and their checksums are immutable.
+            source_dir="${REQUESTED_TAG%/*}"
+            python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); p=m.get("supported_platforms"); sys.exit("Unsupported recovery platform" if p is not None and sys.argv[2] not in p else 0)' \
+              "$source_dir/manifest.json" "$MATRIX_PLATFORM"
+            zip_name="$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["id"]+"-"+m["version"]+"-"+sys.argv[2]+"-"+sys.argv[3]+".zip")' \
+              "$source_dir/manifest.json" '${{ matrix.os_label }}' '${{ matrix.arch }}')"
+            assets="$(gh release view "$REQUESTED_TAG" --json assets --jq '.assets[].name')"
+            if grep -Fxq "$zip_name" <<< "$assets" || grep -Fxq "$zip_name.sha256" <<< "$assets"; then
+              echo '::error::Recovery would replace an existing release asset'; exit 1
+            fi
+            tag_type=tag
+          fi
           python3 scripts/release_tools.py resolve-build-scope \
-            --tag "${GITHUB_REF_NAME:-}" \
-            --tag-type "${GITHUB_REF_TYPE:-}" \
+            --tag "${RELEASE_TAG:-${GITHUB_REF_NAME:-}}" \
+            --tag-type "$tag_type" \
             --os-label "${{ matrix.os_label }}" \
             --arch "${{ matrix.arch }}" \
             >> "${GITHUB_OUTPUT}"
@@ -92,11 +149,40 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.arch }}
+          # VS2026 is now the ARM runner default. Keep Conan/MSBuild on the
+          # installed VS2022-compatible compiler used by dependency projects.
+          toolset: ${{ matrix.arch == 'arm64' && '14.44' || '' }}
+
+      # Widget-family libraries (needs_qt) are built against the official Qt that matches the host's
+      # major.minor, never a distribution or Conan Qt. Every other leg stays Qt-free.
+      - name: Install Qt (widget libraries)
+        if: steps.build-scope.outputs.needs_qt == 'true'
+        uses: ./.github/actions/install-qt
+        with:
+          arch: ${{ runner.os == 'Windows' && 'win64_msvc2022_64' || 'linux_gcc_64' }}
 
       - name: Detect Conan profile
         if: steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: conan profile detect --force
+
+      - name: Match Conan to the selected ARM64 compiler
+        if: runner.os == 'Windows' && matrix.arch == 'arm64' && steps.build-scope.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          # Detection follows the VS installation's default, even after vcvars
+          # selects an older compiler. Keep package IDs and generated toolchains
+          # consistent with the actual 14.44 compiler in VS2026.
+          $profile = conan profile path default
+          $content = (Get-Content -Raw $profile) -replace '(?m)^compiler.version=.*$', 'compiler.version=194'
+          $content += "`n[conf]`ntools.microsoft.msbuild:vs_version=18`ntools.microsoft:msvc_update=4`n"
+          Set-Content -Path $profile -Value $content
+          conan profile show
+
+      - name: Seed Conan source download cache
+        if: runner.os == 'macOS' && steps.build-scope.outputs.skip != 'true'
+        shell: bash
+        run: scripts/seed_conan_sources.sh
 
       - name: Configure PlotJuggler JFrog Conan remote
         if: steps.build-scope.outputs.skip != 'true' && github.repository == 'PlotJuggler/pj-official-plugins'
@@ -117,6 +203,9 @@ jobs:
         if: steps.build-scope.outputs.skip != 'true' && steps.build-scope.outputs.plugin_name == 'data_stream_ros2' && runner.os == 'Linux'
         uses: prefix-dev/setup-pixi@v0.8.14
         with:
+          # Pinned: pixi deprecates the [system-requirements] table robostack/pixi.toml
+          # uses (0.84.2 warns); migrate it before bumping, or a removal breaks this job.
+          pixi-version: v0.84.2
           run-install: false
           cache: false
 
@@ -137,7 +226,7 @@ jobs:
         # platform fetches them prebuilt. This matrix is the ONLY producer of
         # linux-aarch64, windows-x64/arm64 and macos-arm64 release binaries: the
         # CI workflows prime JFrog for linux-x86_64 and macos only, so without
-        # this step every cold release leg recompiled Arrow/gRPC/cpython from
+        # this step every cold release leg recompiled Arrow/gRPC from
         # source (40 min on ubuntu-22.04-arm, 77 min on windows-2022). Idempotent:
         # Conan skips revisions already on the remote, and the script is a no-op
         # when the remote was not configured (fork, missing secrets, outage).
@@ -146,20 +235,20 @@ jobs:
         run: scripts/upload_conan_artifacts.sh
 
       - name: Verify plugin version
-        if: startsWith(github.ref, 'refs/tags/') && steps.build-scope.outputs.skip != 'true'
+        if: env.RELEASE_TAG != '' && steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: |
           python3 scripts/release_tools.py verify-version-consistency \
-            --release-tag "${{ github.ref_name }}" \
+            --release-tag "$RELEASE_TAG" \
             --build-dir "${{ steps.build-scope.outputs.build_dir }}" \
             --check-manifest
 
       - name: Package artifacts
-        if: startsWith(github.ref, 'refs/tags/') && steps.build-scope.outputs.skip != 'true'
+        if: env.RELEASE_TAG != '' && steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: |
           ZIP_NAME=$(python3 scripts/release_tools.py create-distribution-package \
-            --release-tag "${{ github.ref_name }}" \
+            --release-tag "$RELEASE_TAG" \
             --build-dir "${{ steps.build-scope.outputs.build_dir }}" \
             --output-dir dist \
             --os-label "${{ matrix.os_label }}" \
@@ -168,19 +257,19 @@ jobs:
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
       - name: Compress artifacts (Linux/macOS)
-        if: startsWith(github.ref, 'refs/tags/') && runner.os != 'Windows' && steps.build-scope.outputs.skip != 'true'
+        if: env.RELEASE_TAG != '' && runner.os != 'Windows' && steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: cd dist && zip -r "../${{ env.ZIP_NAME }}" .
 
       - name: Compress artifacts (Windows)
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows' && steps.build-scope.outputs.skip != 'true'
+        if: env.RELEASE_TAG != '' && runner.os == 'Windows' && steps.build-scope.outputs.skip != 'true'
         shell: pwsh
         run: |
           Compress-Archive -Path dist\* -DestinationPath "$env:ZIP_NAME"
           Write-Host "Package created: $env:ZIP_NAME"
 
       - name: Generate checksum (Linux/macOS)
-        if: startsWith(github.ref, 'refs/tags/') && runner.os != 'Windows' && steps.build-scope.outputs.skip != 'true'
+        if: env.RELEASE_TAG != '' && runner.os != 'Windows' && steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: |
           if command -v sha256sum &> /dev/null; then
@@ -191,7 +280,7 @@ jobs:
           cat "${{ env.ZIP_NAME }}.sha256"
 
       - name: Generate checksum (Windows)
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows' && steps.build-scope.outputs.skip != 'true'
+        if: env.RELEASE_TAG != '' && runner.os == 'Windows' && steps.build-scope.outputs.skip != 'true'
         shell: pwsh
         run: |
           $hash = (Get-FileHash -Algorithm SHA256 "$env:ZIP_NAME").Hash.ToLower()
@@ -199,25 +288,27 @@ jobs:
           Get-Content "$env:ZIP_NAME.sha256"
 
       - name: Upload artifact
-        if: startsWith(github.ref, 'refs/tags/') && steps.build-scope.outputs.skip != 'true'
+        if: env.RELEASE_TAG != '' && steps.build-scope.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
 
       - name: Generate release notes
-        if: startsWith(github.ref, 'refs/tags/') && matrix.runner == 'ubuntu-22.04' && steps.build-scope.outputs.skip != 'true'
+        if: env.RELEASE_TAG != '' && matrix.runner == 'ubuntu-22.04' && steps.build-scope.outputs.skip != 'true'
         shell: bash
         run: |
           git fetch --tags --force --unshallow || git fetch --tags --force
           python3 scripts/release_tools.py generate-release-notes \
-            --release-tag "${{ github.ref_name }}" \
+            --release-tag "$RELEASE_TAG" \
             --output release-notes.md
 
       - name: Upload to Release with notes
-        if: startsWith(github.ref, 'refs/tags/') && matrix.runner == 'ubuntu-22.04' && steps.build-scope.outputs.skip != 'true'
+        if: env.RELEASE_TAG != '' && matrix.runner == 'ubuntu-22.04' && steps.build-scope.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          overwrite_files: false
           files: |
             ${{ env.ZIP_NAME }}
             ${{ env.ZIP_NAME }}.sha256
@@ -227,9 +318,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to Release
-        if: startsWith(github.ref, 'refs/tags/') && matrix.runner != 'ubuntu-22.04' && steps.build-scope.outputs.skip != 'true'
+        if: env.RELEASE_TAG != '' && matrix.runner != 'ubuntu-22.04' && steps.build-scope.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          overwrite_files: false
           files: |
             ${{ env.ZIP_NAME }}
             ${{ env.ZIP_NAME }}.sha256
@@ -240,13 +333,14 @@ jobs:
   # Submit to registry if tag metadata requests it
   submit-to-registry:
     needs: build
-    if: success() && startsWith(github.ref, 'refs/tags/')
+    if: success() && (github.ref_type == 'tag' || inputs.release_tag != '')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0  # Need full history for tag annotations
 
       - name: Fetch tags with annotations
@@ -257,7 +351,7 @@ jobs:
         run: |
           # Get tag annotation message (contains JSON metadata)
           # Use git cat-file to reliably get the tag message for annotated tags
-          TAG_SHA=$(git rev-parse "refs/tags/${{ github.ref_name }}")
+          TAG_SHA=$(git rev-parse "refs/tags/${RELEASE_TAG}")
           TAG_TYPE=$(git cat-file -t "$TAG_SHA")
 
           if [ "$TAG_TYPE" = "tag" ]; then
@@ -282,10 +376,10 @@ jobs:
           GH_TOKEN: ${{ secrets.REGISTRY_PAT }}
         run: |
           # Extract source_dir from tag (data_load_csv/v1.0.5 -> data_load_csv)
-          SOURCE_DIR="${GITHUB_REF_NAME%/*}"
-          VERSION="${GITHUB_REF_NAME#*/v}"
+          SOURCE_DIR="${RELEASE_TAG%/*}"
+          VERSION="${RELEASE_TAG#*/v}"
           python3 scripts/release_tools.py generate-release-notes \
-            --release-tag "${GITHUB_REF_NAME}" \
+            --release-tag "$RELEASE_TAG" \
             --output release-notes.md
           echo "Submitting $SOURCE_DIR v$VERSION to registry..."
           python3 scripts/submit_to_registry.py "$SOURCE_DIR" \

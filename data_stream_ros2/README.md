@@ -53,6 +53,26 @@ Source layout in this repository:
       manifest.json             ← marketplace manifest
       CMakeLists.txt            ← proxy always; inner only with PJ_BUILD_ROS2_DISTRO=ON
 
+## Optional ROS runtime at startup
+
+Installing this extension does not require ROS. When no ROS distribution is
+detected, the subscriber remains listed without a startup plugin error. Starting
+it reports that ROS must be installed and its `setup.bash` sourced before launching
+PlotJuggler. The proxy caches its runtime selection for the process lifetime, so
+close PlotJuggler before restarting it from the sourced terminal.
+
+A native ROS installation whose libraries are missing from the launch search path
+gets the same behavior only when the loader names a missing library that actually
+exists in the selected `/opt/ros/<distro>/lib` directory or one of its immediate
+subdirectories. This narrow check does not cover libraries elsewhere in vendor or
+workspace overlays. Missing payloads, unsupported distros, missing installed
+dependencies, corrupt libraries, symbol/version errors and RoboStack loader faults
+remain startup errors.
+
+The unavailable subscriber uses the existing DataSource lifecycle: capability
+probing succeeds, and an explicit Start fails at `bind()` with the setup instruction.
+No host-side diagnostic filtering or SDK ABI extension is needed.
+
 ## Building
 
 The proxy and the per-distro inner are different CMake targets, gated on
@@ -220,15 +240,25 @@ Single source of truth: [`docker/distros.env`](docker/distros.env).
 When PlotJuggler itself is installed from conda into a
 [RoboStack](https://robostack.github.io) environment, the proxy loads
 `dist/<distro>-robostack/` instead: RoboStack's `rclcpp` is a different
-build from `/opt/ros`'s. Supported: **jazzy** and **kilted**, on
-linux-x86_64 and linux-arm64 (the environments in
-[`robostack/pixi.toml`](robostack/pixi.toml)).
+build from `/opt/ros`'s. Shipped: **jazzy**, **kilted** and **lyrical**, on
+linux-x86_64 and linux-arm64. `robostack/build.sh` and CI also build
+macos-arm64 payloads (the environments in
+[`robostack/pixi.toml`](robostack/pixi.toml)), but no macOS package ships yet.
 
-These payloads carry no RPATH: their ROS libraries resolve through the
-conda-installed `plotjuggler4` executable's own (`$ORIGIN/../lib`). So they
-load only when PlotJuggler runs from the environment that holds `rclcpp`,
-which is exactly when the proxy picks them. Build one with
-`robostack/build.sh <distro>`.
+The payloads' ROS libraries resolve through the environment of the
+conda-installed `plotjuggler4` executable. Linux payloads carry no RPATH and use
+the executable's `$ORIGIN/../lib`. macOS payloads carry only
+`@executable_path/../lib`, which names the same directory. So they load only
+when PlotJuggler runs from the environment that holds `rclcpp`, which is exactly
+when the proxy picks them. Build one with `robostack/build.sh <distro>`.
+
+A RoboStack package can ship the extension itself, installed at
+`<env>/lib/plotjuggler/plugins/ros2-topic-subscriber/` (with its payload under
+`dist/<distro>-robostack/`). PlotJuggler copies bundled plugins from there into the
+per-user extensions folder, which every environment on the machine shares, so the
+proxy loads the payload from the running environment's copy when it exists: a
+Humble and a Jazzy environment each get their own payload, whichever copied the
+extension first.
 
 Windows is a follow-up — Chocolatey-based ROS 2 installs require a
 different bootstrap path and are not covered yet.

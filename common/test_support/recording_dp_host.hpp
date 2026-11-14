@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: MIT
 //
 // A data-processors host that records what it was asked to install instead of
-// installing it. Shared by the unit tests and the model benchmark: both need to
-// assert on the exact script and inputs a tool synthesized, which is the only
-// objective way to tell whether a model did the job.
+// installing it, so a test can assert on the exact script and inputs a plugin
+// synthesized.
 //
 // Note the limit this implies. It records INTENT — nothing here runs the script,
 // so a transform recorded as correct can still yield an empty curve in the real
@@ -18,7 +17,6 @@
 #include <map>
 #include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
-#include <pj_plugins/testing/toolbox_test_store.hpp>
 #include <string>
 #include <vector>
 
@@ -41,29 +39,9 @@ struct RecordingDpHost {
   bool check_unchecked = false;
   std::string check_message = "not checked: busy";
   bool fail_create = false;
-  // Simulate a host that has not heard of any create_data_processor flag bit
-  // besides EPHEMERAL (i.e. an older host, pre-HISTORY_EXEMPT): any other bit
-  // is refused with an error message containing "reserved" -- the substring
-  // tools.cpp's createWithFlagFallback matches to retry once with flags=0.
-  bool reject_unknown_flags = false;
-  // Test-only bridge to a ToolboxTestStore: when set, an EPHEMERAL create
-  // registers the resolved output's exact topic/field (split on the last
-  // '/', matching joinSeriesPath's convention) into this store, holding
-  // `ephemeral_series_ts`/`ephemeral_series_vals`. This is what lets a test
-  // assert on the read that follows create() without predicting the
-  // counter-generated ephemeral id (see evaluateSeries in tools.cpp).
-  PJ::testing::ToolboxTestStore* ephemeral_series_store = nullptr;
-  std::vector<std::int64_t> ephemeral_series_ts;
-  std::vector<double> ephemeral_series_vals;
-  // Config echo for data_processor_config(id) (PJ::sdk::DataProcessorsHostView
-  // ::recipeOf), what noteUndoProtection (tools.cpp) reads back to confirm
-  // HISTORY_EXEMPT actually took. std::nullopt -> the returned recipe JSON
-  // omits "history_exempt" entirely, mirroring a host that does not know the
-  // property yet even if it tolerated the flag bit; a value -> the recipe
-  // carries "history_exempt": true|false; fail_config -> the read itself
-  // fails.
-  std::optional<bool> config_history_exempt;
-  bool fail_config = false;
+  // Served verbatim by data_processor_config(id) (PJ::sdk::DataProcessorsHostView
+  // ::recipeOf) when non-empty; otherwise the recipe JSON is built from the
+  // last create.
   std::string canned_config_json;
   // The `series{topic, rows, failed, first_error, complete}` object the config of an owner's own recipe carries
   // while the host replays its history. data_processor_config serves one entry per call, in order, and repeats the
@@ -124,6 +102,9 @@ struct RecordingDpHost {
     std::size_t output_count = 0;  // declared outputs
     std::string language;
     std::string script;
+    std::size_t input_count = 0;
+    std::string params_json;
+    std::uint32_t dataset_id = 0;
   };
   std::vector<RecordedRequest> submits;
   int create_v2_calls = 0;
@@ -227,10 +208,6 @@ struct RecordingDpHost {
       PJ::sdk::fillError(err, 1, "test", "create rejected");
       return false;
     }
-    if (self->reject_unknown_flags && (flags & ~static_cast<uint32_t>(PJ_DATA_PROCESSOR_FLAG_EPHEMERAL)) != 0) {
-      PJ::sdk::fillError(err, 1, "test", "flags: unknown reserved bit set");
-      return false;
-    }
     if (rejectsCrossRead(self->last_kind, self->last_script, err)) {
       return false;
     }
@@ -243,19 +220,6 @@ struct RecordingDpHost {
           {self->last_id, self->last_kind, self->last_script, self->last_inputs, self->last_outputs});
     }
     self->resolved = self->last_outputs.empty() ? std::vector<std::string>{"auto_topic"} : self->last_outputs;
-    // Test-only: serve the ephemeral node's resolved output as a real series,
-    // so a test can drive evaluate() end to end without knowing the
-    // counter-generated id ahead of time.
-    if ((flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) != 0 && self->ephemeral_series_store != nullptr &&
-        !self->resolved.empty()) {
-      const std::string& path = self->resolved.front();
-      const auto slash = path.rfind('/');
-      if (slash != std::string::npos) {
-        self->ephemeral_series_store->addTopic(path.substr(0, slash))
-            .addField(
-                path.substr(0, slash), path.substr(slash + 1), self->ephemeral_series_ts, self->ephemeral_series_vals);
-      }
-    }
     if (out_topics_count != nullptr) {
       *out_topics_count = self->resolved.size();
     }
@@ -296,7 +260,7 @@ struct RecordingDpHost {
     return true;
   }
 
-  // Ids this fake claims to have live, so the list/remove tools can be driven.
+  // Ids this fake claims to have live, so the list/remove paths can be driven.
   // Kept separate from what create() recorded: a test needs to say "the host
   // already has these" without pretending this plugin made them here.
   static bool tList(
@@ -321,22 +285,15 @@ struct RecordingDpHost {
     return true;
   }
 
-  static bool tConfig(void* ctx, PJ_string_view_t id, PJ_string_view_t* out_recipe_json, PJ_error_t* err) noexcept {
+  static bool tConfig(void* ctx, PJ_string_view_t id, PJ_string_view_t* out_recipe_json, PJ_error_t* /*err*/) noexcept {
     auto* self = static_cast<RecordingDpHost*>(ctx);
     ++self->config_calls;
     self->last_config_id = toStr(id);
-    if (self->fail_config) {
-      PJ::sdk::fillError(err, 1, "test", "config unavailable");
-      return false;
-    }
     if (!self->canned_config_json.empty()) {
       *out_recipe_json = PJ::sdk::toAbiString(self->canned_config_json);
       return true;
     }
     self->last_config_json = "{\"kind\":\"" + self->last_kind + "\"";
-    if (self->config_history_exempt.has_value()) {
-      self->last_config_json += std::string(",\"history_exempt\":") + (*self->config_history_exempt ? "true" : "false");
-    }
     if (!self->config_series.empty()) {
       const auto& series = self->config_series[std::min(self->config_series_served++, self->config_series.size() - 1)];
       self->last_config_json += ",\"series\":{\"topic\":\"" + series.topic +
@@ -351,9 +308,8 @@ struct RecordingDpHost {
     return true;
   }
 
-  // What the user is actually left with. This is the number a benchmark verdict
-  // wants: a model that probes, measures and cleans up leaves the panel as tidy
-  // as one that got it right first time, and should score the same.
+  // What the user is actually left with: a plugin that probes and cleans up
+  // leaves the same count as one that got it right first time.
   int liveCount() const {
     return static_cast<int>(live_ids.size());
   }
@@ -382,11 +338,6 @@ struct RecordingDpHost {
       PJ::sdk::fillError(err, 1, "test", "create rejected");
       return false;
     }
-    if (self->reject_unknown_flags &&
-        (request->flags & ~static_cast<uint32_t>(PJ_DATA_PROCESSOR_FLAG_EPHEMERAL)) != 0) {
-      PJ::sdk::fillError(err, 1, "test", "flags: unknown reserved bit set");
-      return false;
-    }
     if ((request->flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) == 0) {
       self->live_ids.push_back(self->last_id);
       self->created.push_back(
@@ -410,7 +361,8 @@ struct RecordingDpHost {
     self->recordRequest(*request);
     self->submits.push_back(
         {request->time_ns, request->flags, static_cast<std::size_t>(request->output_count), toStr(request->language),
-         toStr(request->script)});
+         toStr(request->script), static_cast<std::size_t>(request->input_count), toStr(request->params_json),
+         request->dataset_id});
     if (budget != nullptr) {
       self->last_budget_max_millis = budget->max_millis;
       self->last_budget_max_evaluations = budget->max_evaluations;

@@ -3,6 +3,42 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_ros2/`.
 
+## [1.2.1] - 2026-11-11
+
+### Fixed
+- RoboStack: with several conda environments on one machine, each loads its own
+  distro's payload. PlotJuggler copies bundled plugins into the per-user
+  extensions folder, which the environments share; when the running environment
+  ships this extension (`<env>/lib/plotjuggler/plugins/ros2-topic-subscriber/`),
+  the payload is now loaded from there instead of from that copy.
+
+## [1.2.0] - 2026-11-11
+
+### Added
+- RoboStack payload for lyrical (dist/lyrical-robostack/), next to jazzy and kilted.
+- macOS: the proxy detects a RoboStack environment (the executable's environment
+  holding `librclcpp.dylib`) and loads its payload; `robostack/build.sh` builds
+  macos-arm64 payloads. The marketplace zip is still Linux-only.
+
+### Fixed
+- RoboStack: the distro is detected without an activated environment
+  (`ROS_DISTRO` unset) also where RoboStack ships `ros2-rclcpp` instead of
+  `ros-<distro>-rclcpp` (lyrical; jazzy and kilted on macOS).
+
+## [1.1.3] - 2026-11-05
+
+### Fixed
+- Missing optional ROS installations and verified unsourced native ROS library
+  paths no longer produce a plugin error at every startup. Starting the subscriber
+  reports the setup instruction; broken packages and incompatible runtimes still
+  report errors.
+
+## [1.1.2] - 2026-10-01
+
+### Fixed
+- Nested action feedback and service interfaces retain their namespace when
+  building schemas, avoiding truncated package names and wrong typesupport lookup.
+
 ## [1.1.1] - 2026-09-30
 
 ### Fixed

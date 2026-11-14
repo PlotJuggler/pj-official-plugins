@@ -3,6 +3,20 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_mcap/`.
 
+## [1.3.1] - 2026-11-08
+
+### Fixed
+- Reject a chunk that declares an uncompressed size above 2 GiB. Readers
+  allocated that size before decompressing, so a crafted lz4 or zstd chunk
+  made the import or the serial fallback scan attempt an arbitrary
+  allocation and fail with an out-of-memory error.
+- Open MCAP files larger than 2 GiB on 32-bit builds (WebAssembly): the file
+  reader measured and sought the file with a 32-bit `long`, so opening one
+  failed before the loader started.
+- Reject an uncompressed chunk whose declared uncompressed size differs from
+  the bytes it carries. Readers copied the declared size, so a crafted file
+  read past the record into other memory and showed it as message data.
+
 ## [1.3.0] - 2026-09-22
 
 ### Added

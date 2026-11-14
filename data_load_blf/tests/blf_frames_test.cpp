@@ -15,6 +15,10 @@
 #include <string_view>
 #include <vector>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace {
 
 using blf_detail::CanFrame;
@@ -217,4 +221,74 @@ TEST(BlfFrames, OversizedLogContainerFailsCleanly) {
   const auto status = readWithPokedObjSize(0xF0000000u, "blf_hostile_container_big.blf");
   ASSERT_FALSE(status.has_value()) << "oversized log container must fail, not allocate";
   EXPECT_NE(status.error().find("log container"), std::string::npos) << "actual: " << status.error();
+}
+
+// A BLF larger than 4 GiB must read to its end. Its CAN containers sit past 4 GiB, behind top-level objects lblf
+// seeks over: a file length kept in 32 bits wraps to the size modulo 4 GiB and the read stops before them, and a seek
+// distance kept in 32 bits goes negative past 2 GiB.
+TEST(BlfFrames, ReadsFramesPastFourGiB) {
+#ifdef _WIN32
+  GTEST_SKIP() << "needs a sparse 4.5 GiB file";
+#else
+  const std::string src = (std::filesystem::path(BLF_TEST_DATA_DIR) / "sample.blf").string();
+  std::ifstream in(src, std::ios::binary);
+  ASSERT_TRUE(in.is_open());
+  const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  std::uint32_t stat_size = 0;
+  ASSERT_GE(bytes.size(), 8u);
+  std::memcpy(&stat_size, bytes.data() + 4, sizeof(stat_size));
+  ASSERT_LT(stat_size, bytes.size());
+
+  const auto path =
+      (std::filesystem::temp_directory_path() / ("blf_past_four_gib_" + std::to_string(::getpid()) + ".blf")).string();
+  struct Cleanup {
+    std::string path;
+    ~Cleanup() {
+      std::error_code ec;
+      std::filesystem::remove(path, ec);
+    }
+  } cleanup{path};
+  {
+    std::ofstream os(path, std::ios::binary);
+    os.write(bytes.data(), stat_size);
+    // Two 2.25 GiB objects of a type that is not a log container; their bodies are holes.
+    constexpr std::uint32_t kSkipObjectBytes = 9u << 28;
+    std::streamoff position = stat_size;
+    for (int i = 0; i < 2; ++i) {
+      const std::uint32_t signature = 0x4A424F4C;  // "LOBJ"
+      const std::uint16_t header_size = 16;
+      const std::uint16_t header_version = 1;
+      const std::uint32_t object_type = 0x7FFF;
+      os.write(reinterpret_cast<const char*>(&signature), 4);
+      os.write(reinterpret_cast<const char*>(&header_size), 2);
+      os.write(reinterpret_cast<const char*>(&header_version), 2);
+      os.write(reinterpret_cast<const char*>(&kSkipObjectBytes), 4);
+      os.write(reinterpret_cast<const char*>(&object_type), 4);
+      position += kSkipObjectBytes;
+      os.seekp(position);
+    }
+    os.write(bytes.data() + stat_size, static_cast<std::streamsize>(bytes.size() - stat_size));
+    if (!os) {
+      GTEST_SKIP() << "file system cannot hold a sparse 4.5 GiB file";
+    }
+  }
+  ASSERT_GT(std::filesystem::file_size(path), std::uintmax_t{1} << 32);
+
+  std::vector<CanFrame> frames;
+  blf_detail::BlfStats stats;
+  const auto status = blf_detail::readCanFrames(
+      path,
+      [&](const CanFrame& f) {
+        frames.push_back(f);
+        return true;
+      },
+      stats);
+  ASSERT_TRUE(status.has_value()) << status.error();
+  const auto expected = readFixtureFrames();
+  ASSERT_EQ(frames.size(), expected.size());
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    EXPECT_EQ(frames[i].can_id, expected[i].can_id);
+    EXPECT_EQ(frames[i].data, expected[i].data);
+  }
+#endif
 }

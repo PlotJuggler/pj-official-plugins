@@ -1,5 +1,6 @@
 # Shared CAN/DBC decoder (pj_can_dbc): turns raw CAN frames (id, extended, bytes)
-# into named DBC signals. Consumed by data_load_mf4 and data_load_blf.
+# into named DBC signals, plus portable dictionary paths (dictionary_paths.hpp).
+# Consumed by data_load_mf4, data_load_blf and data_load_candump.
 #
 # dbc_parser_cpp (+ the header-only fast_float) is vendored via CPM DOWNLOAD_ONLY
 # and built as a static `dbc` lib here; it is PRIVATE-linked and fully hidden
@@ -112,7 +113,7 @@ target_compile_features(dbc PRIVATE cxx_std_20)
 target_include_directories(dbc SYSTEM PUBLIC ${dbc_parser_cpp_SOURCE_DIR}/include)
 target_include_directories(dbc SYSTEM PRIVATE ${fast_float_SOURCE_DIR}/include)
 
-add_library(pj_can_dbc STATIC can_decoder.cpp can_topic.cpp signal_row.cpp)
+add_library(pj_can_dbc STATIC can_decoder.cpp can_topic.cpp dictionary_paths.cpp signal_row.cpp)
 # Static lib goes inside SHARED plugin .so files -> must be position-independent.
 set_target_properties(pj_can_dbc PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(pj_can_dbc PUBLIC cxx_std_20)
@@ -126,7 +127,7 @@ target_link_libraries(pj_can_dbc PUBLIC plotjuggler_sdk::base PRIVATE dbc)
 # GTest-guarded so this common target can be configured unconditionally.
 find_package(GTest QUIET CONFIG)
 if(TARGET GTest::gtest_main)
-  add_executable(pj_can_dbc_test tests/can_decoder_test.cpp)
+  add_executable(pj_can_dbc_test tests/can_decoder_test.cpp tests/dictionary_paths_test.cpp)
   target_compile_features(pj_can_dbc_test PRIVATE cxx_std_20)
   # field_test_helpers.hpp: shared findField() test helper, also used by
   # data_load_blf/data_load_candump's tests.

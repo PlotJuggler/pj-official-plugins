@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the RoboStack payload of data_stream_ros2 for one distro:
 #
-#   data_stream_ros2/robostack/build.sh <jazzy|kilted> [output-dir]
+#   data_stream_ros2/robostack/build.sh <jazzy|kilted|lyrical> [output-dir]
 #
 # Output: <output-dir>/libros2_stream_plugin-<distro>.pjros2 (default
 # build_ros2_<distro>_robostack/). The proxy ships it as
@@ -12,10 +12,11 @@
 # resolve through the DT_RPATH of the conda-installed plotjuggler4 executable
 # ($ORIGIN/../lib, i.e. the environment's lib/): the environment's path is
 # unknown at build time, and a RUNPATH would stop glibc from consulting the
-# executable's.
+# executable's. On macOS the payload's only rpath is @executable_path/../lib,
+# the same directory.
 set -euo pipefail
 
-DISTRO="${1:?usage: build.sh <jazzy|kilted> [output-dir]}"
+DISTRO="${1:?usage: build.sh <jazzy|kilted|lyrical> [output-dir]}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../.." && pwd)"
 OUT="${2:-${REPO}/build_ros2_${DISTRO}_robostack}"
@@ -48,14 +49,31 @@ pixi run --manifest-path "${HERE}/pixi.toml" -e "${DISTRO}" bash -euo pipefail -
     -DPJ_BUILD_PLUGIN=data_stream_ros2 -DPJ_BUILD_ROS2_DISTRO=ON -DROS_DISTRO="${distro}"
   cmake --build "${work}/plugin-build" --target ros2_stream_plugin_distro
 
-  cp "${work}/plugin-build/bin/libros2_stream_plugin-${distro}.so" \
-    "${out}/libros2_stream_plugin-${distro}.pjros2"
-  # The conda toolchain bakes the build env into every link (see the header).
-  patchelf --remove-rpath "${out}/libros2_stream_plugin-${distro}.pjros2"
+  payload="${out}/libros2_stream_plugin-${distro}.pjros2"
+  if [[ "$(uname)" == Darwin ]]; then
+    # The conda toolchain bakes the build env into every link (see the header).
+    # On macOS the only rpath is the executable'"'"'s environment, the counterpart of
+    # its DT_RPATH on Linux; changing load commands invalidates the ad-hoc signature.
+    cp "${work}/plugin-build/bin/libros2_stream_plugin-${distro}.dylib" "${payload}"
+    otool -l "${payload}" | awk "/cmd LC_RPATH/{getline; getline; print \$2}" | while read -r rpath; do
+      install_name_tool -delete_rpath "${rpath}" "${payload}"
+    done
+    install_name_tool -add_rpath "@executable_path/../lib" "${payload}"
+    codesign --force --sign - "${payload}"
+  else
+    cp "${work}/plugin-build/bin/libros2_stream_plugin-${distro}.so" "${payload}"
+    # The conda toolchain bakes the build env into every link (see the header).
+    patchelf --remove-rpath "${payload}"
+  fi
 ' _ "${DISTRO}" "${REPO}" "${WORK}" "${OUT}" "${SDK_VERSION}"
 
 payload="${OUT}/libros2_stream_plugin-${DISTRO}.pjros2"
-if readelf -d "${payload}" | grep -qE "RPATH|RUNPATH"; then
+if [[ "$(uname)" == Darwin ]]; then
+  if [[ "$(otool -l "${payload}" | awk '/cmd LC_RPATH/{getline; getline; print $2}')" != "@executable_path/../lib" ]]; then
+    echo "error: ${payload} must carry only the @executable_path/../lib rpath" >&2
+    exit 1
+  fi
+elif readelf -d "${payload}" | grep -qE "RPATH|RUNPATH"; then
   echo "error: ${payload} carries an RPATH/RUNPATH" >&2
   exit 1
 fi
