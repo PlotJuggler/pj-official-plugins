@@ -526,9 +526,12 @@ RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_typ
       topic_name_ == "robot_description" || topic_name_.ends_with("/robot_description");
   if (catalog_type == "std_msgs/String" && robot_description_topic) {
     // Object-only: the URDF/SDF/MJCF text is consumed as a model, not stored
-    // as a giant string column in the datastore.
+    // as a giant string column in the datastore. The empty scalar route is
+    // still required, as for markers: without parse_scalars the host's
+    // eager-scalar ingest aborts the push and the model never reaches the store.
     entry = CatalogEntry{
         .object_type = PJ::sdk::BuiltinObjectType::kRobotDescription,
+        .parse_scalars = &RosParser::parseScalarsObjectOnly,
         .parse_object = &RosParser::parseRobotDescription};
   }
   return entry;
