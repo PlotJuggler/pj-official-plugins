@@ -8,6 +8,9 @@ below; for earlier releases see the git history of `parser_ros/`.
 ### Added
 - ROS 2 `rcl_interfaces/msg/Log` and ROS 1 `rosgraph_msgs/Log` messages are
   published as log objects (level, text, and the logger name as source) for the log viewer. The scalar columns (`level`, `line`, ...) are still emitted.
+- `foxglove_msgs/Log`, `mavros_msgs/StatusText`, `px4_msgs/LogMessage` and
+  `px4_msgs/MavlinkLog` messages are published as log objects too, with their
+  severity mapped to the log levels. Their scalar columns are unchanged.
 
 ### Fixed
 - A `robot_description` topic in a recorded file reaches the 3D view again;

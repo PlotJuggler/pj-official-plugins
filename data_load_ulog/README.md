@@ -22,6 +22,10 @@ flight log files.
 - Parameters written as `_parameters/<name>` series: the initial snapshot at
   file start, plus every **in-flight parameter change** as a further point
 - File info (`_info/`) and embedded log messages (`_log`) written as topics
+- Embedded log messages also published as `kLog` objects on an object topic
+  named `_log` (for the log viewer): severity `0`..`7` mapped to fatal (0-2),
+  error, warning, info (5-6), debug; the tag of a tagged message becomes the
+  category
 - Parameters / info / log messages dialog (Info, Properties, Message Logs)
 - Progress reporting with "Stop and keep" support
 - Truncated or partially corrupt files import everything decodable; recoverable

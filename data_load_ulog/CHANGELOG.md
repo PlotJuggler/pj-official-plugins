@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_ulog/`.
 
+## [1.3.0] - 2026-11-14
+
+### Added
+- PX4 log messages are also published as log objects for the log viewer, with
+  their severity mapped to the log levels and the tag of a tagged message as
+  the category. The `_log` level/message columns are unchanged.
+
 ## [1.2.0] - 2026-11-09
 
 ### Changed
