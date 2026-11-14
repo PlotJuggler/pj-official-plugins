@@ -13,6 +13,9 @@ include_guard(GLOBAL)
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/VendoredPatch.cmake)
 
 function(pj_add_mdflib_library target source_dir)
+# Absolute, so list(REMOVE_ITEM) below matches the globbed (absolute) originals:
+# a missed match would compile the unpatched copy beside the patched one.
+get_filename_component(source_dir "${source_dir}" ABSOLUTE)
 file(GLOB _mdf_sources CONFIGURE_DEPENDS ${source_dir}/mdflib/src/*.cpp)
 # Emscripten's libc is musl, whose strerror_r is the XSI one (returns int).
 # mdflib's non-Windows branch expects glibc's (returns char*), so route
@@ -36,7 +39,8 @@ target_link_libraries(${target} PRIVATE ZLIB::ZLIB EXPAT::EXPAT)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   # gcc-15 transitive-include workaround (reason 2 above). PUBLIC: the gap is in
   # mdflib's public headers, so every consumer needs it too.
-  target_compile_options(${target} PUBLIC "SHELL:-include algorithm" "SHELL:-include cstdint")
+  target_compile_options(${target} PUBLIC
+    "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include algorithm>" "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstdint>")
 endif()
 if(EMSCRIPTEN)
   # WebAssembly has no floating-point exceptions: Emscripten's <fenv.h> names no

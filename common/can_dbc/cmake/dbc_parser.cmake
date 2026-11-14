@@ -7,6 +7,9 @@ include_guard(GLOBAL)
 include(${CMAKE_CURRENT_LIST_DIR}/../../../cmake/VendoredPatch.cmake)
 
 function(pj_add_dbc_parser_library target source_dir fast_float_dir)
+# Absolute, so list(REMOVE_ITEM) below matches the globbed (absolute) originals:
+# a missed match would compile the unpatched copy beside the patched one.
+get_filename_component(source_dir "${source_dir}" ABSOLUTE)
 file(GLOB _dbc_sources CONFIGURE_DEPENDS ${source_dir}/src/*.cpp)
 
 # Vendored fix: upstream masks unsigned signals with a 32-bit `1 << size`,
