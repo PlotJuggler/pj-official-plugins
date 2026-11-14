@@ -8,6 +8,7 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -20,6 +21,11 @@
 #include "navmap_msg_decoder.hpp"
 
 namespace navmap_parser {
+
+/// The most memory the sparse layers of one map may expand to. A sparse layer
+/// lists a few NavCels but is stored as one element per NavCel, so a small
+/// message with many of them could otherwise demand gigabytes.
+inline constexpr size_t kMaxSparseLayerBytes = size_t{1} << 30;
 
 /// One per-NavCel layer.
 struct NavMapLayer {
@@ -68,7 +74,8 @@ struct NavMapData {
   /// Layers dropped: data that does not match the NavCel count, an index out
   /// of range, a name that cannot be a channel (empty, reserved, repeated), a
   /// sparse integer layer with no no-data value to fill the unlisted NavCels
-  /// with, or 64-bit integer data.
+  /// with, 64-bit integer data, or a sparse layer that would push the total
+  /// expanded size of the map's sparse layers over `max_sparse_bytes`.
   uint32_t dropped_layers = 0;
   /// Links dropped: a NavCel out of range or a field that is not a valid integer.
   uint32_t dropped_links = 0;
@@ -77,8 +84,10 @@ struct NavMapData {
 /// Validates a decoded NavMap and moves its arrays out of @p root. Fields
 /// missing from older message revisions keep their defaults. An empty header
 /// frame falls back to the first surface's frame. Invalid layers and links are
-/// dropped and counted rather than failing the map.
-[[nodiscard]] PJ::Expected<NavMapData> extractNavMap(Node& root);
+/// dropped and counted rather than failing the map. The sparse layers are kept
+/// in order while the memory they expand to (NavCel count times element size
+/// each) stays within @p max_sparse_bytes; dense layers are bounded by the payload.
+[[nodiscard]] PJ::Expected<NavMapData> extractNavMap(Node& root, size_t max_sparse_bytes = kMaxSparseLayerBytes);
 
 /// Reads a decoded NavMapLayer (standalone message or an element of NavMap.layers).
 [[nodiscard]] NavMapLayer extractLayer(Node& node);

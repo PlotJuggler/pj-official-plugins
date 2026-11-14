@@ -150,7 +150,8 @@ PJ::Expected<std::vector<MsgField>> parseDefinition(std::string_view body, const
 
 template <typename T>
 void readNumberArray(CdrReader& reader, const MsgField& field, bool keep, Value& value) {
-  const uint32_t count = field.fixed_size != 0 ? field.fixed_size : reader.readSequenceLength(sizeof(T));
+  const uint32_t count = field.fixed_size != 0 ? reader.requireElements(field.fixed_size, sizeof(T))
+                                               : reader.readSequenceLength(sizeof(T));
   value.kind = Value::Kind::kNumberArray;
   value.count = count;
   std::vector<T> elements;
@@ -210,7 +211,8 @@ Value decodeField(const MsgSchema& schema, const MsgField& field, CdrReader& rea
       value.text = reader.readString();
       return value;
     }
-    const uint32_t count = field.fixed_size != 0 ? field.fixed_size : reader.readSequenceLength(4);
+    const uint32_t count =
+        field.fixed_size != 0 ? reader.requireElements(field.fixed_size, 4) : reader.readSequenceLength(4);
     value.kind = Value::Kind::kStringArray;
     value.count = count;
     for (uint32_t i = 0; i < count; ++i) {
@@ -290,7 +292,8 @@ size_t saturatingMul(size_t a, size_t b) {
 
 // Memoizes min_wire_size for `type` and every type it embeds. `visiting` holds
 // the types on the current path: reaching one again means the type would embed
-// itself, which no finite payload can hold.
+// itself, which no finite payload can hold, and a path longer than the nesting
+// decodeNode() accepts (the root is depth 0) would only overflow the stack here.
 PJ::Expected<size_t> computeMinWireSize(
     MsgSchema& schema, const std::string& type, std::unordered_set<std::string>& visiting) {
   if (const auto known = schema.min_wire_size.find(type); known != schema.min_wire_size.end()) {
@@ -298,6 +301,9 @@ PJ::Expected<size_t> computeMinWireSize(
   }
   if (!visiting.insert(type).second) {
     return PJ::unexpected(type + " contains itself");
+  }
+  if (visiting.size() > static_cast<size_t>(kMaxDepth) + 1) {
+    return PJ::unexpected(type + " nests messages deeper than " + std::to_string(kMaxDepth) + " levels");
   }
   size_t total = 0;
   for (const MsgField& field : schema.types.at(type)) {
@@ -394,6 +400,10 @@ PJ::Expected<MsgSchema> compileMsgBundle(std::string_view root_type, std::string
     return PJ::unexpected("schema does not define " + schema.root);
   }
   std::unordered_set<std::string> visiting;
+  // The root first: a memoized tail of a long chain would otherwise hide its depth.
+  if (auto size = computeMinWireSize(schema, schema.root, visiting); !size) {
+    return PJ::unexpected(size.error());
+  }
   for (const auto& entry : schema.types) {
     if (auto size = computeMinWireSize(schema, entry.first, visiting); !size) {
       return PJ::unexpected(size.error());

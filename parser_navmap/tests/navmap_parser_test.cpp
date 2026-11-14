@@ -17,6 +17,7 @@
 
 #include "builtin_object_compat.hpp"
 #include "navmap_cdr_reader.hpp"
+#include "navmap_mesh.hpp"
 #include "navmap_msg_decoder.hpp"
 #include "pj_base/builtin/mesh_map.hpp"
 #include "pj_base/builtin/mesh_map_update.hpp"
@@ -251,6 +252,8 @@ struct TestMap {
   uint64_t geometry_id = 0xFEDCBA9876543210ULL;
   std::vector<TestLink> links;
   std::string frame = "map";
+  int32_t stamp_sec = 12;
+  uint32_t stamp_nanosec = 500'000'000;
 
   [[nodiscard]] std::vector<uint8_t> serializeCurrent() const {
     CdrWriter w;
@@ -288,7 +291,7 @@ struct TestMap {
 
  private:
   void writeGeometry(CdrWriter& w) const {
-    w.putHeader(12, 500'000'000, frame);
+    w.putHeader(stamp_sec, stamp_nanosec, frame);
     w.putSeq(x);
     w.putSeq(y);
     w.putSeq(z);
@@ -834,6 +837,31 @@ TEST_F(NavMapParserTest, EmbeddedTimestampMovesObjectsAndScalarsToTheHeaderStamp
   EXPECT_EQ(parseLayerAt(-5, 0), std::tuple(kReceiveTime, kReceiveTime, kReceiveTime));
 }
 
+// ROS requires nanosec < 1 s; a corrupt stamp must not replace the receive time.
+TEST_F(NavMapParserTest, InvalidEmbeddedStampKeepsTheReceiveTime) {
+  ASSERT_TRUE(handle_.loadConfig(R"({"use_embedded_timestamp": true})"));
+  bind(kNavMapType, kCurrentSchema);
+  auto stampsOf = [&](uint32_t nanosec) {
+    TestMap map;
+    map.stamp_sec = 1;
+    map.stamp_nanosec = nanosec;
+    const auto payload = map.serializeCurrent();
+    const PJ::Span<const uint8_t> bytes(payload.data(), payload.size());
+    auto record = handle_.parseObjectFunctional(kReceiveTime, bytes);
+    EXPECT_TRUE(record) << (record ? "" : record.error());
+    EXPECT_TRUE(handle_.parse(kReceiveTime, bytes));
+    const auto* mesh = record ? pj_compat::getBuiltinObject<PJ::sdk::MeshMap>(record->object) : nullptr;
+    EXPECT_NE(mesh, nullptr);
+    return std::tuple{
+        record ? record->ts.value_or(kReceiveTime) : 0, mesh != nullptr ? mesh->timestamp_ns : 0,
+        recorder_.rows().back().timestamp};
+  };
+  EXPECT_EQ(stampsOf(1'500'000'000), std::tuple(kReceiveTime, kReceiveTime, kReceiveTime));
+  EXPECT_EQ(stampsOf(1'000'000'000), std::tuple(kReceiveTime, kReceiveTime, kReceiveTime));
+  // The largest valid nanosec is still honoured.
+  EXPECT_EQ(stampsOf(999'999'999), std::tuple(1'999'999'999, 1'999'999'999, 1'999'999'999));
+}
+
 TEST_F(NavMapParserTest, ReceiveTimeIsTheDefault) {
   bind(kNavMapLayerType, kLayerSchema);
   TestLayer layer = f32Layer("cost", {1.0F});
@@ -896,6 +924,44 @@ TEST_F(NavMapParserTest, BoundsNestedSequencesByTheirMinimumWireSize) {
       handle_.parseObjectFunctional(kReceiveTime, PJ::Span<const uint8_t>(payload.data(), payload.size()));
   ASSERT_FALSE(record);
   EXPECT_NE(record.error().find("sequence length"), std::string::npos) << record.error();
+}
+
+// An acyclic chain of embedded types: the root embeds T0, T0 embeds T1, and so on.
+std::string chainBundle(int length) {
+  std::string bundle = "pkg/T0 next\n";
+  for (int i = 0; i < length; ++i) {
+    bundle += "===\nMSG: pkg/T" + std::to_string(i) + "\n";
+    bundle += i + 1 < length ? "pkg/T" + std::to_string(i + 1) + " next\n" : "uint8 leaf\n";
+  }
+  return bundle;
+}
+
+// Compiling a schema walks the embedded types recursively, so a long chain of
+// distinct types (no cycle to stop it) must hit the nesting limit decodeNode()
+// enforces instead of overflowing the stack.
+TEST_F(NavMapParserTest, BindingRejectsSchemasNestedDeeperThanTheDecoderAllows) {
+  EXPECT_TRUE(handle_.bindSchema(kNavMapType, span(chainBundle(32))));  // root + 32 levels, the decoder's depth 32
+  for (const int length : {33, 40, 100'000}) {
+    const auto bundle = chainBundle(length);
+    const auto status = handle_.bindSchema(kNavMapType, span(bundle));
+    ASSERT_FALSE(status) << length;
+    EXPECT_NE(status.error().find("deeper than 32"), std::string::npos) << status.error();
+  }
+}
+
+// A fixed-size array skips the sequence-length check, so a hostile schema could
+// make the parser reserve gigabytes (float64[4294967295] is 32 GiB) before the
+// missing data was noticed. The bounds check must reject it first.
+TEST_F(NavMapParserTest, HugeFixedArraysAreRejectedBeforeAnyAllocation) {
+  const std::vector<uint8_t> header_only{0x00, 0x01, 0x00, 0x00};
+  const PJ::Span<const uint8_t> bytes(header_only.data(), header_only.size());
+  for (const std::string_view field : {"float64[4294967295] positions_x\n", "string[4294967295] positions_x\n"}) {
+    bind(kNavMapType, field);
+    auto record = handle_.parseObjectFunctional(kReceiveTime, bytes);
+    ASSERT_FALSE(record) << field;
+    EXPECT_NE(record.error().find("fixed array"), std::string::npos) << record.error();
+    EXPECT_FALSE(handle_.parse(kReceiveTime, bytes)) << field;
+  }
 }
 
 // Index-like fields declared as a floating type: NaN or out-of-range values are
@@ -1182,6 +1248,44 @@ TEST_F(NavMapParserTest, ReportsDroppedLayersAndLinks) {
   EXPECT_EQ(reported("parser_navmap.dropped_links"), 1);
   ASSERT_TRUE(handle_.parseObjectFunctional(kReceiveTime, bytes));  // the same counts are not reported again
   EXPECT_EQ(reported("parser_navmap.dropped_layers"), 1);
+}
+
+// A sparse layer is stored as one element per NavCel, so a small message with
+// many of them could demand gigabytes: the memory the sparse layers of a map
+// expand to is capped, and a layer that would pass the cap is dropped.
+TEST(NavMapDecoderTest, SparseLayersAreCappedByTheirExpandedSize) {
+  auto schema = navmap_parser::compileMsgBundle(kNavMapType, kCurrentSchema);
+  ASSERT_TRUE(schema) << schema.error();
+  auto sparseF32 = [](std::string name) {  // 4 NavCels: expands to 16 bytes
+    TestLayer layer = f32Layer(std::move(name), {1.0F});
+    layer.indices = {2};
+    return layer;
+  };
+  TestLayer flags = u8Layer("flags", {1});  // expands to 4 bytes
+  flags.has_unknown = true;
+  flags.indices = {0};
+  TestMap map;
+  map.layers = {f32Layer("dense_a", {1, 2, 3, 4}), sparseF32("s1"), sparseF32("s2"), sparseF32("s3"), flags,
+                f32Layer("dense_b", {5, 6, 7, 8})};
+  const auto payload = map.serializeCurrent();
+  auto layerNames = [&](size_t limit) {
+    navmap_parser::CdrReader reader(payload.data(), payload.size());
+    auto root = navmap_parser::decodeMessage(*schema, reader, true);
+    auto data = navmap_parser::extractNavMap(root, limit);
+    EXPECT_TRUE(data) << (data ? "" : data.error());
+    std::vector<std::string> names;
+    for (const auto& layer : data->layers) {
+      names.push_back(layer.name);
+    }
+    EXPECT_EQ(data->dropped_layers + names.size(), map.layers.size());
+    return names;
+  };
+  using Names = std::vector<std::string>;
+  // 40 bytes: s1 and s2 (32), then s3 would make 48 and is dropped, but flags (36) still fits.
+  EXPECT_EQ(layerNames(40), (Names{"dense_a", "s1", "s2", "flags", "dense_b"}));
+  EXPECT_EQ(layerNames(32), (Names{"dense_a", "s1", "s2", "dense_b"}));
+  EXPECT_EQ(layerNames(0), (Names{"dense_a", "dense_b"}));  // dense layers cost nothing extra
+  EXPECT_EQ(layerNames(navmap_parser::kMaxSparseLayerBytes), (Names{"dense_a", "s1", "s2", "s3", "flags", "dense_b"}));
 }
 
 TEST_F(NavMapParserTest, NegativeLinkLengthIsAnUnspecifiedCost) {

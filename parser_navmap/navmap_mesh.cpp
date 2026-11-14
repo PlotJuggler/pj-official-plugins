@@ -99,6 +99,11 @@ size_t sizeOf(const NumberArray& values) {
   return std::visit([](const auto& elements) { return elements.size(); }, values);
 }
 
+size_t elementSizeOf(const NumberArray& values) {
+  return std::visit(
+      [](const auto& elements) { return sizeof(typename std::decay_t<decltype(elements)>::value_type); }, values);
+}
+
 // --- Channel encoding --------------------------------------------------------
 
 // The channel datatype that stores T as is; kUnknown for the 64-bit integers,
@@ -285,7 +290,7 @@ NavMapLayer extractLayer(Node& node) {
   return layer;
 }
 
-PJ::Expected<NavMapData> extractNavMap(Node& root) {
+PJ::Expected<NavMapData> extractNavMap(Node& root, size_t max_sparse_bytes) {
   NavMapData map;
   if (Node* header = nodeOf(root, "header")) {
     map.frame_id = takeString(*header, "frame_id");
@@ -337,13 +342,20 @@ PJ::Expected<NavMapData> extractNavMap(Node& root) {
 
   if (std::vector<Node>* layers = nodeArrayOf(root, "layers")) {
     std::set<std::string> names;
+    size_t sparse_bytes = 0;  // what the kept sparse layers expand to; never above max_sparse_bytes
     for (Node& node : *layers) {
       NavMapLayer layer = extractLayer(node);
       const size_t values = sizeOf(layer.values);
       const bool fits = layer.indices.empty() ? values == navcel_count
                                               : values == layer.indices.size() && allBelow(layer.indices, navcel_count);
       const bool storable = datatypeOf(layer) != Datatype::kUnknown && fillable(layer, infoFor(layer));
-      if (fits && storable && isLayerChannelName(layer.name) && names.insert(layer.name).second) {
+      // Division, not multiplication: it cannot overflow.
+      const size_t element_size = elementSizeOf(layer.values);
+      const bool in_budget = layer.indices.empty() || navcel_count <= (max_sparse_bytes - sparse_bytes) / element_size;
+      if (fits && storable && isLayerChannelName(layer.name) && in_budget && names.insert(layer.name).second) {
+        if (!layer.indices.empty()) {
+          sparse_bytes += navcel_count * element_size;
+        }
         map.layers.push_back(std::move(layer));
       } else {
         ++map.dropped_layers;
@@ -391,7 +403,7 @@ std::optional<int64_t> positiveHeaderStampNs(const Node& root) {
   }
   const auto sec = integerOf<int32_t>(stamp->nodes.front(), "sec");
   const auto nanosec = integerOf<uint32_t>(stamp->nodes.front(), "nanosec");
-  if (!sec || !nanosec) {
+  if (!sec || !nanosec || *nanosec >= 1'000'000'000) {  // ROS requires nanosec < 1 s
     return std::nullopt;
   }
   const int64_t ns = (int64_t{*sec} * 1'000'000'000) + int64_t{*nanosec};

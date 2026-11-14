@@ -80,7 +80,10 @@ repacked (`navmap_mesh.hpp`):
   hold has nothing valid to mark them with and is dropped (an update never
   fills, so it is never dropped for this). A layer whose data does not match
   the NavCel count, lists a NavCel out of range, or holds 64-bit integers is
-  dropped.
+  dropped. So is a sparse layer that would take the memory the map's sparse
+  layers expand to (NavCel count times element size each, 1 GiB in all) over
+  that limit: a small message cannot demand gigabytes. Layers are kept in
+  order until the limit is reached.
 - **Links** become `MeshFaceLink`s: `kind` = the NavMap link type, `cost` = its
   length, NaN (unspecified) for a negative length, which upstream means
   "compute it". A link to a NavCel out of range is dropped.
@@ -103,11 +106,12 @@ compiles the `.msg` bundle each topic carries (`navmap_msg_decoder.hpp`) and
 decodes by it, so every layout works and future fields are skipped by type. A
 topic without a schema is decoded with the current layout.
 
-Every array of nested messages, fixed-size or not, is bounded by the remaining
-payload divided by the fewest bytes one element takes (computed per type when
-the bundle is compiled; a message type without fields is one `uint8` on the
-wire, as rosidl writes it), so a hostile length or schema fails the message
-instead of allocating far beyond the payload. Integer fields a hostile schema
+Every array, fixed-size or not, is bounded by the remaining payload divided by
+the fewest bytes one element takes (computed per type when the bundle is
+compiled; a message type without fields is one `uint8` on the wire, as rosidl
+writes it), so a hostile length or schema fails the message instead of
+allocating far beyond the payload. A schema that nests messages more than 32
+levels deep does not bind. Integer fields a hostile schema
 declares as floating (`type`, the link NavCels, index arrays) are range-checked
 before conversion; a value that does not fit drops its layer or link.
 

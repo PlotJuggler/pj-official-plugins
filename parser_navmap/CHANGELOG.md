@@ -21,7 +21,9 @@ One entry per released version (newest first).
 - Name each layer's channel after the layer; a layer with an empty, repeated
   or reserved name is dropped, so maps and their updates always address the
   same channel with the same type. A sparse integer layer inside a map without
-  an "unknown" value to mark the unlisted NavCels is dropped. NavCels on no
+  an "unknown" value to mark the unlisted NavCels is dropped, and so is a
+  sparse layer that would take the memory the map's sparse layers expand to
+  over 1 GiB. NavCels on no
   surface are marked as no-data in the `surface` channel.
 - Decode every released message layout, using the definition carried by each
   recording.
