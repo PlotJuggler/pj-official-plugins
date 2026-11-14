@@ -1951,7 +1951,7 @@ TEST(ProtobufParserTest, FoxgloveFrameTransformDecodes) {
   EXPECT_DOUBLE_EQ(t.translation.x, 1.0);
   EXPECT_DOUBLE_EQ(t.translation.z, 3.0);
   EXPECT_DOUBLE_EQ(t.rotation.w, 1.0);
-  EXPECT_EQ(t.timestamp, 5'000'000'000LL);
+  EXPECT_EQ(t.timestamp_ns, 5'000'000'000LL);
 }
 
 TEST(ProtobufParserTest, FoxgloveImageAnnotationsDecodes) {
@@ -1994,7 +1994,7 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodes) {
   ASSERT_EQ(r->entities.size(), 1u);
   EXPECT_EQ(r->entities[0].frame_id, "map");
   EXPECT_EQ(r->entities[0].id, "robot");
-  EXPECT_EQ(r->entities[0].timestamp, 3'000'000'000LL);
+  EXPECT_EQ(r->entities[0].timestamp_ns, 3'000'000'000LL);
 }
 
 // Exercises readColor/toU8 (the [0,1]→uint8 rounding) and the readBoxLike /
@@ -2293,7 +2293,7 @@ TEST(ProtobufParserTest, FoxgloveImageAnnotationsAdoptsTimestamp) {
 
   auto r = pj_protobuf::deserializeFoxgloveImageAnnotations(w.data(), w.size());
   ASSERT_TRUE(r) << r.error();
-  EXPECT_EQ(r->timestamp, 8'000'000'500LL);
+  EXPECT_EQ(r->timestamp_ns, 8'000'000'500LL);
   ASSERT_EQ(r->points.size(), 1u);
   ASSERT_EQ(r->points[0].points.size(), 1u);
 }

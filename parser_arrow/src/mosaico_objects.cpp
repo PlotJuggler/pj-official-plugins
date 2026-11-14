@@ -1021,7 +1021,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeTransforms(
           std::string("transform topic '") + topic_name + "' row " + std::to_string(row) + ": empty 'transforms'");
     }
     for (auto& ft : transforms) {
-      ft.timestamp = ts_ns;
+      ft.timestamp_ns = ts_ns;
     }
     PJ::sdk::FrameTransforms batch;
     batch.transforms = std::move(transforms);
@@ -1054,7 +1054,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeTransforms(
   }
   const std::int64_t ts_ns = *timestamp;
   PJ::sdk::FrameTransform ft;
-  ft.timestamp = ts_ns;
+  ft.timestamp_ns = ts_ns;
   ft.parent_frame_id = parent_col ? arrowStringAt(parent_col, row) : std::string{};
   ft.child_frame_id = child_col ? arrowStringAt(child_col, row) : std::string{};
   ft.translation =
@@ -1270,7 +1270,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeGridCells(
   }
   PJ::sdk::SceneEntities scene;
   PJ::sdk::SceneEntity entity;
-  entity.timestamp = ts_ns;
+  entity.timestamp_ns = ts_ns;
   entity.frame_id = frame_col ? arrowStringAt(frame_col, row) : std::string{};
   entity.cubes.reserve(cells.size());
   constexpr double kThickness = 0.01;  // sparse cells render as thin flat boxes

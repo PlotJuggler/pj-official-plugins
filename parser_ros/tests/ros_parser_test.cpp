@@ -1392,14 +1392,14 @@ TEST(RosParserTest, TFMessageProducesFrameTransformsObject) {
   // out of sync with point clouds.
   EXPECT_EQ(ft->transforms[0].parent_frame_id, "world");
   EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
-  EXPECT_EQ(ft->transforms[0].timestamp, 1000);
+  EXPECT_EQ(ft->transforms[0].timestamp_ns, 1000);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.x, 1.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
 
   EXPECT_EQ(ft->transforms[1].parent_frame_id, "base_link");
   EXPECT_EQ(ft->transforms[1].child_frame_id, "sensor");
-  EXPECT_EQ(ft->transforms[1].timestamp, 1000);
+  EXPECT_EQ(ft->transforms[1].timestamp_ns, 1000);
   EXPECT_DOUBLE_EQ(ft->transforms[1].translation.y, 5.0);
   EXPECT_DOUBLE_EQ(ft->transforms[1].rotation.z, 0.707);
 }
@@ -1434,8 +1434,8 @@ TEST(RosParserTest, TFMessageZeroStampStaysStaticNonZeroOverridden) {
   const auto* ft = pj_compat::getBuiltinObject<PJ::sdk::FrameTransforms>(rec->object);
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->transforms.size(), 2u);
-  EXPECT_EQ(ft->transforms[0].timestamp, 0);     // static: zero stamp preserved
-  EXPECT_EQ(ft->transforms[1].timestamp, 7777);  // dynamic: message time
+  EXPECT_EQ(ft->transforms[0].timestamp_ns, 0);     // static: zero stamp preserved
+  EXPECT_EQ(ft->transforms[1].timestamp_ns, 7777);  // dynamic: message time
 }
 
 // With "use embedded timestamp" ON the toggle wins: every transform keeps its raw
@@ -1470,8 +1470,8 @@ TEST(RosParserTest, TFMessageEmbeddedTimestampKeepsHeaderStamp) {
   const auto* ft = pj_compat::getBuiltinObject<PJ::sdk::FrameTransforms>(rec->object);
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->transforms.size(), 2u);
-  EXPECT_EQ(ft->transforms[0].timestamp, 1'000'000'500);  // header stamp preserved
-  EXPECT_EQ(ft->transforms[1].timestamp, 2'000'000'000);
+  EXPECT_EQ(ft->transforms[0].timestamp_ns, 1'000'000'500);  // header stamp preserved
+  EXPECT_EQ(ft->transforms[1].timestamp_ns, 2'000'000'000);
 }
 
 TEST(RosParserTest, ClassifiesTFMessageWithoutLoadConfig) {
@@ -1525,7 +1525,7 @@ TEST(RosParserTest, TransformStampedProducesFrameTransformsObject) {
   EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
   // Non-zero Header.stamp (5 s), default mode: overridden onto the 999 ns message
   // clock (same resolution as /tf — parseTransformStampedObject shares the handler).
-  EXPECT_EQ(ft->transforms[0].timestamp, 999);
+  EXPECT_EQ(ft->transforms[0].timestamp_ns, 999);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
 }
@@ -2871,7 +2871,7 @@ TEST(RosParserTest, MarkerArrayProducesSceneEntities) {
 
   EXPECT_EQ(se->entities[0].id, "1:a:1");
   EXPECT_EQ(se->entities[0].frame_id, "world");
-  EXPECT_EQ(se->entities[0].timestamp, 1'000'000'500);
+  EXPECT_EQ(se->entities[0].timestamp_ns, 1'000'000'500);
   ASSERT_EQ(se->entities[0].cubes.size(), 1u);
   EXPECT_DOUBLE_EQ(se->entities[0].cubes[0].size.x, 2.0);
   EXPECT_DOUBLE_EQ(se->entities[0].cubes[0].size.z, 4.0);
@@ -3137,7 +3137,7 @@ TEST(RosParserTest, MarkerDeleteAndDeleteAll) {
   ASSERT_EQ(se->deletions.size(), 2u);
   EXPECT_EQ(se->deletions[0].type, PJ::sdk::SceneEntityDeletion::Type::kMatchingId);
   EXPECT_EQ(se->deletions[0].id, "1:a:5");
-  EXPECT_EQ(se->deletions[0].timestamp, 7'000'000'000);
+  EXPECT_EQ(se->deletions[0].timestamp_ns, 7'000'000'000);
   EXPECT_EQ(se->deletions[1].type, PJ::sdk::SceneEntityDeletion::Type::kAll);
 }
 

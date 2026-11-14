@@ -869,8 +869,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
           return PJ::unexpected(std::move(obj).error());
         }
         std::optional<PJ::Timestamp> ts;
-        if (use_embedded_timestamp_ && !obj->transforms.empty() && obj->transforms.front().timestamp > 0) {
-          ts = obj->transforms.front().timestamp;
+        if (use_embedded_timestamp_ && !obj->transforms.empty() && obj->transforms.front().timestamp_ns > 0) {
+          ts = obj->transforms.front().timestamp_ns;
         }
         return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
       };
@@ -886,15 +886,16 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
           return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
         PJ::sdk::ScalarRecord r;
-        if (use_embedded_timestamp_ && !obj->transforms.empty() && obj->transforms.front().timestamp > 0) {
-          r.ts = obj->transforms.front().timestamp;
+        if (use_embedded_timestamp_ && !obj->transforms.empty() && obj->transforms.front().timestamp_ns > 0) {
+          r.ts = obj->transforms.front().timestamp_ns;
         }
         // The schema holds exactly one transform, so "the" stamp is the first
         // one's; with none decoded there is no stamp to report and the series is
         // omitted for this message rather than filed as a fake 0.
         if (!obj->transforms.empty()) {
           r.fields.push_back(
-              {.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->transforms.front().timestamp)}});
+              {.name = "timestamp",
+               .value = PJ::sdk::ValueRef{timestampSeconds(obj->transforms.front().timestamp_ns)}});
         }
         r.fields.push_back(
             {.name = "num_transforms", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->transforms.size())}});
@@ -984,8 +985,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
           return PJ::unexpected(std::move(obj).error());
         }
         std::optional<PJ::Timestamp> ts;
-        if (use_embedded_timestamp_ && obj->timestamp > 0) {
-          ts = obj->timestamp;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {
+          ts = obj->timestamp_ns;
         }
         return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
       };
@@ -997,12 +998,12 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
           return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
         PJ::sdk::ScalarRecord r;
-        if (use_embedded_timestamp_ && obj->timestamp > 0) {  // match the object route's timeline
-          r.ts = obj->timestamp;
+        if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {  // match the object route's timeline
+          r.ts = obj->timestamp_ns;
         }
         // No top-level frame_id in this schema — annotations are tied to an
         // image by layer stacking, not by frame — so only the stamp is added.
-        r.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->timestamp)}});
+        r.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->timestamp_ns)}});
         r.fields.push_back(
             {.name = "num_circles", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->circles.size())}});
         r.fields.push_back(
@@ -1122,8 +1123,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
           return PJ::unexpected(std::move(obj).error());
         }
         std::optional<PJ::Timestamp> ts;
-        if (use_embedded_timestamp_ && !obj->entities.empty() && obj->entities.front().timestamp > 0) {
-          ts = obj->entities.front().timestamp;
+        if (use_embedded_timestamp_ && !obj->entities.empty() && obj->entities.front().timestamp_ns > 0) {
+          ts = obj->entities.front().timestamp_ns;
         }
         return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
       };
@@ -1134,8 +1135,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
           return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
         }
         PJ::sdk::ScalarRecord r;
-        if (use_embedded_timestamp_ && !obj->entities.empty() && obj->entities.front().timestamp > 0) {
-          r.ts = obj->entities.front().timestamp;  // match the object route's timeline
+        if (use_embedded_timestamp_ && !obj->entities.empty() && obj->entities.front().timestamp_ns > 0) {
+          r.ts = obj->entities.front().timestamp_ns;  // match the object route's timeline
         }
         // A SceneUpdate has no top-level stamp; the first entity's is the one
         // the object route files the record under, so it is the stamp for this
@@ -1143,7 +1144,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         // file a fabricated 0.0 (same rule as foxglove.FrameTransform).
         if (!obj->entities.empty()) {
           r.fields.push_back(
-              {.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->entities.front().timestamp)}});
+              {.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->entities.front().timestamp_ns)}});
         }
         r.fields.push_back(
             {.name = "num_entities", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->entities.size())}});

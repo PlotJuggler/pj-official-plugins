@@ -432,7 +432,7 @@ PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(
       if (wireOf(tag) != kWireLen || !in.ReadVarint32(&len)) {
         return PJ::unexpected(std::string("foxglove.FrameTransform: bad timestamp"));
       }
-      tf.timestamp = readTimestampNs(in, len);
+      tf.timestamp_ns = readTimestampNs(in, len);
     } else if (f == fields.parent_frame_id) {
       if (wireOf(tag) != kWireLen || !readString(in, tf.parent_frame_id)) {
         return PJ::unexpected(std::string("foxglove.FrameTransform: bad parent_frame_id"));
@@ -869,7 +869,7 @@ PJ::Expected<PJ::sdk::ImageAnnotations> deserializeFoxgloveImageAnnotations(
       first_timestamp_ns = ts;
     }
   }
-  ann.timestamp = first_timestamp_ns;
+  ann.timestamp_ns = first_timestamp_ns;
   return ann;
 }
 
@@ -1107,7 +1107,7 @@ PJ::sdk::SceneEntity readSceneEntity(CodedInputStream& in, uint32_t len, const S
   // through to the scanner's skipField; a failed skip ends the loop.
   scanSubMessage(in, len, [&](int f, uint32_t w) {
     if (f == fields.timestamp) {
-      return fieldMessage(in, w, e.timestamp, readTimestampNs);
+      return fieldMessage(in, w, e.timestamp_ns, readTimestampNs);
     }
     if (f == fields.frame_id) {
       return fieldString(in, w, e.frame_id);
