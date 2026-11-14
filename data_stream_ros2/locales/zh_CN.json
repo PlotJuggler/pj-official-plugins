@@ -1,0 +1,149 @@
+{
+  "locale": "zh_CN",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "DataStreamROS2",
+      "property": "windowTitle",
+      "source": "Select ROS messages",
+      "translation": "选择 ROS 消息"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "labelStatus",
+      "property": "text",
+      "source": "Scanning ROS 2 topics...",
+      "translation": "正在扫描 ROS 2 主题…"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "tabTopicSelector",
+      "property": "title",
+      "source": "Topic Selector",
+      "translation": "主题选择器"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "checkBoxTimestamp",
+      "property": "text",
+      "source": "If present, use the timestamp in the field [header.stamp]",
+      "translation": "如果存在，则使用 [header.stamp] 字段中的时间戳"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "labelArraySize",
+      "property": "text",
+      "source": "Maximum size of arrays:",
+      "translation": "数组最大大小："
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "radioMaxClamp",
+      "property": "text",
+      "source": "clamp",
+      "translation": "截断"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "radioMaxDiscard",
+      "property": "text",
+      "source": "discard",
+      "translation": "丢弃"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "labelFilter",
+      "property": "text",
+      "source": "Filter: ",
+      "translation": "筛选： "
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "labelTip",
+      "property": "text",
+      "source": "Tip: [CTRL+A] select all, [CTRL+SHIFT+A] deselect all",
+      "translation": "提示：[CTRL+A] 全选，[CTRL+SHIFT+A] 取消全选"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "tabAdvancedOptions",
+      "property": "title",
+      "source": "Advanced Options",
+      "translation": "高级选项"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "labelStringParsing",
+      "property": "text",
+      "source": "String parsing (used for instance in diagnostic_msgs/DiagnosticArray)",
+      "translation": "字符串解析（例如用于 diagnostic_msgs/DiagnosticArray）"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "checkBoxStringSuffix",
+      "property": "text",
+      "source": "remove suffixes from numbers (example: \"100ms\" -> 100)",
+      "translation": "移除数字的后缀（例如：\"100ms\" -> 100）"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "checkBoxStringBoolean",
+      "property": "text",
+      "source": "convert boolean strings (\"false\"/\"true\") to numbers (0/1)",
+      "translation": "将布尔字符串（\"false\"/\"true\"）转换为数字（0/1）"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "listRosTopics",
+      "property": "headerText",
+      "source": "Topic",
+      "translation": "主题"
+    },
+    {
+      "kind": "exact",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "listRosTopics",
+      "property": "headerText",
+      "source": "Datatype",
+      "translation": "数据类型"
+    },
+    {
+      "kind": "templates",
+      "ui": "distro/datastream_ros2.ui",
+      "context": "DataStreamROS2",
+      "widget": "labelStatus",
+      "property": "text",
+      "source": "%1 topic(s) found",
+      "translation": "找到 %1 个主题"
+    }
+  ]
+}

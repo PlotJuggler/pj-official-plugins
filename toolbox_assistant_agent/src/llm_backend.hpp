@@ -1,3 +1,4 @@
+#include "../../common/localization/display_language.hpp"
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 #pragma once
@@ -133,7 +134,7 @@ class EchoBackend : public LlmBackend {
   }
 
   [[nodiscard]] std::string name() const override {
-    return "Echo (no LLM)";
+    return pj::localization::text("Echo (no LLM)", "回显（无大语言模型）", "回顯（不使用大型語言模型）");
   }
 
  private:

@@ -1,0 +1,401 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "DataStreamWebRTC",
+      "property": "windowTitle",
+      "source": "WebRTC Video Client (WHEP)",
+      "translation": "WebRTC 影片用戶端（WHEP）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "connectionBanner",
+      "property": "text",
+      "source": "Connection",
+      "translation": "連線"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelTransport",
+      "property": "text",
+      "source": "Transport",
+      "translation": "傳輸方式"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelAddress",
+      "property": "text",
+      "source": "Address",
+      "translation": "位址"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelPort",
+      "property": "text",
+      "source": "Port",
+      "translation": "連接埠"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelServerRow",
+      "property": "text",
+      "source": "Server",
+      "translation": "伺服器"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "comboBoxTransport",
+      "property": "toolTip",
+      "source": "WHEP signaling is HTTP. (HTTPS is not wired in this build.)",
+      "translation": "WHEP 訊號交換使用 HTTP。（此建置版本尚未支援 HTTPS。）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditAddress",
+      "property": "toolTip",
+      "source": "WHEP server host (mediamtx). Each selected path is read from http://<address>:<port>/<path>/whep.",
+      "translation": "WHEP 伺服器主機（mediamtx）。每個選取路徑均從 http://<address>:<port>/<path>/whep 讀取。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditPort",
+      "property": "toolTip",
+      "source": "WHEP server port (mediamtx default 8889).",
+      "translation": "WHEP 伺服器連接埠（mediamtx 預設為 8889）。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelApiRow",
+      "property": "text",
+      "source": "Control API",
+      "translation": "控制 API"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "comboBoxApiTransport",
+      "property": "toolTip",
+      "source": "Control API is HTTP. (HTTPS is not wired in this build.)",
+      "translation": "Control API 使用 HTTP。（此建置版本尚未支援 HTTPS。）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditApiAddress",
+      "property": "toolTip",
+      "source": "mediamtx Control API host, used only to list paths (GET /v3/paths/list). Auto-derived from the server; edit to override, or clear to disable API discovery (manual paths still work).",
+      "translation": "mediamtx 控制 API 主機，僅用於列出路徑（GET /v3/paths/list）。預設根據伺服器自動推導；可編輯以覆寫，或清除以停用 API 發現（手動路徑仍可使用）。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditApiPort",
+      "property": "toolTip",
+      "source": "mediamtx Control API port (default 9997).",
+      "translation": "mediamtx 控制 API 連接埠（預設為 9997）。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "buttonRefresh",
+      "property": "text",
+      "source": "Refresh list",
+      "translation": "重新整理清單"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelPath",
+      "property": "text",
+      "source": "Base path",
+      "translation": "基礎路徑"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditPath",
+      "property": "toolTip",
+      "source": "Optional base path prefix on the server (most mediamtx setups leave this empty).",
+      "translation": "伺服器上的可選基礎路徑前綴（大多數 mediamtx 設定可留空）。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditPath",
+      "property": "placeholderText",
+      "source": "(optional)",
+      "translation": "（可選）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelBearer",
+      "property": "text",
+      "source": "Bearer token",
+      "translation": "Bearer 權杖"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditBearer",
+      "property": "toolTip",
+      "source": "Optional. Sent as \"Authorization: Bearer ...\" on every WHEP and Control API request.",
+      "translation": "可選。每個 WHEP 和控制 API 要求都會以 \"Authorization: Bearer ...\" 的形式傳送此權杖。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditBearer",
+      "property": "placeholderText",
+      "source": "(optional)",
+      "translation": "（可選）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelTopicPrefix",
+      "property": "text",
+      "source": "Topic prefix",
+      "translation": "主題前綴"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditTopicPrefix",
+      "property": "toolTip",
+      "source": "Each selected path becomes the topic <prefix>/<path>.",
+      "translation": "每個選取路徑都會成為主題 <prefix>/<path>。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "streamsBanner",
+      "property": "text",
+      "source": "Streams",
+      "translation": "串流"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "streamsBanner",
+      "property": "filterPlaceholder",
+      "source": "Filter",
+      "translation": "篩選"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "camerasList",
+      "property": "toolTip",
+      "source": "Paths on the server (from the Control API) plus manually added ones. Select the streams you want; each becomes its own PJ.VideoFrame topic. Only H.264 streams are selectable.",
+      "translation": "列出伺服器上的路徑（由 Control API 提供）及手動新增的路徑。請選取所需的串流，每個串流都會成為獨立的 PJ.VideoFrame 主題。僅能選取 H.264 串流。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "camerasList",
+      "property": "text",
+      "source": "Path",
+      "translation": "路徑"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "camerasList",
+      "property": "text",
+      "source": "Tracks",
+      "translation": "軌道"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "camerasList",
+      "property": "text",
+      "source": "Ready",
+      "translation": "就緒"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelManualPath",
+      "property": "text",
+      "source": "Manual path:",
+      "translation": "手動路徑："
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditManualPath",
+      "property": "toolTip",
+      "source": "Add a path the Control API did not list (API disabled, or a non-mediamtx WHEP server).",
+      "translation": "新增控制 API 未列出的路徑（適用於 API 已停用或非 mediamtx 的 WHEP 伺服器）。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "buttonAddPath",
+      "property": "text",
+      "source": "Add",
+      "translation": "新增"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "iceBanner",
+      "property": "text",
+      "source": "ICE Servers (STUN / TURN)",
+      "translation": "ICE 伺服器（STUN / TURN）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "tableIceServers",
+      "property": "toolTip",
+      "source": "STUN: fill URL only (e.g. stun:stun.l.google.com:19302). TURN: also fill Username and Credential (e.g. turn:turn.example.org:3478).",
+      "translation": "STUN：僅填寫 URL（例如 stun:stun.l.google.com:19302）。TURN：還需填寫使用者名稱和認證資訊（例如 turn:turn.example.org:3478）。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "tableIceServers",
+      "property": "text",
+      "source": "Username",
+      "translation": "使用者名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "tableIceServers",
+      "property": "text",
+      "source": "Credential",
+      "translation": "認證資訊"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "camerasList",
+      "property": "headerText",
+      "source": "Path",
+      "translation": "路徑"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "camerasList",
+      "property": "headerText",
+      "source": "Tracks",
+      "translation": "軌道"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "camerasList",
+      "property": "headerText",
+      "source": "Ready",
+      "translation": "就緒"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "tableIceServers",
+      "property": "headerText",
+      "source": "Username",
+      "translation": "使用者名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "tableIceServers",
+      "property": "headerText",
+      "source": "Credential",
+      "translation": "認證資訊"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelApiStatus",
+      "property": "text",
+      "source": "path not added: whitespace/control characters are not allowed",
+      "translation": "未新增路徑：不允許包含空白或控制字元"
+    },
+    {
+      "kind": "exact",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "lineEditManualPath",
+      "property": "placeholderText",
+      "source": "e.g. cam0",
+      "translation": "例如 cam0"
+    },
+    {
+      "kind": "templates",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelApiStatus",
+      "property": "text",
+      "source": "Control API: %1 (manual paths still work)",
+      "translation": "控制 API：%1（仍可使用手動路徑）"
+    },
+    {
+      "kind": "templates",
+      "ui": "datastream_webrtc.ui",
+      "context": "DataStreamWebRTC",
+      "widget": "labelApiStatus",
+      "property": "text",
+      "source": "%1 path(s) on the server",
+      "translation": "伺服器上有 %1 個路徑"
+    }
+  ]
+}

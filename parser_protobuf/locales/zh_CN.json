@@ -1,0 +1,185 @@
+{
+  "locale": "zh_CN",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "ProtobufParserOptionsForm",
+      "property": "windowTitle",
+      "source": "Protobuf Parser Options",
+      "translation": "Protobuf 解析器选项"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "labelProtoFile",
+      "property": "text",
+      "source": "Proto file:",
+      "translation": "Proto 文件："
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "lineEditProtoFile",
+      "property": "placeholderText",
+      "source": "Path to a .proto file",
+      "translation": ".proto 文件的路径"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "buttonLoadProtoFile",
+      "property": "toolTip",
+      "source": "Browse for a .proto file",
+      "translation": "浏览并选择 .proto 文件"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "labelMessageType",
+      "property": "text",
+      "source": "Select your message type:",
+      "translation": "选择消息类型："
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "checkBoxUseEmbeddedTimestamp",
+      "property": "text",
+      "source": "Use embedded timestamp field",
+      "translation": "使用内嵌时间戳字段"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "checkBoxUseEmbeddedTimestamp",
+      "property": "toolTip",
+      "source": "If enabled, the parser will look for a top-level double field and use its value (in seconds) as the message timestamp.",
+      "translation": "启用后，解析器将查找顶层 double 类型字段，并将其值（单位为秒）用作消息时间戳。"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "labelTimestampField",
+      "property": "text",
+      "source": "Timestamp field name:",
+      "translation": "时间戳字段名称："
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "lineEditTimestampField",
+      "property": "toolTip",
+      "source": "Name of the top-level double field containing the timestamp in seconds. Leave empty to try \"timestamp\" then \"ts\" automatically.",
+      "translation": "包含时间戳（单位为秒）的顶层 double 类型字段名称。留空时将自动依次尝试 \"timestamp\" 和 \"ts\"。"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "labelArraySize",
+      "property": "text",
+      "source": "Maximum size of arrays:",
+      "translation": "数组最大大小："
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "radioMaxClamp",
+      "property": "text",
+      "source": "clamp",
+      "translation": "截断"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "radioMaxDiscard",
+      "property": "text",
+      "source": "discard",
+      "translation": "丢弃"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "labelFileText",
+      "property": "text",
+      "source": "File text:",
+      "translation": "文件文本："
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "textEditProtoPreview",
+      "property": "placeholderText",
+      "source": "Proto file content will appear here after loading...",
+      "translation": "加载后将在此处显示 Proto 文件内容…"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "bannerIncludeFolders",
+      "property": "text",
+      "source": "Include Folders",
+      "translation": "包含目录"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "buttonLoadProtoFile",
+      "property": "pickerTitle",
+      "source": "Select Proto File",
+      "translation": "选择 Proto 文件"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "comboBoxMessageType",
+      "property": "text",
+      "source": "(load a .proto file first)",
+      "translation": "（请先加载 .proto 文件）"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "buttonAddIncludeFolder",
+      "property": "pickerTitle",
+      "source": "Select Include Folder",
+      "translation": "选择包含文件夹"
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "listWidgetIncludeFolders",
+      "property": "placeholderText",
+      "source": "Add folders where imported .proto files can be found:",
+      "translation": "添加用于查找导入的 .proto 文件的文件夹："
+    },
+    {
+      "kind": "exact",
+      "ui": "protobuf_parser_options.ui",
+      "context": "ProtobufParserOptionsForm",
+      "widget": "lineEditTimestampField",
+      "property": "placeholderText",
+      "source": "e.g. timestamp, ts, time",
+      "translation": "例如 timestamp, ts, time"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+#include "../../common/localization/display_language.hpp"
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 #pragma once
@@ -25,6 +26,7 @@ struct ChatMessage {
   enum class Role { User, Assistant, System, Tool };
   Role role;
   std::string text;
+  std::string display_text = {};  // Presentation override, never sent to the backend or persisted.
 };
 
 // Pure, Qt-free transcript + turn-state model. Mutated on the GUI thread only;
@@ -34,10 +36,10 @@ struct ChatMessage {
 class ChatSession {
  public:
   void addUser(std::string text) {
-    messages_.push_back({ChatMessage::Role::User, std::move(text)});
+    messages_.push_back({ChatMessage::Role::User, std::move(text), {}});
   }
   void addAssistant(std::string text) {
-    messages_.push_back({ChatMessage::Role::Assistant, std::move(text)});
+    messages_.push_back({ChatMessage::Role::Assistant, std::move(text), {}});
   }
   // Grow the assistant's current reply instead of starting a new one. Backends
   // that stream deliver a reply in many small pieces; without this each piece
@@ -48,13 +50,13 @@ class ChatSession {
       messages_.back().text += text;
       return;
     }
-    messages_.push_back({ChatMessage::Role::Assistant, text});
+    messages_.push_back({ChatMessage::Role::Assistant, text, {}});
   }
-  void addSystem(std::string text) {
-    messages_.push_back({ChatMessage::Role::System, std::move(text)});
+  void addSystem(std::string text, std::string display_text = {}) {
+    messages_.push_back({ChatMessage::Role::System, std::move(text), std::move(display_text)});
   }
   void addTool(std::string text) {
-    messages_.push_back({ChatMessage::Role::Tool, std::move(text)});
+    messages_.push_back({ChatMessage::Role::Tool, std::move(text), {}});
   }
 
   [[nodiscard]] const std::vector<ChatMessage>& messages() const {
@@ -104,11 +106,11 @@ class ChatSession {
   [[nodiscard]] std::string statusText() const {
     switch (state_) {
       case TurnState::Idle:
-        return "Ready";
+        return pj::localization::text("Ready", "就绪", "就緒");
       case TurnState::WaitingForLlm:
-        return "Thinking…";
+        return pj::localization::text("Thinking…", "正在思考…", "正在思考…");
       case TurnState::ExecutingTool:
-        return "Running a tool…";
+        return pj::localization::text("Running a tool…", "正在运行工具…", "正在執行工具…");
     }
     return {};
   }
@@ -117,13 +119,13 @@ class ChatSession {
   static const char* markdownSpeakerTag(ChatMessage::Role role) {
     switch (role) {
       case ChatMessage::Role::User:
-        return "**You:**";
+        return pj::localization::text("**You:**", "**你：**", "**你：**");
       case ChatMessage::Role::Assistant:
-        return "**Assistant:**";
+        return pj::localization::text("**Assistant:**", "**助手：**", "**助手：**");
       case ChatMessage::Role::System:
-        return "**System:**";
+        return pj::localization::text("**System:**", "**系统：**", "**系統：**");
       case ChatMessage::Role::Tool:
-        return "**Tool:**";
+        return pj::localization::text("**Tool:**", "**工具：**", "**工具：**");
     }
     return "";
   }
@@ -196,7 +198,7 @@ class ChatSession {
   }
 
   static std::string renderMarkdownMessage(const ChatMessage& message) {
-    std::string body = message.text;
+    std::string body = message.display_text.empty() ? message.text : message.display_text;
     if (message.role == ChatMessage::Role::System || message.role == ChatMessage::Role::Tool) {
       body = escapeMarkdownLiteral(body);
     } else {

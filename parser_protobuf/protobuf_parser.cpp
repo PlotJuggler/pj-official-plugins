@@ -1,3 +1,4 @@
+#include "../common/localization/display_language.hpp"
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/descriptor.pb.h>
 #include <google/protobuf/dynamic_message.h>
@@ -390,7 +391,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
     gp::FileDescriptorSet fd_set;
     if (!fd_set.ParseFromArray(schema.data(), static_cast<int>(schema.size()))) {
-      return PJ::unexpected(std::string("failed to parse FileDescriptorSet"));
+      return PJ::unexpected(std::string(pj::localization::text("failed to parse FileDescriptorSet", "无法解析 FileDescriptorSet", "無法解析 FileDescriptorSet")));
     }
 
     pool_ = std::make_unique<gp::DescriptorPool>();
@@ -403,7 +404,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
     descriptor_ = pool_->FindMessageTypeByName(std::string(type_name));
     if (descriptor_ == nullptr) {
-      return PJ::unexpected(std::string("message type not found: ") + std::string(type_name));
+      return PJ::unexpected(std::string(pj::localization::text("message type not found: ", "未找到消息类型：", "找不到訊息類型：")) + std::string(type_name));
     }
 
     // Detect embedded timestamp field: a top-level non-repeated double.
@@ -444,7 +445,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
   PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override {
     if (!writeHostBound()) {
-      return PJ::unexpected(std::string("write host not bound"));
+      return PJ::unexpected(std::string(pj::localization::text("write host not bound", "未绑定写入宿主", "尚未繫結寫入主程式")));
     }
     // Canonical-object schemas (VideoFrame) have no descriptor pool — they are
     // served by a registered SchemaHandler. Defer to the base parse(), which
@@ -453,13 +454,13 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       if (findSchemaHandler(bound_type_name_) != nullptr) {
         return MessageParserPluginBase::parse(timestamp_ns, payload);
       }
-      return PJ::unexpected(std::string("no schema bound"));
+      return PJ::unexpected(std::string(pj::localization::text("no schema bound", "未绑定模式", "尚未繫結結構描述")));
     }
 
     const gp::Message* prototype = factory_->GetPrototype(descriptor_);
     std::unique_ptr<gp::Message> msg(prototype->New());
     if (!msg->ParseFromArray(payload.data(), static_cast<int>(payload.size()))) {
-      return PJ::unexpected("failed to deserialize protobuf message (" + std::to_string(payload.size()) + " bytes)");
+      return PJ::unexpected(pj::localization::text("failed to deserialize protobuf message (", "无法反序列化 Protobuf 消息（", "無法反序列化 Protobuf 訊息（") + std::to_string(payload.size()) + pj::localization::text(" bytes)", " 字节）", " 位元組）"));
     }
 
     // Extract embedded timestamp if available (overrides the provided timestamp)

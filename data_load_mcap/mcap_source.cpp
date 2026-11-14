@@ -1,3 +1,4 @@
+#include "../common/localization/display_language.hpp"
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
@@ -107,7 +108,7 @@ class McapSource : public PJ::FileSourceBase {
 
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!dialog_.loadConfig(config_json)) {
-      return PJ::unexpected(std::string("invalid config JSON"));
+      return PJ::unexpected(std::string(pj::localization::text("invalid config JSON", "无效的 JSON 配置", "無效的 JSON 設定")));
     }
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
@@ -139,7 +140,7 @@ class McapSource : public PJ::FileSourceBase {
 
   PJ::Status importData() override {
     if (dialog_.filepath().empty()) {
-      return PJ::unexpected(std::string("no filepath configured"));
+      return PJ::unexpected(std::string(pj::localization::text("no filepath configured", "未配置文件路径", "尚未設定檔案路徑")));
     }
 
     // One file for a plain .mcap; every split, in recording order, for a
@@ -147,7 +148,7 @@ class McapSource : public PJ::FileSourceBase {
     // once and the files are read back to back.
     const auto recording = PJ::McapHelpers::resolveRecordingFiles(dialog_.filepath());
     if (!recording.error.empty()) {
-      runtimeHost().showError("MCAP import failed", recording.error);
+      runtimeHost().showError(pj::localization::text("MCAP import failed", "MCAP 导入失败", "MCAP 匯入失敗"), recording.error);
       return PJ::unexpected(recording.error);
     }
     const bool multi_file = recording.paths.size() > 1;
@@ -163,8 +164,8 @@ class McapSource : public PJ::FileSourceBase {
       auto reader = std::make_unique<mcap::ParallelReader>();
       if (auto st = reader->open(path); !st.ok()) {
         const std::string msg =
-            std::string("cannot open MCAP file") + (multi_file ? " " + path : std::string{}) + ": " + st.message;
-        runtimeHost().showError("MCAP import failed", msg);
+            std::string(pj::localization::text("cannot open MCAP file", "无法打开 MCAP 文件", "無法開啟 MCAP 檔案")) + (multi_file ? " " + path : std::string{}) + ": " + st.message;
+        runtimeHost().showError(pj::localization::text("MCAP import failed", "MCAP 导入失败", "MCAP 匯入失敗"), msg);
         return PJ::unexpected(msg);
       }
       readers.push_back(std::move(reader));
@@ -212,7 +213,7 @@ class McapSource : public PJ::FileSourceBase {
         total_messages += PJ::McapHelpers::progressTotal(*stats, selected_channel_ids);
       }
     }
-    (void)runtimeHost().progressStart("Importing MCAP", total_messages, true);
+    (void)runtimeHost().progressStart(pj::localization::text("Importing MCAP", "正在导入 MCAP", "正在匯入 MCAP"), total_messages, true);
 
     // Parser config starts with the embedded parser dialog (pj_parser_slot) when
     // present, then MCAP-level controls apply consistently to every selected
@@ -279,7 +280,7 @@ class McapSource : public PJ::FileSourceBase {
         if (parser_encoding.empty()) {
           // Neither a schema nor a message encoding: nothing identifies the
           // payload format. Report it rather than dropping the topic silently.
-          binding_errors.push_back(channel_ptr->topic + ": channel declares neither a schema nor a message encoding");
+          binding_errors.push_back(channel_ptr->topic + pj::localization::text(": channel declares neither a schema nor a message encoding", "：通道既未声明模式，也未声明消息编码", "：通道未宣告結構描述或訊息編碼"));
           binding_by_topic.emplace(channel_ptr->topic, std::nullopt);
           continue;
         }
@@ -313,7 +314,7 @@ class McapSource : public PJ::FileSourceBase {
         // schema->name nor mentions object_type anywhere.
         auto handle = runtimeHost().ensureParserBinding(request);
         if (!handle) {
-          binding_errors.push_back(channel_ptr->topic + " (encoding: " + parser_encoding + "): " + handle.error());
+          binding_errors.push_back(channel_ptr->topic + pj::localization::text(" (encoding: ", "（编码：", "（編碼：") + parser_encoding + "): " + handle.error());
           binding_by_topic.emplace(channel_ptr->topic, std::nullopt);
           continue;
         }
@@ -324,20 +325,20 @@ class McapSource : public PJ::FileSourceBase {
     }
 
     if (!any_binding) {
-      std::string msg = "No channels could be bound to parsers:\n";
+      std::string msg = pj::localization::text("No channels could be bound to parsers:\n", "没有可绑定到解析器的通道：\n", "沒有可繫結至解析器的通道：\n");
       for (const auto& e : binding_errors) {
         msg += "  - " + e + "\n";
       }
-      runtimeHost().showError("Parser Error", msg);
+      runtimeHost().showError(pj::localization::text("Parser Error", "解析器错误", "解析器錯誤"), msg);
       return PJ::unexpected(msg);
     }
 
     if (!binding_errors.empty()) {
-      std::string msg = std::to_string(binding_errors.size()) + " channel(s) skipped (no parser):\n";
+      std::string msg = std::to_string(binding_errors.size()) + pj::localization::text(" channel(s) skipped (no parser):\n", " 个通道已跳过（无解析器）：\n", " 個通道已略過（無解析器）：\n");
       for (const auto& e : binding_errors) {
         msg += "  - " + e + "\n";
       }
-      runtimeHost().showWarning("Parser Error", msg);
+      runtimeHost().showWarning(pj::localization::text("Parser Error", "解析器错误", "解析器錯誤"), msg);
     }
 
     // Cold-path byte stores, ONE PER FILE, each seeded from that file's
@@ -471,12 +472,12 @@ class McapSource : public PJ::FileSourceBase {
         if (consecutive_push_failures % kPushFailureLogInterval == 1) {
           runtimeHost().reportMessage(
               PJ::DataSourceMessageLevel::kWarning,
-              std::string("push failed on '") + mv.channel->topic + "': " + push_status.error() +
-                  " (consecutive failures: " + std::to_string(consecutive_push_failures) + ")");
+              std::string(pj::localization::text("push failed on '", "推送失败，主题 '", "推送失敗，主題 '")) + mv.channel->topic + "': " + push_status.error() +
+                  pj::localization::text(" (consecutive failures: ", "（连续失败次数：", "（連續失敗次數：") + std::to_string(consecutive_push_failures) + ")");
         }
         if (consecutive_push_failures >= kMaxConsecutivePushFailures) {
-          import_failure = "MCAP import aborted: " + std::to_string(consecutive_push_failures) +
-                           " consecutive push failures (loaded " + std::to_string(msg_count) + " messages)";
+          import_failure = pj::localization::text("MCAP import aborted: ", "MCAP 导入已中止：", "MCAP 匯入已中止：") + std::to_string(consecutive_push_failures) +
+                           pj::localization::text(" consecutive push failures (loaded ", " 次连续推送失败（已加载 ", " 次連續推送失敗（已載入 ") + std::to_string(msg_count) + pj::localization::text(" messages)", " 条消息）", " 則訊息）");
           runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *import_failure);
           return false;
         }
@@ -594,7 +595,7 @@ class McapSource : public PJ::FileSourceBase {
                   runtimeHost().isStopRequested())) {
             runtimeHost().reportMessage(
                 PJ::DataSourceMessageLevel::kWarning,
-                "MCAP indexed read failed (" + file_status.message + "); retrying as a serial file-order scan");
+                pj::localization::text("MCAP indexed read failed (", "MCAP 索引读取失败（", "MCAP 索引讀取失敗（") + file_status.message + pj::localization::text("); retrying as a serial file-order scan", "）；正在按文件顺序串行扫描重试", "）；正在依檔案順序循序掃描重試"));
             parallel_opts.read.readOrder = mcap::ReadMessageOptions::ReadOrder::FileOrder;
             first_problem.reset();
             file_status = mcap::Status{};
@@ -617,12 +618,12 @@ class McapSource : public PJ::FileSourceBase {
       }
     } catch (const std::exception& e) {
       const std::string msg =
-          std::string("MCAP import aborted: ") + e.what() + " (loaded " + std::to_string(msg_count) + " messages)";
+          std::string(pj::localization::text("MCAP import aborted: ", "MCAP 导入已中止：", "MCAP 匯入已中止：")) + e.what() + pj::localization::text(" (loaded ", "（已加载 ", "（已載入 ") + std::to_string(msg_count) + pj::localization::text(" messages)", " 条消息）", " 則訊息）");
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
       import_failure = msg;
     } catch (...) {
       const std::string msg =
-          "MCAP import aborted on unknown error (loaded " + std::to_string(msg_count) + " messages)";
+          pj::localization::text("MCAP import aborted on unknown error (loaded ", "MCAP 导入因未知错误而中止（已加载 ", "MCAP 匯入因未知錯誤而中止（已載入 ") + std::to_string(msg_count) + pj::localization::text(" messages)", " 条消息）", " 則訊息）");
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
       import_failure = msg;
     }
@@ -645,19 +646,19 @@ class McapSource : public PJ::FileSourceBase {
         // load still succeeds — keeping recovered data is what the pre-SDK
         // plugin did — so this message is the only signal the user ever gets.
         std::string partial =
-            "MCAP file partially recovered: " + view_status.message + " (loaded " + std::to_string(accepted_count);
+            pj::localization::text("MCAP file partially recovered: ", "MCAP 文件已部分恢复：", "MCAP 檔案已部分復原：") + view_status.message + pj::localization::text(" (loaded ", "（已加载 ", "（已載入 ") + std::to_string(accepted_count);
         if (total_messages > 0) {
-          partial += " of " + std::to_string(total_messages);
+          partial += pj::localization::text(" of ", " / ", " / ") + std::to_string(total_messages);
         }
-        partial += " messages)";
+        partial += pj::localization::text(" messages)", " 条消息）", " 則訊息）");
         runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, partial);
         break;
       }
 
       case PJ::McapHelpers::ImportOutcome::kFailed: {
-        const std::string msg = view_status.ok() ? ("MCAP import loaded no messages: all " + std::to_string(msg_count) +
-                                                    " message(s) on the selected topics were rejected by the host.")
-                                                 : ("MCAP import failed: " + view_status.message);
+        const std::string msg = view_status.ok() ? (pj::localization::text("MCAP import loaded no messages: all ", "MCAP 未导入任何消息：所选主题上的全部 ", "MCAP 未匯入任何訊息：所選主題上的全部 ") + std::to_string(msg_count) +
+                                                    pj::localization::text(" message(s) on the selected topics were rejected by the host.", " 条消息均被宿主拒绝。", " 則訊息均遭主程式拒絕。"))
+                                                 : (pj::localization::text("MCAP import failed: ", "MCAP 导入失败：", "MCAP 匯入失敗：") + view_status.message);
         runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, msg);
         return PJ::unexpected(msg);
       }

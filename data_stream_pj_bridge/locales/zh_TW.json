@@ -1,0 +1,122 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "connectionBanner",
+      "property": "text",
+      "source": "Connection",
+      "translation": "連線"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "buttonConnect",
+      "property": "text",
+      "source": "Connect",
+      "translation": "連線"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "label_3",
+      "property": "text",
+      "source": "Address",
+      "translation": "位址"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "label_4",
+      "property": "text",
+      "source": "Port",
+      "translation": "連接埠"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "labelTransport",
+      "property": "text",
+      "source": "Transport",
+      "translation": "傳輸方式"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "topicsBanner",
+      "property": "text",
+      "source": "Topics",
+      "translation": "主題"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "topicsBanner",
+      "property": "filterPlaceholder",
+      "source": "Filter",
+      "translation": "篩選"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "topicsList",
+      "property": "text",
+      "source": "Topic Name",
+      "translation": "主題名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "topicsList",
+      "property": "text",
+      "source": "DataType",
+      "translation": "資料型別"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "buttonConnect",
+      "property": "text",
+      "source": "Connected",
+      "translation": "已連線"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "topicsList",
+      "property": "headerText",
+      "source": "Topic Name",
+      "translation": "主題名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "topicsList",
+      "property": "headerText",
+      "source": "DataType",
+      "translation": "資料型別"
+    },
+    {
+      "kind": "exact",
+      "ui": "websocket_client.ui",
+      "context": "WebSocketDialog",
+      "widget": "topicsList",
+      "property": "placeholderText",
+      "source": "Click to select, Click+Drag to multi-select",
+      "translation": "按一下選擇，按一下並拖曳可多選"
+    }
+  ]
+}

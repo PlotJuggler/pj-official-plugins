@@ -1,3 +1,4 @@
+#include "../common/localization/display_language.hpp"
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 
@@ -85,7 +86,7 @@ std::string WebrtcDialog::widget_data() {
       if (isSelected(p.name)) {
         selected_labels.push_back(p.name);
       }
-      rows.push_back({p.name, joinTracks(p.tracks), p.ready ? "yes" : "no"});
+      rows.push_back({p.name, joinTracks(p.tracks), p.ready ? pj::localization::text("yes", "是", "是") : pj::localization::text("no", "否", "否")});
     }
     for (const auto& m : manual_paths_) {
       const bool in_catalog =
@@ -96,7 +97,7 @@ std::string WebrtcDialog::widget_data() {
       if (isSelected(m)) {
         selected_labels.push_back(m);
       }
-      rows.push_back({m, "(manual)", "-"});
+      rows.push_back({m, pj::localization::text("(manual)", "（手动）", "（手動）"), "-"});
     }
   }
   wd.setTableRows("camerasList", rows);

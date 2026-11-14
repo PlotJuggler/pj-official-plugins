@@ -1,0 +1,456 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "FFTDialog",
+      "property": "windowTitle",
+      "source": "FFT Toolbox",
+      "translation": "FFT 工具箱"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "inputBanner",
+      "property": "text",
+      "source": "Input signal - Time (s)",
+      "translation": "輸入訊號 - 時間 (s)"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "selected_label",
+      "property": "text",
+      "source": "Input:",
+      "translation": "輸入："
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "btn_clear",
+      "property": "text",
+      "source": "Clear",
+      "translation": "清除"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "range_label",
+      "property": "text",
+      "source": "Range of data to be processed:",
+      "translation": "待處理的資料範圍："
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "radio_all",
+      "property": "text",
+      "source": "All Data",
+      "translation": "全部資料"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "radio_zoomed",
+      "property": "text",
+      "source": "Only data in zoomed area",
+      "translation": "僅縮放區域內的資料"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "check_dc_removal",
+      "property": "text",
+      "source": "Remove Average (DC, 0 Hz)",
+      "translation": "移除平均值（直流分量，0 Hz）"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "window_label",
+      "property": "text",
+      "source": "Window:",
+      "translation": "窗函式："
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "window_combo",
+      "property": "text",
+      "source": "Hann (recommended)",
+      "translation": "漢寧窗（建議）"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "window_combo",
+      "property": "text",
+      "source": "Rectangular",
+      "translation": "矩形窗"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "sampling_note",
+      "property": "text",
+      "source": "Requires evenly sampled data (maximum 1% interval deviation). Resample irregular signals first.",
+      "translation": "需要等間隔取樣資料（間隔偏差不超過 1%）。請先對不規則訊號重新取樣。"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "suffix_label",
+      "property": "text",
+      "source": "Output topic suffix:",
+      "translation": "輸出主題後綴："
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "btn_compute",
+      "property": "text",
+      "source": "Calculate Spectrum",
+      "translation": "計算頻譜"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "btn_save",
+      "property": "text",
+      "source": "Export Spectrum Data",
+      "translation": "匯出頻譜資料"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "freqBanner",
+      "property": "text",
+      "source": "Spectrum - Frequency (Hz) vs amplitude",
+      "translation": "頻譜 - 頻率 (Hz) 與振幅"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "chart_input",
+      "property": "chartPlaceholder",
+      "source": "Drag and drop one numeric time series here\n(from the left panel)",
+      "translation": "將一條數值時間序列拖放到這裡\n（從左側面板拖入）"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "chart_fft",
+      "property": "chartPlaceholder",
+      "source": "Calculate the spectrum to preview it here",
+      "translation": "計算頻譜後在此預覽"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "The dropped field is unavailable or is not numeric",
+      "translation": "拖入的欄位無法使用或不是數值欄位"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Zoom range changed — calculate again",
+      "translation": "縮放範圍已變更，請重新計算"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "DC removal changed — calculate again",
+      "translation": "移除直流設定已變更，請重新計算"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Input range changed — calculate again",
+      "translation": "輸入範圍已變更，請重新計算"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Zoom the input chart to choose a time range",
+      "translation": "請縮放輸入圖表以選取時間範圍"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Window function changed — calculate again",
+      "translation": "窗函式已變更，請重新計算"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Selection cleared",
+      "translation": "已清除選取"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "The selected input is not available yet",
+      "translation": "所選輸入尚無法使用"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Input selection restored",
+      "translation": "已還原輸入選取"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Input data changed — calculate again",
+      "translation": "輸入資料已變更，請重新計算"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Error: toolbox host not bound",
+      "translation": "錯誤：工具箱主程式尚未繫結"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "No field selected",
+      "translation": "未選取欄位"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Zoom the input chart before calculating the selected range",
+      "translation": "請先縮放輸入圖表，再計算所選範圍"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Error: no data in selected range",
+      "translation": "錯誤：所選範圍內沒有資料"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Nothing to save — run Calculate first",
+      "translation": "沒有可匯出的資料，請先計算"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Error: Need at least 8 samples",
+      "translation": "錯誤：至少需要 8 個樣本"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Error: Input is too large for the FFT backend",
+      "translation": "錯誤：輸入資料超過 FFT 後端的大小限制"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Error: Input contains NaN or infinity",
+      "translation": "錯誤：輸入包含 NaN 或無窮大"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Error: Timestamps must be strictly increasing",
+      "translation": "錯誤：時間戳記必須嚴格遞增"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Error: Timestamps must span a positive duration",
+      "translation": "錯誤：時間戳記的跨度必須大於零"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Error: FFT window has zero coherent gain",
+      "translation": "錯誤：FFT 窗函式的相干增益為零"
+    },
+    {
+      "kind": "exact",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Error: FFT backend allocation failed",
+      "translation": "錯誤：FFT 後端記憶體配置失敗"
+    },
+    {
+      "kind": "templates",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Selected '%1' (FFT accepts one input at a time)",
+      "translation": "已選取「%1」（FFT 每次僅接受一個輸入）"
+    },
+    {
+      "kind": "templates",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Selected '%1'",
+      "translation": "已選取「%1」"
+    },
+    {
+      "kind": "templates",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Need at least 8 samples (got %1)",
+      "translation": "至少需要 8 個樣本（目前 %1 個）"
+    },
+    {
+      "kind": "templates",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Error: Sampling is irregular (maximum interval deviation %1%; resample the signal first)",
+      "translation": "錯誤：取樣不規則（最大間隔偏差 %1%；請先對訊號重新取樣）"
+    },
+    {
+      "kind": "templates",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Computed %1 bins from %2 samples · %3 Hz sample rate · %4 Hz resolution",
+      "translation": "已用 %2 個樣本計算 %1 個頻點 · 取樣率 %3 Hz · 解析度 %4 Hz"
+    },
+    {
+      "kind": "templates",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "createDataSource failed: %1",
+      "translation": "建立資料來源失敗：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "ensureTopic failed: %1",
+      "translation": "建立主題失敗：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Export failed after %1 points: %2",
+      "translation": "匯出 %1 個點後失敗：%2"
+    },
+    {
+      "kind": "templates",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Exported '%1' with frequency_hz and amplitude columns (%2 rows)",
+      "translation": "已匯出「%1」，包含 frequency_hz 和 amplitude 欄（%2 列）"
+    },
+    {
+      "kind": "guarded",
+      "ui": "fft_dialog.ui",
+      "context": "FFTDialog",
+      "widget": "selected_value",
+      "property": "text",
+      "source": "No input selected",
+      "translation": "未選取輸入",
+      "disabled_widget": "btn_compute"
+    }
+  ]
+}

@@ -1,0 +1,581 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "DialogCSV",
+      "property": "windowTitle",
+      "source": "CSV Loader",
+      "translation": "CSV 載入器"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "delimiterHeader",
+      "property": "text",
+      "source": "Delimiter",
+      "translation": "分隔字元"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "checkBoxAutoDelim",
+      "property": "text",
+      "source": "Detect Automatically",
+      "translation": "自動偵測"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "label",
+      "property": "text",
+      "source": "Delimiter:",
+      "translation": "分隔字元："
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "comboBox",
+      "property": "text",
+      "source": "\",\" (comma)",
+      "translation": "\",\"（逗號）"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "comboBox",
+      "property": "text",
+      "source": "\";\" (semicolon)",
+      "translation": "\";\"（分號）"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "comboBox",
+      "property": "text",
+      "source": "\" \" (space)",
+      "translation": "\" \"（空白）"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "comboBox",
+      "property": "text",
+      "source": "\"\\t\" (tab)",
+      "translation": "\"\\t\"（定位字元）"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "timestampHeader",
+      "property": "text",
+      "source": "Timestamp Format",
+      "translation": "時間戳記格式"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "checkBoxAutoTime",
+      "property": "text",
+      "source": "Detect Automatically",
+      "translation": "自動偵測"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "labelCustomFormat",
+      "property": "text",
+      "source": "Custom",
+      "translation": "自訂"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "timeAxisHeader",
+      "property": "text",
+      "source": "Time Axis",
+      "translation": "時間軸"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "previewHeader",
+      "property": "text",
+      "source": "Preview",
+      "translation": "預覽"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "radioPreviewTable",
+      "property": "text",
+      "source": "Table",
+      "translation": "表格"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "radioPreviewRaw",
+      "property": "text",
+      "source": "Raw",
+      "translation": "原始內容"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "DateTimeHelp",
+      "property": "windowTitle",
+      "source": "Date-Time Format",
+      "translation": "日期時間格式"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "exampleHeader",
+      "property": "text",
+      "source": "Common Format Examples (input date: 1/15/2024 2:30:45.123 PM)",
+      "translation": "常見格式範例（輸入日期：1/15/2024 2:30:45.123 PM）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "exampleTable",
+      "property": "text",
+      "source": "Format String",
+      "translation": "格式字串"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "exampleTable",
+      "property": "text",
+      "source": "Result",
+      "translation": "結果"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "labelNote",
+      "property": "text",
+      "source": "All other input characters will be treated as text. Any non-empty sequence of characters enclosed in single quotes will also be treated (stripped of the quotes) as text and not be interpreted as expressions.",
+      "translation": "所有其他輸入字元均視為文字。任何用單引號括起來的非空字元序列也將視為文字（去掉引號），不會被解釋為運算式。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateHeader",
+      "property": "text",
+      "source": "Date Format",
+      "translation": "日期格式"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "Expression",
+      "translation": "運算式"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "Output",
+      "translation": "輸出"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "The day as a number without a leading zero (1 to 31)",
+      "translation": "日期中的日，不帶前導零（1 至 31）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "The day as a number with a leading zero (01 to 31)",
+      "translation": "日期中的日，帶前導零（01 至 31）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "The abbreviated localized day name (e.g. 'Mon' to 'Sun')",
+      "translation": "在地化的星期簡稱（例如 'Mon' 至 'Sun'）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "The long localized day name (e.g. 'Monday' to 'Sunday')",
+      "translation": "在地化的星期全稱（例如 'Monday' 至 'Sunday'）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "The month as a number without a leading zero (1 to 12)",
+      "translation": "月份，不帶前導零（1 至 12）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "The month as a number with a leading zero (01 to 12)",
+      "translation": "月份，帶前導零（01 至 12）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "The abbreviated localized month name (e.g. 'Jan' to 'Dec')",
+      "translation": "在地化的月份簡稱（例如 'Jan' 至 'Dec'）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "The long localized month name (e.g. 'January' to 'December')",
+      "translation": "在地化的月份全稱（例如 'January' 至 'December'）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "The year as a two digit number (00 to 99)",
+      "translation": "兩位數字的年份（00 至 99）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "dateFormatTable",
+      "property": "text",
+      "source": "The year as a four digit number, possibly plus a leading minus sign for negative years",
+      "translation": "四位數字的年份；負年份前可能帶有負號"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeHeader",
+      "property": "text",
+      "source": "Time Format",
+      "translation": "時間格式"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "Expression",
+      "translation": "運算式"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "Output",
+      "translation": "輸出"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "The hour without a leading zero (0 to 23 or 1 to 12 if AM/PM display)",
+      "translation": "小時，不帶前導零（0 至 23；採用 AM/PM 顯示時為 1 至 12）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "The hour with a leading zero (00 to 23 or 01 to 12 if AM/PM display)",
+      "translation": "小時，帶前導零（00 至 23；採用 AM/PM 顯示時為 01 至 12）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "The hour without a leading zero (0 to 23, even with AM/PM display)",
+      "translation": "小時，不帶前導零（0 至 23，即使採用 AM/PM 顯示也不變）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "The hour with a leading zero (00 to 23, even with AM/PM display)",
+      "translation": "小時，帶前導零（00 至 23，即使採用 AM/PM 顯示也不變）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "The minute without a leading zero (0 to 59)",
+      "translation": "分鐘，不帶前導零（0 至 59）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "The minute with a leading zero (00 to 59)",
+      "translation": "分鐘，帶前導零（00 至 59）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "The whole second, without any leading zero (0 to 59)",
+      "translation": "整數秒，不帶前導零（0 至 59）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "The whole second, with a leading zero where applicable (00 to 59)",
+      "translation": "整數秒，必要時帶前導零（00 至 59）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "The fractional part of the second, to go after a decimal point, without trailing zeroes (0 to 999). Thus \"s.z\" reports the seconds to full available (millisecond) precision without trailing zeroes.",
+      "translation": "秒的小數部分，位於小數點之後，不帶末尾零（0 至 999）。因此，\"s.z\" 以完整的可用精度（毫秒）顯示秒數，不帶末尾零。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "The fractional part of the second, to millisecond precision, including trailing zeroes where applicable (000 to 999).",
+      "translation": "秒的小數部分，精確到毫秒，必要時包含末尾零（000 至 999）。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "Interpret as an AM/PM time. A/AP will match an upper-case version of either QLocale::amText() or QLocale::pmText().",
+      "translation": "按 AM/PM 時間解釋。A/AP 將符合 QLocale::amText() 或 QLocale::pmText() 的大寫形式。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeFormatTable",
+      "property": "text",
+      "source": "Interpret as an am/pm time. a/ap will match a lower-case version of either QLocale::amText() or QLocale::pmText().",
+      "translation": "按 am/pm 時間解釋。a/ap 將符合 QLocale::amText() 或 QLocale::pmText() 的小寫形式。"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "comboBox",
+      "property": "text",
+      "source": "\",\" (comma)",
+      "translation": "\",\"（逗號）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "comboBox",
+      "property": "text",
+      "source": "\";\" (semicolon)",
+      "translation": "\";\"（分號）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "comboBox",
+      "property": "text",
+      "source": "\" \" (space)",
+      "translation": "\" \"（空白）"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "comboBox",
+      "property": "text",
+      "source": "\"\\t\" (tab)",
+      "translation": "\"\\t\"（定位字元）"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "timeAxisModeCombo",
+      "property": "text",
+      "source": "Number of Rows",
+      "translation": "列數"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeAxisModeCombo",
+      "property": "text",
+      "source": "Number of Rows",
+      "translation": "列數"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "timeAxisModeCombo",
+      "property": "text",
+      "source": "Selected Column",
+      "translation": "所選欄"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeAxisModeCombo",
+      "property": "text",
+      "source": "Selected Column",
+      "translation": "所選欄"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "timeAxisModeCombo",
+      "property": "text",
+      "source": "Multiple Columns",
+      "translation": "多欄組合"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "timeAxisModeCombo",
+      "property": "text",
+      "source": "Multiple Columns",
+      "translation": "多欄組合"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "labelWarning",
+      "property": "text",
+      "source": "Duplicate column names detected. Adding suffixes",
+      "translation": "偵測到重複欄名，將新增後綴"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "labelWarning",
+      "property": "text",
+      "source": "Duplicate column names detected. Adding suffixes",
+      "translation": "偵測到重複欄名，將新增後綴"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "labelWarning",
+      "property": "text",
+      "source": "Some rows have column number mismatch. Will skip those",
+      "translation": "部分列的欄數不符，將略過這些列"
+    },
+    {
+      "kind": "exact",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "labelWarning",
+      "property": "text",
+      "source": "Some rows have column number mismatch. Will skip those",
+      "translation": "部分列的欄數不符，將略過這些列"
+    },
+    {
+      "kind": "templates",
+      "ui": "dataload_csv.ui",
+      "context": "DialogCSV",
+      "widget": "labelWarning",
+      "property": "text",
+      "source": "Values in \"%1\" are not monotonically increasing. Will sort these automatically",
+      "translation": "「%1」欄中的值並非單調遞增，將自動排序"
+    },
+    {
+      "kind": "templates",
+      "ui": "datetimehelp.ui",
+      "context": "DateTimeHelp",
+      "widget": "labelWarning",
+      "property": "text",
+      "source": "Values in \"%1\" are not monotonically increasing. Will sort these automatically",
+      "translation": "「%1」欄中的值並非單調遞增，將自動排序"
+    }
+  ]
+}

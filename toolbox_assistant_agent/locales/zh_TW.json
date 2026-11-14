@@ -1,0 +1,419 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "ui/rename_conversation.ui",
+      "context": "RenameConversation",
+      "widget": "RenameConversation",
+      "property": "windowTitle",
+      "source": "Rename conversation",
+      "translation": "重新命名對話"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/rename_conversation.ui",
+      "context": "RenameConversation",
+      "widget": "renameCaption",
+      "property": "text",
+      "source": "Name (leave blank to use the default title)",
+      "translation": "名稱（留空則使用預設標題）"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "AssistantPanel",
+      "property": "windowTitle",
+      "source": "Assistant Agent",
+      "translation": "智慧型助手"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "settingsButton",
+      "property": "text",
+      "source": "Settings...",
+      "translation": "設定…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "settingsButton",
+      "property": "toolTip",
+      "source": "Settings",
+      "translation": "設定"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "conversationsBand",
+      "property": "text",
+      "source": "Conversations",
+      "translation": "對話"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "conversationsBand",
+      "property": "trailingButtonToolTips",
+      "source": "New chat: start a fresh conversation (the current one stays in this list)",
+      "translation": "新增對話：開始一段新對話（目前對話將保留在此清單中）"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "conversationList",
+      "property": "pj_context_actions",
+      "source": "rename=Rename",
+      "translation": "rename=重新命名"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "transcriptText",
+      "property": "placeholderText",
+      "source": "Ask the assistant to list your topics, describe a topic, or plot the derivative of a series...",
+      "translation": "讓助手列出主題、描述某個主題，或繪製某個序列的導數…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "statusLabel",
+      "property": "text",
+      "source": "Ready.",
+      "translation": "就緒。"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "inputEdit",
+      "property": "placeholderText",
+      "source": "Type a message and press Send...",
+      "translation": "輸入訊息並按「傳送」…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "sendButton",
+      "property": "text",
+      "source": "Send",
+      "translation": "傳送"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "cancelButton",
+      "property": "text",
+      "source": "Cancel",
+      "translation": "取消"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "AssistantSettings",
+      "property": "windowTitle",
+      "source": "Assistant Agent - Settings",
+      "translation": "智慧型助手 - 設定"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "backendCaption",
+      "property": "text",
+      "source": "Choose which model backend the assistant uses.",
+      "translation": "選擇助手使用的模型後端。"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "backendFieldLabel",
+      "property": "text",
+      "source": "Backend",
+      "translation": "後端"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "backendCombo",
+      "property": "text",
+      "source": "Claude Code (subscription)",
+      "translation": "Claude Code（訂閱）"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "backendCombo",
+      "property": "text",
+      "source": "Codex (ChatGPT subscription)",
+      "translation": "Codex（ChatGPT 訂閱）"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "claudeModelLabel",
+      "property": "text",
+      "source": "Claude model",
+      "translation": "Claude 模型"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "claudeCustomModelLabel",
+      "property": "text",
+      "source": "Custom model",
+      "translation": "自訂模型"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "claudeModelEdit",
+      "property": "placeholderText",
+      "source": "full model name",
+      "translation": "完整模型名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "claudeCliPathLabel",
+      "property": "text",
+      "source": "claude CLI path",
+      "translation": "claude 命令列工具路徑"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "claudeCliPathEdit",
+      "property": "placeholderText",
+      "source": "claude (on PATH) or full path",
+      "translation": "claude（位於 PATH 中）或完整路徑"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "codexModelLabel",
+      "property": "text",
+      "source": "Codex model",
+      "translation": "Codex 模型"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "codexCustomModelLabel",
+      "property": "text",
+      "source": "Custom model",
+      "translation": "自訂模型"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "codexModelEdit",
+      "property": "placeholderText",
+      "source": "full model name",
+      "translation": "完整模型名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "codexCliPathLabel",
+      "property": "text",
+      "source": "codex CLI path",
+      "translation": "codex 命令列工具路徑"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "codexCliPathEdit",
+      "property": "placeholderText",
+      "source": "codex (on PATH) or full path",
+      "translation": "codex（位於 PATH 中）或完整路徑"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/rename_conversation.ui",
+      "context": "RenameConversation",
+      "widget": "conversationList",
+      "property": "placeholderText",
+      "source": "No conversations yet",
+      "translation": "暫無對話"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "conversationList",
+      "property": "placeholderText",
+      "source": "No conversations yet",
+      "translation": "暫無對話"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "conversationList",
+      "property": "placeholderText",
+      "source": "No conversations yet",
+      "translation": "暫無對話"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/rename_conversation.ui",
+      "context": "RenameConversation",
+      "widget": "claudeModelCombo",
+      "property": "text",
+      "source": "CLI default",
+      "translation": "CLI 預設值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "claudeModelCombo",
+      "property": "text",
+      "source": "CLI default",
+      "translation": "CLI 預設值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "claudeModelCombo",
+      "property": "text",
+      "source": "CLI default",
+      "translation": "CLI 預設值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/rename_conversation.ui",
+      "context": "RenameConversation",
+      "widget": "codexModelCombo",
+      "property": "text",
+      "source": "CLI default",
+      "translation": "CLI 預設值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "codexModelCombo",
+      "property": "text",
+      "source": "CLI default",
+      "translation": "CLI 預設值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "codexModelCombo",
+      "property": "text",
+      "source": "CLI default",
+      "translation": "CLI 預設值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/rename_conversation.ui",
+      "context": "RenameConversation",
+      "widget": "claudeModelCombo",
+      "property": "text",
+      "source": "Custom...",
+      "translation": "自訂…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "claudeModelCombo",
+      "property": "text",
+      "source": "Custom...",
+      "translation": "自訂…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "claudeModelCombo",
+      "property": "text",
+      "source": "Custom...",
+      "translation": "自訂…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/rename_conversation.ui",
+      "context": "RenameConversation",
+      "widget": "codexModelCombo",
+      "property": "text",
+      "source": "Custom...",
+      "translation": "自訂…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "codexModelCombo",
+      "property": "text",
+      "source": "Custom...",
+      "translation": "自訂…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "codexModelCombo",
+      "property": "text",
+      "source": "Custom...",
+      "translation": "自訂…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/rename_conversation.ui",
+      "context": "RenameConversation",
+      "widget": "claudeModelCombo",
+      "property": "text",
+      "source": "sonnet — fast; the measured default",
+      "translation": "sonnet：快速；經實測的預設選項"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_panel.ui",
+      "context": "AssistantPanel",
+      "widget": "claudeModelCombo",
+      "property": "text",
+      "source": "sonnet — fast; the measured default",
+      "translation": "sonnet：快速；經實測的預設選項"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/assistant_settings.ui",
+      "context": "AssistantSettings",
+      "widget": "claudeModelCombo",
+      "property": "text",
+      "source": "sonnet — fast; the measured default",
+      "translation": "sonnet：快速；經實測的預設選項"
+    }
+  ]
+}

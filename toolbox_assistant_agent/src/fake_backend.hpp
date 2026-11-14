@@ -1,3 +1,4 @@
+#include "../../common/localization/display_language.hpp"
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 #pragma once
@@ -153,7 +154,7 @@ class FakeBackend : public LlmBackend {
   }
 
   [[nodiscard]] std::string name() const override {
-    return "Fake (scripted, no LLM)";
+    return pj::localization::text("Fake (scripted, no LLM)", "模拟（脚本驱动，不调用大模型）", "模擬（由指令碼驅動，不使用大型語言模型）");
   }
 
  private:

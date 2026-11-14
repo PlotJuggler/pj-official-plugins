@@ -7,6 +7,8 @@
 #include <set>
 #include <sstream>
 
+#include "../common/localization/display_language.hpp"
+
 namespace PJ::CSV {
 
 DelimiterDetection DetectDelimiterEx(const std::string& first_line) {
@@ -285,6 +287,9 @@ CsvParseResult ParseCsvData(std::istream& input, const CsvParseConfig& config, s
       warn.type = CsvParseWarning::WRONG_COLUMN_COUNT;
       warn.line_number = linenumber;
       warn.detail = "Expected " + std::to_string(num_columns) + " columns, got " + std::to_string(parts.size());
+      warn.localized_detail = pj::localization::text("Expected ", "预期 ", "預期 ") + std::to_string(num_columns) +
+                              pj::localization::text(" columns, got ", " 列，实际 ", " 欄，實際 ") +
+                              std::to_string(parts.size());
       result.warnings.push_back(warn);
       result.lines_skipped++;
       continue;
@@ -315,6 +320,10 @@ CsvParseResult ParseCsvData(std::istream& input, const CsvParseConfig& config, s
         warn.type = CsvParseWarning::INVALID_TIMESTAMP;
         warn.line_number = linenumber;
         warn.detail = "Invalid combined timestamp: \"" + date_val + "\" + \"" + time_val + "\"";
+        warn.localized_detail = std::string(
+                                    pj::localization::text(
+                                        "Invalid combined timestamp: ", "无效的组合时间戳：", "無效的組合時間戳記：")) +
+                                "\"" + date_val + "\" + \"" + time_val + "\"";
         result.warnings.push_back(warn);
         result.lines_skipped++;
         continue;
@@ -342,6 +351,9 @@ CsvParseResult ParseCsvData(std::istream& input, const CsvParseConfig& config, s
         warn.type = CsvParseWarning::INVALID_TIMESTAMP;
         warn.line_number = linenumber;
         warn.detail = "Invalid timestamp: \"" + t_str + "\"";
+        warn.localized_detail =
+            std::string(pj::localization::text("Invalid timestamp: ", "无效的时间戳：", "無效的時間戳記：")) + "\"" +
+            t_str + "\"";
         result.warnings.push_back(warn);
         result.lines_skipped++;
         continue;

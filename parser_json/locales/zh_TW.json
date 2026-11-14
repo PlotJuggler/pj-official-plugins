@@ -1,0 +1,104 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "JsonParserOptionsForm",
+      "property": "windowTitle",
+      "source": "JSON Parser Options",
+      "translation": "JSON 解析器選項"
+    },
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "checkBoxUseEmbeddedTimestamp",
+      "property": "text",
+      "source": "Use embedded timestamp field",
+      "translation": "使用內嵌時間戳記欄位"
+    },
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "checkBoxUseEmbeddedTimestamp",
+      "property": "toolTip",
+      "source": "If enabled, the parser will look for a timestamp field in the JSON message and use its value as the message timestamp.",
+      "translation": "啟用後，解析器將在 JSON 訊息中尋找時間戳記欄位，並將其值用作訊息時間戳記。"
+    },
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "labelTimestampField",
+      "property": "text",
+      "source": "Timestamp field name:",
+      "translation": "時間戳記欄位名稱："
+    },
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "lineEditTimestampField",
+      "property": "toolTip",
+      "source": "Name of the top-level JSON field containing the timestamp, in seconds.",
+      "translation": "包含時間戳記的頂層 JSON 欄位名稱，時間戳記單位為秒。"
+    },
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "checkBoxLabelKeyedArrays",
+      "property": "text",
+      "source": "Key arrays of labeled objects by label",
+      "translation": "使用標籤作為帶標籤物件陣列的鍵"
+    },
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "checkBoxLabelKeyedArrays",
+      "property": "toolTip",
+      "source": "If enabled, arrays of objects carrying a string \"label\" (or \"name\") member are keyed by that label instead of the array index, and a lone \"value\" member collapses onto it (e.g. scalars/shoulder_pan.pos instead of scalars[0]/value).",
+      "translation": "啟用後，對於含有字串 \"label\"（或 \"name\"）成員的物件陣列，將使用該標籤而非陣列索引作為鍵；如果僅有一個 \"value\" 成員，則將其合併到該鍵下（例如，使用 scalars/shoulder_pan.pos，而不是 scalars[0]/value）。"
+    },
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "labelArraySize",
+      "property": "text",
+      "source": "Maximum size of arrays:",
+      "translation": "陣列大小上限："
+    },
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "radioMaxClamp",
+      "property": "text",
+      "source": "clamp",
+      "translation": "截斷"
+    },
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "radioMaxDiscard",
+      "property": "text",
+      "source": "discard",
+      "translation": "丟棄"
+    },
+    {
+      "kind": "exact",
+      "ui": "json_parser_options.ui",
+      "context": "JsonParserOptionsForm",
+      "widget": "lineEditTimestampField",
+      "property": "placeholderText",
+      "source": "e.g. timestamp, ts, time",
+      "translation": "例如 timestamp, ts, time"
+    }
+  ]
+}

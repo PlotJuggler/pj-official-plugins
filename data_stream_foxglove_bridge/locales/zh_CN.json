@@ -1,0 +1,140 @@
+{
+  "locale": "zh_CN",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "connectionBanner",
+      "property": "text",
+      "source": "Connection",
+      "translation": "连接"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "labelTransport",
+      "property": "text",
+      "source": "Transport",
+      "translation": "传输方式"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "labelAddressHdr",
+      "property": "text",
+      "source": "Address",
+      "translation": "地址"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "labelPortHdr",
+      "property": "text",
+      "source": "Port",
+      "translation": "端口"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "buttonConnect",
+      "property": "text",
+      "source": "Connect",
+      "translation": "连接"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "labelArraySize",
+      "property": "text",
+      "source": "When an array size exceeds:",
+      "translation": "当数组大小超过："
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "radioClamp",
+      "property": "text",
+      "source": "Clamp",
+      "translation": "截断"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "radioSkip",
+      "property": "text",
+      "source": "Skip",
+      "translation": "跳过"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "checkBoxUseTimestamp",
+      "property": "text",
+      "source": "Use the timestamp in the message (if present)",
+      "translation": "使用消息中的时间戳（如果存在）"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "channelsBanner",
+      "property": "text",
+      "source": "Channels",
+      "translation": "通道"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "channelsBanner",
+      "property": "filterPlaceholder",
+      "source": "Filter",
+      "translation": "筛选"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "buttonConnect",
+      "property": "text",
+      "source": "Connected",
+      "translation": "已连接"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "topicsList",
+      "property": "headerText",
+      "source": "Topic Name",
+      "translation": "主题名称"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "topicsList",
+      "property": "headerText",
+      "source": "DataType",
+      "translation": "数据类型"
+    },
+    {
+      "kind": "exact",
+      "ui": "foxglove_client.ui",
+      "context": "FoxgloveDialog",
+      "widget": "topicsList",
+      "property": "headerText",
+      "source": "Encoding",
+      "translation": "编码"
+    }
+  ]
+}

@@ -21,6 +21,30 @@ function(pj_embed_ui TARGET)
     message(FATAL_ERROR "pj_embed_ui: UI_FILE, HEADER, and VAR_NAME are required")
   endif()
 
+  # Catalogs are owned by plugins; the host does not know plugin IDs.
+  get_filename_component(_embed_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+  file(RELATIVE_PATH _relative_ui "${_embed_root}" "${ARG_UI_FILE}")
+  string(REGEX MATCH "^[^/]+" _module "${_relative_ui}")
+  set(_catalog_dir "${_embed_root}/${_module}/locales")
+  if(EXISTS "${_catalog_dir}/zh_CN.json" AND EXISTS "${_catalog_dir}/zh_TW.json")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(_generator "${_embed_root}/scripts/embed_localized_ui.py")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+      "${ARG_UI_FILE}" "${_catalog_dir}/zh_CN.json" "${_catalog_dir}/zh_TW.json" "${_generator}")
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${_generator}"
+      --ui "${ARG_UI_FILE}" --cn "${_catalog_dir}/zh_CN.json"
+      --tw "${_catalog_dir}/zh_TW.json" --output "${ARG_HEADER}"
+      --variable "${ARG_VAR_NAME}" RESULT_VARIABLE _locale_result)
+    if(NOT _locale_result EQUAL 0)
+      message(FATAL_ERROR "Failed to embed localized UI: ${ARG_UI_FILE}")
+    endif()
+    get_filename_component(_gen_dir "${ARG_HEADER}" DIRECTORY)
+    configure_file("${_embed_root}/common/localization/display_language.hpp"
+      "${_gen_dir}/display_language.hpp" COPYONLY)
+    target_include_directories(${TARGET} PRIVATE "${_gen_dir}" "${_embed_root}/common/localization")
+    return()
+  endif()
+
   # Track the .ui file so CMake reconfigures when it changes
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ARG_UI_FILE}")
 

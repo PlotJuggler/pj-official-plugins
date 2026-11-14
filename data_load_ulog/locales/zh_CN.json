@@ -1,0 +1,167 @@
+{
+  "locale": "zh_CN",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "ULogParamsForm",
+      "property": "windowTitle",
+      "source": "ULog File",
+      "translation": "ULog 文件"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tabInfo",
+      "property": "title",
+      "source": "Info",
+      "translation": "信息"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableInfo",
+      "property": "text",
+      "source": "Property",
+      "translation": "属性"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableInfo",
+      "property": "text",
+      "source": "Value",
+      "translation": "值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tabParameters",
+      "property": "title",
+      "source": "Properties",
+      "translation": "属性"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableParams",
+      "property": "text",
+      "source": "Property",
+      "translation": "属性"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableParams",
+      "property": "text",
+      "source": "Value",
+      "translation": "值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tabMessageLogs",
+      "property": "title",
+      "source": "Message Logs",
+      "translation": "消息日志"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "text",
+      "source": "Timestamp",
+      "translation": "时间戳"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "text",
+      "source": "Level",
+      "translation": "级别"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "text",
+      "source": "Message",
+      "translation": "消息"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableInfo",
+      "property": "headerText",
+      "source": "Property",
+      "translation": "属性"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableInfo",
+      "property": "headerText",
+      "source": "Value",
+      "translation": "值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableParams",
+      "property": "headerText",
+      "source": "Property",
+      "translation": "属性"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableParams",
+      "property": "headerText",
+      "source": "Value",
+      "translation": "值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "headerText",
+      "source": "Timestamp",
+      "translation": "时间戳"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "headerText",
+      "source": "Level",
+      "translation": "级别"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "headerText",
+      "source": "Message",
+      "translation": "消息"
+    }
+  ]
+}

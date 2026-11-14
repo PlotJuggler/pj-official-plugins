@@ -1,0 +1,59 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "dataload_parquet.ui",
+      "context": "DialogParquet",
+      "widget": "DialogParquet",
+      "property": "windowTitle",
+      "source": "Parquet Loader",
+      "translation": "Parquet 載入器"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_parquet.ui",
+      "context": "DialogParquet",
+      "widget": "checkBoxDateFormat",
+      "property": "text",
+      "source": "Parse Date Format",
+      "translation": "解析日期格式"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_parquet.ui",
+      "context": "DialogParquet",
+      "widget": "label_4",
+      "property": "text",
+      "source": "<html><head/><body><p>Visit <a href=\"https://doc.qt.io/qt-5/qtime.html#toString\"><span style=\" text-decoration: underline; color:#0000ff;\">these</span></a> <a href=\"https://doc.qt.io/qt-5/qdate.html#fromString-2\"><span style=\" text-decoration: underline; color:#0000ff;\">links</span></a> to learn more about the Date-Time format</p></body></html>",
+      "translation": "<html><head/><body><p>存取<a href=\"https://doc.qt.io/qt-5/qtime.html#toString\"><span style=\" text-decoration: underline; color:#0000ff;\">時間格式說明</span></a>和<a href=\"https://doc.qt.io/qt-5/qdate.html#fromString-2\"><span style=\" text-decoration: underline; color:#0000ff;\">日期格式說明</span></a>，瞭解日期時間格式的更多資訊。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_parquet.ui",
+      "context": "DialogParquet",
+      "widget": "radioButtonSelect",
+      "property": "text",
+      "source": "Select a column to be used as timestamp",
+      "translation": "選取用作時間戳記的欄"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_parquet.ui",
+      "context": "DialogParquet",
+      "widget": "radioButtonIndex",
+      "property": "text",
+      "source": "Use row number as X axis",
+      "translation": "使用列號作為 X 軸"
+    },
+    {
+      "kind": "exact",
+      "ui": "dataload_parquet.ui",
+      "context": "DialogParquet",
+      "widget": "label_3",
+      "property": "text",
+      "source": "Columns:",
+      "translation": "欄："
+    }
+  ]
+}

@@ -1,0 +1,167 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "ULogParamsForm",
+      "property": "windowTitle",
+      "source": "ULog File",
+      "translation": "ULog 檔案"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tabInfo",
+      "property": "title",
+      "source": "Info",
+      "translation": "資訊"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableInfo",
+      "property": "text",
+      "source": "Property",
+      "translation": "屬性"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableInfo",
+      "property": "text",
+      "source": "Value",
+      "translation": "值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tabParameters",
+      "property": "title",
+      "source": "Properties",
+      "translation": "屬性"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableParams",
+      "property": "text",
+      "source": "Property",
+      "translation": "屬性"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableParams",
+      "property": "text",
+      "source": "Value",
+      "translation": "值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tabMessageLogs",
+      "property": "title",
+      "source": "Message Logs",
+      "translation": "訊息記錄檔"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "text",
+      "source": "Timestamp",
+      "translation": "時間戳記"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "text",
+      "source": "Level",
+      "translation": "等級"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "text",
+      "source": "Message",
+      "translation": "訊息"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableInfo",
+      "property": "headerText",
+      "source": "Property",
+      "translation": "屬性"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableInfo",
+      "property": "headerText",
+      "source": "Value",
+      "translation": "值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableParams",
+      "property": "headerText",
+      "source": "Property",
+      "translation": "屬性"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableParams",
+      "property": "headerText",
+      "source": "Value",
+      "translation": "值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "headerText",
+      "source": "Timestamp",
+      "translation": "時間戳記"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "headerText",
+      "source": "Level",
+      "translation": "等級"
+    },
+    {
+      "kind": "exact",
+      "ui": "ulog_params.ui",
+      "context": "ULogParamsForm",
+      "widget": "tableMessageLogs",
+      "property": "headerText",
+      "source": "Message",
+      "translation": "訊息"
+    }
+  ]
+}

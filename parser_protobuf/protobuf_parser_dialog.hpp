@@ -1,3 +1,4 @@
+#include "../common/localization/display_language.hpp"
 #pragma once
 
 #include <google/protobuf/compiler/importer.h>
@@ -94,11 +95,11 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     // notice rather than silently pretending the source is still available.
     if (!compile_error_.empty()) {
       const std::string heading = !compiled_schema_.empty() && !message_types_.empty()
-                                      ? "SOURCE COMPILE ERROR (USING SAVED DESCRIPTOR):\n"
-                                      : "COMPILE ERROR:\n";
+                                      ? pj::localization::text("SOURCE COMPILE ERROR (USING SAVED DESCRIPTOR):\n", "源文件编译错误（使用已保存的描述符）：\n", "原始檔編譯錯誤（使用已儲存的描述元）：\n")
+                                      : pj::localization::text("COMPILE ERROR:\n", "编译错误：\n", "編譯錯誤：\n");
       wd.setPlainText("textEditProtoPreview", heading + compile_error_ + "\n\n" + proto_file_content_);
     } else if (!source_notice_.empty()) {
-      wd.setPlainText("textEditProtoPreview", "SOURCE NOTICE:\n" + source_notice_ + "\n\n" + proto_file_content_);
+      wd.setPlainText("textEditProtoPreview", pj::localization::text("SOURCE NOTICE:\n", "源文件提示：\n", "原始檔提示：\n") + source_notice_ + "\n\n" + proto_file_content_);
     } else {
       wd.setPlainText("textEditProtoPreview", proto_file_content_);
     }
@@ -309,10 +310,10 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
         }
       } else if (!message_types_.empty()) {
 #ifndef PJ_TARGET_WASM
-        source_notice_ = "Source file is unavailable; using the saved embedded descriptor: " + proto_file_path_;
+        source_notice_ = pj::localization::text("Source file is unavailable; using the saved embedded descriptor: ", "源文件不可用；使用已保存的内嵌描述符：", "原始檔無法使用；使用已儲存的內嵌描述元：") + proto_file_path_;
 #endif
       } else {
-        compile_error_ = "Could not open file: " + proto_file_path_;
+        compile_error_ = pj::localization::text("Could not open file: ", "无法打开文件：", "無法開啟檔案：") + proto_file_path_;
       }
     }
 
@@ -372,7 +373,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     // Read file content for preview
     std::ifstream file(proto_file_path_);
     if (!file.is_open()) {
-      compile_error_ = "Could not open file: " + proto_file_path_;
+      compile_error_ = pj::localization::text("Could not open file: ", "无法打开文件：", "無法開啟檔案：") + proto_file_path_;
       return;
     }
 
@@ -409,7 +410,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       if (!error_collector.errors().empty()) {
         compile_error_ = error_collector.errors().front();
       } else {
-        compile_error_ = "Failed to compile proto file (unknown error)";
+        compile_error_ = pj::localization::text("Failed to compile proto file (unknown error)", "无法编译 proto 文件（未知错误）", "無法編譯 proto 檔案（未知錯誤）");
       }
       return;
     }

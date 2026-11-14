@@ -1,3 +1,4 @@
+#include "../common/localization/display_language.hpp"
 #pragma once
 
 // Note: MCAP_IMPLEMENTATION must be defined in exactly one translation unit
@@ -177,7 +178,7 @@ inline mcap::Status readSelectiveSummary(mcap::IReadable& reader, McapSummaryInf
   }
 
   if (footer.summaryStart == 0) {
-    return mcap::Status{mcap::StatusCode::MissingStatistics, "no summary section"};
+    return mcap::Status{mcap::StatusCode::MissingStatistics, pj::localization::text("no summary section", "无摘要区段", "沒有摘要區段")};
   }
   info.summary_start = footer.summaryStart;
 
@@ -185,7 +186,7 @@ inline mcap::Status readSelectiveSummary(mcap::IReadable& reader, McapSummaryInf
       footer.summaryOffsetStart != 0 ? footer.summaryOffsetStart : file_size - mcap::internal::FooterLength;
 
   if (summary_offset_start <= footer.summaryStart) {
-    return mcap::Status{mcap::StatusCode::InvalidFooter, "no SummaryOffset section available"};
+    return mcap::Status{mcap::StatusCode::InvalidFooter, pj::localization::text("no SummaryOffset section available", "没有可用的 SummaryOffset 区段", "沒有可用的 SummaryOffset 區段")};
   }
 
   struct GroupRange {
@@ -217,7 +218,7 @@ inline mcap::Status readSelectiveSummary(mcap::IReadable& reader, McapSummaryInf
   }
 
   if (!found_any) {
-    return mcap::Status{mcap::StatusCode::MissingStatistics, "no relevant SummaryOffset records found"};
+    return mcap::Status{mcap::StatusCode::MissingStatistics, pj::localization::text("no relevant SummaryOffset records found", "未找到相关的 SummaryOffset 记录", "找不到相關的 SummaryOffset 記錄")};
   }
 
   if (schema_range.start != 0) {
@@ -259,7 +260,7 @@ inline mcap::Status readSelectiveSummary(mcap::IReadable& reader, McapSummaryInf
   }
 
   if (!info.statistics) {
-    return mcap::Status{mcap::StatusCode::MissingStatistics, "Statistics record not found in summary"};
+    return mcap::Status{mcap::StatusCode::MissingStatistics, pj::localization::text("Statistics record not found in summary", "摘要中未找到 Statistics 记录", "摘要中找不到 Statistics 記錄")};
   }
   return mcap::StatusCode::Success;
 }
@@ -349,33 +350,33 @@ inline RecordingFiles resolveRecordingFiles(const std::string& path) {
 
   std::ifstream in(yaml_path, std::ios::binary);
   if (!in) {
-    return {{}, "Cannot open " + path};
+    return {{}, pj::localization::text("Cannot open ", "无法打开 ", "無法開啟 ") + path};
   }
   std::stringstream content;
   content << in.rdbuf();
   const Rosbag2Metadata meta = parseRosbag2Metadata(content.str());
 
   if (!meta.is_rosbag2) {
-    return {{}, "Not a ROS 2 bag metadata.yaml: " + path};
+    return {{}, pj::localization::text("Not a ROS 2 bag metadata.yaml: ", "不是 ROS 2 数据包 metadata.yaml：", "不是 ROS 2 資料包 metadata.yaml：") + path};
   }
   if (!meta.storage_identifier.empty() && meta.storage_identifier != "mcap") {
     return {
         {},
-        "Only MCAP-storage ROS 2 bags are supported; this bag uses '" + meta.storage_identifier +
-            "'. Convert it with 'ros2 bag convert' (storage_id: mcap)."};
+        pj::localization::text("Only MCAP-storage ROS 2 bags are supported; this bag uses '", "仅支持 MCAP 存储的 ROS 2 数据包；此数据包使用 '", "僅支援 MCAP 儲存格式的 ROS 2 資料包；此資料包使用 '") + meta.storage_identifier +
+            pj::localization::text("'. Convert it with 'ros2 bag convert' (storage_id: mcap).", "'。请使用 'ros2 bag convert' 转换（storage_id: mcap）。", "'。請使用 'ros2 bag convert' 轉換（storage_id: mcap）。")};
   }
   if (meta.relative_file_paths.empty()) {
-    return {{}, "The ROS 2 bag metadata lists no data files: " + path};
+    return {{}, pj::localization::text("The ROS 2 bag metadata lists no data files: ", "ROS 2 数据包元数据未列出数据文件：", "ROS 2 資料包中繼資料未列出資料檔案：") + path};
   }
 
   RecordingFiles out;
   for (const std::string& relative : meta.relative_file_paths) {
     const fs::path file = yaml_path.parent_path() / relative;
     if (!has_extension(file, ".mcap")) {
-      return {{}, "Only MCAP-storage ROS 2 bags are supported; unsupported bag file: " + relative};
+      return {{}, pj::localization::text("Only MCAP-storage ROS 2 bags are supported; unsupported bag file: ", "仅支持 MCAP 存储的 ROS 2 数据包；不支持的数据包文件：", "僅支援 MCAP 儲存格式的 ROS 2 資料包；不支援的資料包檔案：") + relative};
     }
     if (!fs::exists(file)) {
-      return {{}, "ROS 2 bag file listed in metadata.yaml is missing: " + file.string()};
+      return {{}, pj::localization::text("ROS 2 bag file listed in metadata.yaml is missing: ", "metadata.yaml 中列出的 ROS 2 数据包文件不存在：", "metadata.yaml 中列出的 ROS 2 資料包檔案不存在：") + file.string()};
     }
     out.paths.push_back(file.string());
   }

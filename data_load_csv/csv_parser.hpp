@@ -56,6 +56,8 @@ struct CsvParseWarning {
   Type type;
   int line_number;
   std::string detail;
+  // Display-only prose composed from the same raw values; canonical detail stays unchanged.
+  std::string localized_detail;
 };
 
 struct CsvParseResult {

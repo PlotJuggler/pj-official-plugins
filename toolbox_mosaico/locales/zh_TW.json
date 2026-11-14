@@ -1,0 +1,644 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "CertDialog",
+      "property": "windowTitle",
+      "source": "Server Certificate / API Key",
+      "translation": "伺服器憑證／API 金鑰"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "serverHeaderBand",
+      "property": "text",
+      "source": "Server:",
+      "translation": "伺服器："
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "serverHeaderBand",
+      "property": "trailingButtonToolTips",
+      "source": "Connect",
+      "translation": "連線"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "serverHeaderBand",
+      "property": "trailingButtonToolTips",
+      "source": "Cert / API Key…",
+      "translation": "憑證／API 金鑰…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "seqHeaderBand",
+      "property": "text",
+      "source": "Sequences",
+      "translation": "序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "seqHeaderBand",
+      "property": "filterPlaceholder",
+      "source": "Filter…",
+      "translation": "篩選…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "seqHeaderBand",
+      "property": "trailingToggleToolTip",
+      "source": "Use regular expression",
+      "translation": "使用正規表示式"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "seqHeaderBand",
+      "property": "trailingButtonToolTips",
+      "source": "Reload sequences",
+      "translation": "重新載入序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "metadataFilterHeaderBand",
+      "property": "text",
+      "source": "Metadata Filter",
+      "translation": "中繼資料篩選"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "keyCombo",
+      "property": "placeholderText",
+      "source": "Key",
+      "translation": "鍵"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "opCombo",
+      "property": "placeholderText",
+      "source": "Op",
+      "translation": "運算子"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "valCombo",
+      "property": "placeholderText",
+      "source": "Value",
+      "translation": "值"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "topicHeaderBand",
+      "property": "text",
+      "source": "Topics",
+      "translation": "主題"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "topicHeaderBand",
+      "property": "filterPlaceholder",
+      "source": "Filter…",
+      "translation": "篩選…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "topicHeaderBand",
+      "property": "trailingToggleToolTip",
+      "source": "Use regular expression",
+      "translation": "使用正規表示式"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "topicHeaderBand",
+      "property": "trailingButtonToolTips",
+      "source": "Reload topics",
+      "translation": "重新載入主題"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "infoHeaderBand",
+      "property": "text",
+      "source": "Info",
+      "translation": "資訊"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "buttonCancel",
+      "property": "text",
+      "source": "Cancel",
+      "translation": "取消"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "buttonFetch",
+      "property": "text",
+      "source": "Download",
+      "translation": "下載"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "lua_queryBar",
+      "property": "toolTip",
+      "source": "invalid syntax",
+      "translation": "語法無效"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "lua_queryBar",
+      "property": "toolTip",
+      "source": "invalid syntax",
+      "translation": "語法無效"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "seqTable",
+      "property": "headerText",
+      "source": "Name",
+      "translation": "名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "seqTable",
+      "property": "headerText",
+      "source": "Name",
+      "translation": "名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "seqTable",
+      "property": "headerText",
+      "source": "Date",
+      "translation": "日期"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "seqTable",
+      "property": "headerText",
+      "source": "Date",
+      "translation": "日期"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "seqTable",
+      "property": "headerText",
+      "source": "Size",
+      "translation": "大小"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "seqTable",
+      "property": "headerText",
+      "source": "Size",
+      "translation": "大小"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "topicTable",
+      "property": "headerText",
+      "source": "Name",
+      "translation": "名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "topicTable",
+      "property": "headerText",
+      "source": "Name",
+      "translation": "名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "topicTable",
+      "property": "headerText",
+      "source": "Size",
+      "translation": "大小"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "topicTable",
+      "property": "headerText",
+      "source": "Size",
+      "translation": "大小"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "seqHeader",
+      "property": "text",
+      "source": "Sequences",
+      "translation": "序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "seqHeader",
+      "property": "text",
+      "source": "Sequences",
+      "translation": "序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "topicHeader",
+      "property": "text",
+      "source": "Topics — loading…",
+      "translation": "主題：載入中…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "topicHeader",
+      "property": "text",
+      "source": "Topics — loading…",
+      "translation": "主題：載入中…"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "topicHeader",
+      "property": "text",
+      "source": "Topics",
+      "translation": "主題"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "topicHeader",
+      "property": "text",
+      "source": "Topics",
+      "translation": "主題"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "dataViewHeader",
+      "property": "text",
+      "source": "Info",
+      "translation": "資訊"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "dataViewHeader",
+      "property": "text",
+      "source": "Info",
+      "translation": "資訊"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "dataViewHeader",
+      "property": "text",
+      "source": "Download progress",
+      "translation": "下載進度"
+    },
+    {
+      "kind": "exact",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "dataViewHeader",
+      "property": "text",
+      "source": "Download progress",
+      "translation": "下載進度"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Server URI contains invalid characters (control or non-ASCII bytes).",
+      "translation": "伺服器 URI 包含無效字元（控制字元或非 ASCII 位元組）。"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "TLS certificate path contains invalid characters.",
+      "translation": "TLS 憑證路徑包含無效字元。"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "API key contains invalid characters (control or non-ASCII bytes).",
+      "translation": "API 金鑰包含無效字元（控制字元或非 ASCII 位元組）。"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Reloading sequences…",
+      "translation": "正在重新載入序列…"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Reloading topics…",
+      "translation": "正在重新載入主題…"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Credentials saved",
+      "translation": "認證資訊已儲存"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Select a sequence + topic(s) first",
+      "translation": "請先選擇一個序列和主題"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Cancelling…",
+      "translation": "正在取消…"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Download cancelled — kept the topics that finished first",
+      "translation": "下載已取消，已保留此前完成的主題"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Download cancelled",
+      "translation": "下載已取消"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "host offers no parser ingest (arrow-ipc topics need a newer PlotJuggler)",
+      "translation": "主程式不支援解析器匯入（arrow-ipc 主題需要較新版本的 PlotJuggler）"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Unknown error",
+      "translation": "未知錯誤"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "not connected",
+      "translation": "未連線"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "topic row count overflow",
+      "translation": "主題列數溢位"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "host not bound",
+      "translation": "主程式未繫結"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "no data in the requested range",
+      "translation": "要求範圍內沒有資料"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "pull failed: unknown error",
+      "translation": "擷取失敗：未知錯誤"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "synthetic timestamp overflows int64 at row %1 (anchor %2, interval %3)",
+      "translation": "產生的時間戳記在第 %1 列超出 int64 範圍（起點 %2，間隔 %3）"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Mosaico connection failed: %1",
+      "translation": "Mosaico 連線失敗：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Imported %1/%2 topics from %3",
+      "translation": "已從 %3 匯入 %1/%2 個主題"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "create dataset failed: %1",
+      "translation": "建立資料集失敗：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Mosaico fetch errors:\n%1",
+      "translation": "Mosaico 取得錯誤：\n%1"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Fetching %1 topic(s)…",
+      "translation": "正在取得 %1 個主題…"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Connected — server %1",
+      "translation": "已連線，伺服器版本 %1"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "Connecting to %1…",
+      "translation": "正在連線到 %1…"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "listTopics %1: %2",
+      "translation": "列出主題 %1：%2"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "pull failed: %1",
+      "translation": "擷取失敗：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-mosaico",
+      "property": "message",
+      "source": "%1 sequences",
+      "translation": "%1 個序列"
+    },
+    {
+      "kind": "templates",
+      "ui": "ui/cert_dialog.ui",
+      "context": "CertDialog",
+      "widget": "dataViewHeader",
+      "property": "text",
+      "source": "Info — %1",
+      "translation": "資訊：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": "ui/mosaico_panel.ui",
+      "context": "MosaicoPanel",
+      "widget": "dataViewHeader",
+      "property": "text",
+      "source": "Info — %1",
+      "translation": "資訊：%1"
+    }
+  ]
+}

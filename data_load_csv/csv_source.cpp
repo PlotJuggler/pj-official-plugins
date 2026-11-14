@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "../common/localization/display_language.hpp"
 #include "csv_dialog.hpp"
 #include "csv_manifest.hpp"
 #include "csv_parser.hpp"
@@ -87,7 +88,9 @@ class CsvSource : public PJ::FileSourceBase {
     }
     config.total_lines = total_lines;
 
-    (void)runtimeHost().progressStart("Importing CSV", static_cast<uint64_t>(total_lines), true);
+    (void)runtimeHost().progressStart(
+        pj::localization::text("Importing CSV", "正在导入 CSV", "正在匯入 CSV"), static_cast<uint64_t>(total_lines),
+        true);
 
     auto result = PJ::CSV::ParseCsvData(file, config, [this](int current, int /*total*/) -> bool {
       if (runtimeHost().isStopRequested()) {
@@ -112,10 +115,12 @@ class CsvSource : public PJ::FileSourceBase {
       // --- Non-monotonic time warning ---
       if (result.time_is_non_monotonic) {
         if (!runtimeHost().askContinue(
-                "Non-monotonic Timestamps",
-                "The time column is not monotonically increasing.\n"
-                "Data will be sorted automatically after loading.\n\n"
-                "Continue?")) {
+                pj::localization::text("Non-monotonic Timestamps", "时间戳非单调递增", "時間戳記非單調遞增"),
+                pj::localization::text(
+                    "The time column is not monotonically increasing.\n"
+                    "Data will be sorted automatically after loading.\n\nContinue?",
+                    "时间列不是单调递增的。\n数据将在加载后自动排序。\n\n是否继续？",
+                    "時間欄不是單調遞增的。\n資料將在載入後自動排序。\n\n是否繼續？"))) {
           return PJ::unexpected(std::string("Loading aborted by user"));
         }
       }
@@ -125,13 +130,17 @@ class CsvSource : public PJ::FileSourceBase {
       for (const auto& warn : result.warnings) {
         if (warn.type == PJ::CSV::CsvParseWarning::WRONG_COLUMN_COUNT ||
             warn.type == PJ::CSV::CsvParseWarning::INVALID_TIMESTAMP) {
-          detail += "Line " + std::to_string(warn.line_number) + ": " + warn.detail + "\n";
+          detail += pj::localization::text("Line ", "行 ", "行 ") + std::to_string(warn.line_number) + ": " +
+                    (warn.localized_detail.empty() ? warn.detail : warn.localized_detail) + "\n";
         }
       }
       if (!detail.empty()) {
         if (!runtimeHost().askContinue(
-                "Rows Skipped", "Some rows have an incorrect number of columns and will be skipped:\n\n" + detail +
-                                    "\nContinue loading?")) {
+                pj::localization::text("Rows Skipped", "跳过行", "略過資料列"),
+                pj::localization::text(
+                    "Some rows have an incorrect number of columns and will be skipped:\n\n",
+                    "部分行的列数不正确，将被跳过：\n\n", "部分資料列的欄數不正確，將被略過：\n\n") +
+                    detail + pj::localization::text("\nContinue loading?", "\n是否继续加载？", "\n是否繼續載入？"))) {
           return PJ::unexpected(std::string("Loading aborted by user"));
         }
       }
@@ -170,8 +179,11 @@ class CsvSource : public PJ::FileSourceBase {
         numeric_col_indices.push_back(i);
         if (has_string) {
           runtimeHost().showWarning(
-              "Mixed Column Type", "Column '" + col.name + "' has " + std::to_string(col.string_points.size()) +
-                                       " non-numeric cells that were skipped.");
+              pj::localization::text("Mixed Column Type", "混合列类型", "混合欄位類型"),
+              pj::localization::text("Column '", "列 '", "欄 '") + col.name +
+                  pj::localization::text("' has ", "' 中有 ", "' 中有 ") + std::to_string(col.string_points.size()) +
+                  pj::localization::text(
+                      " non-numeric cells that were skipped.", " 个非数值单元格已跳过。", " 個非數值儲存格已略過。"));
         }
       } else if (has_string) {
         string_col_indices.push_back(i);
@@ -263,8 +275,10 @@ class CsvSource : public PJ::FileSourceBase {
     }
 
     runtimeHost().reportMessage(
-        PJ::DataSourceMessageLevel::kInfo, "Imported " + std::to_string(result.lines_processed) + " rows, " +
-                                               std::to_string(result.lines_skipped) + " skipped");
+        PJ::DataSourceMessageLevel::kInfo,
+        pj::localization::text("Imported ", "已导入 ", "已匯入 ") + std::to_string(result.lines_processed) +
+            pj::localization::text(" rows, ", " 行，跳过 ", " 列，略過 ") + std::to_string(result.lines_skipped) +
+            pj::localization::text(" skipped", " 行", " 列"));
 
     return PJ::okStatus();
   }

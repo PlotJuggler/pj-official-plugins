@@ -1,0 +1,293 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "dialog_mcap",
+      "property": "windowTitle",
+      "source": "MCAP Parser",
+      "translation": "MCAP 解析器"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "headerSettings",
+      "property": "text",
+      "source": "Settings",
+      "translation": "設定"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "label_2",
+      "property": "text",
+      "source": "If an array size exceeds:",
+      "translation": "如果陣列大小超過："
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "label_4",
+      "property": "text",
+      "source": "then:",
+      "translation": "則："
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "radioClamp",
+      "property": "text",
+      "source": "Clamp",
+      "translation": "截斷"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "radioSkip",
+      "property": "text",
+      "source": "Skip",
+      "translation": "跳過"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "label_3",
+      "property": "text",
+      "source": "Timestamp:",
+      "translation": "時間戳記："
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "radioPublishTime",
+      "property": "text",
+      "source": "publish",
+      "translation": "發佈時間"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "radioLogTime",
+      "property": "text",
+      "source": "log",
+      "translation": "記錄時間"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "checkBoxUseTimestamp",
+      "property": "text",
+      "source": "Override with the message header timestamp (if present)",
+      "translation": "使用訊息標頭中的時間戳記覆寫（如果存在）"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "headerChannels",
+      "property": "text",
+      "source": "Channels",
+      "translation": "通道"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "headerChannels",
+      "property": "filterPlaceholder",
+      "source": "Filter Channel Names",
+      "translation": "篩選通道名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "btnSelectAll",
+      "property": "text",
+      "source": "Select All",
+      "translation": "全選"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "btnDeselectAll",
+      "property": "text",
+      "source": "Deselect All",
+      "translation": "取消全選"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "tableWidget",
+      "property": "text",
+      "source": "Channel name",
+      "translation": "通道名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "tableWidget",
+      "property": "text",
+      "source": "Schema",
+      "translation": "結構定義"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "tableWidget",
+      "property": "text",
+      "source": "Encoding",
+      "translation": "編碼"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "tableWidget",
+      "property": "text",
+      "source": "Msg Count",
+      "translation": "訊息數"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "tableWidget",
+      "property": "headerText",
+      "source": "Channel name",
+      "translation": "通道名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "tableWidget",
+      "property": "headerText",
+      "source": "Schema",
+      "translation": "結構定義"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "tableWidget",
+      "property": "headerText",
+      "source": "Encoding",
+      "translation": "編碼"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "tableWidget",
+      "property": "headerText",
+      "source": "Msg Count",
+      "translation": "訊息數"
+    },
+    {
+      "kind": "exact",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "labelAnalyzeError",
+      "property": "text",
+      "source": "No channels were found in this MCAP file.",
+      "translation": "此 MCAP 檔案中未找到任何通道。"
+    },
+    {
+      "kind": "templates",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "labelAnalyzeError",
+      "property": "text",
+      "source": "Only MCAP-storage ROS 2 bags are supported; this bag uses '%1'. Convert it with 'ros2 bag convert' (storage_id: mcap).",
+      "translation": "僅支援使用 MCAP 儲存的 ROS 2 bag；此 bag 使用「%1」。請使用 'ros2 bag convert' 轉換（storage_id: mcap）。"
+    },
+    {
+      "kind": "templates",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "labelAnalyzeError",
+      "property": "text",
+      "source": "No readable channels: all %1 channel(s) in this file reference a missing schema.",
+      "translation": "沒有可讀取的通道：此檔案中的全部 %1 個通道皆參照了不存在的結構定義。"
+    },
+    {
+      "kind": "templates",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "labelAnalyzeError",
+      "property": "text",
+      "source": "Only MCAP-storage ROS 2 bags are supported; unsupported bag file: %1",
+      "translation": "僅支援使用 MCAP 儲存的 ROS 2 bag；不支援的 bag 檔案：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "labelAnalyzeError",
+      "property": "text",
+      "source": "Cannot read the contents of this MCAP file.%1\nCode: %2\nMessage: %3",
+      "translation": "無法讀取此 MCAP 檔案的內容。%1\n錯誤碼：%2\n訊息：%3"
+    },
+    {
+      "kind": "templates",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "labelAnalyzeError",
+      "property": "text",
+      "source": "ROS 2 bag file listed in metadata.yaml is missing: %1",
+      "translation": "metadata.yaml 中列出的 ROS 2 bag 檔案缺失：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "labelAnalyzeError",
+      "property": "text",
+      "source": "Cannot open this MCAP file.%1\nCode: %2\nMessage: %3",
+      "translation": "無法開啟此 MCAP 檔案。%1\n錯誤碼：%2\n訊息：%3"
+    },
+    {
+      "kind": "templates",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "labelAnalyzeError",
+      "property": "text",
+      "source": "The ROS 2 bag metadata lists no data files: %1",
+      "translation": "ROS 2 bag 中繼資料未列出任何資料檔案：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "labelAnalyzeError",
+      "property": "text",
+      "source": "Not a ROS 2 bag metadata.yaml: %1",
+      "translation": "不是 ROS 2 bag 的 metadata.yaml：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": "dialog_mcap.ui",
+      "context": "dialog_mcap",
+      "widget": "labelAnalyzeError",
+      "property": "text",
+      "source": "Cannot open %1",
+      "translation": "無法開啟 %1"
+    }
+  ]
+}

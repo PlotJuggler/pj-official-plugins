@@ -1,0 +1,1652 @@
+{
+  "locale": "zh_TW",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "SaveFunctionName",
+      "property": "windowTitle",
+      "source": "Name of the Function",
+      "translation": "函式名稱"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "saveNameLabel",
+      "property": "text",
+      "source": "Name:",
+      "translation": "名稱："
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "OverwriteFunction",
+      "property": "windowTitle",
+      "source": "Warning",
+      "translation": "警告"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "overwriteLabel",
+      "property": "text",
+      "source": "A function with the same name exists already in the list of saved functions.\n\nOverwrite it?",
+      "translation": "已儲存的函式清單中已存在同名函式。\n\n是否覆寫？"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "TransformEditorDialog",
+      "property": "windowTitle",
+      "source": "Transform Editor",
+      "translation": "轉換編輯器"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "tab",
+      "property": "title",
+      "source": "Single Function",
+      "translation": "單函式"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "timeseriesHeader",
+      "property": "text",
+      "source": "Input Timeseries",
+      "translation": "輸入時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "pushButtonHelp",
+      "property": "toolTip",
+      "source": "Help",
+      "translation": "說明"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "pushButtonHelp",
+      "property": "text",
+      "source": "Help",
+      "translation": "說明"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "tableSources",
+      "property": "toolTip",
+      "source": "<html><head/><body><p>Drag &amp; drop timeseries here. Pick the radio to set which one is <span style=\" font-weight:600;\">value</span>.</p></body></html>",
+      "translation": "<html><head/><body><p>將時間序列拖放到此處。透過單選按鈕選擇用作 <span style=\" font-weight:600;\">value</span> 的序列。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "globalVariablesHeader",
+      "property": "text",
+      "source": "Global Variables",
+      "translation": "全域變數"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "globalVarsText",
+      "property": "toolTip",
+      "source": "<html><head/><body><p>Portion of code outside the function.</p><p>Useful to add global variables.</p></body></html>",
+      "translation": "<html><head/><body><p>函式之外的程式碼部分。</p><p>可用於新增全域變數。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "globalVarsText",
+      "property": "placeholderText",
+      "source": "Add your global variables here",
+      "translation": "在此新增全域變數"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "buttonLoadFunctions",
+      "property": "toolTip",
+      "source": "<html><head/><body><p>Import functions from a XML library.</p></body></html>",
+      "translation": "<html><head/><body><p>從 XML 庫匯入函式。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "buttonSaveFunctions",
+      "property": "toolTip",
+      "source": "<html><head/><body><p>Export functions from a XML library.</p></body></html>",
+      "translation": "<html><head/><body><p>從 XML 庫匯出函式。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "buttonSaveCurrent",
+      "property": "toolTip",
+      "source": "<html><head/><body><p>Save the current function in the library.</p></body></html>",
+      "translation": "<html><head/><body><p>將目前函式儲存到庫中。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "buttonLibraryBox",
+      "property": "toolTip",
+      "source": "<html><head/><body><p>Browse and manage available functions.</p></body></html>",
+      "translation": "<html><head/><body><p>瀏覽和管理可用函式。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "functionText",
+      "property": "toolTip",
+      "source": "<html><head/><body><p>Write your function implementation here. </p><p>It <span style=\" font-weight:600;\">must</span> return a new value.</p></body></html>",
+      "translation": "<html><head/><body><p>在此編寫函式實作。</p><p>函式<span style=\" font-weight:600;\">必須</span>傳回一個新值。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "functionText",
+      "property": "placeholderText",
+      "source": "Write your function here",
+      "translation": "在此編寫函式"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "outputTimeseriesHeader",
+      "property": "text",
+      "source": "Output Timeseries",
+      "translation": "輸出時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "nameLineEdit",
+      "property": "placeholderText",
+      "source": "name the new timeseries",
+      "translation": "為新時間序列命名"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "nameLineEdit",
+      "property": "toolTip",
+      "source": "<html><body><p>Name of the new time series.</p></body></html>",
+      "translation": "<html><body><p>新時間序列的名稱。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "pushButtonCreate",
+      "property": "text",
+      "source": "Create New Time Series",
+      "translation": "建立新時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "tab_2",
+      "property": "title",
+      "source": "Batch Functions",
+      "translation": "批量函式"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "timeseriesHeaderBatch",
+      "property": "text",
+      "source": "Input Timeseries",
+      "translation": "輸入時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "tableBatchSources",
+      "property": "toolTip",
+      "source": "<html><head/><body><p>Drag &amp; drop timeseries here. The function is applied to each one separately.</p></body></html>",
+      "translation": "<html><head/><body><p>將時間序列拖放到此處。函式將分別套用於每個序列。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "globalVariablesHeaderBatch",
+      "property": "text",
+      "source": "Global Variables",
+      "translation": "全域變數"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "globalVarsTextBatch",
+      "property": "toolTip",
+      "source": "<html><head/><body><p>Portion of code outside the function.</p><p>Useful to add global variables.</p></body></html>",
+      "translation": "<html><head/><body><p>函式之外的程式碼部分。</p><p>可用於新增全域變數。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "globalVarsTextBatch",
+      "property": "placeholderText",
+      "source": "Add your global variables here",
+      "translation": "在此新增全域變數"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "functionTextBatch",
+      "property": "toolTip",
+      "source": "<html><head/><body><p>Write your function implementation here. </p><p>It <span style=\" font-weight:600;\">must</span> return a new value.</p></body></html>",
+      "translation": "<html><head/><body><p>在此編寫函式實作。</p><p>函式<span style=\" font-weight:600;\">必須</span>傳回一個新值。</p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "functionTextBatch",
+      "property": "placeholderText",
+      "source": "Write your function here",
+      "translation": "在此編寫函式"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "radioButtonPrefix",
+      "property": "text",
+      "source": "Prefix",
+      "translation": "前綴"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "radioButtonSuffix",
+      "property": "text",
+      "source": "Suffix",
+      "translation": "後綴"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "suffixLineEdit",
+      "property": "placeholderText",
+      "source": "prefix / suffix to add to the names",
+      "translation": "要新增到名稱中的前綴／後綴"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "pushButtonCreateBatch",
+      "property": "text",
+      "source": "Create New Time Series",
+      "translation": "建立新時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "TransformEditorHelp",
+      "property": "windowTitle",
+      "source": "Help",
+      "translation": "說明"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "textBrowser",
+      "property": "html",
+      "source": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\np, li { white-space: pre-wrap; }\n</style></head><body style=\" font-family:'Ubuntu'; font-size:11pt; font-weight:400; font-style:normal;\">\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:14pt; font-weight:600;\">Transform editor Help</span></p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px; font-size:14pt; font-weight:600;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">The transform editor uses the scripting language Lua. You may want to read <a href=\"http://tylerneylon.com/a/learn-lua/\"><span style=\" text-decoration: underline;\">Learn Lua in 15 minutes</span></a>.</p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">In practice, you don't need to know that much to use it in PlotJuggler.</p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">You should implement the body of a <span style=\" font-style:italic;\">function(time, value),</span> that is invoked for each point. The returned value is the point [time, your_value]</p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:12pt; font-weight:600;\">Single input, stateless functions:</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">Example:</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return (value *  2) + 1</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">or you can use the <a href=\"https://www.tutorialspoint.com/lua/lua_math_library.htm\"><span style=\" text-decoration: underline;\">math library from Lua</span></a>:</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return math.log(value)</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">The new point will have the same time of the original point. If you want to modify the timestamp, just return two values like this:</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return time +1, (value *  2) </span></p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:12pt; font-weight:600;\">Return multiple points at once:</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">Since version 3.1, you may also return multiple values at once, using a Lua table:</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   -- Calculate t1,v1, t2, v2, etc...</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return { {t1, v1}, {t2, v2} }</span></p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:12pt; font-weight:600;\">Stateful functions:</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">Some transformations require some form of &quot;memory&quot;, i.e. they need the previous value. To do this you may use the &quot;global variable&quot; textbox.</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">For instance, to compute the finite difference between two consecutive value, you would add this to the <span style=\" font-weight:600;\">Global Variables</span> textbox:</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   prev = nil</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">And this to the <span style=\" font-weight:600;\">Function() </span>textbox</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   if ( prev == nil ) then</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">        prev = value</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   end</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   diff = value - prev</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   prev = value</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return diff  </span></p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:12pt; font-weight:600;\">Multi input, single output:</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">Select an additional time series and drop it in the table on the left side. Now your function definition will look like <span style=\" font-style:italic;\">function(time,value,v1)</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">Average of two time series:</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return (value + v1) / 2</span></p></body></html>",
+      "translation": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\np, li { white-space: pre-wrap; }\n</style></head><body style=\" font-family:'Ubuntu'; font-size:11pt; font-weight:400; font-style:normal;\">\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:14pt; font-weight:600;\">轉換編輯器說明</span></p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px; font-size:14pt; font-weight:600;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">轉換編輯器使用 Lua 指令碼語言。您可以先閱讀<a href=\"http://tylerneylon.com/a/learn-lua/\"><span style=\" text-decoration: underline;\">15 分鐘學會 Lua</span></a>.</p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">實際上，在 PlotJuggler 中使用它並不需要掌握太多知識。</p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">您需要實作以下函式的函式主體：<span style=\" font-style:italic;\">function(time, value),</span>它會對每個資料點呼叫一次。傳回值將構成資料點 [time, your_value]。</p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:12pt; font-weight:600;\">單輸入、無狀態函式：</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">範例：</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return (value *  2) + 1</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">也可以使用 <a href=\"https://www.tutorialspoint.com/lua/lua_math_library.htm\"><span style=\" text-decoration: underline;\">Lua 數學庫</span></a>:</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return math.log(value)</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">新資料點的時間與原資料點相同。如果需要修改時間戳記，只需像下面這樣傳回兩個值：</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return time +1, (value *  2) </span></p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:12pt; font-weight:600;\">一次傳回多個資料點：</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">從 3.1 版本起，還可以使用 Lua 表一次傳回多個值：</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   -- Calculate t1,v1, t2, v2, etc...</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return { {t1, v1}, {t2, v2} }</span></p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:12pt; font-weight:600;\">有狀態函式：</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">某些轉換需要某種形式的「記憶」，即需要前一個值。為此，可以使用「全域變數」文字框。</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">例如，要計算兩個相鄰值的有限差分，可以在<span style=\" font-weight:600;\">全域變數</span>文字框中新增以下程式碼：</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   prev = nil</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">並在 <span style=\" font-weight:600;\">Function() </span>文字框中新增以下程式碼：</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   if ( prev == nil ) then</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">        prev = value</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   end</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   diff = value - prev</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   prev = value</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return diff  </span></p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:12pt; font-weight:600;\">多輸入、單輸出：</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">選擇另一個時間序列並將其拖放到左側表格中。此時，函式定義將變為 <span style=\" font-style:italic;\">function(time,value,v1)</span></p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">計算兩個時間序列的平均值：</p>\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-style:italic;\">   return (value + v1) / 2</span></p></body></html>"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "FunctionsLibrary",
+      "property": "windowTitle",
+      "source": "Function Library",
+      "translation": "函式庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "functionsHeader",
+      "property": "text",
+      "source": "Functions",
+      "translation": "函式"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "functionsHeader",
+      "property": "filterPlaceholder",
+      "source": "Search",
+      "translation": "搜尋"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "previewHeader",
+      "property": "text",
+      "source": "Preview",
+      "translation": "預覽"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "labelTip",
+      "property": "text",
+      "source": "Ctrl+Click to select multiple",
+      "translation": "按住 Ctrl 並按一下可多選"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "useButton",
+      "property": "text",
+      "source": "Use",
+      "translation": "使用"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "tableSources",
+      "property": "headerText",
+      "source": "Input timeseries",
+      "translation": "輸入時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "tableSources",
+      "property": "headerText",
+      "source": "Input timeseries",
+      "translation": "輸入時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "tableSources",
+      "property": "headerText",
+      "source": "Input timeseries",
+      "translation": "輸入時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "tableSources",
+      "property": "headerText",
+      "source": "Input timeseries",
+      "translation": "輸入時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "tableSources",
+      "property": "headerText",
+      "source": "Input timeseries",
+      "translation": "輸入時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "tableSources",
+      "property": "headerText",
+      "source": "Var",
+      "translation": "變數"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "tableSources",
+      "property": "headerText",
+      "source": "Var",
+      "translation": "變數"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "tableSources",
+      "property": "headerText",
+      "source": "Var",
+      "translation": "變數"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "tableSources",
+      "property": "headerText",
+      "source": "Var",
+      "translation": "變數"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "tableSources",
+      "property": "headerText",
+      "source": "Var",
+      "translation": "變數"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "tableSources",
+      "property": "placeholderText",
+      "source": "Drag & drop timeseries here",
+      "translation": "將時間序列拖放到此處"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "tableSources",
+      "property": "placeholderText",
+      "source": "Drag & drop timeseries here",
+      "translation": "將時間序列拖放到此處"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "tableSources",
+      "property": "placeholderText",
+      "source": "Drag & drop timeseries here",
+      "translation": "將時間序列拖放到此處"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "tableSources",
+      "property": "placeholderText",
+      "source": "Drag & drop timeseries here",
+      "translation": "將時間序列拖放到此處"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "tableSources",
+      "property": "placeholderText",
+      "source": "Drag & drop timeseries here",
+      "translation": "將時間序列拖放到此處"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "tableFunctions",
+      "property": "headerText",
+      "source": "Function",
+      "translation": "函式"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "tableFunctions",
+      "property": "headerText",
+      "source": "Function",
+      "translation": "函式"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "tableFunctions",
+      "property": "headerText",
+      "source": "Function",
+      "translation": "函式"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "tableFunctions",
+      "property": "headerText",
+      "source": "Function",
+      "translation": "函式"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "tableFunctions",
+      "property": "headerText",
+      "source": "Function",
+      "translation": "函式"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "tableFunctions",
+      "property": "headerText",
+      "source": "Language",
+      "translation": "語言"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "tableFunctions",
+      "property": "headerText",
+      "source": "Language",
+      "translation": "語言"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "tableFunctions",
+      "property": "headerText",
+      "source": "Language",
+      "translation": "語言"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "tableFunctions",
+      "property": "headerText",
+      "source": "Language",
+      "translation": "語言"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "tableFunctions",
+      "property": "headerText",
+      "source": "Language",
+      "translation": "語言"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "buttonLoadFunctions",
+      "property": "pickerFilter",
+      "source": "Snippet library (*.json)",
+      "translation": "程式碼片段庫 (*.json)"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "buttonLoadFunctions",
+      "property": "pickerFilter",
+      "source": "Snippet library (*.json)",
+      "translation": "程式碼片段庫 (*.json)"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "buttonLoadFunctions",
+      "property": "pickerFilter",
+      "source": "Snippet library (*.json)",
+      "translation": "程式碼片段庫 (*.json)"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "buttonLoadFunctions",
+      "property": "pickerFilter",
+      "source": "Snippet library (*.json)",
+      "translation": "程式碼片段庫 (*.json)"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "buttonLoadFunctions",
+      "property": "pickerFilter",
+      "source": "Snippet library (*.json)",
+      "translation": "程式碼片段庫 (*.json)"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "buttonLoadFunctions",
+      "property": "pickerTitle",
+      "source": "Import snippet library",
+      "translation": "匯入程式碼片段庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "buttonLoadFunctions",
+      "property": "pickerTitle",
+      "source": "Import snippet library",
+      "translation": "匯入程式碼片段庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "buttonLoadFunctions",
+      "property": "pickerTitle",
+      "source": "Import snippet library",
+      "translation": "匯入程式碼片段庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "buttonLoadFunctions",
+      "property": "pickerTitle",
+      "source": "Import snippet library",
+      "translation": "匯入程式碼片段庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "buttonLoadFunctions",
+      "property": "pickerTitle",
+      "source": "Import snippet library",
+      "translation": "匯入程式碼片段庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "buttonSaveFunctions",
+      "property": "pickerFilter",
+      "source": "Snippet library (*.json)",
+      "translation": "程式碼片段庫 (*.json)"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "buttonSaveFunctions",
+      "property": "pickerFilter",
+      "source": "Snippet library (*.json)",
+      "translation": "程式碼片段庫 (*.json)"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "buttonSaveFunctions",
+      "property": "pickerFilter",
+      "source": "Snippet library (*.json)",
+      "translation": "程式碼片段庫 (*.json)"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "buttonSaveFunctions",
+      "property": "pickerFilter",
+      "source": "Snippet library (*.json)",
+      "translation": "程式碼片段庫 (*.json)"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "buttonSaveFunctions",
+      "property": "pickerFilter",
+      "source": "Snippet library (*.json)",
+      "translation": "程式碼片段庫 (*.json)"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "buttonSaveFunctions",
+      "property": "pickerTitle",
+      "source": "Export snippet library",
+      "translation": "匯出程式碼片段庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "buttonSaveFunctions",
+      "property": "pickerTitle",
+      "source": "Export snippet library",
+      "translation": "匯出程式碼片段庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "buttonSaveFunctions",
+      "property": "pickerTitle",
+      "source": "Export snippet library",
+      "translation": "匯出程式碼片段庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "buttonSaveFunctions",
+      "property": "pickerTitle",
+      "source": "Export snippet library",
+      "translation": "匯出程式碼片段庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "buttonSaveFunctions",
+      "property": "pickerTitle",
+      "source": "Export snippet library",
+      "translation": "匯出程式碼片段庫"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "nameLineEdit",
+      "property": "toolTip",
+      "source": "Name is required",
+      "translation": "名稱不能為空"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "nameLineEdit",
+      "property": "toolTip",
+      "source": "Name is required",
+      "translation": "名稱不能為空"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "nameLineEdit",
+      "property": "toolTip",
+      "source": "Name is required",
+      "translation": "名稱不能為空"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "nameLineEdit",
+      "property": "toolTip",
+      "source": "Name is required",
+      "translation": "名稱不能為空"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "nameLineEdit",
+      "property": "toolTip",
+      "source": "Name is required",
+      "translation": "名稱不能為空"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "tableBatchSources",
+      "property": "placeholderText",
+      "source": "Drag & drop timeseries here",
+      "translation": "將時間序列拖放到此處"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "tableBatchSources",
+      "property": "placeholderText",
+      "source": "Drag & drop timeseries here",
+      "translation": "將時間序列拖放到此處"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "tableBatchSources",
+      "property": "placeholderText",
+      "source": "Drag & drop timeseries here",
+      "translation": "將時間序列拖放到此處"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "tableBatchSources",
+      "property": "placeholderText",
+      "source": "Drag & drop timeseries here",
+      "translation": "將時間序列拖放到此處"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "tableBatchSources",
+      "property": "placeholderText",
+      "source": "Drag & drop timeseries here",
+      "translation": "將時間序列拖放到此處"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "pushButtonCreate",
+      "property": "text",
+      "source": "Modify Time Series",
+      "translation": "修改時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "pushButtonCreate",
+      "property": "text",
+      "source": "Modify Time Series",
+      "translation": "修改時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "pushButtonCreate",
+      "property": "text",
+      "source": "Modify Time Series",
+      "translation": "修改時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "pushButtonCreate",
+      "property": "text",
+      "source": "Modify Time Series",
+      "translation": "修改時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "pushButtonCreate",
+      "property": "text",
+      "source": "Modify Time Series",
+      "translation": "修改時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "pushButtonCreate",
+      "property": "text",
+      "source": "Create New Time Series",
+      "translation": "建立新時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "pushButtonCreate",
+      "property": "text",
+      "source": "Create New Time Series",
+      "translation": "建立新時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "pushButtonCreate",
+      "property": "text",
+      "source": "Create New Time Series",
+      "translation": "建立新時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "pushButtonCreate",
+      "property": "text",
+      "source": "Create New Time Series",
+      "translation": "建立新時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "pushButtonCreateBatch",
+      "property": "text",
+      "source": "Modify Time Series",
+      "translation": "修改時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "pushButtonCreateBatch",
+      "property": "text",
+      "source": "Modify Time Series",
+      "translation": "修改時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "pushButtonCreateBatch",
+      "property": "text",
+      "source": "Modify Time Series",
+      "translation": "修改時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "pushButtonCreateBatch",
+      "property": "text",
+      "source": "Modify Time Series",
+      "translation": "修改時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "pushButtonCreateBatch",
+      "property": "text",
+      "source": "Modify Time Series",
+      "translation": "修改時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "pushButtonCreateBatch",
+      "property": "text",
+      "source": "Create New Time Series",
+      "translation": "建立新時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "pushButtonCreateBatch",
+      "property": "text",
+      "source": "Create New Time Series",
+      "translation": "建立新時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "pushButtonCreateBatch",
+      "property": "text",
+      "source": "Create New Time Series",
+      "translation": "建立新時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "pushButtonCreateBatch",
+      "property": "text",
+      "source": "Create New Time Series",
+      "translation": "建立新時間序列"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Create a name for the new series\n",
+      "translation": "請為新序列命名\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Create a name for the new series\n",
+      "translation": "請為新序列命名\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Create a name for the new series\n",
+      "translation": "請為新序列命名\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Create a name for the new series\n",
+      "translation": "請為新序列命名\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Create a name for the new series\n",
+      "translation": "請為新序列命名\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Give the new series a name that isn't one of its inputs\n",
+      "translation": "新序列的名稱不能與任何輸入序列相同\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Give the new series a name that isn't one of its inputs\n",
+      "translation": "新序列的名稱不能與任何輸入序列相同\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Give the new series a name that isn't one of its inputs\n",
+      "translation": "新序列的名稱不能與任何輸入序列相同\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Give the new series a name that isn't one of its inputs\n",
+      "translation": "新序列的名稱不能與任何輸入序列相同\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Give the new series a name that isn't one of its inputs\n",
+      "translation": "新序列的名稱不能與任何輸入序列相同\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Add an input time series (drag & drop)\n",
+      "translation": "請拖放以新增輸入時間序列\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Add an input time series (drag & drop)\n",
+      "translation": "請拖放以新增輸入時間序列\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Add an input time series (drag & drop)\n",
+      "translation": "請拖放以新增輸入時間序列\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Add an input time series (drag & drop)\n",
+      "translation": "請拖放以新增輸入時間序列\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Add an input time series (drag & drop)\n",
+      "translation": "請拖放以新增輸入時間序列\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Write your function body\n",
+      "translation": "請撰寫函式主體\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Write your function body\n",
+      "translation": "請撰寫函式主體\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Write your function body\n",
+      "translation": "請撰寫函式主體\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Write your function body\n",
+      "translation": "請撰寫函式主體\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Write your function body\n",
+      "translation": "請撰寫函式主體\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreviewBatch",
+      "property": "chartPlaceholder",
+      "source": "Write your function body\n",
+      "translation": "請撰寫函式主體\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreviewBatch",
+      "property": "chartPlaceholder",
+      "source": "Write your function body\n",
+      "translation": "請撰寫函式主體\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreviewBatch",
+      "property": "chartPlaceholder",
+      "source": "Write your function body\n",
+      "translation": "請撰寫函式主體\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreviewBatch",
+      "property": "chartPlaceholder",
+      "source": "Write your function body\n",
+      "translation": "請撰寫函式主體\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreviewBatch",
+      "property": "chartPlaceholder",
+      "source": "Write your function body\n",
+      "translation": "請撰寫函式主體\n"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "The selected file contains no functions.",
+      "translation": "所選檔案中沒有函式。"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "The selected file contains no functions.",
+      "translation": "所選檔案中沒有函式。"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "The selected file contains no functions.",
+      "translation": "所選檔案中沒有函式。"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "The selected file contains no functions.",
+      "translation": "所選檔案中沒有函式。"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "The selected file contains no functions.",
+      "translation": "所選檔案中沒有函式。"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Could not read a function library from the selected file.",
+      "translation": "無法從所選檔案中讀取函式庫。"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Could not read a function library from the selected file.",
+      "translation": "無法從所選檔案中讀取函式庫。"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Could not read a function library from the selected file.",
+      "translation": "無法從所選檔案中讀取函式庫。"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Could not read a function library from the selected file.",
+      "translation": "無法從所選檔案中讀取函式庫。"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Could not read a function library from the selected file.",
+      "translation": "無法從所選檔案中讀取函式庫。"
+    },
+    {
+      "kind": "exact",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Could not write the selected file.",
+      "translation": "無法寫入所選檔案。"
+    },
+    {
+      "kind": "exact",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Could not write the selected file.",
+      "translation": "無法寫入所選檔案。"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Could not write the selected file.",
+      "translation": "無法寫入所選檔案。"
+    },
+    {
+      "kind": "exact",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Could not write the selected file.",
+      "translation": "無法寫入所選檔案。"
+    },
+    {
+      "kind": "exact",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Could not write the selected file.",
+      "translation": "無法寫入所選檔案。"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-transform-editor",
+      "property": "message",
+      "source": "Transform Editor: a source series, an output name, and a function body are required.",
+      "translation": "轉換編輯器：必須提供來源序列、輸出名稱和函式主體。"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-transform-editor",
+      "property": "message",
+      "source": "Transform Editor: the host did not expose pj.data_processors.v1 (cannot create the series).",
+      "translation": "轉換編輯器：主程式未提供 pj.data_processors.v1（無法建立序列）。"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-transform-editor",
+      "property": "message",
+      "source": "Transform Editor: no valid output name.",
+      "translation": "轉換編輯器：沒有有效的輸出名稱。"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-transform-editor",
+      "property": "message",
+      "source": "Transform Editor: drop in some input series, set a prefix/suffix, and write a function body.",
+      "translation": "轉換編輯器：請拖入輸入序列，設定前綴或後綴，並編寫函式主體。"
+    },
+    {
+      "kind": "templates",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "function produced no output — declared %1 outputs, so it must return exactly %1 values per point",
+      "translation": "函式未產生輸出：已宣告 %1 個輸出，因此每個點必須恰好傳回 %1 個值"
+    },
+    {
+      "kind": "templates",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "function produced no output — declared %1 outputs, so it must return exactly %1 values per point",
+      "translation": "函式未產生輸出：已宣告 %1 個輸出，因此每個點必須恰好傳回 %1 個值"
+    },
+    {
+      "kind": "templates",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "function produced no output — declared %1 outputs, so it must return exactly %1 values per point",
+      "translation": "函式未產生輸出：已宣告 %1 個輸出，因此每個點必須恰好傳回 %1 個值"
+    },
+    {
+      "kind": "templates",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "function produced no output — declared %1 outputs, so it must return exactly %1 values per point",
+      "translation": "函式未產生輸出：已宣告 %1 個輸出，因此每個點必須恰好傳回 %1 個值"
+    },
+    {
+      "kind": "templates",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "function produced no output — declared %1 outputs, so it must return exactly %1 values per point",
+      "translation": "函式未產生輸出：已宣告 %1 個輸出，因此每個點必須恰好傳回 %1 個值"
+    },
+    {
+      "kind": "templates",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "function produced no output — declared %1 output, so it must return exactly %1 value per point",
+      "translation": "函式未產生輸出：已宣告 %1 個輸出，因此每個點必須恰好傳回 %1 個值"
+    },
+    {
+      "kind": "templates",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "function produced no output — declared %1 output, so it must return exactly %1 value per point",
+      "translation": "函式未產生輸出：已宣告 %1 個輸出，因此每個點必須恰好傳回 %1 個值"
+    },
+    {
+      "kind": "templates",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "function produced no output — declared %1 output, so it must return exactly %1 value per point",
+      "translation": "函式未產生輸出：已宣告 %1 個輸出，因此每個點必須恰好傳回 %1 個值"
+    },
+    {
+      "kind": "templates",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "function produced no output — declared %1 output, so it must return exactly %1 value per point",
+      "translation": "函式未產生輸出：已宣告 %1 個輸出，因此每個點必須恰好傳回 %1 個值"
+    },
+    {
+      "kind": "templates",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "function produced no output — declared %1 output, so it must return exactly %1 value per point",
+      "translation": "函式未產生輸出：已宣告 %1 個輸出，因此每個點必須恰好傳回 %1 個值"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-transform-editor",
+      "property": "message",
+      "source": "Transform Editor: created %1 series.",
+      "translation": "轉換編輯器：已建立 %1 個序列。"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-transform-editor",
+      "property": "message",
+      "source": "Transform Editor: error on '%1': %2",
+      "translation": "轉換編輯器：處理「%1」時出錯：%2"
+    },
+    {
+      "kind": "templates",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Imported %1 function(s).",
+      "translation": "已匯入 %1 個函式。"
+    },
+    {
+      "kind": "templates",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Imported %1 function(s).",
+      "translation": "已匯入 %1 個函式。"
+    },
+    {
+      "kind": "templates",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Imported %1 function(s).",
+      "translation": "已匯入 %1 個函式。"
+    },
+    {
+      "kind": "templates",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Imported %1 function(s).",
+      "translation": "已匯入 %1 個函式。"
+    },
+    {
+      "kind": "templates",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Imported %1 function(s).",
+      "translation": "已匯入 %1 個函式。"
+    },
+    {
+      "kind": "templates",
+      "ui": "save_function_name.ui",
+      "context": "SaveFunctionName",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Exported %1 function(s).",
+      "translation": "已匯出 %1 個函式。"
+    },
+    {
+      "kind": "templates",
+      "ui": "overwrite_function.ui",
+      "context": "OverwriteFunction",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Exported %1 function(s).",
+      "translation": "已匯出 %1 個函式。"
+    },
+    {
+      "kind": "templates",
+      "ui": "transform_editor_dialog.ui",
+      "context": "TransformEditorDialog",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Exported %1 function(s).",
+      "translation": "已匯出 %1 個函式。"
+    },
+    {
+      "kind": "templates",
+      "ui": "transform_editor_help.ui",
+      "context": "TransformEditorHelp",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Exported %1 function(s).",
+      "translation": "已匯出 %1 個函式。"
+    },
+    {
+      "kind": "templates",
+      "ui": "function_library.ui",
+      "context": "FunctionsLibrary",
+      "widget": "framePlotPreview",
+      "property": "chartPlaceholder",
+      "source": "Exported %1 function(s).",
+      "translation": "已匯出 %1 個函式。"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-transform-editor",
+      "property": "message",
+      "source": "Transform Editor: %1",
+      "translation": "轉換編輯器：%1"
+    }
+  ]
+}

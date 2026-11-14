@@ -1,0 +1,140 @@
+{
+  "locale": "zh_CN",
+  "entries": [
+    {
+      "kind": "exact",
+      "ui": "quaternion_dialog.ui",
+      "context": "QuaternionDialog",
+      "widget": "QuaternionDialog",
+      "property": "windowTitle",
+      "source": "Quaternion to RPY",
+      "translation": "四元数转 RPY"
+    },
+    {
+      "kind": "exact",
+      "ui": "quaternion_dialog.ui",
+      "context": "QuaternionDialog",
+      "widget": "radio_radians",
+      "property": "text",
+      "source": "Radians",
+      "translation": "弧度"
+    },
+    {
+      "kind": "exact",
+      "ui": "quaternion_dialog.ui",
+      "context": "QuaternionDialog",
+      "widget": "radio_degrees",
+      "property": "text",
+      "source": "Degrees",
+      "translation": "度"
+    },
+    {
+      "kind": "exact",
+      "ui": "quaternion_dialog.ui",
+      "context": "QuaternionDialog",
+      "widget": "unwrap_check",
+      "property": "text",
+      "source": "Unwrap Angles",
+      "translation": "角度解缠绕"
+    },
+    {
+      "kind": "exact",
+      "ui": "quaternion_dialog.ui",
+      "context": "QuaternionDialog",
+      "widget": "save_button",
+      "property": "text",
+      "source": "Save",
+      "translation": "保存"
+    },
+    {
+      "kind": "exact",
+      "ui": "quaternion_dialog.ui",
+      "context": "QuaternionDialog",
+      "widget": "chart_preview",
+      "property": "chartPlaceholder",
+      "source": "Drag and Drop Quaternion values in the frames above.",
+      "translation": "请将四元数值拖放到上方的输入框中。"
+    },
+    {
+      "kind": "exact",
+      "ui": "quaternion_dialog.ui",
+      "context": "QuaternionDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Created roll/pitch/yaw transform.",
+      "translation": "已创建 roll/pitch/yaw 变换。"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-quaternion",
+      "property": "message",
+      "source": "host did not expose pj.data_processors.v1",
+      "translation": "宿主未提供 pj.data_processors.v1"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-quaternion",
+      "property": "message",
+      "source": "quaternion apply failed: host did not expose pj.data_processors.v1",
+      "translation": "四元数应用失败：宿主未提供 pj.data_processors.v1"
+    },
+    {
+      "kind": "exact",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-quaternion",
+      "property": "message",
+      "source": "quaternion save failed: host did not expose pj.data_processors.v1",
+      "translation": "四元数保存失败：宿主未提供 pj.data_processors.v1"
+    },
+    {
+      "kind": "exact",
+      "ui": "quaternion_dialog.ui",
+      "context": "QuaternionDialog",
+      "widget": "",
+      "property": "text",
+      "source": "Output:",
+      "translation": "输出："
+    },
+    {
+      "kind": "exact",
+      "ui": "quaternion_dialog.ui",
+      "context": "QuaternionDialog",
+      "widget": "output_prefix",
+      "property": "placeholderText",
+      "source": "e.g. /imu/rpy/",
+      "translation": "例如 /imu/rpy/"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-quaternion",
+      "property": "message",
+      "source": "quaternion apply failed: %1",
+      "translation": "四元数应用失败：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": null,
+      "context": null,
+      "widget": "message-source:toolbox-quaternion",
+      "property": "message",
+      "source": "quaternion save failed: %1",
+      "translation": "四元数保存失败：%1"
+    },
+    {
+      "kind": "templates",
+      "ui": "quaternion_dialog.ui",
+      "context": "QuaternionDialog",
+      "widget": "status_label",
+      "property": "text",
+      "source": "Create failed: %1",
+      "translation": "创建失败：%1"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+#include "../../common/localization/display_language.hpp"
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 #include "assistant_dialog.hpp"
@@ -276,7 +277,7 @@ bool AssistantDialog::switchToConversation(const std::string& id) {
   }
   // Visible seam between then and now — the model's memory comes back through
   // --resume regardless; this keeps the user able to SEE that it did.
-  state_.session.addSystem("resumed previous conversation");
+  state_.session.addSystem("resumed previous conversation", pj::localization::text("resumed previous conversation", "已恢复先前对话", "已恢復先前的對話"));
 
   const std::shared_ptr<HarnessMemory> memory = memoryFor(active_backend_key_);
   *memory = HarnessMemory{};
@@ -834,14 +835,14 @@ void AssistantDialog::sendCurrentInput() {
       backend->sendUserMessage(text, tools, sink);
     } else {
       postEvent([this]() {
-        applyBackendEvent({BackendEvent::Kind::Error, "No backend configured."});
+        applyBackendEvent({BackendEvent::Kind::Error, "No backend configured."}, pj::localization::text("No backend configured.", "未配置后端。", "尚未設定後端。"));
         applyBackendEvent({BackendEvent::Kind::TurnComplete, {}});
       });
     }
   });
 }
 
-void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
+void AssistantDialog::applyBackendEvent(const BackendEvent& ev, const std::string& display_error) {
   std::lock_guard<std::mutex> lock(state_.mu);
   switch (ev.kind) {
     case BackendEvent::Kind::AssistantText:
@@ -854,13 +855,13 @@ void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
       state_.transcript_dirty = true;
       break;
     case BackendEvent::Kind::Error:
-      state_.session.addSystem("Error: " + ev.text);
+      state_.session.addSystem("Error: " + ev.text, std::string(pj::localization::text("Error: ", "错误：", "錯誤：")) + (display_error.empty() ? ev.text : display_error));
       if (ev.resume_failed) {
         // The backend established that --resume itself failed (the session
         // was purged between listing it and this turn): say the one thing the
         // error text does not — retrying will not help. The transcript stays
         // readable; New chat is the way forward.
-        state_.session.addSystem("This conversation can no longer be continued; start a new one.");
+        state_.session.addSystem("This conversation can no longer be continued; start a new one.", pj::localization::text("This conversation can no longer be continued; start a new one.", "此对话无法继续，请新建对话。", "無法繼續此對話，請建立新對話。"));
       }
       state_.transcript_dirty = true;
       break;
@@ -920,7 +921,7 @@ void AssistantDialog::commitSettings() {
 
   {
     std::lock_guard<std::mutex> lock(state_.mu);
-    state_.session.addSystem("Settings saved (backend: " + backend + ").");
+    state_.session.addSystem("Settings saved (backend: " + backend + ").", std::string(pj::localization::text("Settings saved (backend: ", "设置已保存（后端：", "設定已儲存（後端：")) + backend + pj::localization::text(").", "）。", "）。"));
     state_.transcript_dirty = true;
   }
 
@@ -929,9 +930,9 @@ void AssistantDialog::commitSettings() {
   // swap the object out from under the probe.
   postCommand([this, backend = backend_]() {
     BackendTestResult t = backend ? backend->testConnection() : BackendTestResult{false, "no backend"};
-    postEvent([this, t]() {
+    postEvent([this, t, has_backend = static_cast<bool>(backend)]() {
       std::lock_guard<std::mutex> lock(state_.mu);
-      state_.session.addSystem(std::string("Connection: ") + (t.ok ? "OK - " : "FAILED - ") + t.message);
+      state_.session.addSystem(std::string("Connection: ") + (t.ok ? "OK - " : "FAILED - ") + t.message, std::string(pj::localization::text("Connection: ", "连接：", "連線：")) + (t.ok ? pj::localization::text("OK - ", "成功 - ", "成功 - ") : pj::localization::text("FAILED - ", "失败 - ", "失敗 - ")) + (has_backend ? t.message : pj::localization::text("no backend", "无后端", "無後端")));
       state_.transcript_dirty = true;
     });
   });

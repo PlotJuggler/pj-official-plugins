@@ -1,3 +1,4 @@
+#include "../../common/localization/display_language.hpp"
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 #pragma once
@@ -72,7 +73,7 @@ struct DialogState {
   ChatSession session;
 
   // Human-readable active-backend name, shown on the status line.
-  std::string backend_name = "Echo (no LLM)";
+  std::string backend_name = pj::localization::text("Echo (no LLM)", "回显（不调用大模型）", "回顯（不使用大型語言模型）");
 
   // Dirty flags so widget_data() re-pushes only what changed. The transcript
   // re-push (setPlainText on a growing transcript) is the expensive one, so
@@ -186,7 +187,7 @@ class AssistantDialog : public PJ::DialogPluginTyped {
 
   // Apply a BackendEvent to the ChatSession. Runs on the GUI thread (posted by
   // the worker's sink through the event queue).
-  void applyBackendEvent(const BackendEvent& ev);
+  void applyBackendEvent(const BackendEvent& ev, const std::string& display_error = {});
 
   // Forward a one-shot message to the app's notification dropdown. Safe no-op
 
