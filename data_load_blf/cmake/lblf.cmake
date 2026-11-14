@@ -2,6 +2,8 @@
 # Shared by this plugin and PlotJuggler's WebAssembly build: each fetches the
 # same pinned source and calls pj_add_lblf_library(<target> <lblf source dir>),
 # so the hardening below lives in one place. Needs ZLIB::ZLIB.
+# Only its two library sources are built (blf_reader.cc + print.cc):
+# object_types.cc and the read*.cc files are example programs with a main().
 include_guard(GLOBAL)
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/VendoredPatch.cmake)
 

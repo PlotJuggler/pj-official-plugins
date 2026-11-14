@@ -13,10 +13,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 # ---------------------------------------------------------------------------
 # lblf (PetStr/lblf, MIT) via CPM — DOWNLOAD_ONLY.
 #
-# Vector BLF reader (classic CAN + LIN + zlib-compressed LogContainers). We build
-# a static lib from its two LIBRARY sources only — blf_reader.cc + print.cc.
-# object_types.cc and the read*.cc files are example programs that each carry
-# their own main(), so they are excluded. Pinned by commit tarball + SHA256.
+# Vector BLF reader (classic CAN + LIN + zlib-compressed LogContainers), built
+# by cmake/lblf.cmake. Pinned by commit tarball + SHA256.
 # ---------------------------------------------------------------------------
 CPMAddPackage(
   NAME lblf
