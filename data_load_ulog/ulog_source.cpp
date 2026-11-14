@@ -575,5 +575,7 @@ class ULogSource : public PJ::FileSourceBase {
 
 }  // namespace
 
-PJ_DIALOG_PLUGIN(ulog_detail::ULogParamsDialog, kUlogManifest)
+// The dialog class is namespaced, so the static (WASM) build needs an
+// unqualified name for its getter symbol.
+PJ_DIALOG_PLUGIN_NAMED(ulog_detail::ULogParamsDialog, ULogParamsDialog, kUlogManifest)
 PJ_DATA_SOURCE_PLUGIN(ULogSource, kUlogManifest)
