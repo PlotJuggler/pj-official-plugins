@@ -190,10 +190,10 @@ class FoxgloveTestServer:
             print(f"    → frame → {topic_names}", end="\r")
 
 
-async def main(host: str, port: int):
+async def main(host: str, port: int, subprotocol: str):
     server = FoxgloveTestServer()
     print(f"Foxglove test server (simple) listening on ws://{host}:{port}")
-    print(f"Subprotocol: foxglove.sdk.v1")
+    print(f"Subprotocol: {subprotocol}")
     print(f"Channels: {[ch['topic'] for ch in CHANNELS]}")
     print("Ctrl+C to stop\n")
 
@@ -201,7 +201,7 @@ async def main(host: str, port: int):
         server.handler,
         host,
         port,
-        subprotocols=["foxglove.sdk.v1"],
+        subprotocols=[subprotocol],
     ):
         await server.emit_loop()
 
@@ -210,9 +210,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Foxglove WebSocket test server (simple, no foxglove-websocket SDK)")
     parser.add_argument("--host", default=HOST, help=f"Bind address (default: {HOST})")
     parser.add_argument("--port", type=int, default=PORT, help=f"Port (default: {PORT})")
+    parser.add_argument(
+        "--subprotocol",
+        default="foxglove.sdk.v1",
+        help="The only subprotocol accepted; foxglove.websocket.v1 imitates a bridge that predates the Foxglove SDK",
+    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(main(args.host, args.port))
+        asyncio.run(main(args.host, args.port, args.subprotocol))
     except KeyboardInterrupt:
         print("\nStopped.")

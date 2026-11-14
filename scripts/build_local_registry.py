@@ -264,7 +264,12 @@ def main() -> int:
             print(f"  ! {extension_id}: registry entry has warnings:", file=sys.stderr)
             for err in entry_errors:
                 print(f"      - {err}", file=sys.stderr)
-        registry = update_registry(registry, entry)
+        try:
+            registry = update_registry(registry, entry)
+        except ValueError as e:
+            print(f"✗ {extension_id}: {e} — skipping\n", file=sys.stderr)
+            failed.append(extension_id)
+            continue
         print()
 
     if not registry["extensions"]:
