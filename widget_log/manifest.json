@@ -1,0 +1,28 @@
+{
+  "id": "log-widget",
+  "name": "Log Widget",
+  "version": "1.0.0",
+  "description": "Dock widget that lists log messages (such as ROS /rosout) next to the playback tracker.",
+  "author": "PlotJuggler Team",
+  "publisher": "PlotJuggler",
+  "website": "https://github.com/PlotJuggler/pj-official-plugins",
+  "repository": "https://github.com/PlotJuggler/pj-official-plugins",
+  "license": "MIT",
+  "icon_url": "",
+  "category": "widget",
+  "tags": ["widget", "log", "ros", "rosout"],
+  "min_sdk_required": "0.39.0",
+  "min_plotjuggler_version": "4.2.0",
+  "supported_platforms": ["linux-x86_64", "windows-x86_64"],
+  "qt_modules": ["Core", "Gui", "Widgets"],
+  "widgets": [
+    {
+      "type": "log_viewer",
+      "name": "Log",
+      "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"><rect x=\"1.5\" y=\"2.5\" width=\"13\" height=\"11\" rx=\"1.5\"/><path d=\"M4 5.5h1M7 5.5h5M4 8h1M7 8h5M4 10.5h1M7 10.5h3\"/></svg>",
+      "settings": [
+        {"key": "future_rows", "type": "enum", "options": ["grey", "hide"], "default": "grey", "label": "Rows after the tracker"}
+      ]
+    }
+  ]
+}

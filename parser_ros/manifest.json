@@ -1,7 +1,7 @@
 {
   "id": "ros-parser",
   "name": "ROS CDR Parser",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Decodes ROS 1 and ROS 2 messages, with definitions in .msg or IDL form, into plottable fields. Common sensor and visualization messages (images, point clouds, occupancy grids, grid maps, TF, markers, and yolo_msgs detections as image annotations) are shown in the 2D image and 3D scene views.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

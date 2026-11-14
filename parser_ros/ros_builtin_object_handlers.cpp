@@ -41,6 +41,7 @@
 #include <unordered_map>
 
 #include "pj_base/builtin/camera_info.hpp"
+#include "pj_base/builtin/log.hpp"
 #include "pj_base/builtin/poses_in_frame.hpp"
 #include "ros_parser_internal.hpp"
 
@@ -978,6 +979,92 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxglovePosesInFrame(
         .object = PJ::sdk::BuiltinObject{std::move(result)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("PosesInFrame: CDR read error: ") + e.what());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// rcl_interfaces/Log (ROS 2) and rosgraph_msgs/Log (ROS 1) -> sdk::Log. The
+// scalar route (generic flatten) still runs in parallel so `level` etc. stay
+// plottable.
+//
+// Wire layout:
+//   ROS 2: builtin_interfaces/Time stamp; uint8 level; string name; string msg;
+//          string file; string function; uint32 line
+//   ROS 1: std_msgs/Header header; byte level; string name; string msg;
+//          string file; string function; uint32 line; string[] topics
+//          (topics is last and not needed, so the read stops after `line`)
+// Level constants differ: ROS 2 10/20/30/40/50, ROS 1 1/2/4/8/16.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+PJ::sdk::Log::Level mapRosLogLevel(uint8_t level, bool ros2) {
+  using Level = PJ::sdk::Log::Level;
+  if (ros2) {
+    switch (level) {
+      case 10:
+        return Level::kDebug;
+      case 20:
+        return Level::kInfo;
+      case 30:
+        return Level::kWarning;
+      case 40:
+        return Level::kError;
+      case 50:
+        return Level::kFatal;
+      default:
+        return Level::kUnknown;
+    }
+  }
+  switch (level) {
+    case 1:
+      return Level::kDebug;
+    case 2:
+      return Level::kInfo;
+    case 4:
+      return Level::kWarning;
+    case 8:
+      return Level::kError;
+    case 16:
+      return Level::kFatal;
+    default:
+      return Level::kUnknown;
+  }
+}
+
+}  // namespace
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLogObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+
+    const bool ros2 = deserializer_->isROS2();
+    int64_t stamp_ns = 0;
+    if (ros2) {
+      stamp_ns = readBareTime();
+    } else {
+      const HeaderData header = readHeader();
+      stamp_ns = header.sec * 1000000000LL + static_cast<int64_t>(header.nsec);
+    }
+
+    PJ::sdk::Log result;
+    result.timestamp_ns = stamp_ns != 0 ? stamp_ns : static_cast<int64_t>(ts);
+    result.level = mapRosLogLevel(readU8(*deserializer_), ros2);
+    deserializer_->deserializeString(result.source);
+    deserializer_->deserializeString(result.message);
+    // The source location (file, function, line) is not part of the canonical Log; it is read only so a
+    // truncated message is rejected instead of accepted.
+    std::string skipped;
+    deserializer_->deserializeString(skipped);
+    deserializer_->deserializeString(skipped);
+    (void)deserializer_->deserializeUInt32();  // line
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("Log: CDR read error: ") + e.what());
   }
 }
 

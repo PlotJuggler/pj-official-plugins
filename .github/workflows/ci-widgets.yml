@@ -1,6 +1,6 @@
 name: CI Widgets
 
-# Widget-family libraries (widget_basic) are the only plugins that link Qt. They get their own
+# Widget-family libraries (widget_basic, widget_log) are the only plugins that link Qt. They get their own
 # lane, with the official Qt named in QT_VERSION installed, so that every other CI lane stays
 # Qt-free; the Qt-free lanes skip them (see "List plugins" in ci-linux.yml). The host loads a widget
 # library only when it was built against the same Qt major.minor, which is why Qt comes from the
@@ -106,3 +106,11 @@ jobs:
       - name: Test widget_basic
         shell: bash
         run: ctest --test-dir build/widget_basic/Release --output-on-failure -V
+
+      - name: Build widget_log
+        shell: bash
+        run: ./build.sh widget_log
+
+      - name: Test widget_log
+        shell: bash
+        run: ctest --test-dir build/widget_log/Release --output-on-failure -V
