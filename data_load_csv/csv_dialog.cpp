@@ -2,6 +2,7 @@
 
 // Generated at configure time
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -364,7 +365,8 @@ void CsvDialog::analyzeFile() {
   if (filepath_.empty()) {
     return;
   }
-  std::ifstream file(filepath_);
+  // Paths from the host are UTF-8; use a Unicode filesystem path on Windows.
+  std::ifstream file(std::filesystem::path(std::u8string(filepath_.begin(), filepath_.end())));
   if (!file.is_open()) {
     return;
   }
