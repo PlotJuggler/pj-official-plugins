@@ -81,7 +81,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseYoloDetectionArray(PJ::Times
     const HeaderData header = readHeader();
 
     PJ::sdk::ImageAnnotations out;
-    out.timestamp = current_timestamp_;
+    out.timestamp_ns = current_timestamp_;
     // Informational only — the Scene2D renderer composites by layer stacking,
     // not by matching this against an image topic. yolo_msgs carries no image
     // topic name, so the camera optical frame_id is the best available hint.

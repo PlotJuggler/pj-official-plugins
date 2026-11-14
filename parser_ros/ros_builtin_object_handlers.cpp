@@ -819,9 +819,9 @@ PJ::sdk::FrameTransform RosParser::readStampedTransform() {
   //      stamp drifts transforms out of sync with point clouds. Overriding onto
   //      the message clock keeps them moving together.
   if (use_embedded_timestamp_ || header_stamp_ns == 0) {
-    tf.timestamp = static_cast<PJ::Timestamp>(header_stamp_ns);
+    tf.timestamp_ns = static_cast<PJ::Timestamp>(header_stamp_ns);
   } else {
-    tf.timestamp = current_timestamp_;
+    tf.timestamp_ns = current_timestamp_;
   }
   tf.parent_frame_id = std::move(header.frame_id);
   tf.child_frame_id = std::move(child_frame_id);

@@ -448,7 +448,7 @@ TEST(ObjectSerialize, TransformSingularRoundTrips) {
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.x, 7.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 9.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
-  EXPECT_EQ(ft->transforms[0].timestamp, 111);
+  EXPECT_EQ(ft->transforms[0].timestamp_ns, 111);
 }
 
 // frame_transform ontology: a `transforms` list<struct> per row → one batch.
@@ -486,8 +486,8 @@ TEST(ObjectSerialize, FrameTransformListRoundTrips) {
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.x, 1.0);
   EXPECT_EQ(ft->transforms[1].parent_frame_id, "base_link");
   EXPECT_DOUBLE_EQ(ft->transforms[1].translation.z, 6.0);
-  EXPECT_EQ(ft->transforms[0].timestamp, 555);
-  EXPECT_EQ(ft->transforms[1].timestamp, 555);
+  EXPECT_EQ(ft->transforms[0].timestamp_ns, 555);
+  EXPECT_EQ(ft->transforms[1].timestamp_ns, 555);
 }
 
 // occupancy_grid: info{resolution,width,height,origin} + dense data list<int8>.

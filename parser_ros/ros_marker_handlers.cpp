@@ -199,14 +199,14 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
     out.deletions.push_back(
         PJ::sdk::SceneEntityDeletion{
             .type = PJ::sdk::SceneEntityDeletion::Type::kMatchingId,
-            .timestamp = stamp_ns,
+            .timestamp_ns = stamp_ns,
             .id = makeEntityId(ns, id)});
     return;
   }
   if (action == marker_action::kDeleteAll) {
     out.deletions.push_back(
         PJ::sdk::SceneEntityDeletion{
-            .type = PJ::sdk::SceneEntityDeletion::Type::kAll, .timestamp = stamp_ns, .id = std::string()});
+            .type = PJ::sdk::SceneEntityDeletion::Type::kAll, .timestamp_ns = stamp_ns, .id = std::string()});
     return;
   }
 
@@ -215,7 +215,7 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
   const bool use_vertex_colors = !colors.empty() && colors.size() == points.size();
 
   PJ::sdk::SceneEntity entity;
-  entity.timestamp = stamp_ns;
+  entity.timestamp_ns = stamp_ns;
   entity.frame_id = header.frame_id;
   entity.id = makeEntityId(ns, id);
   entity.lifetime_ns = static_cast<int64_t>(life_sec) * 1000000000LL + static_cast<int64_t>(life_nsec);
