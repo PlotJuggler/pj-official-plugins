@@ -3,7 +3,7 @@ name: CI Windows
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main, ci/affected-plugins]  # TEMP: scope probe PR, revert before merge
+    branches: [main]
     paths-ignore: ['**/*.md']
   push:
     branches: [main]
