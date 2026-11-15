@@ -1140,6 +1140,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
         on_save_batch_();
       }
     }
+    // A create that succeeded closes the editor: a preview rebuilt (or a batch re-validated) now
+    // would replay the whole source again, in the same main-thread task, for a panel about to go.
+    if (action != PendingCreate::None && pending_close_) {
+      return true;
+    }
     // Rebuild immediately after an editor change. Browser builds sample an
     // otherwise-live source at 1 Hz instead of replaying the complete Luau
     // transform on every 20 Hz panel tick; native builds retain their existing
