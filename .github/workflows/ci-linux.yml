@@ -19,8 +19,6 @@ jobs:
   # prebuilt SDK is absent, ensure_core.sh builds it from the pinned git tag
   # (v<SDK_VERSION>). The matrix still receives one local artifact.
   acquire-core:
-    needs: discover-plugins
-    if: needs.discover-plugins.outputs.plugins != '[]' || needs.discover-plugins.outputs.arrow_plugins != '[]'
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     steps:
@@ -212,36 +210,14 @@ jobs:
 
       - name: List plugins
         id: list
+        # Arrow consumers build in a dedicated job (arrow-plugin-build) that reuses a
+        # once-built Arrow binary from acquire-arrow; everyone else builds right after
+        # acquire-core. The script splits them by recipe content ("arrow/"), so a new
+        # Arrow plugin is routed with no workflow edit. A plugin requesting an Arrow
+        # variant acquire-arrow does not prime still works; it rebuilds it in-leg.
+        # Explicit bash = -o pipefail, so a script failure is not hidden behind tee.
         shell: bash
-        env:
-          EVENT: ${{ github.event_name }}
-        # Partition into Arrow consumers and the rest. The Arrow consumers build in a
-        # dedicated job (arrow-plugin-build) that reuses a once-built Arrow binary from
-        # acquire-arrow, while everyone else builds immediately after acquire-core. The
-        # split is by recipe content (grep "arrow/"), so a new Arrow plugin is routed
-        # automatically with no workflow edit. acquire-arrow primes the variants the repo
-        # needs (parquet/snappy + Flight); a plugin requesting some other Arrow variant
-        # still works — it just rebuilds that variant in-leg until acquire-arrow primes it
-        # too.
-        run: |
-          if [[ "$EVENT" == pull_request ]]; then
-            scope=$(git diff --name-only HEAD^1 HEAD | python3 scripts/ci_affected_plugins.py)
-          else
-            scope=$(python3 scripts/ci_affected_plugins.py --all)
-          fi
-          echo "$scope"
-          plugins=()
-          arrow_plugins=()
-          for plugin in $(sed -n 's/^list=//p' <<<"$scope"); do
-            if grep -q '"arrow/' "$plugin/conanfile.py"; then
-              arrow_plugins+=("$plugin")
-            else
-              plugins+=("$plugin")
-            fi
-          done
-          to_json() { if (($#)); then printf '%s\n' "$@" | jq -R . | jq -sc .; else echo '[]'; fi; }
-          echo "plugins=$(to_json "${plugins[@]}")" >> "$GITHUB_OUTPUT"
-          echo "arrow_plugins=$(to_json "${arrow_plugins[@]}")" >> "$GITHUB_OUTPUT"
+        run: python3 scripts/ci_affected_plugins.py | tee -a "$GITHUB_OUTPUT"
 
   # Build each plugin in isolation against its own conanfile.py, matching the
   # path the release workflow takes. Catches per-plugin recipe gaps. Each leg

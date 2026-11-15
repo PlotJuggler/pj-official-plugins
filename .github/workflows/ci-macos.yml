@@ -19,26 +19,20 @@ jobs:
   scope:
     runs-on: ubuntu-22.04
     outputs:
-      all: ${{ steps.scope.outputs.all }}
-      list: ${{ steps.scope.outputs.list }}
+      aggregate: ${{ steps.scope.outputs.aggregate }}
+      standalone: ${{ steps.scope.outputs.standalone }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
       - id: scope
+        # Explicit bash = -o pipefail, so a script failure is not hidden behind tee.
         shell: bash
-        env:
-          EVENT: ${{ github.event_name }}
-        run: |
-          if [[ "$EVENT" == pull_request ]]; then
-            git diff --name-only HEAD^1 HEAD | python3 scripts/ci_affected_plugins.py | tee -a "$GITHUB_OUTPUT"
-          else
-            python3 scripts/ci_affected_plugins.py --all | tee -a "$GITHUB_OUTPUT"
-          fi
+        run: python3 scripts/ci_affected_plugins.py | tee -a "$GITHUB_OUTPUT"
 
   build:
     needs: scope
-    if: needs.scope.outputs.list != ''
+    if: needs.scope.outputs.aggregate == 'true' || needs.scope.outputs.standalone != ''
     # Apple silicon, matching the only macOS leg the release matrix still builds.
     # Intel Macs are not a supported target for the time being.
     runs-on: macos-15
@@ -83,25 +77,23 @@ jobs:
         # build.sh, not an inline conan install: it is the path a release tag takes
         # and it carries the plugin-scoped Conan confs -- including the liblsl
         # ASIO_HAS_STD_INVOKE_RESULT define, without which liblsl does not compile
-        # under libc++.
-        # The aggregate when everything is affected; otherwise only the affected plugins,
-        # each against its own recipe (the path a release tag takes).
+        # under libc++. The aggregate and/or single plugins, as the scope job decided
+        # (scripts/ci_affected_plugins.py).
         shell: bash
         env:
-          ALL: ${{ needs.scope.outputs.all }}
-          PLUGINS: ${{ needs.scope.outputs.list }}
+          AGGREGATE: ${{ needs.scope.outputs.aggregate }}
+          STANDALONE: ${{ needs.scope.outputs.standalone }}
         run: |
-          if [[ "$ALL" == true ]]; then
+          if [[ "$AGGREGATE" == true ]]; then
             ./build.sh
             ctest --test-dir build/all/Release -V --output-on-failure
-          else
-            for plugin in $PLUGINS; do
-              echo "::group::$plugin"
-              ./build.sh "$plugin"
-              ctest --test-dir "build/$plugin/Release" --output-on-failure -V
-              echo "::endgroup::"
-            done
           fi
+          for plugin in $STANDALONE; do
+            echo "::group::$plugin"
+            ./build.sh "$plugin"
+            ctest --test-dir "build/$plugin/Release" --output-on-failure -V
+            echo "::endgroup::"
+          done
 
       - name: Upload built Conan binaries to JFrog
         # Publish every dependency compiled above (macOS binaries) so the next

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ci_affected_plugins import affected_plugins
+from ci_affected_plugins import affected_plugins, build_plan
 
 
 class AffectedPluginsTest(unittest.TestCase):
@@ -38,6 +38,28 @@ class AffectedPluginsTest(unittest.TestCase):
                 self.assertTrue(all_)
                 self.assertIn("data_load_mcap", plugins)
                 self.assertNotIn("widget_basic", plugins)
+
+
+class BuildPlanTest(unittest.TestCase):
+    def test_one_plugin_builds_standalone_and_splits_arrow(self):
+        plan = build_plan(["data_load_parquet/a.cpp", "data_load_csv/a.cpp"])
+        self.assertEqual(plan["aggregate"], "false")
+        self.assertEqual(plan["standalone"], "data_load_csv data_load_parquet")
+        self.assertEqual(plan["plugins"], '["data_load_csv"]')
+        self.assertEqual(plan["arrow_plugins"], '["data_load_parquet"]')
+
+    def test_nothing_affected_builds_nothing(self):
+        plan = build_plan(["README.md"])
+        self.assertEqual((plan["aggregate"], plan["standalone"], plan["plugins"]), ("false", "", "[]"))
+
+    def test_everything_builds_the_aggregate(self):
+        plan = build_plan(None)
+        self.assertEqual(plan["aggregate"], "true")
+        self.assertIn("data_load_mcap", plan["plugins"])
+
+    def test_a_broad_change_switches_to_the_aggregate(self):
+        lane = affected_plugins(None)[1]
+        self.assertEqual(build_plan([f"{p}/a.cpp" for p in lane[: len(lane) // 2]])["aggregate"], "true")
 
 
 if __name__ == "__main__":
