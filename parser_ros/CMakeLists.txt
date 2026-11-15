@@ -139,6 +139,21 @@ if(benchmark_FOUND)
     plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host rosx_introspection benchmark::benchmark)
 endif()
 
+# --- Real-file decode benchmark (optional, needs zstd + lz4 for the vendored mcap reader) ---
+#   mcap_decode_bench [--read-only] [--hash] file.mcap...
+find_library(PJ_BENCH_ZSTD zstd)
+find_library(PJ_BENCH_LZ4 lz4)
+if(PJ_BENCH_ZSTD AND PJ_BENCH_LZ4)
+  add_executable(mcap_decode_bench benchmarks/mcap_decode_bench.cpp)
+  target_compile_features(mcap_decode_bench PRIVATE cxx_std_20)
+  target_compile_definitions(mcap_decode_bench PRIVATE
+    PJ_ROS_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_ros_plugin>")
+  target_include_directories(mcap_decode_bench SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../data_load_mcap/contrib)
+  target_link_libraries(mcap_decode_bench PRIVATE
+    plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host ${PJ_BENCH_ZSTD} ${PJ_BENCH_LZ4})
+  add_dependencies(mcap_decode_bench parser_ros_plugin)
+endif()
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(parser_ros_plugin
   REQUIRED_EXPORTS PJ_get_message_parser_vtable PJ_get_dialog_vtable)
