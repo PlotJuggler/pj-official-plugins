@@ -27,7 +27,7 @@ concurrency:
 env:
   # The PlotJuggler commit whose browser build this job runs (README "WebAssembly build"): a
   # commit, not a branch, so the job does not break when the host moves.
-  PJ_HOST_REF: 840bfc82613af25487ec677c5255c35ea469ef78
+  PJ_HOST_REF: a149194cf35030e6ac6f7e5e3b4a08924f1d81b6
 
 jobs:
   changes:
