@@ -50,8 +50,8 @@ class LogLoader {
   [[nodiscard]] std::vector<WireInfo> wires() const;
   [[nodiscard]] std::string label(uint32_t wire) const;
 
-  /// Samples received from the host vs. samples the host holds, over every log wire. They differ only
-  /// when the host delivered fewer samples than asked (an older host with a fixed cap).
+  /// Samples received from the host vs. samples the host holds, over every log wire. They differ when the
+  /// host counts entries it cannot deliver, or delivered fewer samples than asked (an older host's cap).
   [[nodiscard]] size_t receivedSamples() const;
   [[nodiscard]] size_t hostSamples() const;
 
@@ -67,13 +67,14 @@ class LogLoader {
   struct Wire {
     std::string label;
     bool is_log = true;
-    bool loaded = false;        ///< a full load succeeded at least once
-    bool warned = false;        ///< a warning about this wire was already reported
-    uint32_t host_total = 0;    ///< samples the host held at the last sync
-    double host_first = 0.0;    ///< time of its first sample
-    double host_last = 0.0;     ///< time of its last sample
-    uint32_t host_at_last = 0;  ///< samples at host_last
-    size_t missing = 0;         ///< samples the host counted but did not deliver since the last full load
+    bool loaded = false;                ///< a full load succeeded at least once
+    bool warned = false;                ///< a warning about this wire was already reported
+    uint32_t host_total = 0;            ///< samples the host held at the last sync
+    double host_first = 0.0;            ///< time of its first sample
+    double host_last = 0.0;             ///< time of its last sample
+    uint32_t host_at_last = 0;          ///< samples at host_last
+    size_t missing = 0;                 ///< samples the host holds and counted but did not deliver
+    std::optional<double> probe_first;  ///< the count probe's first sample at the last sync (none: undelivered)
     uint64_t next_seq = 0;
   };
 
