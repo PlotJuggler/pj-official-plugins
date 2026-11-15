@@ -4,15 +4,41 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    paths-ignore: ['**/*.md']
   push:
     branches: [main]
+    paths-ignore: ['**/*.md']
 
 concurrency:
   group: ci-macos-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Which plugins this change can affect -- see the discover-plugins job in ci-linux.yml.
+  # On a cheap Linux runner, so a change that touches no lane plugin never starts a Mac.
+  scope:
+    runs-on: ubuntu-22.04
+    outputs:
+      all: ${{ steps.scope.outputs.all }}
+      list: ${{ steps.scope.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: scope
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [[ "$EVENT" == pull_request ]]; then
+            git diff --name-only HEAD^1 HEAD | python3 scripts/ci_affected_plugins.py | tee -a "$GITHUB_OUTPUT"
+          else
+            python3 scripts/ci_affected_plugins.py --all | tee -a "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: scope
+    if: needs.scope.outputs.list != ''
     # Apple silicon, matching the only macOS leg the release matrix still builds.
     # Intel Macs are not a supported target for the time being.
     runs-on: macos-15
@@ -58,10 +84,24 @@ jobs:
         # and it carries the plugin-scoped Conan confs -- including the liblsl
         # ASIO_HAS_STD_INVOKE_RESULT define, without which liblsl does not compile
         # under libc++.
+        # The aggregate when everything is affected; otherwise only the affected plugins,
+        # each against its own recipe (the path a release tag takes).
         shell: bash
+        env:
+          ALL: ${{ needs.scope.outputs.all }}
+          PLUGINS: ${{ needs.scope.outputs.list }}
         run: |
-          ./build.sh
-          ctest --test-dir build/all/Release -V --output-on-failure
+          if [[ "$ALL" == true ]]; then
+            ./build.sh
+            ctest --test-dir build/all/Release -V --output-on-failure
+          else
+            for plugin in $PLUGINS; do
+              echo "::group::$plugin"
+              ./build.sh "$plugin"
+              ctest --test-dir "build/$plugin/Release" --output-on-failure -V
+              echo "::endgroup::"
+            done
+          fi
 
       - name: Upload built Conan binaries to JFrog
         # Publish every dependency compiled above (macOS binaries) so the next

@@ -9,11 +9,13 @@ on:
       - '.github/workflows/ci-ros2.yml'
       - 'CMakeLists.txt'
       - 'cmake/**'
+      - '!**/*.md'
   push:
     branches: [main]
     paths:
       - 'data_stream_ros2/**'
       - '.github/workflows/ci-ros2.yml'
+      - '!**/*.md'
 
 concurrency:
   group: ci-ros2-${{ github.ref }}
