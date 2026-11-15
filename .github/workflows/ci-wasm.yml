@@ -24,7 +24,6 @@ on:
       - 'data_load_parquet/**'
       - 'data_load_ulog/**'
       - 'data_stream_dummy/**'
-      - 'data_stream_foxglove_bridge/**'
       - 'data_stream_pj_bridge/**'
       - 'parser_arrow/**'
       - 'parser_data_tamer/**'
@@ -148,6 +147,9 @@ jobs:
           key: wasm-cpython-${{ hashFiles('host/cmake/PjWasmPython.cmake', 'host/cmake/wasm_python/**') }}-emsdk-${{ steps.versions.outputs.emscripten }}
 
       - name: Restore compiler cache
+        # Saved only by pushes to main (below): this repository's Actions cache is at its 10 GB
+        # cap, and a PR's entry is visible to that PR alone, so saving one per PR run would evict
+        # the other workflows' caches. PRs start from main's latest entry.
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/ccache
@@ -156,7 +158,8 @@ jobs:
 
       - name: Configure compiler cache
         run: |
-          ccache --set-config=max_size=2G
+          # A cold build of the whole app stores about 0.11 GB (compressed).
+          ccache --set-config=max_size=1G
           ccache --set-config=compression=true
           ccache --set-config=compiler_check=content
           ccache --set-config=hash_dir=false
@@ -186,7 +189,7 @@ jobs:
         run: ccache --show-stats
 
       - name: Save compiler cache
-        if: always()
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/ccache
