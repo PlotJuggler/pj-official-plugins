@@ -168,12 +168,9 @@ To make a plugin available in the browser:
    does not provide yet goes into its `PjWasmDependencies.cmake`, and every new static
    archive needs the symbol-collision audit and notice entry PlotJuggler's `CLAUDE.md` asks for.
 
-The `ci-wasm` workflow builds PlotJuggler's browser app against this checkout, so a change
-here that breaks the browser build (a renamed source, a new dependency, a duplicate symbol
-at link time) fails its PR. It checks out PlotJuggler at `PJ_HOST_REF`, the one place the
-host is pinned (top of `.github/workflows/ci-wasm.yml`): a commit that consumes these
-`wasm.cmake` files. Move it forward, to a commit of PlotJuggler's `main`, when the host's
-side of the contract changes.
+This repository's CI does not build the browser app: PlotJuggler's WASM CI does, on the
+PR that moves its pin. A change to a browser-built plugin or to `common/` should therefore
+be built once with the override above before it merges here.
 
 ## Development Checklist
 
