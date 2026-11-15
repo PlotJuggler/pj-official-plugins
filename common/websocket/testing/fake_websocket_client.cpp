@@ -1,8 +1,8 @@
-#include "fake_bridge_websocket.hpp"
+#include <pj_websocket/testing/fake_websocket_client.hpp>
 
-namespace PJ::BridgeProtocol {
+namespace PJ::WebSocket {
 
-struct BridgeWebSocket::State {
+struct Client::State {
   std::shared_ptr<testing::FakeSocket> fake;
 };
 
@@ -15,26 +15,27 @@ std::vector<std::shared_ptr<FakeSocket>>& fakeSockets() {
 
 }  // namespace testing
 
-PJ::Status BridgeWebSocket::start(std::string url, EventSink sink) {
+PJ::Status Client::start(std::string url, EventSink sink, std::vector<std::string> subprotocols) {
   state_ = std::make_shared<State>();
   state_->fake = std::make_shared<testing::FakeSocket>();
   state_->fake->url = std::move(url);
   state_->fake->sink = std::move(sink);
+  state_->fake->subprotocols = std::move(subprotocols);
   testing::fakeSockets().push_back(state_->fake);
   return PJ::okStatus();
 }
 
-void BridgeWebSocket::sendText(std::string text) {
+void Client::sendText(std::string text) {
   if (isOpen()) {
     state_->fake->sent.push_back(std::move(text));
   }
 }
 
-bool BridgeWebSocket::isOpen() const {
+bool Client::isOpen() const {
   return state_ && state_->fake->open;
 }
 
-void BridgeWebSocket::stop() {
+void Client::stop() {
   if (!state_) {
     return;
   }
@@ -42,4 +43,4 @@ void BridgeWebSocket::stop() {
   state_->fake->open = false;
 }
 
-}  // namespace PJ::BridgeProtocol
+}  // namespace PJ::WebSocket

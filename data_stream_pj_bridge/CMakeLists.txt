@@ -18,13 +18,14 @@ target_compile_options(pj_bridge_protocol_lib PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(pj_bridge_protocol_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pj_bridge_protocol_lib PUBLIC zstd::libzstd_static)
 
-# The WebSocket backend is chosen by source file: pj_bridge_websocket_native.cpp (IXWebSocket)
-# here; a WebAssembly build compiles pj_bridge_websocket_wasm.cpp instead and needs no IXWebSocket.
-add_library(pj_bridge_source_plugin SHARED pj_bridge_source.cpp pj_bridge_websocket_native.cpp)
+# The WebSocket transport is common/websocket: its IXWebSocket backend here; a WebAssembly build
+# compiles its browser backend instead and needs no IXWebSocket.
+add_library(pj_bridge_source_plugin SHARED pj_bridge_source.cpp)
 target_compile_features(pj_bridge_source_plugin PRIVATE cxx_std_20)
 target_compile_options(pj_bridge_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(pj_bridge_source_plugin PRIVATE
-  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json pj_bridge_protocol_lib ixwebsocket::ixwebsocket
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json pj_bridge_protocol_lib pj_websocket_native
+  ixwebsocket::ixwebsocket
 )
 
 pj_embed_ui(pj_bridge_source_plugin
@@ -63,7 +64,7 @@ target_link_libraries(pj_bridge_topic_subscription_test PRIVATE
 add_test(NAME pj_bridge_topic_subscription_test COMMAND pj_bridge_topic_subscription_test)
 
 # --- Connection lifecycle: the source and dialog against a fake transport (no sockets) ---
-add_executable(pj_bridge_connection_test tests/pj_bridge_connection_test.cpp tests/fake_bridge_websocket.cpp)
+add_executable(pj_bridge_connection_test tests/pj_bridge_connection_test.cpp)
 target_compile_features(pj_bridge_connection_test PRIVATE cxx_std_20)
 target_compile_options(pj_bridge_connection_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(pj_bridge_connection_test PRIVATE
@@ -72,18 +73,9 @@ target_include_directories(pj_bridge_connection_test PRIVATE
 )
 target_link_libraries(pj_bridge_connection_test PRIVATE
   plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json pj_bridge_protocol_lib
-  GTest::gtest_main
+  pj_websocket_fake GTest::gtest_main
 )
 add_test(NAME pj_bridge_connection_test COMMAND pj_bridge_connection_test)
-
-# --- The IXWebSocket backend against a loopback server ---
-add_executable(pj_bridge_websocket_native_test tests/pj_bridge_websocket_native_test.cpp pj_bridge_websocket_native.cpp)
-target_compile_features(pj_bridge_websocket_native_test PRIVATE cxx_std_20)
-target_compile_options(pj_bridge_websocket_native_test PRIVATE ${PJ_WARNING_FLAGS})
-target_link_libraries(pj_bridge_websocket_native_test PRIVATE
-  plotjuggler_sdk::plugin_sdk ixwebsocket::ixwebsocket GTest::gtest_main
-)
-add_test(NAME pj_bridge_websocket_native_test COMMAND pj_bridge_websocket_native_test)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(pj_bridge_source_plugin

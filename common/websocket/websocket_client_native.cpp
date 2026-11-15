@@ -1,14 +1,13 @@
-// IXWebSocket backend of BridgeWebSocket (desktop builds).
+// IXWebSocket backend of Client (desktop builds).
 
 #include <ixwebsocket/IXSocketTLSOptions.h>
 #include <ixwebsocket/IXWebSocket.h>
 
 #include <filesystem>
+#include <pj_websocket/websocket_client.hpp>
 #include <system_error>
 
-#include "pj_bridge_websocket.hpp"
-
-namespace PJ::BridgeProtocol {
+namespace PJ::WebSocket {
 
 std::string firstExistingCaFile(const std::vector<std::string>& candidates) {
   for (const auto& path : candidates) {
@@ -20,14 +19,14 @@ std::string firstExistingCaFile(const std::vector<std::string>& candidates) {
   return "SYSTEM";
 }
 
-struct BridgeWebSocket::State {
+struct Client::State {
   ix::WebSocket socket;
   EventSink sink;
 };
 
-PJ::Status BridgeWebSocket::start(std::string url, EventSink sink) {
+PJ::Status Client::start(std::string url, EventSink sink, std::vector<std::string> subprotocols) {
   if (state_ || !sink) {
-    return PJ::unexpected(std::string("BridgeWebSocket::start needs a fresh socket and an event sink"));
+    return PJ::unexpected(std::string("Client::start needs a fresh socket and an event sink"));
   }
   state_ = std::make_shared<State>();
   state_->sink = sink;
@@ -42,6 +41,9 @@ PJ::Status BridgeWebSocket::start(std::string url, EventSink sink) {
   }
 #endif
   state_->socket.setUrl(url);
+  for (const auto& subprotocol : subprotocols) {
+    state_->socket.addSubProtocol(subprotocol);
+  }
   // The browser backend cannot reconnect either; a lost connection is reported, never retried.
   state_->socket.disableAutomaticReconnection();
   // A stop() that lands just as IXWebSocket starts its handshake loses the cancellation (the
@@ -53,17 +55,16 @@ PJ::Status BridgeWebSocket::start(std::string url, EventSink sink) {
   state_->socket.setOnMessageCallback([sink](const ix::WebSocketMessagePtr& message) {
     switch (message->type) {
       case ix::WebSocketMessageType::Open:
-        sink->push({BridgeWebSocketEvent::Type::kOpen, {}});
+        sink->push({Event::Type::kOpen, {}});
         break;
       case ix::WebSocketMessageType::Message:
-        sink->push(
-            {message->binary ? BridgeWebSocketEvent::Type::kBinary : BridgeWebSocketEvent::Type::kText, message->str});
+        sink->push({message->binary ? Event::Type::kBinary : Event::Type::kText, message->str});
         break;
       case ix::WebSocketMessageType::Close:
-        sink->push({BridgeWebSocketEvent::Type::kClosed, message->closeInfo.reason});
+        sink->push({Event::Type::kClosed, message->closeInfo.reason});
         break;
       case ix::WebSocketMessageType::Error:
-        sink->push({BridgeWebSocketEvent::Type::kError, message->errorInfo.reason});
+        sink->push({Event::Type::kError, message->errorInfo.reason});
         break;
       default:
         break;  // ping, pong, fragment
@@ -73,17 +74,17 @@ PJ::Status BridgeWebSocket::start(std::string url, EventSink sink) {
   return PJ::okStatus();
 }
 
-void BridgeWebSocket::sendText(std::string text) {
+void Client::sendText(std::string text) {
   if (isOpen()) {
     state_->socket.sendText(text);
   }
 }
 
-bool BridgeWebSocket::isOpen() const {
+bool Client::isOpen() const {
   return state_ && state_->socket.getReadyState() == ix::ReadyState::Open;
 }
 
-void BridgeWebSocket::stop() {
+void Client::stop() {
   if (!state_) {
     return;
   }
@@ -91,4 +92,4 @@ void BridgeWebSocket::stop() {
   state_->socket.stop();
 }
 
-}  // namespace PJ::BridgeProtocol
+}  // namespace PJ::WebSocket

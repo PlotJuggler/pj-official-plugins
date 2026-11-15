@@ -1,7 +1,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -9,6 +8,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/streaming_source.hpp>
+#include <pj_websocket/websocket_client.hpp>
 #include <set>
 #include <string>
 #include <string_view>
@@ -18,7 +18,6 @@
 #include "pj_bridge_manifest.hpp"
 #include "pj_bridge_protocol.hpp"
 #include "pj_bridge_topic_subscription.hpp"
-#include "pj_bridge_websocket.hpp"
 
 namespace {
 
@@ -127,8 +126,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
         advertised_topics_[info.name] = std::move(info);
       }
     } else {
-      events_ = std::make_shared<BridgeEventQueue>(options_.inbound_queue_bytes);
-      socket_ = std::make_unique<BridgeWebSocket>();
+      events_ = std::make_shared<PJ::WebSocket::EventQueue>(options_.inbound_queue_bytes);
+      socket_ = std::make_unique<PJ::WebSocket::Client>();
       if (auto status = socket_->start(endpoint_, events_); !status) {
         return PJ::unexpected("failed to connect to PJ bridge at " + endpoint_ + ": " + status.error());
       }
@@ -222,15 +221,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     advertise_dirty_ = false;
     fatal_error_.clear();
     server_info_logged_ = false;
-    reported_dropped_frames_ = 0;
+    drop_warning_.reset();
     paused_ = false;
     (void)desired_topics_slot_.take();  // drop any pending host command so it can't leak into the next start
   }
 
  private:
   using Clock = std::chrono::steady_clock;
-
-  static constexpr std::chrono::seconds kDropWarningInterval{5};
 
   /// Where the connection is. Advances only from onPoll() (or onStart() for an adopted socket).
   enum class ConnectionPhase {
@@ -293,15 +290,15 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     // Pop each event as it is applied, so a long batch frees its frames as it goes.
     auto pending = events_->drain();
     while (!pending.empty()) {
-      const BridgeWebSocketEvent event = std::move(pending.front());
+      const PJ::WebSocket::Event event = std::move(pending.front());
       pending.pop_front();
       switch (event.type) {
-        case BridgeWebSocketEvent::Type::kOpen:
+        case PJ::WebSocket::Event::Type::kOpen:
           if (phase_ == ConnectionPhase::kConnecting) {
             beginDiscovery();
           }
           break;
-        case BridgeWebSocketEvent::Type::kText:
+        case PJ::WebSocket::Event::Type::kText:
           // Wire data can be arbitrarily malformed (nlohmann accessors throw on wrong-typed
           // fields): drop the frame with a warning, never fail the host's poll.
           try {
@@ -311,13 +308,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
                 PJ::DataSourceMessageLevel::kWarning, std::string("Dropped malformed control frame: ") + e.what());
           }
           break;
-        case BridgeWebSocketEvent::Type::kBinary:
+        case PJ::WebSocket::Event::Type::kBinary:
           onBinaryFrame(event.payload);
           break;
-        case BridgeWebSocketEvent::Type::kClosed:
+        case PJ::WebSocket::Event::Type::kClosed:
           failConnection(event.payload.empty() ? "closed by the server" : event.payload);
           break;
-        case BridgeWebSocketEvent::Type::kError:
+        case PJ::WebSocket::Event::Type::kError:
           failConnection(event.payload);
           break;
       }
@@ -326,26 +323,11 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   // [poll thread] The queue drops the oldest data frames when this thread falls behind (see
-  // BridgeEventQueue). Warn at the first drop, then at most once per kDropWarningInterval, each
-  // time with the running total of this session.
+  // PJ::WebSocket::EventQueue); DropWarning throttles the warning.
   void reportDroppedData() {
-    const auto dropped = events_->dropped();
-    if (dropped.frames == reported_dropped_frames_) {
-      return;
+    if (auto warning = drop_warning_.check(*events_, "PJ bridge stream at " + endpoint_)) {
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, *warning);
     }
-    const auto now = Clock::now();
-    if (reported_dropped_frames_ > 0 && now - last_drop_warning_ < kDropWarningInterval) {
-      return;
-    }
-    reported_dropped_frames_ = dropped.frames;
-    last_drop_warning_ = now;
-    char mebibytes[32];
-    std::snprintf(mebibytes, sizeof(mebibytes), "%.1f", static_cast<double>(dropped.bytes) / (1024.0 * 1024.0));
-    runtimeHost().reportMessage(
-        PJ::DataSourceMessageLevel::kWarning, "PlotJuggler fell behind the PJ bridge stream at " + endpoint_ +
-                                                  " and dropped the oldest " + std::to_string(dropped.frames) +
-                                                  " data frames (" + mebibytes +
-                                                  " MiB) so far; the plots have gaps where they were.");
   }
 
   // [poll thread] Decode one PJRB data frame and push each message to its topic's parser.
@@ -464,10 +446,11 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // synchronously-consumed notify_available_topics call. Mirrors the ros2 /
   // foxglove parameter shape: {topic, parser_encoding, type_name, schema}.
   std::vector<PJ::AvailableTopic> buildAvailableTopics() const {
+    const auto filter = advertiseFilter();
     std::vector<PJ::AvailableTopic> topics;
     topics.reserve(advertised_topics_.size());
     for (const auto& [name, info] : advertised_topics_) {
-      if (!passesAdvertiseFilter(name, advertiseFilter())) {
+      if (!passesAdvertiseFilter(name, filter)) {
         continue;
       }
       const auto schema_bytes = reinterpret_cast<const uint8_t*>(info.schema.data());
@@ -762,10 +745,10 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // lookup; the advertise filter is just its names, derived on demand.
   std::vector<TopicInfo> selected_topics_;
 
-  std::unique_ptr<BridgeWebSocket> socket_;
+  std::unique_ptr<PJ::WebSocket::Client> socket_;
   // Transport thread -> poll thread handoff of every inbound event, text and binary alike.
   // Fresh per start, so a late callback of a stopped session lands in a queue nobody drains.
-  EventSink events_;
+  PJ::WebSocket::EventSink events_;
   std::map<std::string, PJ::ParserBindingHandle> bindings_;  // poll-thread-only
 
   ConnectionPhase phase_ = ConnectionPhase::kConnecting;
@@ -802,9 +785,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   std::string fatal_error_;
   // One server-identity log + capability warning per start.
   bool server_info_logged_ = false;
-  // Data frames already reported as dropped, and when; see reportDroppedData().
-  uint64_t reported_dropped_frames_ = 0;
-  Clock::time_point last_drop_warning_{};
+  // Throttles the warning about data frames the queue dropped; see reportDroppedData().
+  PJ::WebSocket::DropWarning drop_warning_;
 
   // The id of the LAST subscribe request naming each topic — lets a stale
   // per-topic failure (from a superseded request) be ignored instead of

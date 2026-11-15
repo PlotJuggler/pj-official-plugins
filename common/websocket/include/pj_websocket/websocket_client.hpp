@@ -1,34 +1,38 @@
 #pragma once
 
-/// @file pj_bridge_websocket.hpp
-/// @brief The PlotJuggler Bridge plugin's WebSocket transport: one non-blocking contract with a
-///  backend per platform, chosen by which source file the build compiles.
+/// @file websocket_client.hpp
+/// @brief WebSocket client transport shared by the streaming plugins (PlotJuggler Bridge,
+///  Foxglove Bridge): one non-blocking contract with a backend per platform, chosen by which
+///  source file the build compiles.
 ///
-///  - pj_bridge_websocket_native.cpp: IXWebSocket; events arrive on IXWebSocket's own thread.
-///  - pj_bridge_websocket_wasm.cpp: <emscripten/websocket.h>; the browser socket, its callbacks
+///  - websocket_client_native.cpp: IXWebSocket; events arrive on IXWebSocket's own thread.
+///  - websocket_client_wasm.cpp: <emscripten/websocket.h>; the browser socket, its callbacks
 ///    and every send/close/delete run on the main runtime thread.
 ///
 ///  Either way, start() only begins connecting, and every outcome reaches the owner as an owned
-///  event in a BridgeEventQueue that the owner drains from its own (poll or dialog-tick) thread.
+///  event in an EventQueue that the owner drains from its own (poll or dialog-tick) thread.
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <pj_base/expected.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-namespace PJ::BridgeProtocol {
+namespace PJ::WebSocket {
 
 /// One transport event. Owns its bytes: the transport's own buffer is gone by the time the owner
 /// drains the event.
-struct BridgeWebSocketEvent {
+struct Event {
   enum class Type { kOpen, kText, kBinary, kClosed, kError };
 
   Type type = Type::kText;
@@ -41,13 +45,13 @@ struct BridgeWebSocketEvent {
 /// Overflow policy: pending data frames (kBinary) are capped at `max_bytes` of payload plus a
 /// fixed per-frame overhead. Past the cap the OLDEST pending data frames are dropped and counted
 /// in dropped(); the newest frame is always kept. Control events (open, text, close, error) are
-/// never dropped and do not count against the cap: they are small and carry protocol state. A
-/// PJRB data frame is self-contained, so a dropped one leaves a gap in the plots, never a broken
-/// stream.
+/// never dropped and do not count against the cap: they are small and carry protocol state. The
+/// protocols this carries make each data frame self-contained, so a dropped one leaves a gap in
+/// the plots, never a broken stream.
 ///
 /// close() discards pending events and turns every later push() into a no-op: that is how a
 /// transport drops callbacks that land after stop().
-class BridgeEventQueue {
+class EventQueue {
  public:
 #ifdef __EMSCRIPTEN__
   /// The wasm32 heap is shared with the whole app and cannot exceed 4 GiB.
@@ -62,15 +66,15 @@ class BridgeEventQueue {
     uint64_t bytes = 0;
   };
 
-  explicit BridgeEventQueue(size_t max_bytes = kDefaultMaxBytes) : max_bytes_(max_bytes) {}
+  explicit EventQueue(size_t max_bytes = kDefaultMaxBytes) : max_bytes_(max_bytes) {}
 
   /// [transport thread]
-  void push(BridgeWebSocketEvent event) {
+  void push(Event event) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {
       return;
     }
-    const bool data = event.type == BridgeWebSocketEvent::Type::kBinary;
+    const bool data = event.type == Event::Type::kBinary;
     if (data) {
       queued_data_bytes_ += cost(event);
     }
@@ -81,8 +85,8 @@ class BridgeEventQueue {
   }
 
   /// [owner thread] Everything pending, in arrival order.
-  [[nodiscard]] std::deque<BridgeWebSocketEvent> drain() {
-    std::deque<BridgeWebSocketEvent> pending;
+  [[nodiscard]] std::deque<Event> drain() {
+    std::deque<Event> pending;
     std::lock_guard<std::mutex> lock(mutex_);
     pending.swap(events_);
     queued_data_bytes_ = 0;
@@ -90,7 +94,7 @@ class BridgeEventQueue {
   }
 
   void close() {
-    std::deque<BridgeWebSocketEvent> discarded;  // freed after the lock: it may hold the whole cap
+    std::deque<Event> discarded;  // freed after the lock: it may hold the whole cap
     std::lock_guard<std::mutex> lock(mutex_);
     closed_ = true;
     discarded.swap(events_);
@@ -106,7 +110,7 @@ class BridgeEventQueue {
   /// Charged per data frame so a flood of tiny frames is bounded too.
   static constexpr size_t kFrameOverheadBytes = 64;
 
-  [[nodiscard]] static size_t cost(const BridgeWebSocketEvent& event) {
+  [[nodiscard]] static size_t cost(const Event& event) {
     return event.payload.size() + kFrameOverheadBytes;
   }
 
@@ -115,9 +119,8 @@ class BridgeEventQueue {
     auto candidate = events_.begin();
     while (queued_data_bytes_ > max_bytes_) {
       const auto newest = std::prev(events_.end());
-      candidate = std::find_if(candidate, newest, [](const BridgeWebSocketEvent& event) {
-        return event.type == BridgeWebSocketEvent::Type::kBinary;
-      });
+      candidate =
+          std::find_if(candidate, newest, [](const Event& event) { return event.type == Event::Type::kBinary; });
       if (candidate == newest) {
         return;  // only the newest frame is left: keep it even when it alone exceeds the cap
       }
@@ -130,15 +133,15 @@ class BridgeEventQueue {
 
   const size_t max_bytes_;
   mutable std::mutex mutex_;
-  std::deque<BridgeWebSocketEvent> events_;
+  std::deque<Event> events_;
   size_t queued_data_bytes_ = 0;
   bool closed_ = false;
   DropCount dropped_;
 };
 
-/// Where a BridgeWebSocket delivers its events. Shared, so callbacks still queued on another
+/// Where a Client delivers its events. Shared, so callbacks still queued on another
 /// thread can outlive the owner's stop() safely.
-using EventSink = std::shared_ptr<BridgeEventQueue>;
+using EventSink = std::shared_ptr<EventQueue>;
 
 /// True for "ws://" or "wss://" followed by a non-empty host; any port and path are kept as is.
 [[nodiscard]] inline bool isWebSocketUrl(std::string_view url) {
@@ -152,27 +155,29 @@ using EventSink = std::shared_ptr<BridgeEventQueue>;
 /// which its mbedTLS build can read only on Windows): the CA bundle wss:// is verified against.
 [[nodiscard]] std::string firstExistingCaFile(const std::vector<std::string>& candidates);
 
-/// Plugin-local WebSocket client with the same contract on every backend:
+/// WebSocket client with the same contract on every backend:
 ///  - start() returns before the connection completes; open, frames, close and errors arrive
 ///    later in the sink. Call it once per object.
 ///  - sendText(), isOpen() and stop() may be called from any thread; none of them waits for the
 ///    browser main thread, which may itself be joining the caller.
 ///  - stop() is idempotent and closes the sink first, so callbacks that land late are dropped.
-class BridgeWebSocket {
+class Client {
  public:
   /// Backend-defined connection state, shared with callbacks that may outlive stop().
   struct State;
 
-  BridgeWebSocket() = default;
-  ~BridgeWebSocket() {
+  Client() = default;
+  ~Client() {
     stop();
   }
-  BridgeWebSocket(const BridgeWebSocket&) = delete;
-  BridgeWebSocket& operator=(const BridgeWebSocket&) = delete;
+  Client(const Client&) = delete;
+  Client& operator=(const Client&) = delete;
 
-  /// Begins connecting to `url` (ws:// or wss://, any path). Fails only when the attempt cannot
-  /// even be scheduled; a refused or unreachable server is reported as a kError/kClosed event.
-  [[nodiscard]] PJ::Status start(std::string url, EventSink sink);
+  /// Begins connecting to `url` (ws:// or wss://, any path), offering `subprotocols` in order
+  /// (none: no Sec-WebSocket-Protocol header) and letting the server pick one. Fails only when
+  /// the attempt cannot even be scheduled; a refused or unreachable server is reported as a
+  /// kError/kClosed event.
+  [[nodiscard]] PJ::Status start(std::string url, EventSink sink, std::vector<std::string> subprotocols = {});
 
   /// Sends a text frame when open; otherwise the frame is dropped.
   void sendText(std::string text);
@@ -188,4 +193,45 @@ class BridgeWebSocket {
   std::shared_ptr<State> state_;
 };
 
-}  // namespace PJ::BridgeProtocol
+/// [owner thread] Throttles the warning that the owner fell behind and the queue dropped data
+/// frames: the first drop is reported at once, later ones at most once per `interval`, each time
+/// with the running total since the queue was created.
+class DropWarning {
+ public:
+  using Clock = std::chrono::steady_clock;
+
+  explicit DropWarning(Clock::duration interval = std::chrono::seconds(5)) : interval_(interval) {}
+
+  /// The warning to report now, if any. `stream` names what fell behind, e.g.
+  /// "PJ bridge stream at ws://robot:9090".
+  [[nodiscard]] std::optional<std::string> check(
+      const EventQueue& queue, std::string_view stream, Clock::time_point now = Clock::now()) {
+    const auto dropped = queue.dropped();
+    if (dropped.frames == reported_frames_) {
+      return std::nullopt;
+    }
+    if (reported_frames_ > 0 && now - last_warning_ < interval_) {
+      return std::nullopt;
+    }
+    reported_frames_ = dropped.frames;
+    last_warning_ = now;
+    char mebibytes[32];
+    std::snprintf(mebibytes, sizeof(mebibytes), "%.1f", static_cast<double>(dropped.bytes) / (1024.0 * 1024.0));
+    return "PlotJuggler fell behind the " + std::string(stream) + " and dropped the oldest " +
+           std::to_string(dropped.frames) + " data frames (" + mebibytes +
+           " MiB) so far; the plots have gaps where they were.";
+  }
+
+  /// Forget what was reported, for a fresh queue.
+  void reset() {
+    reported_frames_ = 0;
+    last_warning_ = {};
+  }
+
+ private:
+  Clock::duration interval_;
+  uint64_t reported_frames_ = 0;
+  Clock::time_point last_warning_{};
+};
+
+}  // namespace PJ::WebSocket

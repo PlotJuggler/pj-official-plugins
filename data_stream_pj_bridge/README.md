@@ -82,12 +82,14 @@ everything.
 
 ### Threading and transport
 
-`pj_bridge_websocket.hpp` is the plugin's transport contract; the build picks the
-backend by source file (`pj_bridge_websocket_native.cpp` or
-`pj_bridge_websocket_wasm.cpp`).
+The transport is the shared [`common/websocket`](../common/websocket/README.md)
+client, also used by the Foxglove Bridge: `<pj_websocket/websocket_client.hpp>` is the
+contract, and the build picks the backend by source file (`websocket_client_native.cpp`
+or `websocket_client_wasm.cpp`). The dialog's connection fields, retry and status line
+come from `<pj_websocket/connection_dialog.hpp>`.
 
 - Every transport event (open, text and binary frames, close, error) is copied into
-  one bounded FIFO, `BridgeEventQueue`, and processed in arrival order on the poll
+  one bounded FIFO, `PJ::WebSocket::EventQueue`, and processed in arrival order on the poll
   thread (on the dialog's tick while the dialog owns the connection), so parser
   bindings are only ever created and read from the poll thread.
 - The queue holds at most 512 MiB of unprocessed data frames on the desktop and 64 MiB

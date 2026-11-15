@@ -1,10 +1,11 @@
 /**
  * @file pj_bridge_connection_test.cpp
  * @brief PjBridgeSource connection lifecycle against the fake transport
- *  (tests/fake_bridge_websocket.cpp) and a recording runtime host: start() never waits for the
+ *  (common/websocket/testing/fake_websocket_client.cpp) and a recording runtime host: start() never waits for the
  *  connection, onPoll() drives connecting -> discovery -> streaming, failures latch once, and
  *  stop() isolates sessions. Also covers the dialog handoff, explicit and legacy endpoints,
- *  compressed frames, heartbeat, pause/resume, demand subscriptions and the inbound-queue bound.
+ *  compressed frames, heartbeat, pause/resume, demand subscriptions and the inbound-queue bound
+ *  (the queue itself is tested in common/websocket/tests).
  *
  * The plugin translation unit is included so its anonymous-namespace classes are reachable.
  */
@@ -16,19 +17,19 @@
 #include <chrono>
 #include <cstring>
 #include <pj_plugins/host/service_registry_builder.hpp>
+#include <pj_websocket/testing/fake_websocket_client.hpp>
 #include <random>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "../pj_bridge_source.cpp"  // NOLINT(bugprone-suspicious-include)
-#include "fake_bridge_websocket.hpp"
 
 namespace {
 
-using PJ::BridgeProtocol::testing::FakeSocket;
-using PJ::BridgeProtocol::testing::fakeSockets;
-using EventType = PJ::BridgeProtocol::BridgeWebSocketEvent::Type;
+using PJ::WebSocket::testing::FakeSocket;
+using PJ::WebSocket::testing::fakeSockets;
+using EventType = PJ::WebSocket::Event::Type;
 
 /// Test-length deadlines; the queue keeps its platform default.
 BridgeConnectionOptions testOptions() {
@@ -418,15 +419,6 @@ TEST(PjBridgeConnectionTest, LegacySubscribeDeadlineWarnsWithoutStopping) {
   EXPECT_TRUE(fixture.host.reported("Subscribe response not received"));
 }
 
-TEST(BridgeWebSocketUrlTest, AcceptsOnlyWebSocketUrlsWithAHost) {
-  EXPECT_TRUE(isWebSocketUrl("ws://127.0.0.1:9871"));
-  EXPECT_TRUE(isWebSocketUrl("wss://robot.local:8443/bridge"));
-  EXPECT_FALSE(isWebSocketUrl("ws://"));
-  EXPECT_FALSE(isWebSocketUrl("wss:///bridge"));
-  EXPECT_FALSE(isWebSocketUrl("http://robot:9871"));
-  EXPECT_FALSE(isWebSocketUrl("robot:9871"));
-}
-
 // --- Streaming ---
 
 TEST(PjBridgeConnectionTest, DemandSubscriptionsWaitForTheConnectionThenFollowTheHost) {
@@ -637,71 +629,6 @@ TEST(PjBridgeConnectionTest, DialogDefaultsToTheBridgeServersPort) {
   EXPECT_EQ(dialog.endpoint(), "ws://127.0.0.1:9090");
   ASSERT_TRUE(dialog.loadConfig(R"({"address":"10.0.0.2"})"));
   EXPECT_EQ(dialog.endpoint(), "ws://10.0.0.2:9090");
-}
-
-// --- BridgeEventQueue ---
-
-TEST(BridgeEventQueueTest, PreservesArrivalOrderAcrossThreads) {
-  BridgeEventQueue queue;
-  constexpr int kCount = 1000;
-  std::thread writer([&queue] {
-    for (int index = 0; index < kCount; ++index) {
-      queue.push({EventType::kText, std::to_string(index)});
-    }
-  });
-  std::vector<std::string> received;
-  while (received.size() < static_cast<size_t>(kCount)) {
-    for (auto& event : queue.drain()) {
-      received.push_back(std::move(event.payload));
-    }
-    std::this_thread::yield();
-  }
-  writer.join();
-  for (int index = 0; index < kCount; ++index) {
-    EXPECT_EQ(received[static_cast<size_t>(index)], std::to_string(index));
-  }
-}
-
-TEST(BridgeEventQueueTest, OverflowDropsTheOldestDataFramesOnly) {
-  BridgeEventQueue queue(2000);  // two 900-byte frames plus overhead fit, three do not
-  queue.push({EventType::kBinary, std::string(900, 'a')});
-  queue.push({EventType::kText, "control"});
-  queue.push({EventType::kBinary, std::string(900, 'b')});
-  queue.push({EventType::kBinary, std::string(900, 'c')});
-  queue.push({EventType::kClosed, "bye"});
-  queue.push({EventType::kText, std::string(5000, 't')});  // control frames never count against the cap
-  const auto pending = queue.drain();
-  ASSERT_EQ(pending.size(), 5U);
-  EXPECT_EQ(pending[0].payload, "control");
-  EXPECT_EQ(pending[1].payload, std::string(900, 'b'));
-  EXPECT_EQ(pending[2].payload, std::string(900, 'c'));
-  EXPECT_EQ(pending[3].type, EventType::kClosed);
-  EXPECT_EQ(pending[4].payload.size(), 5000U);
-  EXPECT_EQ(queue.dropped().frames, 1U);
-  EXPECT_EQ(queue.dropped().bytes, 900U);
-
-  // The budget frees up on drain; the count is cumulative.
-  queue.push({EventType::kBinary, std::string(900, 'd')});
-  EXPECT_EQ(queue.drain().size(), 1U);
-  EXPECT_EQ(queue.dropped().frames, 1U);
-}
-
-TEST(BridgeEventQueueTest, OversizedFrameReplacesOlderDataButIsKept) {
-  BridgeEventQueue queue(100);
-  queue.push({EventType::kBinary, std::string(1000, 'x')});
-  queue.push({EventType::kBinary, std::string(1000, 'y')});
-  const auto pending = queue.drain();
-  ASSERT_EQ(pending.size(), 1U);
-  EXPECT_EQ(pending[0].payload, std::string(1000, 'y'));
-  EXPECT_EQ(queue.dropped().frames, 1U);
-}
-
-TEST(BridgeEventQueueTest, CloseDropsPendingAndLateEvents) {
-  BridgeEventQueue queue;
-  queue.push({EventType::kOpen, {}});
-  queue.close();
-  queue.push({EventType::kText, "late"});
-  EXPECT_TRUE(queue.drain().empty());
 }
 
 }  // namespace
