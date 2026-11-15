@@ -1,4 +1,4 @@
-find_package(nanoarrow REQUIRED)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/Nanoarrow.cmake)
 find_package(Arrow CONFIG REQUIRED)
 find_package(nlohmann_json REQUIRED)
 

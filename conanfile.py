@@ -26,7 +26,6 @@ class PjOfficialPluginsConan(ConanFile):
 
     requires = (
         "nlohmann_json/3.12.0",
-        "nanoarrow/0.7.0",
         "arrow/26.0.1",
         "fmt/12.1.0",
         "paho-mqtt-cpp/1.6.0",

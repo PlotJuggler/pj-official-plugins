@@ -258,7 +258,7 @@ is available (`scripts/ensure_core.sh`).
 | **plotjuggler_sdk** (cloudsmith) | pinned via `SDK_VERSION` (exact) | **SDK + host loaders** (`plotjuggler_sdk::plugin_sdk`, `::plugin_host`) |
 | nlohmann_json | 3.12.0 | Most plugins |
 | arrow + parquet | 26.0.1 | data_load_parquet, data_load_lerobot, parser_arrow, toolbox_data_exporter, toolbox_mosaico |
-| nanoarrow | 0.7.0 | parser_arrow (C Data column shaping) |
+| nanoarrow | 0.9.0 (fetched by `cmake/Nanoarrow.cmake` until ConanCenter has it) | parser_arrow (C Data column shaping) |
 | paho-mqtt-cpp | 1.6.0 | data_stream_mqtt |
 | cppzmq | 4.11.0 | data_stream_zmq |
 | protobuf | 6.33.5 | parser_protobuf |

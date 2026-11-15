@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_arrow/`.
 
+## [1.0.2] - 2026-11-15
+
+### Changed
+- Updated the bundled nanoarrow from 0.7.0 to 0.9.0, picking up upstream bug fixes.
+
 ## [1.0.1] - 2026-11-09
 
 ### Changed
