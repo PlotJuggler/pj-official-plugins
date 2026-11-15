@@ -2,10 +2,18 @@
 
 #include <cstdint>
 #include <cstring>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 
 namespace PJ::FoxgloveProtocol {
+
+/// The WebSocket subprotocols offered to a Foxglove server, which picks one: foxglove_bridge
+/// releases built on the Foxglove SDK accept only "foxglove.sdk.v1", the ones before it only
+/// "foxglove.websocket.v1". The messages this plugin exchanges are the same under both.
+[[nodiscard]] inline std::vector<std::string> subprotocols() {
+  return {"foxglove.sdk.v1", "foxglove.websocket.v1"};
+}
 
 struct ChannelInfo {
   uint64_t id = 0;
@@ -15,6 +23,39 @@ struct ChannelInfo {
   std::string schema;
   std::string schema_encoding;
 };
+
+/// The channels of an "advertise" message. These come straight off the wire: an entry that is
+/// not an object or lacks an unsigned `id` is skipped (it could not be subscribed, and as id 0 it
+/// would shadow a real channel 0), and another wrong-typed field reads as empty; never throws.
+[[nodiscard]] inline std::vector<ChannelInfo> parseAdvertisedChannels(const nlohmann::json& advertise) {
+  const auto string_field = [](const nlohmann::json& entry, const char* key) {
+    const auto it = entry.find(key);
+    return it != entry.end() && it->is_string() ? it->get<std::string>() : std::string{};
+  };
+  std::vector<ChannelInfo> channels;
+  const auto list = advertise.find("channels");
+  if (list == advertise.end() || !list->is_array()) {
+    return channels;
+  }
+  for (const auto& entry : *list) {
+    if (!entry.is_object()) {
+      continue;
+    }
+    const auto id = entry.find("id");
+    if (id == entry.end() || !id->is_number_unsigned()) {
+      continue;
+    }
+    ChannelInfo ch;
+    ch.id = id->get<uint64_t>();
+    ch.topic = string_field(entry, "topic");
+    ch.encoding = string_field(entry, "encoding");
+    ch.schema_name = string_field(entry, "schemaName");
+    ch.schema = string_field(entry, "schema");
+    ch.schema_encoding = string_field(entry, "schemaEncoding");
+    channels.push_back(std::move(ch));
+  }
+  return channels;
+}
 
 struct BinaryFrame {
   uint8_t opcode = 0;

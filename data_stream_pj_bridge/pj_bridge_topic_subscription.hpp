@@ -17,6 +17,7 @@
 ///  `subscribe` and one `unsubscribe` per pass.
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -187,13 +188,14 @@ inline constexpr int kSupportedProtocolVersion = 1;
 /// the caller turns that into a fatal stream error. Absent or non-integer
 /// versions yield nullopt (old/test servers predate the field; tolerance is
 /// the compatibility policy for everything except a KNOWN-newer protocol).
-[[nodiscard]] inline std::optional<int> unsupportedProtocolVersion(const nlohmann::json& response, int supported) {
+/// Compared without narrowing: a version too large for an int is still newer.
+[[nodiscard]] inline std::optional<uint64_t> unsupportedProtocolVersion(const nlohmann::json& response, int supported) {
   const auto it = response.find("protocol_version");
-  if (it == response.end() || !it->is_number_integer()) {
-    return std::nullopt;
+  if (it == response.end() || !it->is_number_integer() || (!it->is_number_unsigned() && it->get<int64_t>() < 0)) {
+    return std::nullopt;  // absent, wrong-typed, or negative (older than any version)
   }
-  const int version = it->get<int>();
-  return version > supported ? std::optional<int>(version) : std::nullopt;
+  const auto version = it->get<uint64_t>();
+  return version > static_cast<uint64_t>(supported) ? std::optional<uint64_t>(version) : std::nullopt;
 }
 
 /// Server identity + capability list from a get_topics response's `server`

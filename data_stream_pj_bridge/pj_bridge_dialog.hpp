@@ -1,35 +1,29 @@
 #pragma once
 
-#include <algorithm>
 #include <chrono>
-#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
-#include <pj_plugins/sdk/endpoint.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_websocket/connection_dialog.hpp>
+#include <pj_websocket/websocket_client.hpp>
 #include <string>
 #include <vector>
 
 #include "pj_bridge_manifest.hpp"
 #include "pj_bridge_protocol.hpp"
-#include "pj_bridge_websocket.hpp"
+#include "pj_bridge_topic_subscription.hpp"
 #include "websocket_client_ui.hpp"
 
 namespace {
 
-/// Deadlines and limits the source and the dialog enforce by polling; tests shorten them.
-struct BridgeConnectionOptions {
-  /// Per connection attempt, for the source and for each dialog attempt.
-  std::chrono::milliseconds connect{5000};
+/// Deadlines and limits the source and the dialog enforce by polling; tests shorten them. The
+/// base's connect deadline applies to the source's connection and to each dialog attempt.
+struct BridgeConnectionOptions : PJ::WebSocket::DialogConnectionOptions {
   /// Legacy mode: how long the source waits for the subscribe response before streaming anyway.
   std::chrono::milliseconds subscribe{5000};
-  /// Dialog retry backoff: first delay, doubled after each failure up to retry_max.
-  std::chrono::milliseconds retry_first{1000};
-  std::chrono::milliseconds retry_max{10000};
-  size_t inbound_queue_bytes = PJ::BridgeProtocol::BridgeEventQueue::kDefaultMaxBytes;
 };
 
 struct DiscoveredTopic {
@@ -38,12 +32,6 @@ struct DiscoveredTopic {
   std::string schema_name;
   std::string schema_encoding;
   std::string schema_definition;
-};
-
-/// A live dialog connection handed to the source on OK: the socket and the queue its events land in.
-struct BridgeHandoff {
-  std::unique_ptr<PJ::BridgeProtocol::BridgeWebSocket> socket;
-  PJ::BridgeProtocol::EventSink events;
 };
 
 /// Smart dialog plugin for the PlotJuggler Bridge streamer.
@@ -64,7 +52,17 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  explicit PjBridgeDialog(BridgeConnectionOptions options = {}) : options_(options) {}
+  explicit PjBridgeDialog(BridgeConnectionOptions options = {})
+      : link_(
+            options, {
+                         .on_open =
+                             [this] {
+                               tick_count_ = 0;
+                               requestTopics();
+                             },
+                         .on_text = [this](const std::string& text) { onServerMessage(text); },
+                         .on_lost = [this] { clearTopics(); },
+                     }) {}
 
   ~PjBridgeDialog() override {
     disconnect();
@@ -72,14 +70,13 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   /// Transfer the connection to the caller (source plugin); its socket is null when the dialog
   /// never connected. Events not yet drained by onTick() stay queued for the new owner.
-  BridgeHandoff takeConnection() {
-    link_ = LinkState::kIdle;
-    return {std::move(socket_), std::move(events_)};
+  PJ::WebSocket::Handoff takeConnection() {
+    return link_.take();
   }
 
   /// The URL the source connects to: the configured `url` verbatim, else ws://address:port.
   std::string endpoint() const {
-    return url_.empty() ? PJ::sdk::composeEndpoint("ws", address_, static_cast<uint16_t>(port_)) : url_;
+    return endpoint_.str();
   }
 
   /// Full catalog of topics discovered during this dialog's connection session
@@ -114,16 +111,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     PJ::WidgetData wd;
 
     // Connection fields. A full URL in the address field replaces address + port.
-    wd.setText("lineEditAddress", url_.empty() ? address_ : url_);
-    wd.setText("lineEditPort", std::to_string(port_));
-    const bool connected = link_ == LinkState::kConnected;
-    wd.setEnabled("lineEditAddress", link_ == LinkState::kIdle);
-    wd.setEnabled("lineEditPort", link_ == LinkState::kIdle && url_.empty());
-    wd.setCurrentIndex("comboBoxTransport", url_.starts_with("wss://") ? 1 : 0);
-    // Pressing the button while connecting or retrying cancels, and while connected disconnects.
-    wd.setButtonText("buttonConnect", connected ? "Connected" : (link_ == LinkState::kIdle ? "Connect" : "Cancel"));
-    wd.setChecked("buttonConnect", link_ != LinkState::kIdle);
-    wd.setLabel("labelConnectionStatus", connectionStatus());
+    endpoint_.toWidgets(wd, link_.idle());
+    link_.toWidgets(wd);
 
     // Topic list — apply case-insensitive filter matching on name AND type
     wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
@@ -150,31 +139,17 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     // PjBridgeSource: on a host that supports demand subscriptions it becomes an
     // OPTIONAL advertise filter (empty = advertise everything); on a legacy host
     // it keeps its original meaning, the subscribe list.
-    wd.setOkEnabled(connected);
+    wd.setOkEnabled(link_.connected());
 
     return wd.toJson();
   }
 
   bool onTextChanged(std::string_view widget_name, std::string_view text) override {
-    if (widget_name == "lineEditAddress") {
-      const bool was_url = !url_.empty();
-      if (PJ::BridgeProtocol::isWebSocketUrl(text)) {
-        url_ = std::string(text);
-      } else {
-        url_.clear();
-        address_ = std::string(text);
-      }
-      return was_url != !url_.empty();  // the port field and scheme follow the mode
-    }
-    if (widget_name == "lineEditPort") {
-      if (const auto port = PJ::sdk::parsePort(text)) {
-        port_ = *port;
-      }
-      return false;
+    if (const auto refresh = endpoint_.onTextChanged(widget_name, text)) {
+      return *refresh;
     }
     if (widget_name == "lineEditFilter") {
       filter_ = std::string(text);
-      applyFilter();
       return true;
     }
     return false;
@@ -182,9 +157,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view widget_name) override {
     if (widget_name == "buttonConnect") {
-      if (link_ == LinkState::kIdle) {
-        retry_delay_ = options_.retry_first;
-        attempt();
+      if (link_.idle()) {
+        link_.connect(endpoint());
       } else {
         disconnect();
       }
@@ -203,26 +177,10 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   }
 
   bool onTick() override {
-    if (link_ == LinkState::kIdle) {
-      return false;
-    }
-
-    bool changed = events_ && pumpEvents();
-    if (link_ == LinkState::kConnecting && Clock::now() >= attempt_deadline_) {
-      scheduleRetry("timed out");
-      changed = true;
-    } else if (link_ == LinkState::kRetrying) {
-      if (Clock::now() >= next_attempt_) {
-        attempt();
-        changed = true;
-      } else if (const int seconds = retrySecondsLeft(); seconds != shown_retry_seconds_) {
-        shown_retry_seconds_ = seconds;  // the countdown in the status label moved
-        changed = true;
-      }
-    }
+    const bool changed = link_.tick();
 
     // Periodic topic refresh (every ~1s = 20 ticks at 50ms)
-    if (link_ == LinkState::kConnected && ++tick_count_ >= 20) {
+    if (link_.connected() && ++tick_count_ >= 20) {
       tick_count_ = 0;
       requestTopics();
     }
@@ -239,11 +197,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   std::string saveConfig() const override {
     nlohmann::json cfg;
-    cfg["address"] = address_;
-    cfg["port"] = port_;
-    if (!url_.empty()) {
-      cfg["url"] = url_;
-    }
+    endpoint_.save(cfg);
     PJ::sdk::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
     cfg["use_timestamp"] = use_timestamp_;
 
@@ -279,21 +233,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       return false;
     }
     // `url`, when present, must be a ws:// or wss:// string; it wins over address/port.
-    std::string url;
-    if (const auto it = cfg.find("url"); it != cfg.end()) {
-      if (!it->is_string()) {
-        return false;
-      }
-      url = it->get<std::string>();
-      if (!PJ::BridgeProtocol::isWebSocketUrl(url)) {
-        return false;
-      }
+    if (!endpoint_.load(cfg, "127.0.0.1", kDefaultPort)) {
+      return false;
     }
-    if (url.empty()) {
-      address_ = cfg.value("address", std::string("127.0.0.1"));
-      port_ = cfg.value("port", kDefaultPort);
-    }
-    url_ = std::move(url);
     const auto array_limit = PJ::sdk::arrayLimitFromJson(cfg);
     max_array_size_ = static_cast<int>(array_limit.max_size);
     clamp_large_arrays_ = array_limit.clamp();
@@ -319,116 +261,22 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
-  using Clock = std::chrono::steady_clock;
-
-  /// The dialog's own connection. Every transition happens on the dialog thread, driven by
-  /// onClicked() and onTick(); attempts, deadlines and retries are polled, never waited on.
-  enum class LinkState {
-    kIdle,        ///< not connecting (initially, after Cancel/disconnect, after the handoff)
-    kConnecting,  ///< one attempt in flight until attempt_deadline_
-    kRetrying,    ///< the last attempt failed; the next starts at next_attempt_
-    kConnected,
-  };
-
-  /// Starts one connection attempt with its own deadline (options_.connect).
-  void attempt() {
-    events_ = std::make_shared<PJ::BridgeProtocol::BridgeEventQueue>(options_.inbound_queue_bytes);
-    socket_ = std::make_unique<PJ::BridgeProtocol::BridgeWebSocket>();
-    link_ = LinkState::kConnecting;
-    attempt_deadline_ = Clock::now() + options_.connect;
-    if (auto status = socket_->start(endpoint(), events_); !status) {
-      scheduleRetry(status.error());
-    }
-  }
-
-  /// Drops the current attempt or connection and tries again after a doubling, capped delay.
-  void scheduleRetry(const std::string& reason) {
-    socket_.reset();  // stops it
-    events_.reset();
-    clearTopics();
-    last_error_ = reason.empty() ? "connection closed" : reason;
-    link_ = LinkState::kRetrying;
-    next_attempt_ = Clock::now() + retry_delay_;
-    retry_delay_ = std::min(retry_delay_ * 2, options_.retry_max);
-    shown_retry_seconds_ = retrySecondsLeft();
-  }
-
   void disconnect() {
-    socket_.reset();  // stops it
-    events_.reset();
+    link_.disconnect();
     clearTopics();
-    link_ = LinkState::kIdle;
   }
 
   void clearTopics() {
     std::lock_guard<std::mutex> lock(topics_mutex_);
     topics_.clear();
-    topics_dirty_ = true;
-  }
-
-  [[nodiscard]] int retrySecondsLeft() const {
-    const auto left = std::chrono::ceil<std::chrono::seconds>(next_attempt_ - Clock::now()).count();
-    return static_cast<int>(std::max<decltype(left)>(left, 1));
-  }
-
-  [[nodiscard]] std::string connectionStatus() const {
-    switch (link_) {
-      case LinkState::kIdle:
-        return {};
-      case LinkState::kConnecting:
-        return "Connecting to " + endpoint() + "...";
-      case LinkState::kRetrying:
-        return "Retrying in " + std::to_string(retrySecondsLeft()) + " s: " + last_error_;
-      case LinkState::kConnected:
-        return "Connected to " + endpoint();
-    }
-    return {};
-  }
-
-  /// [dialog thread] Applies the connection's queued events; true when the UI must refresh.
-  /// Data frames are ignored: the dialog subscribes to nothing. The queue never drops control
-  /// events, so a close is always seen.
-  bool pumpEvents() {
-    bool changed = false;
-    for (auto& event : events_->drain()) {
-      using Type = PJ::BridgeProtocol::BridgeWebSocketEvent::Type;
-      switch (event.type) {
-        case Type::kOpen:
-          link_ = LinkState::kConnected;
-          retry_delay_ = options_.retry_first;
-          last_error_.clear();
-          tick_count_ = 0;
-          requestTopics();
-          changed = true;
-          break;
-        case Type::kText:
-          // Wire data can be wrong-typed (nlohmann accessors throw): skip it, so a close
-          // queued behind it is still seen.
-          try {
-            onServerMessage(event.payload);
-          } catch (const nlohmann::json::exception&) {}
-          changed = true;
-          break;
-        case Type::kBinary:
-          break;
-        case Type::kClosed:
-        case Type::kError:
-          scheduleRetry(event.payload);  // releases this connection's queue; later events are moot
-          return true;
-      }
-    }
-    return changed;
   }
 
   void requestTopics() {
-    if (!socket_ || !socket_->isOpen()) {
-      return;
-    }
     nlohmann::json cmd;
     cmd["command"] = "get_topics";
     cmd["protocol_version"] = 1;
     cmd["id"] = std::to_string(request_id_++);
-    socket_->sendText(cmd.dump());
+    link_.sendText(cmd.dump());
   }
 
   void onServerMessage(const std::string& message) {
@@ -452,17 +300,11 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     std::lock_guard<std::mutex> lock(topics_mutex_);
     topics_.clear();
     for (const auto& v : json["topics"]) {
-      if (!v.is_object()) {
-        continue;
-      }
-      DiscoveredTopic dt;
-      dt.name = v.value("name", std::string{});
-      dt.type = v.value("type", std::string{});
-      dt.schema_name = v.value("schema_name", dt.type);
-      dt.schema_encoding = v.value("encoding", std::string{});
-      dt.schema_definition = v.value("definition", std::string{});
-      if (!dt.name.empty()) {
-        topics_.push_back(std::move(dt));
+      // parseTopicEntry (shared with the source): a wrong-typed field of one entry degrades to
+      // empty instead of throwing away the whole list.
+      if (auto info = PJ::BridgeProtocol::parseTopicEntry(v)) {
+        topics_.push_back(
+            {info->name, PJ::BridgeProtocol::stringField(v, "type"), info->schema_name, info->encoding, info->schema});
       }
     }
 
@@ -477,13 +319,6 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       }
     }
     selected_topic_names_ = std::move(new_selection);
-
-    applyFilter();
-    topics_dirty_ = true;
-  }
-
-  void applyFilter() {
-    topics_dirty_ = true;
   }
 
   /// Snapshot the full schema info for selected topics so saveConfig()
@@ -521,30 +356,19 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   }
 
   // --- State ---
-  BridgeConnectionOptions options_;
   static constexpr int kDefaultPort = 9090;  ///< the bridge server's own default
-  std::string address_ = "127.0.0.1";
-  int port_ = kDefaultPort;
-  std::string url_;  ///< Non-empty: a full ws:// or wss:// URL that replaces address_/port_.
+  PJ::WebSocket::Endpoint endpoint_{"127.0.0.1", kDefaultPort, {}};
   int max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
   bool use_timestamp_ = false;
   std::string filter_;
 
-  LinkState link_ = LinkState::kIdle;
-  std::unique_ptr<PJ::BridgeProtocol::BridgeWebSocket> socket_;
-  PJ::BridgeProtocol::EventSink events_;
-  Clock::time_point attempt_deadline_{};
-  Clock::time_point next_attempt_{};
-  std::chrono::milliseconds retry_delay_{};
-  std::string last_error_;       ///< why the last attempt failed, shown while retrying
-  int shown_retry_seconds_ = 0;  ///< the countdown last rendered, so onTick() refreshes once a second
+  PJ::WebSocket::DialogConnection link_;
 
   mutable std::mutex topics_mutex_;
   std::vector<DiscoveredTopic> topics_;
   std::vector<std::string> selected_topic_names_;
   std::vector<DiscoveredTopic> selected_topics_snapshot_;
-  bool topics_dirty_ = true;
   int tick_count_ = 0;
   uint32_t request_id_ = 1;
 };

@@ -1,20 +1,20 @@
 #pragma once
 
-/// @file fake_bridge_websocket.hpp
-/// @brief Test backend for BridgeWebSocket (linked instead of the native or browser backend):
+/// @file fake_websocket_client.hpp
+/// @brief Test backend for Client (linked instead of the native or browser backend):
 ///  the test plays the server by reading what a socket sent and pushing events into its sink.
 
 #include <memory>
+#include <pj_websocket/websocket_client.hpp>
 #include <string>
 #include <vector>
 
-#include "pj_bridge_websocket.hpp"
-
-namespace PJ::BridgeProtocol::testing {
+namespace PJ::WebSocket::testing {
 
 /// What one fake socket saw. Single-threaded: the test pushes events on its own thread.
 struct FakeSocket {
   std::string url;
+  std::vector<std::string> subprotocols;
   EventSink sink;
   std::vector<std::string> sent;
   bool open = false;
@@ -23,20 +23,20 @@ struct FakeSocket {
   /// The server accepted the connection.
   void acceptConnection() {
     open = true;
-    sink->push({BridgeWebSocketEvent::Type::kOpen, {}});
+    sink->push({Event::Type::kOpen, {}});
   }
 
   void deliverText(std::string text) const {
-    sink->push({BridgeWebSocketEvent::Type::kText, std::move(text)});
+    sink->push({Event::Type::kText, std::move(text)});
   }
 
   void deliverBinary(std::string bytes) const {
-    sink->push({BridgeWebSocketEvent::Type::kBinary, std::move(bytes)});
+    sink->push({Event::Type::kBinary, std::move(bytes)});
   }
 
   void closeFromServer(std::string reason) {
     open = false;
-    sink->push({BridgeWebSocketEvent::Type::kClosed, std::move(reason)});
+    sink->push({Event::Type::kClosed, std::move(reason)});
   }
 };
 
@@ -44,4 +44,4 @@ struct FakeSocket {
 /// stopped fake keeps its sink open, so tests prove the source isolates sessions on its own.
 std::vector<std::shared_ptr<FakeSocket>>& fakeSockets();
 
-}  // namespace PJ::BridgeProtocol::testing
+}  // namespace PJ::WebSocket::testing

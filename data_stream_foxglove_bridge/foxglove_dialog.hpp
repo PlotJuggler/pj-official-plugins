@@ -1,10 +1,6 @@
 #pragma once
 
-#include <ixwebsocket/IXWebSocket.h>
-
 #include <algorithm>
-#include <atomic>
-#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/text_utils.hpp>
@@ -12,57 +8,59 @@
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_websocket/connection_dialog.hpp>
 #include <string>
 #include <vector>
 
 #include "foxglove_client_ui.hpp"
 #include "foxglove_manifest.hpp"
 #include "foxglove_protocol.hpp"
-#include "foxglove_socket.hpp"
 
 namespace {
 
-struct DiscoveredChannel {
-  uint64_t id = 0;
-  std::string topic;
-  std::string encoding;
-  std::string schema_name;
-  std::string schema;
-  std::string schema_encoding;
-};
-
 /// Smart dialog plugin for the Foxglove Bridge streamer.
 /// Owns the WebSocket connection for channel discovery during the dialog session.
+/// The connection half (address or ws:// / wss:// URL, Connect / Cancel, retry with backoff,
+/// status line, handoff on OK) is the one the PlotJuggler Bridge dialog uses.
 /// Foxglove sends "advertise" messages automatically upon connection — no explicit
 /// request needed. The dialog populates the channel table and lets the user select.
 class FoxgloveDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
+  explicit FoxgloveDialog(PJ::WebSocket::DialogConnectionOptions options = {})
+      : link_(
+            options, {
+                         // Foxglove sends "advertise" automatically on open — no request needed.
+                         .on_open = {},
+                         .on_text = [this](const std::string& text) { onServerMessage(text); },
+                         .on_lost = [this] { clearChannels(); },
+                     }) {}
+
   ~FoxgloveDialog() override {
     disconnect();
   }
 
-  /// Transfer ownership of the live socket to the caller (source plugin).
-  std::unique_ptr<ix::WebSocket> takeSocket() {
-    connected_ = false;
-    return std::move(socket_);
+  /// Transfer the connection to the caller (source plugin); its socket is null when the dialog
+  /// never connected. Events not yet drained by onTick() stay queued for the new owner.
+  PJ::WebSocket::Handoff takeConnection() {
+    return link_.take();
+  }
+
+  /// The URL the source connects to: the configured `url` verbatim, else ws://address:port.
+  std::string endpoint() const {
+    return endpoint_.str();
   }
 
   /// Full catalog of channels discovered so far during this dialog's connection
   /// session (thread-safe snapshot), regardless of what the user selected. When
-  /// the source steals an already-open socket (see takeSocket()), the server's
+  /// the source adopts an already-open connection (see takeConnection()), the server's
   /// one-time "advertise" burst has already happened and will not repeat — this
   /// is the only way the source learns about topics the user did NOT select, so
   /// it can advertise the full set to the host instead of just the selection.
   std::vector<PJ::FoxgloveProtocol::ChannelInfo> allDiscoveredChannels() const {
     std::lock_guard<std::mutex> lock(channels_mutex_);
-    std::vector<PJ::FoxgloveProtocol::ChannelInfo> out;
-    out.reserve(channels_.size());
-    for (const auto& ch : channels_) {
-      out.push_back({ch.id, ch.topic, ch.encoding, ch.schema_name, ch.schema, ch.schema_encoding});
-    }
-    return out;
+    return channels_;
   }
 
   // --- Dialog protocol ---
@@ -78,13 +76,9 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Connection fields
-    wd.setText("lineEditAddress", address_);
-    wd.setText("lineEditPort", std::to_string(port_));
-    wd.setEnabled("lineEditAddress", !connected_);
-    wd.setEnabled("lineEditPort", !connected_);
-    wd.setButtonText("buttonConnect", connected_ ? "Connected" : "Connect");
-    wd.setChecked("buttonConnect", connected_.load());
+    // Connection fields. A full URL in the address field replaces address + port.
+    endpoint_.toWidgets(wd, link_.idle());
+    link_.toWidgets(wd);
 
     // Parser options
     wd.setValue("spinBoxArraySize", max_array_size_);
@@ -116,25 +110,17 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     // subscriptions it becomes an OPTIONAL advertise filter (empty = advertise
     // everything); on a legacy host it keeps its original meaning, the
     // subscribe list.
-    wd.setOkEnabled(connected_);
+    wd.setOkEnabled(link_.connected());
 
     return wd.toJson();
   }
 
   bool onTextChanged(std::string_view widget_name, std::string_view text) override {
-    if (widget_name == "lineEditAddress") {
-      address_ = std::string(text);
-      return false;
-    }
-    if (widget_name == "lineEditPort") {
-      if (const auto port = PJ::sdk::parsePort(text)) {
-        port_ = *port;
-      }
-      return false;
+    if (const auto refresh = endpoint_.onTextChanged(widget_name, text)) {
+      return *refresh;
     }
     if (widget_name == "lineEditFilter") {
       filter_ = std::string(text);
-      channels_dirty_ = true;
       return true;
     }
     return false;
@@ -166,8 +152,8 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view widget_name) override {
     if (widget_name == "buttonConnect") {
-      if (!connected_) {
-        connectToServer();
+      if (link_.idle()) {
+        link_.connect(endpoint(), PJ::FoxgloveProtocol::subprotocols());
       } else {
         disconnect();
       }
@@ -200,15 +186,11 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   }
 
   bool onTick() override {
-    if (tick_dirty_) {
-      tick_dirty_ = false;
-      return true;
-    }
-    return false;
+    return link_.tick();
   }
 
   void onAccepted(std::string_view /*json*/) override {
-    // Do NOT disconnect — the source's onStart() will steal the socket.
+    // Do NOT disconnect — the source's onStart() adopts the open connection.
     snapshotSelectedChannels();
   }
   void onRejected() override {
@@ -217,8 +199,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
   std::string saveConfig() const override {
     nlohmann::json cfg;
-    cfg["address"] = address_;
-    cfg["port"] = port_;
+    endpoint_.save(cfg);
     PJ::sdk::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
     cfg["use_timestamp"] = use_timestamp_;
 
@@ -239,13 +220,27 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     return cfg.dump();
   }
 
+  /// False for malformed JSON, a `url` that is not a ws:// / wss:// URL, or a wrong-typed field.
   bool loadConfig(std::string_view config_json) override {
+    try {
+      return loadConfigOrThrow(config_json);
+    } catch (const nlohmann::json::exception&) {
+      return false;
+    }
+  }
+
+ private:
+  static constexpr int kDefaultPort = 8765;  ///< foxglove_bridge's own default
+
+  bool loadConfigOrThrow(std::string_view config_json) {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (cfg.is_discarded()) {
       return false;
     }
-    address_ = cfg.value("address", std::string("localhost"));
-    port_ = cfg.value("port", 8765);
+    // `url`, when present, must be a ws:// or wss:// string; it wins over address/port.
+    if (!endpoint_.load(cfg, "localhost", kDefaultPort)) {
+      return false;
+    }
     const auto array_limit = PJ::sdk::arrayLimitFromJson(cfg);
     max_array_size_ = static_cast<int>(array_limit.max_size);
     clamp_large_arrays_ = array_limit.clamp();
@@ -258,7 +253,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       for (const auto& ch_json : cfg["channels"]) {
         if (ch_json.contains("topic") && ch_json["topic"].is_string()) {
           selected_topic_names_.push_back(ch_json["topic"].get<std::string>());
-          DiscoveredChannel ch;
+          PJ::FoxgloveProtocol::ChannelInfo ch;
           ch.id = ch_json.value("id", uint64_t{0});
           ch.topic = ch_json.value("topic", std::string{});
           ch.encoding = ch_json.value("encoding", std::string{});
@@ -272,10 +267,9 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
- private:
   /// Case-insensitive substring match of the active filter against the topic
   /// name and datatype. An empty filter matches everything.
-  bool matchesFilter(const DiscoveredChannel& ch) const {
+  bool matchesFilter(const PJ::FoxgloveProtocol::ChannelInfo& ch) const {
     if (filter_.empty()) {
       return true;
     }
@@ -284,36 +278,14 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
            PJ::sdk::lowerAscii(ch.schema_name).find(lowered_filter) != std::string::npos;
   }
 
-  void connectToServer() {
-    socket_ = PJ::FoxgloveProtocol::makeSocket(address_, static_cast<uint16_t>(port_));
-
-    socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
-      if (msg->type == ix::WebSocketMessageType::Open) {
-        connected_ = true;
-        tick_dirty_ = true;
-        // Foxglove sends "advertise" automatically — no request needed
-      } else if (msg->type == ix::WebSocketMessageType::Close) {
-        connected_ = false;
-        {
-          std::lock_guard<std::mutex> lock(channels_mutex_);
-          channels_.clear();
-        }
-        channels_dirty_ = true;
-        tick_dirty_ = true;
-      } else if (msg->type == ix::WebSocketMessageType::Message && !msg->binary) {
-        onServerMessage(msg->str);
-      }
-    });
-
-    socket_->start();
+  void disconnect() {
+    link_.disconnect();
+    clearChannels();
   }
 
-  void disconnect() {
-    if (socket_) {
-      socket_->stop();
-      socket_.reset();
-    }
-    connected_ = false;
+  void clearChannels() {
+    std::lock_guard<std::mutex> lock(channels_mutex_);
+    channels_.clear();
   }
 
   void onServerMessage(const std::string& message) {
@@ -321,41 +293,32 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     if (json.is_discarded() || !json.is_object()) {
       return;
     }
-
-    std::string op = json.value("op", "");
+    const std::string op = json.value("op", "");
+    std::lock_guard<std::mutex> lock(channels_mutex_);
+    if (op == "unadvertise") {
+      // Forget removed channels, so the source is not handed one on OK.
+      const auto ids = json.value("channelIds", nlohmann::json::array());
+      for (const auto& id : ids) {
+        if (id.is_number_unsigned()) {
+          std::erase_if(channels_, [&id](const auto& channel) { return channel.id == id.get<uint64_t>(); });
+        }
+      }
+      return;
+    }
     if (op != "advertise") {
       return;
     }
-
-    auto channels_arr = json.value("channels", nlohmann::json::array());
-
-    std::lock_guard<std::mutex> lock(channels_mutex_);
-    for (const auto& ch_json : channels_arr) {
-      DiscoveredChannel ch;
-      ch.id = ch_json.value("id", uint64_t{0});
-      ch.topic = ch_json.value("topic", "");
-      ch.encoding = ch_json.value("encoding", "");
-      ch.schema_name = ch_json.value("schemaName", "");
-      ch.schema = ch_json.value("schema", "");
-      ch.schema_encoding = ch_json.value("schemaEncoding", "");
-
-      if (!ch.topic.empty() && !ch.encoding.empty()) {
-        // Avoid duplicates (Foxglove may re-advertise)
-        bool exists = false;
-        for (const auto& existing : channels_) {
-          if (existing.id == ch.id) {
-            exists = true;
-            break;
-          }
-        }
-        if (!exists) {
-          channels_.push_back(std::move(ch));
-        }
+    for (auto& ch : PJ::FoxgloveProtocol::parseAdvertisedChannels(json)) {
+      if (ch.topic.empty() || ch.encoding.empty()) {
+        continue;
+      }
+      // Avoid duplicates (Foxglove may re-advertise)
+      const bool exists =
+          std::any_of(channels_.begin(), channels_.end(), [&ch](const auto& existing) { return existing.id == ch.id; });
+      if (!exists) {
+        channels_.push_back(std::move(ch));
       }
     }
-
-    channels_dirty_ = true;
-    tick_dirty_ = true;
   }
 
   void snapshotSelectedChannels() {
@@ -372,22 +335,19 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   }
 
   // --- State ---
-  std::string address_ = "localhost";
-  int port_ = 8765;
+  PJ::WebSocket::Endpoint endpoint_{"localhost", kDefaultPort, {}};
   int max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
   bool use_timestamp_ = false;
   std::string filter_;
 
-  std::atomic<bool> connected_ = false;
-  std::unique_ptr<ix::WebSocket> socket_;
+  PJ::WebSocket::DialogConnection link_;
 
+  /// Read by the source's onStart() (allDiscoveredChannels) as well as the dialog thread.
   mutable std::mutex channels_mutex_;
-  std::vector<DiscoveredChannel> channels_;
+  std::vector<PJ::FoxgloveProtocol::ChannelInfo> channels_;
   std::vector<std::string> selected_topic_names_;
-  std::vector<DiscoveredChannel> selected_channels_snapshot_;
-  bool channels_dirty_ = true;
-  std::atomic<bool> tick_dirty_ = false;
+  std::vector<PJ::FoxgloveProtocol::ChannelInfo> selected_channels_snapshot_;
 };
 
 }  // namespace

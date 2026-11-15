@@ -1,4 +1,4 @@
-// <emscripten/websocket.h> backend of BridgeWebSocket (WebAssembly builds with pthreads).
+// <emscripten/websocket.h> backend of Client (WebAssembly builds with pthreads).
 //
 // Threading: the browser WebSocket lives on the main runtime thread, and so do its callbacks and
 // every send/close/delete. The library's own entry points proxy SYNCHRONOUSLY from a worker,
@@ -14,28 +14,29 @@
 
 #include <atomic>
 #include <cstring>
+#include <pj_websocket/websocket_client.hpp>
 
-#include "pj_bridge_websocket.hpp"
-
-EM_JS_DEPS(pj_bridge_websocket, "emscripten_websocket_new");
+EM_JS_DEPS(pj_websocket_client, "emscripten_websocket_new");
 
 // new WebSocket(url) throws synchronously (SyntaxError for a malformed URL, SecurityError for ws://
 // from an https page). Escaping into the proxy queue, that exception would wedge it, so it
 // becomes a failed handle here.
-EM_JS(int, pj_bridge_websocket_new_guarded, (const EmscriptenWebSocketCreateAttributes* attributes), {
+EM_JS(int, pj_websocket_client_new_guarded, (const EmscriptenWebSocketCreateAttributes* attributes), {
   try {
     return _emscripten_websocket_new(attributes);
   } catch (error) {
-    console.error('PlotJuggler Bridge: the browser refused to open the WebSocket:', error);
+    console.error('PlotJuggler: the browser refused to open the WebSocket:', error);
     return -1;
   }
 });
 
-namespace PJ::BridgeProtocol {
+namespace PJ::WebSocket {
 
-struct BridgeWebSocket::State {
+struct Client::State {
   EventSink sink;
   std::string url;
+  /// Comma-separated, as EmscriptenWebSocketCreateAttributes::protocols takes them; empty: none.
+  std::string protocols;
   std::atomic<bool> open{false};
   std::atomic<bool> stop_requested{false};
   /// [main runtime thread] 0 until created, and again once deleted.
@@ -46,8 +47,8 @@ struct BridgeWebSocket::State {
 
 namespace {
 
-using StatePtr = std::shared_ptr<BridgeWebSocket::State>;
-using Type = BridgeWebSocketEvent::Type;
+using StatePtr = std::shared_ptr<Client::State>;
+using Type = Event::Type;
 
 /// Created once and never destroyed. Unlike the system queue, whose tasks may run inside any
 /// wait or lock the main thread is in, these run only when it returns to the browser event loop.
@@ -63,8 +64,13 @@ struct Task {
   std::string text;
 };
 
-/// Never waits: the task is queued, and the main thread runs it later on its own turn.
+/// Never waits: the task is queued, and the main thread runs it later on its own turn. Tasks run
+/// in the order they were posted from one thread (the queue is a FIFO per target thread), so a
+/// send posted before stop() runs before its close. False when the task cannot be queued.
 bool postToMainThread(void (*run)(Task&), StatePtr state, std::string text = {}) {
+  if (mainThreadQueue() == nullptr) {
+    return false;  // the queue could not be allocated
+  }
   auto* task = new Task{run, std::move(state), std::move(text)};
   const bool queued = emscripten_proxy_async(
       mainThreadQueue(), emscripten_main_runtime_thread_id(),
@@ -79,8 +85,8 @@ bool postToMainThread(void (*run)(Task&), StatePtr state, std::string text = {})
   return queued;
 }
 
-BridgeWebSocket::State& stateOf(void* user_data) {
-  return *static_cast<BridgeWebSocket::State*>(user_data);
+Client::State& stateOf(void* user_data) {
+  return *static_cast<Client::State*>(user_data);
 }
 
 bool onOpen(int, const EmscriptenWebSocketOpenEvent*, void* user_data) {
@@ -131,8 +137,9 @@ void createSocket(Task& task) {
   EmscriptenWebSocketCreateAttributes attributes;
   emscripten_websocket_init_create_attributes(&attributes);
   attributes.url = state.url.c_str();
+  attributes.protocols = state.protocols.empty() ? nullptr : state.protocols.c_str();
   attributes.createOnMainThread = true;
-  const EMSCRIPTEN_WEBSOCKET_T socket = pj_bridge_websocket_new_guarded(&attributes);
+  const EMSCRIPTEN_WEBSOCKET_T socket = pj_websocket_client_new_guarded(&attributes);
   if (socket <= 0) {
     state.sink->push({Type::kError, "the browser refused to open a WebSocket to " + state.url});
     return;
@@ -147,8 +154,10 @@ void createSocket(Task& task) {
 }
 
 void sendOnSocket(Task& task) {
+  // Not gated on stop_requested: a send posted before stop() (Foxglove's unsubscribe in onStop)
+  // still reaches the server, as closeSocket, posted after it, runs after it.
   const auto& state = *task.state;
-  if (state.socket > 0 && !state.stop_requested) {
+  if (state.socket > 0) {
     emscripten_websocket_send_utf8_text(state.socket, task.text.c_str());
   }
 }
@@ -167,32 +176,36 @@ void closeSocket(Task& task) {
 
 }  // namespace
 
-PJ::Status BridgeWebSocket::start(std::string url, EventSink sink) {
+PJ::Status Client::start(std::string url, EventSink sink, std::vector<std::string> subprotocols) {
   if (state_ || !sink) {
-    return PJ::unexpected(std::string("BridgeWebSocket::start needs a fresh socket and an event sink"));
+    return PJ::unexpected(std::string("Client::start needs a fresh socket and an event sink"));
   }
   state_ = std::make_shared<State>();
   state_->sink = std::move(sink);
   state_->url = std::move(url);
+  for (const auto& subprotocol : subprotocols) {
+    state_->protocols += (state_->protocols.empty() ? "" : ",") + subprotocol;
+  }
   if (!postToMainThread(&createSocket, state_)) {
     return PJ::unexpected(std::string("could not schedule the WebSocket on the browser main thread"));
   }
   return PJ::okStatus();
 }
 
-void BridgeWebSocket::sendText(std::string text) {
-  if (isOpen()) {
-    postToMainThread(&sendOnSocket, state_, std::move(text));
+void Client::sendText(std::string text) {
+  if (isOpen() && !postToMainThread(&sendOnSocket, state_, std::move(text))) {
+    // A lost frame can break the protocol: fail the connection so its owner recovers.
+    state_->sink->push({Type::kError, "failed to send a frame to the browser WebSocket"});
   }
 }
 
-bool BridgeWebSocket::isOpen() const {
+bool Client::isOpen() const {
   // stop_requested is set first in stop(), so this reads false after stop() even when onOpen()
   // sets `open` on the main thread in between.
   return state_ && state_->open && !state_->stop_requested;
 }
 
-void BridgeWebSocket::stop() {
+void Client::stop() {
   if (!state_ || state_->stop_requested.exchange(true)) {
     return;
   }
@@ -204,4 +217,4 @@ void BridgeWebSocket::stop() {
   postToMainThread(&closeSocket, state_);
 }
 
-}  // namespace PJ::BridgeProtocol
+}  // namespace PJ::WebSocket

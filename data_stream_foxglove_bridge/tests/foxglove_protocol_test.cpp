@@ -280,6 +280,18 @@ TEST(FoxgloveProtocolTest, ClassifyChannelEmptySchemaName) {
 
 // --- shared base64 decoder (pj_base64) ---
 
+TEST(FoxgloveProtocolTest, ParseAdvertisedChannelsSkipsEntriesWithoutAValidId) {
+  const auto json = nlohmann::json::parse(R"({"op":"advertise","channels":[
+      {"topic":"/no_id","encoding":"cdr"},
+      {"id":"7","topic":"/string_id","encoding":"cdr"},
+      {"id":-1,"topic":"/negative_id","encoding":"cdr"},
+      {"id":7.5,"topic":"/float_id","encoding":"cdr"},
+      {"id":0,"topic":"/zero","encoding":"cdr"}]})");
+  const auto channels = PJ::FoxgloveProtocol::parseAdvertisedChannels(json);
+  ASSERT_EQ(channels.size(), 1U);  // channel 0 is a valid id
+  EXPECT_EQ(channels[0].topic, "/zero");
+}
+
 TEST(Base64Test, KnownVectors) {
   EXPECT_EQ(PJ::base64::decode(""), "");
   EXPECT_EQ(PJ::base64::decode("Zg=="), "f");

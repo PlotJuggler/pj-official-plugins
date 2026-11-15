@@ -1,5 +1,3 @@
-#include <ixwebsocket/IXWebSocket.h>
-
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -9,10 +7,9 @@
 #include <optional>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base64/base64.hpp>
-#include <pj_plugins/sdk/endpoint.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/streaming_source.hpp>
-#include <pj_streaming/websocket_utils.hpp>
+#include <pj_websocket/source_connection.hpp>
 #include <set>
 #include <string>
 #include <string_view>
@@ -21,25 +18,34 @@
 #include "foxglove_dialog.hpp"
 #include "foxglove_manifest.hpp"
 #include "foxglove_protocol.hpp"
-#include "foxglove_socket.hpp"
 #include "foxglove_topic_subscription.hpp"
 
 namespace {
 
 using namespace PJ::FoxgloveProtocol;
 
-struct QueuedBinaryMessage {
-  uint32_t subscription_id;
-  int64_t timestamp_ns;
-  std::vector<uint8_t> payload;
-};
-
-struct QueuedTextMessage {
-  std::string text;
+/// Deadlines the source enforces by polling; tests shorten them.
+struct FoxgloveConnectionOptions : PJ::WebSocket::DialogConnectionOptions {
+  /// Wait before each reconnection attempt after the connection was lost.
+  std::chrono::milliseconds reconnect{5000};
 };
 
 class FoxgloveSource : public PJ::StreamSourceBase {
  public:
+  explicit FoxgloveSource(FoxgloveConnectionOptions options = {})
+      : dialog_(options),
+        connection_(
+            {.name = "Foxglove bridge",
+             .connect = options.connect,
+             .reconnect = options.reconnect,
+             .inbound_queue_bytes = options.inbound_queue_bytes},
+            {[this](bool reconnected) { onOpen(reconnected); },
+             [this](const std::string& text) { onTextMessage(text); },
+             [this](std::string&& frame) { onBinaryMessage(std::move(frame)); },
+             [this](PJ::DataSourceMessageLevel level, const std::string& message) {
+               runtimeHost().reportMessage(level, message);
+             }}) {}
+
   PJ_borrowed_dialog_t getDialog() override {
     return PJ::borrowDialog(dialog_);
   }
@@ -77,8 +83,6 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       return PJ::unexpected("invalid dialog config");
     }
 
-    address_ = cfg.value("address", std::string("localhost"));
-    port_ = cfg.value("port", 8765);
     array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
@@ -99,56 +103,21 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       }
     }
 
-    // Steal the live socket from the dialog (it stays connected on accept).
-    socket_ = dialog_.takeSocket();
-
-    // Message callback for the streaming source. Text messages (advertise/
-    // unadvertise) are queued and processed in onPoll() so that
-    // ensureParserBinding() is always called from the poll thread.
-    const auto install_message_callback = [this](ix::WebSocket& socket) {
-      socket.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
-        if (msg->type == ix::WebSocketMessageType::Message) {
-          if (msg->binary) {
-            onBinaryMessage(msg->str);
-          } else {
-            text_queue_.push({msg->str});
-          }
-        } else if (msg->type == ix::WebSocketMessageType::Close) {
-          onDisconnected();
-        }
-      });
-    };
-
-    if (!socket_ || socket_->getReadyState() != ix::ReadyState::Open) {
-      // Fallback: connect fresh (e.g. when started without dialog via saved config)
-      socket_ = makeSocket(address_, static_cast<uint16_t>(port_));
-      socket_->disableAutomaticReconnection();
-      // Install BEFORE start(): the server sends its one-shot serverInfo +
-      // "advertise" burst the moment the connection opens, and a callback-less
-      // socket drops frames — the burst must land in text_queue_, or demand mode
-      // starts with an empty channel catalog it can never refill (the server
-      // does not re-advertise on request).
-      install_message_callback(*socket_);
-      if (!pj::streaming::startAndWaitForOpen(*socket_, std::chrono::seconds(5))) {
-        socket_->stop();
-        return PJ::unexpected(
-            "failed to connect to Foxglove bridge at " +
-            PJ::sdk::composeHostPort(address_, static_cast<uint16_t>(port_)));
+    // Adopt the dialog's connection when it hands over an open one (it stays connected on
+    // accept); otherwise connect fresh, e.g. for a configured start without the dialog. Either
+    // way start() returns before the connection completes: onPoll() drives the rest, and every
+    // transport event (the server's one-shot serverInfo + "advertise" burst included) waits in
+    // the connection's queue in arrival order until the poll thread applies it.
+    adopted_ = connection_.adopt(dialog_.takeConnection());
+    if (adopted_) {
+      // The server already sent its one-shot "advertise" burst and will not re-send it. The
+      // dialog discovered the FULL channel catalog during that burst (not just what the user
+      // selected); seeding from it is the only way to learn about unselected topics here.
+      for (const auto& ch : dialog_.allDiscoveredChannels()) {
+        advertised_channels_[ch.id] = ch;
       }
-    } else {
-      // Stolen socket: re-register for the streaming source (the dialog's
-      // callback goes away with it). The initial advertise burst already
-      // happened — the dialog's discovered catalog is seeded below instead.
-      install_message_callback(*socket_);
-    }
-
-    // When the socket is stolen from the dialog it is already connected and the server
-    // already sent its initial "advertise" burst — it will not re-send it. The dialog
-    // discovered the FULL channel catalog during that burst (not just what the user
-    // selected); seed our view of it now, since this is the only way we learn about
-    // unselected topics on the stolen-socket path.
-    for (const auto& ch : dialog_.allDiscoveredChannels()) {
-      advertised_channels_[ch.id] = ch;
+    } else if (auto status = connection_.start(dialog_.endpoint(), subprotocols()); !status) {
+      return status;
     }
 
     // Demand mode is decided ONCE per start, by the very first advertise attempt: a
@@ -169,110 +138,45 @@ class FoxgloveSource : public PJ::StreamSourceBase {
             "advertise topics on demand. Nothing will stream until the connection dialog is "
             "reopened and channels are selected.");
       }
-      // Subscribe directly using the channel info captured by the dialog.
-      subscribeToSelectedChannels();
     }
 
-    connected_ = true;
     return PJ::okStatus();
   }
 
   PJ::Status onPoll() override {
-    // Non-blocking reconnection: if connection was lost, try every ~5s.
-    // MUST run before the text drain below: the new connection's one-shot
-    // serverInfo+advertise burst may already sit in text_queue_ when reconnect
-    // success is detected, and the state reset here has to happen BEFORE that
-    // advertise is processed — draining first would populate the catalog and
-    // then immediately wipe it, losing the burst for good (the server does not
-    // re-advertise).
-    if (!connected_ && socket_) {
-      if (reconnect_pending_) {
-        // Check if the async reconnect succeeded
-        if (socket_->getReadyState() == ix::ReadyState::Open) {
-          connected_ = true;
-          reconnect_pending_ = false;
-          reconnect_tick_ = 0;
-          // Reset subscription state so new advertise messages create fresh bindings
-          subscriptions_.clear();
-          binding_by_subscription_.clear();
-          advertised_channels_.clear();
-          next_subscription_id_ = 1;
-          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "Reconnected to Foxglove bridge");
-        } else if (socket_->getReadyState() == ix::ReadyState::Closed) {
-          // Connection attempt failed
-          reconnect_pending_ = false;
-        }
-      } else if (++reconnect_tick_ >= 150) {
-        reconnect_tick_ = 0;
-        reconnect_pending_ = true;
-        socket_->stop();
-        socket_->start();  // async — result checked on next poll
-      }
-    }
-
-    // Drain text messages (advertise/unadvertise) queued from the WebSocket callback thread.
-    // ensureParserBinding() must be called from the poll thread, not the callback thread.
-    auto text_batch = text_queue_.drain();
-    while (!text_batch.empty()) {
-      onTextMessage(text_batch.front().text);
-      text_batch.pop();
+    // Applies the queued events; re-dials a lost connection every FoxgloveConnectionOptions::reconnect.
+    if (auto status = connection_.poll(); !status) {
+      return status;  // the first connection of this start failed: stops the stream
     }
 
     // Demand mode: apply the host's latest desired active-topic set, if it wrote one
     // since the last poll. demand_mode_ and last_applied_desired_ deliberately survive
-    // a reconnect above (host capability doesn't change mid-session) — the channels
-    // that just got cleared will re-subscribe against last_applied_desired_ as they
+    // a reconnect (host capability doesn't change mid-session) — the channels that got
+    // cleared on reconnect re-subscribe against last_applied_desired_ as they
     // re-advertise (reconcileSubscriptions runs after every advertise delta), so no
     // special reconnect handling is needed here.
-    if (demand_mode_ && connected_) {
+    if (demand_mode_ && connection_.isOpen()) {
       applyDesiredTopics();
-    }
-
-    auto batch = message_queue_.drain();
-
-    while (!batch.empty()) {
-      auto& msg = batch.front();
-
-      auto it = binding_by_subscription_.find(msg.subscription_id);
-      if (it != binding_by_subscription_.end()) {
-        // Move the per-message payload into a shared_ptr-owned buffer so the
-        // PayloadView fetcher remains valid after onPoll returns
-        // (ObjectIngestPolicy may defer dispatch beyond this call).
-        auto payload = std::make_shared<std::vector<uint8_t>>(std::move(msg.payload));
-        auto status = runtimeHost().pushMessage(
-            it->second, PJ::Timestamp{msg.timestamp_ns},
-            [payload]() -> PJ::sdk::PayloadView { return PJ::sdk::PayloadView{payload}; });
-        if (!status) {
-          runtimeHost().reportMessage(
-              PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
-        }
-      }
-
-      batch.pop();
     }
 
     return PJ::okStatus();
   }
 
   void onStop() override {
-    if (socket_) {
-      if (connected_ && !subscriptions_.empty()) {
-        std::vector<uint32_t> ids;
-        for (const auto& [id, _channel_id] : subscriptions_) {
-          ids.push_back(id);
-        }
-        socket_->sendText(buildUnsubscribeMessage(ids));
+    if (connection_.isOpen() && !subscriptions_.empty()) {
+      std::vector<uint32_t> ids;
+      for (const auto& [id, _channel_id] : subscriptions_) {
+        ids.push_back(id);
       }
-
-      socket_->stop();
-      socket_.reset();
+      connection_.sendText(buildUnsubscribeMessage(ids));
     }
-    connected_ = false;
+    connection_.stop();  // nothing from this session reaches the next
     selected_channels_.clear();
     subscriptions_.clear();
     binding_by_subscription_.clear();
     advertised_channels_.clear();
     next_subscription_id_ = 1;
+    adopted_ = false;
     demand_mode_ = false;
     last_applied_desired_.clear();
     (void)desired_topics_slot_.take();  // drop any pending host command so it can't leak into the next start
@@ -420,7 +324,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     const auto diff = computeSubscriptionDiff(subscriptions_, advertised_topics, last_applied_desired_);
 
     if (!diff.to_unsubscribe.empty()) {
-      socket_->sendText(buildUnsubscribeMessage(diff.to_unsubscribe));
+      connection_.sendText(buildUnsubscribeMessage(diff.to_unsubscribe));
       for (uint32_t sub_id : diff.to_unsubscribe) {
         subscriptions_.erase(sub_id);
         binding_by_subscription_.erase(sub_id);
@@ -438,7 +342,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         to_send.emplace_back(registerSubscription(it->second, parser_errors), channel_id);
       }
       if (!to_send.empty()) {
-        socket_->sendText(buildSubscribeMessage(to_send));
+        connection_.sendText(buildSubscribeMessage(to_send));
       }
       reportParserErrors(parser_errors);
     }
@@ -456,8 +360,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
   // Subscribe to all selected channels using the channel info already captured by the dialog.
-  // Called from onStart() when the socket is stolen (server won't re-send "advertise").
-  // Also safe to call after a fresh connect where selected_channels_ is pre-populated.
+  // Only for a connection adopted from the dialog: the server will not re-send "advertise", and
+  // the selection's channel ids are this server session's. A fresh connection subscribes from
+  // the advertise burst instead, by topic, since saved ids may belong to an earlier session.
   void subscribeToSelectedChannels() {
     std::vector<std::string> parser_errors;
 
@@ -470,7 +375,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       advertised_channels_[ch.id] = ch;
 
       const uint32_t sub_id = registerSubscription(ch, parser_errors);
-      socket_->sendText(buildSubscribeMessage({{sub_id, ch.id}}));
+      connection_.sendText(buildSubscribeMessage({{sub_id, ch.id}}));
     }
 
     reportParserErrors(parser_errors);
@@ -485,18 +390,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     std::string op = json.value("op", "");
 
     if (op == "advertise") {
-      auto channels_arr = json.value("channels", nlohmann::json::array());
+      const auto channels = parseAdvertisedChannels(json);
       std::vector<std::string> parser_errors;
 
-      for (const auto& ch_json : channels_arr) {
-        ChannelInfo ch;
-        ch.id = ch_json.value("id", uint64_t{0});
-        ch.topic = ch_json.value("topic", "");
-        ch.encoding = ch_json.value("encoding", "");
-        ch.schema_name = ch_json.value("schemaName", "");
-        ch.schema = ch_json.value("schema", "");
-        ch.schema_encoding = ch_json.value("schemaEncoding", "");
-
+      for (const auto& ch : channels) {
         // Track server-advertised channels (full info — schema included — so
         // refreshAdvertisedTopics()/bindChannel() never need to re-parse).
         advertised_channels_[ch.id] = ch;
@@ -523,12 +420,14 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         }
 
         const uint32_t sub_id = registerSubscription(ch, parser_errors);
-        socket_->sendText(buildSubscribeMessage({{sub_id, ch.id}}));
+        connection_.sendText(buildSubscribeMessage({{sub_id, ch.id}}));
       }
 
       reportParserErrors(parser_errors);
 
-      if (demand_mode_ && !channels_arr.empty()) {
+      // Even an empty advertise is published: after a reconnect it is what clears the previous
+      // session's topics from the host.
+      if (demand_mode_) {
         // A channel may advertise AFTER the host already asked for its topic (mid-stream
         // advertise, or the resubscribe burst after a reconnect) — the reconcile picks it
         // up from last_applied_desired_ without waiting for another set_active_topics call.
@@ -542,7 +441,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       auto channel_ids = json.value("channelIds", nlohmann::json::array());
       std::vector<std::string> removed_topics;
       for (const auto& id_json : channel_ids) {
-        uint64_t removed_id = id_json.get<uint64_t>();
+        if (!id_json.is_number_unsigned()) {
+          continue;  // malformed: apply the valid ids, so the host's topic list stays in sync
+        }
+        const uint64_t removed_id = id_json.get<uint64_t>();
         auto it = advertised_channels_.find(removed_id);
         if (it != advertised_channels_.end()) {
           removed_topics.push_back(it->second.topic);
@@ -586,47 +488,63 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     }
   }
 
-  void onDisconnected() {
-    if (connected_) {
-      connected_ = false;
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "Foxglove bridge connection lost");
+  // [poll thread] The socket opened, or reopened after a loss. Comes before the server's
+  // serverInfo + "advertise" burst in the queue, so state reset here never wipes a catalog that
+  // burst populated.
+  void onOpen(bool reconnected) {
+    if (!reconnected) {
+      if (!demand_mode_ && adopted_) {
+        subscribeToSelectedChannels();
+      }
+      return;
     }
+    // A fresh server session: reset subscription state so new advertise messages create fresh
+    // bindings.
+    subscriptions_.clear();
+    binding_by_subscription_.clear();
+    advertised_channels_.clear();
+    next_subscription_id_ = 1;
   }
 
-  void onBinaryMessage(const std::string& message) {
+  // [poll thread] One Foxglove binary frame: push a message-data frame to its subscription's parser.
+  void onBinaryMessage(std::string&& message) {
     BinaryFrame frame;
     if (!parseBinaryFrame(reinterpret_cast<const uint8_t*>(message.data()), message.size(), frame)) {
       return;
     }
-
-    QueuedBinaryMessage msg;
-    msg.subscription_id = frame.subscription_id;
-    msg.timestamp_ns = static_cast<int64_t>(frame.log_time_ns);
-    msg.payload.assign(frame.payload_data, frame.payload_data + frame.payload_size);
-
-    message_queue_.push(std::move(msg));
+    auto it = binding_by_subscription_.find(frame.subscription_id);
+    if (it == binding_by_subscription_.end()) {
+      return;
+    }
+    // The queued frame itself anchors the payload, so the PayloadView fetcher stays valid after
+    // onPoll returns (ObjectIngestPolicy may defer dispatch) without copying it. The span is
+    // re-derived from the moved string by offset: a short string's bytes move with it.
+    const auto offset = static_cast<size_t>(frame.payload_data - reinterpret_cast<const uint8_t*>(message.data()));
+    auto frame_buffer = std::make_shared<const std::string>(std::move(message));
+    const PJ::Span<const uint8_t> bytes{
+        reinterpret_cast<const uint8_t*>(frame_buffer->data()) + offset, frame.payload_size};
+    auto status = runtimeHost().pushMessage(
+        it->second, PJ::Timestamp{static_cast<int64_t>(frame.log_time_ns)},
+        [frame_buffer, bytes]() -> PJ::sdk::PayloadView { return PJ::sdk::PayloadView{bytes, frame_buffer}; });
+    if (!status) {
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
+    }
   }
 
   FoxgloveDialog dialog_;
+  // The connection of this start; its handlers run on the poll thread, from onPoll().
+  PJ::WebSocket::SourceConnection connection_;
 
-  std::string address_ = "localhost";
-  int port_ = 8765;
   PJ::sdk::ArrayLimit array_limit_;
   bool use_timestamp_ = false;
 
   std::vector<ChannelInfo> selected_channels_;
-  std::unique_ptr<ix::WebSocket> socket_;
-  std::atomic<bool> connected_ = false;
+  bool adopted_ = false;  ///< this start took over the dialog's connection
 
   std::map<uint32_t, uint64_t> subscriptions_;  // sub_id -> channel_id
   std::map<uint32_t, PJ::ParserBindingHandle> binding_by_subscription_;
   std::map<uint64_t, ChannelInfo> advertised_channels_;  // channel_id -> full channel info (schema included)
   uint32_t next_subscription_id_ = 1;
-
-  PJ::sdk::DrainQueue<QueuedBinaryMessage> message_queue_;
-  PJ::sdk::DrainQueue<QueuedTextMessage> text_queue_;
-  int reconnect_tick_ = 0;
-  std::atomic<bool> reconnect_pending_ = false;
 
   // --- Demand-driven per-topic subscription (pj.topic_subscription.v1) ---
 

@@ -5,7 +5,8 @@ server and streams real-time data via delegated ingest.
 
 ## Features
 
-- WebSocket connection with configurable address and port
+- WebSocket connection to an address and port, or to a full `ws://` / `wss://` URL
+- The dialog retries a refused or dropped connection with a capped backoff until cancelled; a stream whose connection is lost reconnects every 5 s
 - Connects to current servers (`foxglove.sdk.v1` subprotocol) and older ones (`foxglove.websocket.v1`); nothing to configure
 - Automatic channel discovery via Foxglove `advertise` protocol
 - Topic filtering by name in the dialog
@@ -35,3 +36,24 @@ channels, and lets you select which topics to subscribe to. Parser options
 
 - No pause/resume support (requires host-side streamer controls)
 - ROS 1 channels (`ros1` encoding, `ros1msg` schemas) are not decoded: a ROS 1 bridge connects and lists its topics, but they produce no data
+
+## Threading and transport
+
+The transport is the shared [`common/websocket`](../common/websocket/README.md)
+client, also used by the PlotJuggler Bridge, so the plugin builds for the desktop
+(IXWebSocket) and for PlotJuggler's browser build (`<emscripten/websocket.h>`) alike;
+the dialog's connection fields, retry and status line come from
+`<pj_websocket/connection_dialog.hpp>`.
+
+- Every transport event (open, text and binary frames, close, error) is copied into one
+  bounded FIFO and applied in arrival order on the poll thread (on the dialog's tick while
+  the dialog owns the connection), so no transport thread ever touches a parser binding.
+  (A connection adopted from the dialog is opened, and the selection subscribed, on the
+  first poll.)
+- The queue holds at most 512 MiB of unprocessed binary frames on the desktop and 64 MiB
+  in the browser. When the poll thread falls behind, the OLDEST are dropped and a warning
+  reports the running count, at most every 5 s; text frames (advertise, unadvertise,
+  status) are never dropped. The poll thread applies one drained batch while the queue
+  refills, so unprocessed data can peak at about twice the cap (1 GiB / 128 MiB).
+- A page served over `https://` can open only `wss://` sockets (localhost excepted), so a
+  plain `ws://` `foxglove_bridge` on a robot needs TLS in front of it for the browser build.

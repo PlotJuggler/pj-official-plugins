@@ -1,10 +1,11 @@
 /**
  * @file pj_bridge_connection_test.cpp
  * @brief PjBridgeSource connection lifecycle against the fake transport
- *  (tests/fake_bridge_websocket.cpp) and a recording runtime host: start() never waits for the
+ *  (common/websocket/testing/fake_websocket_client.cpp) and a recording runtime host: start() never waits for the
  *  connection, onPoll() drives connecting -> discovery -> streaming, failures latch once, and
  *  stop() isolates sessions. Also covers the dialog handoff, explicit and legacy endpoints,
- *  compressed frames, heartbeat, pause/resume, demand subscriptions and the inbound-queue bound.
+ *  compressed frames, heartbeat, pause/resume, demand subscriptions and the inbound-queue bound
+ *  (the queue itself is tested in common/websocket/tests).
  *
  * The plugin translation unit is included so its anonymous-namespace classes are reachable.
  */
@@ -16,19 +17,20 @@
 #include <chrono>
 #include <cstring>
 #include <pj_plugins/host/service_registry_builder.hpp>
+#include <pj_websocket/testing/fake_websocket_client.hpp>
 #include <random>
 #include <string>
+#include <test_support/recording_runtime_host.hpp>
 #include <thread>
 #include <vector>
 
 #include "../pj_bridge_source.cpp"  // NOLINT(bugprone-suspicious-include)
-#include "fake_bridge_websocket.hpp"
 
 namespace {
 
-using PJ::BridgeProtocol::testing::FakeSocket;
-using PJ::BridgeProtocol::testing::fakeSockets;
-using EventType = PJ::BridgeProtocol::BridgeWebSocketEvent::Type;
+using PJ::WebSocket::testing::FakeSocket;
+using PJ::WebSocket::testing::fakeSockets;
+using EventType = PJ::WebSocket::Event::Type;
 
 /// Test-length deadlines; the queue keeps its platform default.
 BridgeConnectionOptions testOptions() {
@@ -37,6 +39,14 @@ BridgeConnectionOptions testOptions() {
   options.subscribe = std::chrono::milliseconds(50);
   options.retry_first = std::chrono::milliseconds(20);
   options.retry_max = std::chrono::milliseconds(80);
+  return options;
+}
+
+/// For tests that poll a source whose socket is still connecting: a deadline no slow runner
+/// reaches. Only the timeout tests keep the short one.
+BridgeConnectionOptions patientOptions() {
+  auto options = testOptions();
+  options.connect = std::chrono::seconds(10);
   return options;
 }
 
@@ -50,99 +60,7 @@ std::string noise(size_t size, uint32_t seed) {
   return bytes;
 }
 
-std::string toString(PJ_string_view_t view) {
-  return view.data != nullptr ? std::string(view.data, static_cast<size_t>(view.size)) : std::string{};
-}
-
-/// Records the runtime-host calls the source makes. Without `demand_capable` it emulates a host
-/// that lacks notify_available_topics, which puts the source in legacy (subscribe-the-selection) mode.
-class FakeRuntimeHost {
- public:
-  struct Binding {
-    std::string topic;
-    std::string encoding;
-    std::string type_name;
-  };
-  struct Push {
-    uint32_t binding_id = 0;
-    int64_t timestamp_ns = 0;
-    std::string bytes;
-  };
-
-  explicit FakeRuntimeHost(bool demand_capable) {
-    vtable_.protocol_version = 1;
-    vtable_.struct_size = sizeof(vtable_);
-    vtable_.report_message = &reportMessage;
-    vtable_.notify_state = &notifyState;
-    vtable_.ensure_parser_binding = &ensureParserBinding;
-    vtable_.push_message = &pushMessage;
-    vtable_.notify_available_topics = demand_capable ? &notifyAvailableTopics : nullptr;
-  }
-
-  [[nodiscard]] PJ_data_source_runtime_host_t raw() {
-    return {this, &vtable_};
-  }
-
-  [[nodiscard]] int countReported(const std::string& fragment) const {
-    return static_cast<int>(std::count_if(messages.begin(), messages.end(), [&fragment](const std::string& message) {
-      return message.find(fragment) != std::string::npos;
-    }));
-  }
-
-  [[nodiscard]] bool reported(const std::string& fragment) const {
-    return countReported(fragment) > 0;
-  }
-
-  std::vector<std::string> messages;
-  std::vector<Binding> bindings;
-  std::vector<Push> pushes;
-  std::vector<std::vector<std::string>> advertisements;
-
- private:
-  static FakeRuntimeHost& self(void* ctx) {
-    return *static_cast<FakeRuntimeHost*>(ctx);
-  }
-  static void reportMessage(void* ctx, PJ_data_source_message_level_t, PJ_string_view_t message) noexcept {
-    self(ctx).messages.push_back(toString(message));
-  }
-  static void notifyState(void*, PJ_data_source_state_t) noexcept {}
-  static bool ensureParserBinding(
-      void* ctx, const PJ_parser_binding_request_t* request, PJ_parser_binding_handle_t* out, PJ_error_t*) noexcept {
-    auto& host = self(ctx);
-    host.bindings.push_back(
-        {toString(request->topic_name), toString(request->parser_encoding), toString(request->type_name)});
-    *out = PJ_parser_binding_handle_t{static_cast<uint32_t>(host.bindings.size())};
-    return true;
-  }
-  static bool pushMessage(
-      void* ctx, PJ_parser_binding_handle_t binding, int64_t timestamp_ns, PJ_message_data_fetcher_t fetcher,
-      PJ_error_t* error) noexcept {
-    PJ_payload_t payload{};
-    const bool fetched = fetcher.fetchMessageData(fetcher.ctx, &payload, error);
-    if (fetched) {
-      self(ctx).pushes.push_back(
-          {binding.id, timestamp_ns, std::string(reinterpret_cast<const char*>(payload.data), payload.size)});
-      if (payload.anchor.release != nullptr) {
-        payload.anchor.release(payload.anchor.ctx);
-      }
-    }
-    if (fetcher.release != nullptr) {
-      fetcher.release(fetcher.ctx);
-    }
-    return fetched;
-  }
-  static bool notifyAvailableTopics(
-      void* ctx, const PJ_available_topic_t* topics, uint64_t count, PJ_error_t*) noexcept {
-    std::vector<std::string> names;
-    for (uint64_t index = 0; index < count; ++index) {
-      names.push_back(toString(topics[index].topic_name));
-    }
-    self(ctx).advertisements.push_back(std::move(names));
-    return true;
-  }
-
-  PJ_data_source_runtime_host_vtable_t vtable_{};
-};
+using FakeRuntimeHost = toolbox_testing::RecordingRuntimeHost;
 
 /// One PjBridgeSource bound to a recording host, with test-length deadlines.
 struct BridgeFixture {
@@ -260,7 +178,7 @@ std::string compressedFrame(const std::string& topic, int64_t timestamp_ns, cons
 // --- The four lifecycle contracts PlotJuggler's streaming manager relies on ---
 
 TEST(PjBridgeConnectionTest, StartReturnsBeforeConnection) {
-  BridgeFixture fixture;
+  BridgeFixture fixture(/*demand_capable=*/true, patientOptions());
   ASSERT_TRUE(fixture.source.loadConfig(R"({"url":"ws://127.0.0.1:1/bridge"})"));
 
   const auto started = std::chrono::steady_clock::now();
@@ -418,19 +336,10 @@ TEST(PjBridgeConnectionTest, LegacySubscribeDeadlineWarnsWithoutStopping) {
   EXPECT_TRUE(fixture.host.reported("Subscribe response not received"));
 }
 
-TEST(BridgeWebSocketUrlTest, AcceptsOnlyWebSocketUrlsWithAHost) {
-  EXPECT_TRUE(isWebSocketUrl("ws://127.0.0.1:9871"));
-  EXPECT_TRUE(isWebSocketUrl("wss://robot.local:8443/bridge"));
-  EXPECT_FALSE(isWebSocketUrl("ws://"));
-  EXPECT_FALSE(isWebSocketUrl("wss:///bridge"));
-  EXPECT_FALSE(isWebSocketUrl("http://robot:9871"));
-  EXPECT_FALSE(isWebSocketUrl("robot:9871"));
-}
-
 // --- Streaming ---
 
 TEST(PjBridgeConnectionTest, DemandSubscriptionsWaitForTheConnectionThenFollowTheHost) {
-  BridgeFixture fixture;
+  BridgeFixture fixture(/*demand_capable=*/true, patientOptions());
   FakeSocket& socket = fixture.startWithUrl("ws://robot:9871");
 
   // The host asks before the socket is open: the request waits instead of being lost.
@@ -469,18 +378,25 @@ TEST(PjBridgeConnectionTest, HeartbeatEveryThirtyPollsOnceOpen) {
   EXPECT_EQ(std::count(sent.begin(), sent.end(), "heartbeat"), 1);
 }
 
-TEST(PjBridgeConnectionTest, PauseAndResumeReachTheServerOnlyWhenOpen) {
-  BridgeFixture fixture;
+TEST(PjBridgeConnectionTest, PauseAndResumeReachTheServerOnTheNextPollOnceOpen) {
+  BridgeFixture fixture(/*demand_capable=*/true, patientOptions());
   FakeSocket& socket = fixture.startWithUrl("ws://robot:9871");
   ASSERT_TRUE(fixture.source.pause());
+  ASSERT_TRUE(fixture.source.poll());
   EXPECT_TRUE(socket.sent.empty());
+  ASSERT_TRUE(fixture.source.resume());
 
   socket.acceptConnection();
   ASSERT_TRUE(fixture.source.poll());
   ASSERT_TRUE(fixture.source.pause());
+  EXPECT_NE(lastSent(socket).value("command", std::string{}), "pause");  // the host thread sends nothing
+  ASSERT_TRUE(fixture.source.poll());
   EXPECT_EQ(lastSent(socket).value("command", std::string{}), "pause");
   ASSERT_TRUE(fixture.source.resume());
+  ASSERT_TRUE(fixture.source.poll());
   EXPECT_EQ(lastSent(socket).value("command", std::string{}), "resume");
+  const auto sent = commands(socket);
+  EXPECT_EQ(std::count(sent.begin(), sent.end(), "pause"), 1);  // the pause/resume while connecting cancel out
 }
 
 TEST(PjBridgeConnectionTest, PauseBeforeTheConnectionOpensIsAppliedOnOpen) {
@@ -555,6 +471,7 @@ TEST(PjBridgeConnectionTest, DialogConnectionIsHandedToTheSource) {
 
   // OK: the source adopts the open connection instead of dialing again.
   ASSERT_TRUE(fixture.source.start());
+  ASSERT_TRUE(fixture.source.poll());
   EXPECT_EQ(fakeSockets().size(), 1U);
   EXPECT_EQ(commands(socket), (std::vector<std::string>{"get_topics", "subscribe_topic_updates", "get_topics"}));
   ASSERT_FALSE(fixture.host.advertisements.empty());
@@ -610,6 +527,17 @@ TEST(PjBridgeConnectionTest, DialogAttemptThatNeverAnswersTimesOutUntilCancelled
   EXPECT_EQ(dialog.widget_data().find("Retrying"), std::string::npos);
 }
 
+TEST(PjBridgeConnectionTest, DialogTreatsAnOpenArrivingAfterTheDeadlineAsATimeout) {
+  fakeSockets().clear();
+  PjBridgeDialog dialog(testOptions());
+  dialog.onTextChanged("lineEditAddress", "ws://robot:9090");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  std::this_thread::sleep_for(testOptions().connect + std::chrono::milliseconds(10));
+  fakeSockets().back()->acceptConnection();  // too late, but queued before the tick
+  EXPECT_TRUE(dialog.onTick());
+  EXPECT_NE(dialog.widget_data().find("Retrying in 1 s: timed out"), std::string::npos) << dialog.widget_data();
+}
+
 TEST(PjBridgeConnectionTest, DialogSeesACloseThatFollowsMalformedText) {
   fakeSockets().clear();
   PjBridgeDialog dialog(testOptions());
@@ -625,6 +553,23 @@ TEST(PjBridgeConnectionTest, DialogSeesACloseThatFollowsMalformedText) {
   EXPECT_NE(dialog.widget_data().find("Retrying in 1 s: bridge restarting"), std::string::npos) << dialog.widget_data();
 }
 
+TEST(PjBridgeConnectionTest, DialogKeepsTheValidTopicsWhenOneEntryIsMalformed) {
+  fakeSockets().clear();
+  PjBridgeDialog dialog(testOptions());
+  dialog.onTextChanged("lineEditAddress", "ws://robot:9090");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  const auto socket = fakeSockets().back();
+  socket->acceptConnection();
+  EXPECT_TRUE(dialog.onTick());
+
+  auto response = nlohmann::json::parse(getTopicsResponse({"/imu"}));
+  // A wrong-typed field, ahead of the valid entry so a throw would lose it.
+  response["topics"].insert(response["topics"].begin(), {{"name", "/bad"}, {"type", 5}});
+  socket->deliverText(response.dump());
+  dialog.onTick();
+  EXPECT_NE(dialog.widget_data().find("/imu"), std::string::npos) << dialog.widget_data();
+}
+
 TEST(PjBridgeConnectionTest, DialogUrlIgnoresAddressAndPortOfAnyType) {
   PjBridgeDialog dialog(testOptions());
   ASSERT_TRUE(dialog.loadConfig(R"({"url":"wss://robot.local/bridge","address":null,"port":"unused"})"));
@@ -637,71 +582,6 @@ TEST(PjBridgeConnectionTest, DialogDefaultsToTheBridgeServersPort) {
   EXPECT_EQ(dialog.endpoint(), "ws://127.0.0.1:9090");
   ASSERT_TRUE(dialog.loadConfig(R"({"address":"10.0.0.2"})"));
   EXPECT_EQ(dialog.endpoint(), "ws://10.0.0.2:9090");
-}
-
-// --- BridgeEventQueue ---
-
-TEST(BridgeEventQueueTest, PreservesArrivalOrderAcrossThreads) {
-  BridgeEventQueue queue;
-  constexpr int kCount = 1000;
-  std::thread writer([&queue] {
-    for (int index = 0; index < kCount; ++index) {
-      queue.push({EventType::kText, std::to_string(index)});
-    }
-  });
-  std::vector<std::string> received;
-  while (received.size() < static_cast<size_t>(kCount)) {
-    for (auto& event : queue.drain()) {
-      received.push_back(std::move(event.payload));
-    }
-    std::this_thread::yield();
-  }
-  writer.join();
-  for (int index = 0; index < kCount; ++index) {
-    EXPECT_EQ(received[static_cast<size_t>(index)], std::to_string(index));
-  }
-}
-
-TEST(BridgeEventQueueTest, OverflowDropsTheOldestDataFramesOnly) {
-  BridgeEventQueue queue(2000);  // two 900-byte frames plus overhead fit, three do not
-  queue.push({EventType::kBinary, std::string(900, 'a')});
-  queue.push({EventType::kText, "control"});
-  queue.push({EventType::kBinary, std::string(900, 'b')});
-  queue.push({EventType::kBinary, std::string(900, 'c')});
-  queue.push({EventType::kClosed, "bye"});
-  queue.push({EventType::kText, std::string(5000, 't')});  // control frames never count against the cap
-  const auto pending = queue.drain();
-  ASSERT_EQ(pending.size(), 5U);
-  EXPECT_EQ(pending[0].payload, "control");
-  EXPECT_EQ(pending[1].payload, std::string(900, 'b'));
-  EXPECT_EQ(pending[2].payload, std::string(900, 'c'));
-  EXPECT_EQ(pending[3].type, EventType::kClosed);
-  EXPECT_EQ(pending[4].payload.size(), 5000U);
-  EXPECT_EQ(queue.dropped().frames, 1U);
-  EXPECT_EQ(queue.dropped().bytes, 900U);
-
-  // The budget frees up on drain; the count is cumulative.
-  queue.push({EventType::kBinary, std::string(900, 'd')});
-  EXPECT_EQ(queue.drain().size(), 1U);
-  EXPECT_EQ(queue.dropped().frames, 1U);
-}
-
-TEST(BridgeEventQueueTest, OversizedFrameReplacesOlderDataButIsKept) {
-  BridgeEventQueue queue(100);
-  queue.push({EventType::kBinary, std::string(1000, 'x')});
-  queue.push({EventType::kBinary, std::string(1000, 'y')});
-  const auto pending = queue.drain();
-  ASSERT_EQ(pending.size(), 1U);
-  EXPECT_EQ(pending[0].payload, std::string(1000, 'y'));
-  EXPECT_EQ(queue.dropped().frames, 1U);
-}
-
-TEST(BridgeEventQueueTest, CloseDropsPendingAndLateEvents) {
-  BridgeEventQueue queue;
-  queue.push({EventType::kOpen, {}});
-  queue.close();
-  queue.push({EventType::kText, "late"});
-  EXPECT_TRUE(queue.drain().empty());
 }
 
 }  // namespace
