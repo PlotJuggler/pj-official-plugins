@@ -297,18 +297,6 @@
    </item>
    <item>
     <layout class="QHBoxLayout" name="bottomBar">
-     <property name="leftMargin">
-      <number>4</number>
-     </property>
-     <property name="topMargin">
-      <number>4</number>
-     </property>
-     <property name="rightMargin">
-      <number>4</number>
-     </property>
-     <property name="bottomMargin">
-      <number>4</number>
-     </property>
      <item>
       <widget class="QDialogButtonBox" name="buttonBox">
        <property name="orientation">
