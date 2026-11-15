@@ -38,72 +38,93 @@ constexpr std::array<RosMsgParser::BuiltinType, 11> kTslTypeOrder = {
 // Composition parse helpers
 // ---------------------------------------------------------------------------
 
-void RosParser::parseVector3(const std::string& prefix) {
+void RosParser::addFieldAt(std::string& path, std::string_view suffix, double value) {
+  PathSegment segment(path, suffix);
+  addField(path, value);
+}
+
+void RosParser::parseVector3(std::string& path) {
   double x = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   double y = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   double z = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-  addField(prefix + "/x", x);
-  addField(prefix + "/y", y);
-  addField(prefix + "/z", z);
+  addFieldAt(path, "/x", x);
+  addFieldAt(path, "/y", y);
+  addFieldAt(path, "/z", z);
 }
 
-void RosParser::parsePoint(const std::string& prefix) {
-  parseVector3(prefix);  // same wire format: 3 × float64
+void RosParser::parsePoint(std::string& path) {
+  parseVector3(path);  // same wire format: 3 × float64
 }
 
-void RosParser::parseQuaternion(const std::string& prefix) {
+void RosParser::parseQuaternion(std::string& path) {
   double x = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   double y = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   double z = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   double w = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-  addField(prefix + "/x", x);
-  addField(prefix + "/y", y);
-  addField(prefix + "/z", z);
-  addField(prefix + "/w", w);
+  addFieldAt(path, "/x", x);
+  addFieldAt(path, "/y", y);
+  addFieldAt(path, "/z", z);
+  addFieldAt(path, "/w", w);
 
   auto rpy = quaternionToRPY(x, y, z, w);
-  addField(prefix + "/roll", rpy.roll);
-  addField(prefix + "/pitch", rpy.pitch);
-  addField(prefix + "/yaw", rpy.yaw);
+  addFieldAt(path, "/roll", rpy.roll);
+  addFieldAt(path, "/pitch", rpy.pitch);
+  addFieldAt(path, "/yaw", rpy.yaw);
 }
 
-void RosParser::parseTwist(const std::string& prefix) {
-  parseVector3(prefix + "/linear");
-  parseVector3(prefix + "/angular");
+void RosParser::parseTwist(std::string& path) {
+  {
+    PathSegment segment(path, "/linear");
+    parseVector3(path);
+  }
+  PathSegment segment(path, "/angular");
+  parseVector3(path);
 }
 
-void RosParser::parsePose(const std::string& prefix) {
-  emitPose(prefix, readPose());
+void RosParser::parsePose(std::string& path) {
+  emitPose(path, readPose());
 }
 
-void RosParser::emitPose(const std::string& prefix, const PJ::sdk::Pose& pose) {
-  addField(prefix + "/position/x", pose.position.x);
-  addField(prefix + "/position/y", pose.position.y);
-  addField(prefix + "/position/z", pose.position.z);
+void RosParser::emitPose(std::string& path, const PJ::sdk::Pose& pose) {
+  addFieldAt(path, "/position/x", pose.position.x);
+  addFieldAt(path, "/position/y", pose.position.y);
+  addFieldAt(path, "/position/z", pose.position.z);
   const auto& q = pose.orientation;
-  addField(prefix + "/orientation/x", q.x);
-  addField(prefix + "/orientation/y", q.y);
-  addField(prefix + "/orientation/z", q.z);
-  addField(prefix + "/orientation/w", q.w);
+  addFieldAt(path, "/orientation/x", q.x);
+  addFieldAt(path, "/orientation/y", q.y);
+  addFieldAt(path, "/orientation/z", q.z);
+  addFieldAt(path, "/orientation/w", q.w);
   const auto rpy = quaternionToRPY(q.x, q.y, q.z, q.w);
-  addField(prefix + "/orientation/roll", rpy.roll);
-  addField(prefix + "/orientation/pitch", rpy.pitch);
-  addField(prefix + "/orientation/yaw", rpy.yaw);
+  addFieldAt(path, "/orientation/roll", rpy.roll);
+  addFieldAt(path, "/orientation/pitch", rpy.pitch);
+  addFieldAt(path, "/orientation/yaw", rpy.yaw);
 }
 
-void RosParser::parseTransform(const std::string& prefix) {
-  parsePoint(prefix + "/translation");
-  parseQuaternion(prefix + "/rotation");
+void RosParser::parseTransform(std::string& path) {
+  {
+    PathSegment segment(path, "/translation");
+    parsePoint(path);
+  }
+  PathSegment segment(path, "/rotation");
+  parseQuaternion(path);
 }
 
-void RosParser::parsePoseWithCovariance(const std::string& prefix) {
-  parsePose(prefix + "/pose");
-  parseCovariance<6>(prefix + "/covariance");
+void RosParser::parsePoseWithCovariance(std::string& path) {
+  {
+    PathSegment segment(path, "/pose");
+    parsePose(path);
+  }
+  PathSegment segment(path, "/covariance");
+  parseCovariance<6>(path);
 }
 
-void RosParser::parseTwistWithCovariance(const std::string& prefix) {
-  parseTwist(prefix + "/twist");
-  parseCovariance<6>(prefix + "/covariance");
+void RosParser::parseTwistWithCovariance(std::string& path) {
+  {
+    PathSegment segment(path, "/twist");
+    parseTwist(path);
+  }
+  PathSegment segment(path, "/covariance");
+  parseCovariance<6>(path);
 }
 
 // ---------------------------------------------------------------------------
@@ -115,17 +136,20 @@ void RosParser::handleEmpty() {
 }
 
 void RosParser::handlePose() {
-  parsePose("");
+  path_.clear();
+  parsePose(path_);
 }
 
 void RosParser::handlePoseStamped() {
   auto h = readHeader();
   emitHeader(h);
-  parsePose("/pose");
+  path_.assign("/pose");
+  parsePose(path_);
 }
 
 void RosParser::handleTransform() {
-  parseTransform("");
+  path_.clear();
+  parseTransform(path_);
 }
 
 void RosParser::handleTransformStamped() {
@@ -134,18 +158,25 @@ void RosParser::handleTransformStamped() {
   std::string child_frame_id;
   deserializer_->deserializeString(child_frame_id);
   addStringField("/child_frame_id", child_frame_id);
-  parseTransform("/transform");
+  path_.assign("/transform");
+  parseTransform(path_);
 }
 
 void RosParser::handleImu() {
   auto h = readHeader();
   emitHeader(h);
-  parseQuaternion("/orientation");
-  parseCovariance<3>("/orientation_covariance");
-  parseVector3("/angular_velocity");
-  parseCovariance<3>("/angular_velocity_covariance");
-  parseVector3("/linear_acceleration");
-  parseCovariance<3>("/linear_acceleration_covariance");
+  path_.assign("/orientation");
+  parseQuaternion(path_);
+  path_.assign("/orientation_covariance");
+  parseCovariance<3>(path_);
+  path_.assign("/angular_velocity");
+  parseVector3(path_);
+  path_.assign("/angular_velocity_covariance");
+  parseCovariance<3>(path_);
+  path_.assign("/linear_acceleration");
+  parseVector3(path_);
+  path_.assign("/linear_acceleration_covariance");
+  parseCovariance<3>(path_);
 }
 
 void RosParser::handleOdometry() {
@@ -154,8 +185,10 @@ void RosParser::handleOdometry() {
   std::string child_frame_id;
   deserializer_->deserializeString(child_frame_id);
   addStringField("/child_frame_id", child_frame_id);
-  parsePoseWithCovariance("/pose");
-  parseTwistWithCovariance("/twist");
+  path_.assign("/pose");
+  parsePoseWithCovariance(path_);
+  path_.assign("/twist");
+  parseTwistWithCovariance(path_);
 }
 
 void RosParser::handleJointState() {
@@ -186,15 +219,17 @@ void RosParser::handleJointState() {
     e = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
 
-  for (size_t i = 0; i < std::min(name_count, pos_count); i++) {
-    addField("/" + names[i] + "/position", positions[i]);
-  }
-  for (size_t i = 0; i < std::min(name_count, vel_count); i++) {
-    addField("/" + names[i] + "/velocity", velocities[i]);
-  }
-  for (size_t i = 0; i < std::min(name_count, eff_count); i++) {
-    addField("/" + names[i] + "/effort", efforts[i]);
-  }
+  const auto add_joint_fields = [this, &names](
+                                    size_t count, const std::vector<double>& values, std::string_view suffix) {
+    for (size_t i = 0; i < count; i++) {
+      path_.assign("/");
+      path_ += names[i];
+      addFieldAt(path_, suffix, values[i]);
+    }
+  };
+  add_joint_fields(std::min(name_count, pos_count), positions, "/position");
+  add_joint_fields(std::min(name_count, vel_count), velocities, "/velocity");
+  add_joint_fields(std::min(name_count, eff_count), efforts, "/effort");
 }
 
 void RosParser::handleDiagnosticArray() {
@@ -264,20 +299,21 @@ void RosParser::handleTFMessage() {
     std::string child_frame_id;
     deserializer_->deserializeString(child_frame_id);
 
-    std::string prefix;
-    if (h.frame_id.empty()) {
-      prefix = "/" + child_frame_id;
-    } else {
-      prefix = "/" + h.frame_id + "/" + child_frame_id;
+    // Prefix: /{frame_id}/{child_frame_id}, or /{child_frame_id} without a frame_id.
+    path_.assign("/");
+    if (!h.frame_id.empty()) {
+      path_ += h.frame_id;
+      path_ += '/';
     }
+    path_ += child_frame_id;
     // Per-transform header (the batch has no single message-level Header). The
     // parent frame_id is already the path prefix, so only the stamp (seconds) —
     // and seq on ROS1 — are emitted, matching the /header/stamp series elsewhere.
-    addField(prefix + "/header/stamp", static_cast<double>(h.sec) + static_cast<double>(h.nsec) * 1e-9);
+    addFieldAt(path_, "/header/stamp", static_cast<double>(h.sec) + static_cast<double>(h.nsec) * 1e-9);
     if (!deserializer_->isROS2()) {
-      addField(prefix + "/header/seq", static_cast<double>(h.seq));
+      addFieldAt(path_, "/header/seq", static_cast<double>(h.seq));
     }
-    parseTransform(prefix);
+    parseTransform(path_);
   }
 }
 

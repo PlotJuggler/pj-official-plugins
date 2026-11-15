@@ -67,6 +67,24 @@ inline RPY quaternionToRPY(double x, double y, double z, double w) {
 // Helper types
 // ---------------------------------------------------------------------------
 
+/// Appends a segment to a field-name buffer for one scope, and truncates the
+/// buffer back to its previous size when the scope ends (also on a throw).
+class PathSegment {
+ public:
+  PathSegment(std::string& path, std::string_view segment) : path_(path), size_(path.size()) {
+    path_.append(segment);
+  }
+  ~PathSegment() {
+    path_.resize(size_);
+  }
+  PathSegment(const PathSegment&) = delete;
+  PathSegment& operator=(const PathSegment&) = delete;
+
+ private:
+  std::string& path_;
+  size_t size_;
+};
+
 /// The fields of the message being parsed, in the shape the write host takes.
 /// Slots, their name strings and the text storage are reused from one message
 /// to the next, so a steady stream of messages allocates nothing here. String
@@ -374,20 +392,25 @@ class RosParser : public PJ::MessageParserPluginBase {
   // (`time` in the .msg) is uint32.
   int64_t readBareTime();
 
-  // Composition parse helpers (used by specialization handlers)
-  void parseVector3(const std::string& prefix);
-  void parsePoint(const std::string& prefix);
-  void parseQuaternion(const std::string& prefix);
+  // Composition parse helpers (used by specialization handlers). `path` is the
+  // field-name prefix; each helper appends its segments to it and truncates it
+  // back before returning, so the names of a whole message are built in one
+  // reused buffer (path_) instead of a temporary string per segment.
+  void addFieldAt(std::string& path, std::string_view suffix, double value);
+  void parseVector3(std::string& path);
+  void parsePoint(std::string& path);
+  void parseQuaternion(std::string& path);
   template <size_t N>
-  void parseCovariance(const std::string& prefix);
-  void parseTwist(const std::string& prefix);
-  void parsePose(const std::string& prefix);
-  // Emits an already-read Pose under `prefix` exactly as parsePose does
+  void parseCovariance(std::string& path);
+  void parseTwist(std::string& path);
+  void parsePose(std::string& path);
+  // Emits an already-read Pose under `path` exactly as parsePose does
   // (position x/y/z, orientation x/y/z/w + roll/pitch/yaw).
-  void emitPose(const std::string& prefix, const PJ::sdk::Pose& pose);
-  void parseTransform(const std::string& prefix);
-  void parsePoseWithCovariance(const std::string& prefix);
-  void parseTwistWithCovariance(const std::string& prefix);
+  void emitPose(std::string& path, const PJ::sdk::Pose& pose);
+  void parseTransform(std::string& path);
+  void parsePoseWithCovariance(std::string& path);
+  void parseTwistWithCovariance(std::string& path);
+  std::string path_;  ///< field-name buffer of the specialized handlers
 
   // ----- Canonical-object handlers (route: parseScalars / parseObject) -----
   //
@@ -651,16 +674,22 @@ class RosParser : public PJ::MessageParserPluginBase {
 
 // parseCovariance is a template — define it here.
 template <size_t N>
-void RosParser::parseCovariance(const std::string& prefix) {
+void RosParser::parseCovariance(std::string& path) {
   std::array<double, N * N> cov{};
   for (auto& val : cov) {
     val = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
+  const size_t prefix_size = path.size();
   for (size_t i = 0; i < N; i++) {
     for (size_t j = i; j < N; j++) {
       size_t index = i * N + j;
-      std::string name = prefix + "/[" + std::to_string(i) + ";" + std::to_string(j) + "]";
-      addField(name, cov[index]);
+      path += "/[";
+      path += std::to_string(i);
+      path += ';';
+      path += std::to_string(j);
+      path += ']';
+      addField(path, cov[index]);
+      path.resize(prefix_size);
     }
   }
 }

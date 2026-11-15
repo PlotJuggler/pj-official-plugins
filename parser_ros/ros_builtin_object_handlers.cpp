@@ -1580,7 +1580,8 @@ PJ::Status RosParser::parseGridMapScalars(PJ::Timestamp ts, PJ::Span<const uint8
     addField("/info/resolution", msg.resolution);
     addField("/info/length_x", msg.length_x);
     addField("/info/length_y", msg.length_y);
-    emitPose("/info/pose", center);
+    path_.assign("/info/pose");
+    emitPose(path_, center);
     // Only the layer count is plottable, not the names; size_x / size_y live in
     // the first layer's layout (dim[1] / dim[0]).
     addField("/num_layers", static_cast<double>(msg.layers.size()));
