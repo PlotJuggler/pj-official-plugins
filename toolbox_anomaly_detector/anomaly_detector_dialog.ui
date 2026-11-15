@@ -216,10 +216,6 @@
    <item>
     <layout class="QHBoxLayout" name="bottomBar">
      <property name="spacing"><number>8</number></property>
-     <property name="leftMargin"><number>8</number></property>
-     <property name="topMargin"><number>6</number></property>
-     <property name="rightMargin"><number>8</number></property>
-     <property name="bottomMargin"><number>8</number></property>
      <item>
       <spacer name="bottomSpacer">
        <property name="orientation"><enum>Qt::Horizontal</enum></property>
