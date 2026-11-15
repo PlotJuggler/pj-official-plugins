@@ -8,7 +8,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/streaming_source.hpp>
-#include <pj_websocket/websocket_client.hpp>
+#include <pj_websocket/source_connection.hpp>
 #include <set>
 #include <string>
 #include <string_view>
@@ -25,7 +25,17 @@ using namespace PJ::BridgeProtocol;
 
 class PjBridgeSource : public PJ::StreamSourceBase {
  public:
-  explicit PjBridgeSource(BridgeConnectionOptions options = {}) : dialog_(options), options_(options) {}
+  explicit PjBridgeSource(BridgeConnectionOptions options = {})
+      : dialog_(options),
+        options_(options),
+        connection_(
+            {"PJ bridge", options.connect, std::nullopt, options.inbound_queue_bytes},
+            {[this](bool /*reconnected: never, a loss is fatal*/) { beginDiscovery(); },
+             [this](const std::string& text) { onTextMessage(text); },
+             [this](std::string&& frame) { onBinaryFrame(frame); },
+             [this](PJ::DataSourceMessageLevel level, const std::string& message) {
+               runtimeHost().reportMessage(level, message);
+             }}) {}
 
   PJ_borrowed_dialog_t getDialog() override {
     return PJ::borrowDialog(dialog_);
@@ -54,17 +64,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   /// Remembered while connecting; beginDiscovery() applies it once the socket opens.
   PJ::Status pause() override {
     paused_ = true;
-    if (socket_ && socket_->isOpen()) {
-      socket_->sendText(buildRequest("pause", generateRequestId()));
-    }
+    connection_.sendText(buildRequest("pause", generateRequestId()));  // dropped unless open
     return PJ::okStatus();
   }
 
   PJ::Status resume() override {
     paused_ = false;
-    if (socket_ && socket_->isOpen()) {
-      socket_->sendText(buildRequest("resume", generateRequestId()));
-    }
+    connection_.sendText(buildRequest("resume", generateRequestId()));  // dropped unless open
     return PJ::okStatus();
   }
 
@@ -88,8 +94,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       return PJ::unexpected("invalid dialog config");
     }
 
-    endpoint_ = dialog_.endpoint();
-    drop_label_ = "PJ bridge stream at " + endpoint_;
+    const std::string endpoint = dialog_.endpoint();
     array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
@@ -115,24 +120,16 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     // configured start without the dialog. Either way start() returns before the connection
     // completes: onPoll() drives connecting -> discovery -> streaming.
     phase_ = ConnectionPhase::kConnecting;
-    auto handoff = dialog_.takeConnection();
-    const bool adopted = handoff.socket && handoff.socket->isOpen();
+    const bool adopted = connection_.adopt(dialog_.takeConnection(), endpoint);
     if (adopted) {
-      socket_ = std::move(handoff.socket);
-      events_ = std::move(handoff.events);
       // Seed the advertise catalog from the topics the dialog already discovered, so demand mode
       // can list them immediately instead of waiting for our own get_topics round-trip.
       // Discarded if the host turns out to be legacy.
       for (auto& info : dialog_.allDiscoveredTopics()) {
         advertised_topics_[info.name] = std::move(info);
       }
-    } else {
-      events_ = std::make_shared<PJ::WebSocket::EventQueue>(options_.inbound_queue_bytes);
-      socket_ = std::make_unique<PJ::WebSocket::Client>();
-      if (auto status = socket_->start(endpoint_, events_); !status) {
-        return PJ::unexpected("failed to connect to PJ bridge at " + endpoint_ + ": " + status.error());
-      }
-      connect_deadline_ = Clock::now() + options_.connect;
+    } else if (auto status = connection_.start(endpoint); !status) {
+      return status;
     }
 
     // Demand mode is decided ONCE per start by the first notify_available_topics
@@ -163,12 +160,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status onPoll() override {
-    pumpEvents();
-    if (phase_ == ConnectionPhase::kConnecting && Clock::now() >= connect_deadline_) {
-      failConnection("timed out");
-    }
-    if (!fatal_error_.empty()) {
-      return PJ::unexpected(fatal_error_);  // stops the stream; latched until stop()
+    // Applies the queued events; a failed or lost connection stops the stream.
+    if (auto status = connection_.poll(); !status) {
+      return status;
     }
     if (phase_ == ConnectionPhase::kConnecting) {
       return PJ::okStatus();  // nothing can be sent yet; host commands wait in their slot
@@ -186,7 +180,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     // Heartbeat: send every ~1s (30 polls at 33ms each)
     if (++heartbeat_tick_ >= 30) {
       heartbeat_tick_ = 0;
-      socket_->sendText(buildRequest("heartbeat", generateRequestId()));
+      connection_.sendText(buildRequest("heartbeat", generateRequestId()));
     }
 
     if (demand_mode_) {
@@ -206,11 +200,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   void onStop() override {
-    if (socket_) {
-      socket_->stop();
-      socket_.reset();
-    }
-    events_.reset();  // a fresh queue per start: nothing from this session reaches the next
+    connection_.stop();  // nothing from this session reaches the next
     phase_ = ConnectionPhase::kConnecting;
     bindings_.clear();
     selected_topics_.clear();
@@ -220,9 +210,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     last_applied_desired_.clear();
     demand_mode_ = false;
     advertise_dirty_ = false;
-    fatal_error_.clear();
     server_info_logged_ = false;
-    drop_warning_ = {};
     paused_ = false;
     (void)desired_topics_slot_.take();  // drop any pending host command so it can't leak into the next start
   }
@@ -232,7 +220,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
   /// Where the connection is. Advances only from onPoll() (or onStart() for an adopted socket).
   enum class ConnectionPhase {
-    kConnecting,  ///< waiting for kOpen until connect_deadline_
+    kConnecting,  ///< waiting for the connection to open
     kDiscovery,   ///< open; the legacy subscribe response is in flight (demand mode stays here)
     kStreaming,   ///< legacy mode: the subscribe response arrived or timed out
   };
@@ -250,8 +238,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       // snapshot and the opt-in is folded into the server's baseline without
       // ever being pushed to us. A duplicate (pushed AND in the snapshot) is
       // harmless: applyAdvertiseDelta upserts.
-      socket_->sendText(buildDiscoveryRequest("subscribe_topic_updates"));
-      socket_->sendText(buildDiscoveryRequest("get_topics"));
+      connection_.sendText(buildDiscoveryRequest("subscribe_topic_updates"));
+      connection_.sendText(buildDiscoveryRequest("get_topics"));
     } else {
       // Legacy: subscribe to the selected topics — the response carries the schemas needed for
       // parsing. onPoll() waits for it until subscribe_deadline_.
@@ -261,73 +249,11 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       for (const auto& info : selected_topics_) {
         names.push_back(info.name);
       }
-      socket_->sendText(buildSubscribeMessage(names, generateRequestId()));
+      connection_.sendText(buildSubscribeMessage(names, generateRequestId()));
       subscribe_deadline_ = Clock::now() + options_.subscribe;
     }
     if (paused_) {
-      socket_->sendText(buildRequest("pause", generateRequestId()));  // pause() came while connecting
-    }
-  }
-
-  /// The first stream-stopping failure wins; a close after a timeout does not replace it.
-  void fail(std::string message) {
-    if (fatal_error_.empty()) {
-      fatal_error_ = std::move(message);
-    }
-  }
-
-  void failConnection(const std::string& reason) {
-    const char* what = phase_ == ConnectionPhase::kConnecting ? "failed to connect to PJ bridge at "
-                                                              : "lost connection to PJ bridge at ";
-    fail(what + endpoint_ + (reason.empty() ? std::string{} : ": " + reason));
-  }
-
-  // [poll thread] Apply every queued transport event in arrival order. Parser bindings are only
-  // created and read here, never on a transport thread.
-  void pumpEvents() {
-    if (!events_) {
-      return;
-    }
-    // Pop each event as it is applied, so a long batch frees its frames as it goes.
-    auto pending = events_->drain();
-    while (!pending.empty()) {
-      const PJ::WebSocket::Event event = std::move(pending.front());
-      pending.pop_front();
-      switch (event.type) {
-        case PJ::WebSocket::Event::Type::kOpen:
-          if (phase_ == ConnectionPhase::kConnecting) {
-            beginDiscovery();
-          }
-          break;
-        case PJ::WebSocket::Event::Type::kText:
-          // Wire data can be arbitrarily malformed (nlohmann accessors throw on wrong-typed
-          // fields): drop the frame with a warning, never fail the host's poll.
-          try {
-            onTextMessage(event.payload);
-          } catch (const std::exception& e) {
-            runtimeHost().reportMessage(
-                PJ::DataSourceMessageLevel::kWarning, std::string("Dropped malformed control frame: ") + e.what());
-          }
-          break;
-        case PJ::WebSocket::Event::Type::kBinary:
-          onBinaryFrame(event.payload);
-          break;
-        case PJ::WebSocket::Event::Type::kClosed:
-          failConnection(event.payload.empty() ? "closed by the server" : event.payload);
-          break;
-        case PJ::WebSocket::Event::Type::kError:
-          failConnection(event.payload);
-          break;
-      }
-    }
-    reportDroppedData();
-  }
-
-  // [poll thread] The queue drops the oldest data frames when this thread falls behind (see
-  // PJ::WebSocket::EventQueue); DropWarning throttles the warning.
-  void reportDroppedData() {
-    if (auto warning = drop_warning_.check(*events_, drop_label_)) {
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, *warning);
+      connection_.sendText(buildRequest("pause", generateRequestId()));  // pause() came while connecting
     }
   }
 
@@ -491,7 +417,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     const auto diff = computeSubscriptionDiff(applied_, advertised, last_applied_desired_);
 
     if (!diff.to_unsubscribe.empty()) {
-      socket_->sendText(buildUnsubscribeMessage(diff.to_unsubscribe));
+      connection_.sendText(buildUnsubscribeMessage(diff.to_unsubscribe));
       for (const auto& topic : diff.to_unsubscribe) {
         applied_.erase(topic);
         bindings_.erase(topic);
@@ -501,7 +427,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
     if (!diff.to_subscribe.empty()) {
       const std::string request_id = generateRequestId();
-      socket_->sendText(buildSubscribeMessage(diff.to_subscribe, request_id));
+      connection_.sendText(buildSubscribeMessage(diff.to_subscribe, request_id));
       // Optimistically mark applied; a per-topic failure in the subscribe
       // response strips it back off (see handleSubscribeResponse), and it
       // retries on the next advertise delta rather than in a tight loop.
@@ -544,7 +470,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
                                   " but this plugin supports " + std::to_string(kSupportedProtocolVersion) +
                                   " — upgrade PlotJuggler (or run an older plotjuggler_bridge)";
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, upgrade);
-      fail(upgrade);
+      connection_.fail(upgrade);
       return;  // do not interpret the frame
     }
 
@@ -737,8 +663,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   PjBridgeDialog dialog_;
   BridgeConnectionOptions options_;
 
-  std::string endpoint_;    ///< the ws:// or wss:// URL of this start, for connection and messages
-  std::string drop_label_;  ///< names this stream in the dropped-frames warning
+  // The connection of this start; its handlers run on the poll thread, from onPoll().
+  PJ::WebSocket::SourceConnection connection_;
   PJ::sdk::ArrayLimit array_limit_;
   bool use_timestamp_ = false;
 
@@ -747,20 +673,15 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // lookup; the advertise filter is just its names, derived on demand.
   std::vector<TopicInfo> selected_topics_;
 
-  std::unique_ptr<PJ::WebSocket::Client> socket_;
-  // Transport thread -> poll thread handoff of every inbound event, text and binary alike.
-  // Fresh per start, so a late callback of a stopped session lands in a queue nobody drains.
-  PJ::WebSocket::EventSink events_;
   std::map<std::string, PJ::ParserBindingHandle> bindings_;  // poll-thread-only
 
   ConnectionPhase phase_ = ConnectionPhase::kConnecting;
-  Clock::time_point connect_deadline_{};
   Clock::time_point subscribe_deadline_{};
 
   std::vector<uint8_t> decompress_buffer_;
   int heartbeat_tick_ = 0;
   std::atomic<bool> paused_{false};  ///< written by the host's pause()/resume(), read on the poll thread
-  // Poll-thread-only: every response is handled while draining events_.
+  // Poll-thread-only: every response is handled from connection_.poll().
   bool subscribe_response_received_ = false;
 
   // --- Demand-driven per-topic subscription (pj.topic_subscription.v1) ---
@@ -782,13 +703,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // optimistically at subscribe, shrunk by unsubscribe and per-topic failures.
   std::set<std::string> applied_;
 
-  // The first stream-stopping failure (connect timeout, close, error, or a
-  // response from a KNOWN-newer protocol); onPoll returns it until stop() clears it.
-  std::string fatal_error_;
   // One server-identity log + capability warning per start.
   bool server_info_logged_ = false;
-  // Throttles the warning about data frames the queue dropped; see reportDroppedData().
-  PJ::WebSocket::DropWarning drop_warning_;
 
   // The id of the LAST subscribe request naming each topic — lets a stale
   // per-topic failure (from a superseded request) be ignored instead of
@@ -802,7 +718,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
   // Cross-thread control-plane surface: setActiveTopicsThunk (host GUI thread)
   // writes; applyDesiredTopics (poll thread) drains. Its own mutex — the only
-  // cross-thread surface besides events_.
+  // cross-thread surface besides connection_'s queue.
   DesiredTopicsSlot desired_topics_slot_;
 };
 

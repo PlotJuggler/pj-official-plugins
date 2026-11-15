@@ -9,7 +9,7 @@
 #include <pj_base64/base64.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/streaming_source.hpp>
-#include <pj_websocket/websocket_client.hpp>
+#include <pj_websocket/source_connection.hpp>
 #include <set>
 #include <string>
 #include <string_view>
@@ -32,7 +32,16 @@ struct FoxgloveConnectionOptions : PJ::WebSocket::DialogConnectionOptions {
 
 class FoxgloveSource : public PJ::StreamSourceBase {
  public:
-  explicit FoxgloveSource(FoxgloveConnectionOptions options = {}) : dialog_(options), options_(options) {}
+  explicit FoxgloveSource(FoxgloveConnectionOptions options = {})
+      : dialog_(options),
+        connection_(
+            {"Foxglove bridge", options.connect, options.reconnect, options.inbound_queue_bytes},
+            {[this](bool reconnected) { onOpen(reconnected); },
+             [this](const std::string& text) { onTextMessage(text); },
+             [this](std::string&& frame) { onBinaryMessage(std::move(frame)); },
+             [this](PJ::DataSourceMessageLevel level, const std::string& message) {
+               runtimeHost().reportMessage(level, message);
+             }}) {}
 
   PJ_borrowed_dialog_t getDialog() override {
     return PJ::borrowDialog(dialog_);
@@ -71,8 +80,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       return PJ::unexpected("invalid dialog config");
     }
 
-    endpoint_ = dialog_.endpoint();
-    drop_label_ = "Foxglove bridge stream at " + endpoint_;
+    const std::string endpoint = dialog_.endpoint();
     array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
@@ -97,20 +105,17 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     // accept); otherwise connect fresh, e.g. for a configured start without the dialog. Either
     // way start() returns before the connection completes: onPoll() drives the rest, and every
     // transport event (the server's one-shot serverInfo + "advertise" burst included) waits in
-    // events_ in arrival order until the poll thread applies it.
-    auto handoff = dialog_.takeConnection();
-    const bool adopted = handoff.socket && handoff.socket->isOpen();
+    // the connection's queue in arrival order until the poll thread applies it.
+    const bool adopted = connection_.adopt(dialog_.takeConnection(), endpoint);
     if (adopted) {
-      socket_ = std::move(handoff.socket);
-      events_ = std::move(handoff.events);
       // The server already sent its one-shot "advertise" burst and will not re-send it. The
       // dialog discovered the FULL channel catalog during that burst (not just what the user
       // selected); seeding from it is the only way to learn about unselected topics here.
       for (const auto& ch : dialog_.allDiscoveredChannels()) {
         advertised_channels_[ch.id] = ch;
       }
-    } else if (auto status = connect(); !status) {
-      return PJ::unexpected("failed to connect to Foxglove bridge at " + endpoint_ + ": " + status.error());
+    } else if (auto status = connection_.start(endpoint, subprotocols()); !status) {
+      return status;
     }
 
     // Demand mode is decided ONCE per start, by the very first advertise attempt: a
@@ -135,30 +140,16 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     // An adopted connection is already open: apply its open now (in legacy mode that subscribes
     // the dialog's selection); a fresh one does so when its kOpen event is pumped.
     if (adopted) {
-      onOpen();
+      onOpen(false);
     }
 
     return PJ::okStatus();
   }
 
   PJ::Status onPoll() override {
-    pumpEvents();
-
-    const auto now = Clock::now();
-    if ((phase_ == Phase::kConnecting || phase_ == Phase::kReconnecting) && now >= connect_deadline_) {
-      onConnectionDown("timed out");
-    }
-    if (phase_ == Phase::kLost && now >= reconnect_at_) {
-      // Non-blocking reconnection: a fresh socket (and queue) per attempt, its result applied
-      // by pumpEvents() on a later poll.
-      if (auto status = connect(); !status) {
-        onConnectionDown(status.error());
-      } else {
-        phase_ = Phase::kReconnecting;
-      }
-    }
-    if (!fatal_error_.empty()) {
-      return PJ::unexpected(fatal_error_);  // stops the stream; latched until stop()
+    // Applies the queued events; re-dials a lost connection every FoxgloveConnectionOptions::reconnect.
+    if (auto status = connection_.poll(); !status) {
+      return status;  // the first connection of this start failed: stops the stream
     }
 
     // Demand mode: apply the host's latest desired active-topic set, if it wrote one
@@ -167,7 +158,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     // cleared on reconnect re-subscribe against last_applied_desired_ as they
     // re-advertise (reconcileSubscriptions runs after every advertise delta), so no
     // special reconnect handling is needed here.
-    if (demand_mode_ && phase_ == Phase::kStreaming) {
+    if (demand_mode_ && connection_.isOpen()) {
       applyDesiredTopics();
     }
 
@@ -175,22 +166,14 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
   void onStop() override {
-    if (socket_) {
-      if (phase_ == Phase::kStreaming && !subscriptions_.empty()) {
-        std::vector<uint32_t> ids;
-        for (const auto& [id, _channel_id] : subscriptions_) {
-          ids.push_back(id);
-        }
-        socket_->sendText(buildUnsubscribeMessage(ids));
+    if (connection_.isOpen() && !subscriptions_.empty()) {
+      std::vector<uint32_t> ids;
+      for (const auto& [id, _channel_id] : subscriptions_) {
+        ids.push_back(id);
       }
-
-      socket_->stop();
-      socket_.reset();
+      connection_.sendText(buildUnsubscribeMessage(ids));
     }
-    events_.reset();  // a fresh queue per start: nothing from this session reaches the next
-    phase_ = Phase::kConnecting;
-    fatal_error_.clear();
-    drop_warning_ = {};
+    connection_.stop();  // nothing from this session reaches the next
     selected_channels_.clear();
     subscriptions_.clear();
     binding_by_subscription_.clear();
@@ -343,7 +326,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     const auto diff = computeSubscriptionDiff(subscriptions_, advertised_topics, last_applied_desired_);
 
     if (!diff.to_unsubscribe.empty()) {
-      socket_->sendText(buildUnsubscribeMessage(diff.to_unsubscribe));
+      connection_.sendText(buildUnsubscribeMessage(diff.to_unsubscribe));
       for (uint32_t sub_id : diff.to_unsubscribe) {
         subscriptions_.erase(sub_id);
         binding_by_subscription_.erase(sub_id);
@@ -361,7 +344,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         to_send.emplace_back(registerSubscription(it->second, parser_errors), channel_id);
       }
       if (!to_send.empty()) {
-        socket_->sendText(buildSubscribeMessage(to_send));
+        connection_.sendText(buildSubscribeMessage(to_send));
       }
       reportParserErrors(parser_errors);
     }
@@ -393,7 +376,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       advertised_channels_[ch.id] = ch;
 
       const uint32_t sub_id = registerSubscription(ch, parser_errors);
-      socket_->sendText(buildSubscribeMessage({{sub_id, ch.id}}));
+      connection_.sendText(buildSubscribeMessage({{sub_id, ch.id}}));
     }
 
     reportParserErrors(parser_errors);
@@ -438,7 +421,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
         }
 
         const uint32_t sub_id = registerSubscription(ch, parser_errors);
-        socket_->sendText(buildSubscribeMessage({{sub_id, ch.id}}));
+        connection_.sendText(buildSubscribeMessage({{sub_id, ch.id}}));
       }
 
       reportParserErrors(parser_errors);
@@ -504,108 +487,22 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     }
   }
 
-  using Clock = std::chrono::steady_clock;
-
-  /// Where the connection is. Advances only from onStart() and onPoll().
-  enum class Phase {
-    kConnecting,    ///< first connection of this start, until connect_deadline_
-    kStreaming,     ///< open
-    kLost,          ///< the connection dropped; the next attempt starts at reconnect_at_
-    kReconnecting,  ///< an attempt after a loss is in flight, until connect_deadline_
-  };
-
-  /// Starts one connection attempt on a fresh socket and queue; its outcome arrives in events_.
-  PJ::Status connect() {
-    if (socket_) {
-      socket_->stop();
-    }
-    events_ = std::make_shared<PJ::WebSocket::EventQueue>(options_.inbound_queue_bytes);
-    drop_warning_ = {};  // the new queue counts its drops from zero
-    socket_ = std::make_unique<PJ::WebSocket::Client>();
-    connect_deadline_ = Clock::now() + options_.connect;
-    return socket_->start(endpoint_, events_, subprotocols());
-  }
-
-  // [poll thread] Apply every queued transport event in arrival order. Parser bindings are only
-  // created and read here, never on a transport thread.
-  void pumpEvents() {
-    if (!events_) {
-      return;
-    }
-    // Pop each event as it is applied, so a long batch frees its frames as it goes. A
-    // reconnection swaps events_ mid-batch only through onPoll, never from in here.
-    auto pending = events_->drain();
-    while (!pending.empty()) {
-      PJ::WebSocket::Event event = std::move(pending.front());
-      pending.pop_front();
-      switch (event.type) {
-        case PJ::WebSocket::Event::Type::kOpen:
-          onOpen();
-          break;
-        case PJ::WebSocket::Event::Type::kText:
-          // Wire data can be arbitrarily malformed (nlohmann accessors throw on wrong-typed
-          // fields): drop the frame with a warning, never fail the host's poll.
-          try {
-            onTextMessage(event.payload);
-          } catch (const std::exception& e) {
-            runtimeHost().reportMessage(
-                PJ::DataSourceMessageLevel::kWarning, std::string("Dropped malformed control frame: ") + e.what());
-          }
-          break;
-        case PJ::WebSocket::Event::Type::kBinary:
-          onBinaryMessage(std::move(event.payload));
-          break;
-        case PJ::WebSocket::Event::Type::kClosed:
-        case PJ::WebSocket::Event::Type::kError:
-          onConnectionDown(event.payload);
-          return;  // this connection's later events are moot
-      }
-    }
-    if (auto warning = drop_warning_.check(*events_, drop_label_)) {
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, *warning);
-    }
-  }
-
-  // [poll thread] The socket opened. Comes before the server's serverInfo + "advertise" burst
-  // in the queue, so state reset here never wipes a catalog that burst populated.
-  void onOpen() {
-    if (phase_ == Phase::kConnecting) {
-      phase_ = Phase::kStreaming;
+  // [poll thread] The socket opened, or reopened after a loss. Comes before the server's
+  // serverInfo + "advertise" burst in the queue, so state reset here never wipes a catalog that
+  // burst populated.
+  void onOpen(bool reconnected) {
+    if (!reconnected) {
       if (!demand_mode_) {
         subscribeToSelectedChannels();
       }
-    } else if (phase_ == Phase::kReconnecting) {
-      phase_ = Phase::kStreaming;
-      // Reset subscription state so new advertise messages create fresh bindings
-      subscriptions_.clear();
-      binding_by_subscription_.clear();
-      advertised_channels_.clear();
-      next_subscription_id_ = 1;
-      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, "Reconnected to Foxglove bridge");
+      return;
     }
-  }
-
-  // [poll thread] A close, an error or a missed deadline. The first connection of a start
-  // failing stops the stream; a lost or failed reconnection retries every options_.reconnect.
-  void onConnectionDown(const std::string& reason) {
-    switch (phase_) {
-      case Phase::kConnecting:
-        if (fatal_error_.empty()) {
-          fatal_error_ = "failed to connect to Foxglove bridge at " + endpoint_ + (reason.empty() ? "" : ": " + reason);
-        }
-        return;
-      case Phase::kStreaming:
-        runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "Foxglove bridge connection lost");
-        break;
-      case Phase::kLost:
-      case Phase::kReconnecting:
-        break;
-    }
-    if (socket_) {
-      socket_->stop();
-    }
-    phase_ = Phase::kLost;
-    reconnect_at_ = Clock::now() + options_.reconnect;
+    // A fresh server session: reset subscription state so new advertise messages create fresh
+    // bindings.
+    subscriptions_.clear();
+    binding_by_subscription_.clear();
+    advertised_channels_.clear();
+    next_subscription_id_ = 1;
   }
 
   // [poll thread] One Foxglove binary frame: push a message-data frame to its subscription's parser.
@@ -634,26 +531,13 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
   FoxgloveDialog dialog_;
-  FoxgloveConnectionOptions options_;
+  // The connection of this start; its handlers run on the poll thread, from onPoll().
+  PJ::WebSocket::SourceConnection connection_;
 
-  std::string endpoint_;    ///< the ws:// or wss:// URL of this start, for connection and messages
-  std::string drop_label_;  ///< names this stream in the dropped-frames warning
   PJ::sdk::ArrayLimit array_limit_;
   bool use_timestamp_ = false;
 
   std::vector<ChannelInfo> selected_channels_;
-  std::unique_ptr<PJ::WebSocket::Client> socket_;
-  // Transport thread -> poll thread handoff of every inbound event, text and binary alike, in
-  // arrival order. Fresh per connection attempt, so late callbacks of an old socket land in a
-  // queue nobody drains.
-  PJ::WebSocket::EventSink events_;
-  Phase phase_ = Phase::kConnecting;
-  Clock::time_point connect_deadline_{};
-  Clock::time_point reconnect_at_{};
-  // The first stream-stopping failure (the first connection of a start failing); onPoll
-  // returns it until stop() clears it.
-  std::string fatal_error_;
-  PJ::WebSocket::DropWarning drop_warning_;
 
   std::map<uint32_t, uint64_t> subscriptions_;  // sub_id -> channel_id
   std::map<uint32_t, PJ::ParserBindingHandle> binding_by_subscription_;

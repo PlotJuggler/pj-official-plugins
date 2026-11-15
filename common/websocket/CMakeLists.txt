@@ -1,5 +1,7 @@
 # WebSocket client transport shared by the websocket streaming plugins
-# (data_stream_pj_bridge, data_stream_foxglove_bridge): <pj_websocket/websocket_client.hpp>.
+# (data_stream_pj_bridge, data_stream_foxglove_bridge): <pj_websocket/websocket_client.hpp>, and the
+# header-only dialog and source halves of a connection built on it (connection_dialog.hpp,
+# source_connection.hpp).
 #
 # The backend is chosen by source file, compiled into each consumer with its own flags:
 #   pj_websocket_native  websocket_client_native.cpp (IXWebSocket). Consumers link
@@ -26,6 +28,12 @@ if(TARGET GTest::gtest_main)
   target_compile_options(pj_websocket_event_queue_test PRIVATE ${PJ_WARNING_FLAGS})
   target_link_libraries(pj_websocket_event_queue_test PRIVATE pj_websocket plotjuggler_sdk::plugin_sdk GTest::gtest_main)
   add_test(NAME pj_websocket_event_queue_test COMMAND pj_websocket_event_queue_test)
+
+  add_executable(pj_websocket_source_connection_test tests/source_connection_test.cpp)
+  target_compile_options(pj_websocket_source_connection_test PRIVATE ${PJ_WARNING_FLAGS})
+  target_link_libraries(pj_websocket_source_connection_test PRIVATE
+    pj_websocket_fake plotjuggler_sdk::plugin_sdk GTest::gtest_main)
+  add_test(NAME pj_websocket_source_connection_test COMMAND pj_websocket_source_connection_test)
 
   # The IXWebSocket backend against loopback servers; only where a consumer provides IXWebSocket.
   find_package(ixwebsocket QUIET)

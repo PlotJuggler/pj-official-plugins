@@ -13,6 +13,11 @@ WebSocket client transport shared by the websocket streaming plugins
   `Endpoint` (address or full `ws://`/`wss://` URL, port, transport indicator, config keys)
   and `DialogConnection` (connect/cancel, per-attempt deadline, doubling capped retry
   backoff, status line, handoff of the live connection to the source on OK).
+- `<pj_websocket/source_connection.hpp>`: the connection half of a streaming source.
+  `SourceConnection` adopts the dialog's open connection or dials a fresh one, enforces the
+  connect deadline, latches the first stream-stopping failure (`poll()` returns it until
+  `stop()`) and, when `reconnect` is set, re-dials a lost connection on a fixed delay. Frames
+  reach the owner through handlers in arrival order, on the poll thread.
 
 ## Backends
 
