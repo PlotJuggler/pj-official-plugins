@@ -346,13 +346,19 @@
     </widget>
    </item>
    <item>
-    <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="orientation">
-      <enum>Qt::Horizontal</enum>
-     </property>
-     <property name="standardButtons">
-      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
-     </property>
+    <widget class="QWidget" name="buttonBoxWrap" native="true">
+     <layout class="QVBoxLayout" name="buttonBoxWrapLayout">
+      <property name="leftMargin"><number>9</number></property>
+      <property name="topMargin"><number>9</number></property>
+      <property name="rightMargin"><number>9</number></property>
+      <property name="bottomMargin"><number>9</number></property>
+      <item>
+       <widget class="QDialogButtonBox" name="buttonBox">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+       </widget>
+      </item>
+     </layout>
     </widget>
    </item>
   </layout>

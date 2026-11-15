@@ -3,6 +3,12 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_csv/`.
 
+## [1.0.9] - 2026-11-15
+
+### Fixed
+- The OK / Cancel buttons no longer sit flush against the dialog's bottom-right
+  edge: they get the same breathing room as every other loader dialog.
+
 ## [1.0.8] - 2026-11-08
 
 ### Changed
