@@ -108,8 +108,8 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     // way start() returns before the connection completes: onPoll() drives the rest, and every
     // transport event (the server's one-shot serverInfo + "advertise" burst included) waits in
     // the connection's queue in arrival order until the poll thread applies it.
-    const bool adopted = connection_.adopt(dialog_.takeConnection());
-    if (adopted) {
+    adopted_ = connection_.adopt(dialog_.takeConnection());
+    if (adopted_) {
       // The server already sent its one-shot "advertise" burst and will not re-send it. The
       // dialog discovered the FULL channel catalog during that burst (not just what the user
       // selected); seeding from it is the only way to learn about unselected topics here.
@@ -176,6 +176,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     binding_by_subscription_.clear();
     advertised_channels_.clear();
     next_subscription_id_ = 1;
+    adopted_ = false;
     demand_mode_ = false;
     last_applied_desired_.clear();
     (void)desired_topics_slot_.take();  // drop any pending host command so it can't leak into the next start
@@ -359,8 +360,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
   // Subscribe to all selected channels using the channel info already captured by the dialog.
-  // Called from onStart() when the socket is stolen (server won't re-send "advertise").
-  // Also safe to call after a fresh connect where selected_channels_ is pre-populated.
+  // Only for a connection adopted from the dialog: the server will not re-send "advertise", and
+  // the selection's channel ids are this server session's. A fresh connection subscribes from
+  // the advertise burst instead, by topic, since saved ids may belong to an earlier session.
   void subscribeToSelectedChannels() {
     std::vector<std::string> parser_errors;
 
@@ -423,7 +425,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
       reportParserErrors(parser_errors);
 
-      if (demand_mode_ && !channels.empty()) {
+      // Even an empty advertise is published: after a reconnect it is what clears the previous
+      // session's topics from the host.
+      if (demand_mode_) {
         // A channel may advertise AFTER the host already asked for its topic (mid-stream
         // advertise, or the resubscribe burst after a reconnect) — the reconcile picks it
         // up from last_applied_desired_ without waiting for another set_active_topics call.
@@ -489,7 +493,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   // burst populated.
   void onOpen(bool reconnected) {
     if (!reconnected) {
-      if (!demand_mode_) {
+      if (!demand_mode_ && adopted_) {
         subscribeToSelectedChannels();
       }
       return;
@@ -535,6 +539,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   bool use_timestamp_ = false;
 
   std::vector<ChannelInfo> selected_channels_;
+  bool adopted_ = false;  ///< this start took over the dialog's connection
 
   std::map<uint32_t, uint64_t> subscriptions_;  // sub_id -> channel_id
   std::map<uint32_t, PJ::ParserBindingHandle> binding_by_subscription_;

@@ -53,6 +53,7 @@ the dialog's connection fields, retry and status line come from
 - The queue holds at most 512 MiB of unprocessed binary frames on the desktop and 64 MiB
   in the browser. When the poll thread falls behind, the OLDEST are dropped and a warning
   reports the running count, at most every 5 s; text frames (advertise, unadvertise,
-  status) are never dropped.
+  status) are never dropped. The poll thread applies one drained batch while the queue
+  refills, so unprocessed data can peak at about twice the cap (1 GiB / 128 MiB).
 - A page served over `https://` can open only `wss://` sockets (localhost excepted), so a
   plain `ws://` `foxglove_bridge` on a robot needs TLS in front of it for the browser build.

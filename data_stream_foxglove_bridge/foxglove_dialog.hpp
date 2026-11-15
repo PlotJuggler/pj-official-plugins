@@ -293,11 +293,21 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     if (json.is_discarded() || !json.is_object()) {
       return;
     }
-    if (json.value("op", "") != "advertise") {
+    const std::string op = json.value("op", "");
+    std::lock_guard<std::mutex> lock(channels_mutex_);
+    if (op == "unadvertise") {
+      // Forget removed channels, so the source is not handed one on OK.
+      const auto ids = json.value("channelIds", nlohmann::json::array());
+      for (const auto& id : ids) {
+        if (id.is_number_unsigned()) {
+          std::erase_if(channels_, [&id](const auto& channel) { return channel.id == id.get<uint64_t>(); });
+        }
+      }
       return;
     }
-
-    std::lock_guard<std::mutex> lock(channels_mutex_);
+    if (op != "advertise") {
+      return;
+    }
     for (auto& ch : PJ::FoxgloveProtocol::parseAdvertisedChannels(json)) {
       if (ch.topic.empty() || ch.encoding.empty()) {
         continue;

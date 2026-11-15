@@ -38,6 +38,9 @@ struct Event {
   Type type = Type::kText;
   /// Frame bytes for kText/kBinary; a human-readable reason (possibly empty) for kClosed/kError.
   std::string payload;
+  /// When the transport queued it (stamped by EventQueue::push), so an open that arrived after a
+  /// connect deadline is told apart from a timely one the owner applies late.
+  std::chrono::steady_clock::time_point arrived{};
 };
 
 /// Bounded FIFO from a transport's callback thread to the thread that owns the connection.
@@ -50,6 +53,10 @@ struct Event {
 /// leaves a gap in the plots, never a broken stream) and send what has to arrive as text. PJRB
 /// data frames and Foxglove message data qualify; the other Foxglove binary frames (time,
 /// service and asset responses) are ignored by its consumer anyway.
+///
+/// The cap bounds ONE queue's backlog. An owner that drains everything at once (SourceConnection
+/// does) holds the drained batch while the transport refills the queue, so a connection's inbound
+/// data can peak at about twice max_bytes before the owner's own consumers see it.
 ///
 /// close() discards pending events and turns every later push() into a no-op: that is how a
 /// transport drops callbacks that land after stop().
@@ -72,6 +79,7 @@ class EventQueue {
 
   /// [transport thread]
   void push(Event event) {
+    event.arrived = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {
       return;

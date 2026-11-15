@@ -3,10 +3,21 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_pj_bridge/`.
 
-## [1.1.1] - 2026-11-09
+## [1.1.1] - 2026-11-15
 
 ### Changed
 - Updated the bundled IXWebSocket from 11.4.6 to 12.0.0, picking up upstream bug and security fixes.
+- Pause and resume are sent to the bridge on the stream's next poll instead of from the calling thread.
+- A server that speaks a newer protocol closes the connection at once (the stream still stops with an upgrade message).
+
+### Fixed
+- Pausing or resuming while the stream is running no longer races the stream's own thread.
+- One malformed topic entry from the bridge no longer empties the dialog's whole topic list.
+- A protocol version too large for a 32-bit integer is recognised as newer and reported in full, instead of being wrapped to a supported one.
+- The transport indicator follows a URL edited from `ws://` to `wss://` (or back).
+- A saved port outside 0–65535 is rejected instead of being silently wrapped (70000 became 4464).
+- A connection that opens only after the 5 s deadline counts as timed out, even when it opened before PlotJuggler next checked; the dialog retries it.
+- Browser build: a send the browser cannot queue now stops the stream with an error instead of losing the frame silently.
 
 ## [1.1.0] - 2026-10-18
 

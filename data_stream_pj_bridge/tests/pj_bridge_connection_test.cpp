@@ -42,6 +42,14 @@ BridgeConnectionOptions testOptions() {
   return options;
 }
 
+/// For tests that poll a source whose socket is still connecting: a deadline no slow runner
+/// reaches. Only the timeout tests keep the short one.
+BridgeConnectionOptions patientOptions() {
+  auto options = testOptions();
+  options.connect = std::chrono::seconds(10);
+  return options;
+}
+
 /// Incompressible bytes, so a frame's queued size is predictable.
 std::string noise(size_t size, uint32_t seed) {
   std::mt19937 generator(seed);
@@ -170,7 +178,7 @@ std::string compressedFrame(const std::string& topic, int64_t timestamp_ns, cons
 // --- The four lifecycle contracts PlotJuggler's streaming manager relies on ---
 
 TEST(PjBridgeConnectionTest, StartReturnsBeforeConnection) {
-  BridgeFixture fixture;
+  BridgeFixture fixture(/*demand_capable=*/true, patientOptions());
   ASSERT_TRUE(fixture.source.loadConfig(R"({"url":"ws://127.0.0.1:1/bridge"})"));
 
   const auto started = std::chrono::steady_clock::now();
@@ -331,7 +339,7 @@ TEST(PjBridgeConnectionTest, LegacySubscribeDeadlineWarnsWithoutStopping) {
 // --- Streaming ---
 
 TEST(PjBridgeConnectionTest, DemandSubscriptionsWaitForTheConnectionThenFollowTheHost) {
-  BridgeFixture fixture;
+  BridgeFixture fixture(/*demand_capable=*/true, patientOptions());
   FakeSocket& socket = fixture.startWithUrl("ws://robot:9871");
 
   // The host asks before the socket is open: the request waits instead of being lost.
@@ -371,7 +379,7 @@ TEST(PjBridgeConnectionTest, HeartbeatEveryThirtyPollsOnceOpen) {
 }
 
 TEST(PjBridgeConnectionTest, PauseAndResumeReachTheServerOnTheNextPollOnceOpen) {
-  BridgeFixture fixture;
+  BridgeFixture fixture(/*demand_capable=*/true, patientOptions());
   FakeSocket& socket = fixture.startWithUrl("ws://robot:9871");
   ASSERT_TRUE(fixture.source.pause());
   ASSERT_TRUE(fixture.source.poll());
@@ -517,6 +525,17 @@ TEST(PjBridgeConnectionTest, DialogAttemptThatNeverAnswersTimesOutUntilCancelled
   dialog.onTick();
   EXPECT_EQ(fakeSockets().size(), 1U);
   EXPECT_EQ(dialog.widget_data().find("Retrying"), std::string::npos);
+}
+
+TEST(PjBridgeConnectionTest, DialogTreatsAnOpenArrivingAfterTheDeadlineAsATimeout) {
+  fakeSockets().clear();
+  PjBridgeDialog dialog(testOptions());
+  dialog.onTextChanged("lineEditAddress", "ws://robot:9090");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  std::this_thread::sleep_for(testOptions().connect + std::chrono::milliseconds(10));
+  fakeSockets().back()->acceptConnection();  // too late, but queued before the tick
+  EXPECT_TRUE(dialog.onTick());
+  EXPECT_NE(dialog.widget_data().find("Retrying in 1 s: timed out"), std::string::npos) << dialog.widget_data();
 }
 
 TEST(PjBridgeConnectionTest, DialogSeesACloseThatFollowsMalformedText) {

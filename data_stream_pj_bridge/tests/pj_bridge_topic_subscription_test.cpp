@@ -231,7 +231,12 @@ TEST(BridgeProtocolVersionTest, OnlyAKnownNewerVersionIsUnsupported) {
   // Same version: fine.
   EXPECT_EQ(unsupportedProtocolVersion(nlohmann::json{{"protocol_version", 1}}, 1), std::nullopt);
   // Newer version: the one hard-fail.
-  EXPECT_EQ(unsupportedProtocolVersion(nlohmann::json{{"protocol_version", 2}}, 1), std::optional<int>(2));
+  EXPECT_EQ(unsupportedProtocolVersion(nlohmann::json{{"protocol_version", 2}}, 1), std::optional<uint64_t>(2));
+  // A version too large for an int is still newer, and reported in full (not narrowed to 1).
+  EXPECT_EQ(
+      unsupportedProtocolVersion(nlohmann::json::parse(R"({"protocol_version":4294967297})"), 1),
+      std::optional<uint64_t>(4294967297));
+  EXPECT_EQ(unsupportedProtocolVersion(nlohmann::json{{"protocol_version", -5}}, 1), std::nullopt);
   // Absent (pre-versioning server) or wrong-typed: tolerated.
   EXPECT_EQ(unsupportedProtocolVersion(nlohmann::json::object(), 1), std::nullopt);
   EXPECT_EQ(unsupportedProtocolVersion(nlohmann::json{{"protocol_version", "2"}}, 1), std::nullopt);

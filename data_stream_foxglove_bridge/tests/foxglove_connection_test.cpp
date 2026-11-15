@@ -39,6 +39,14 @@ FoxgloveConnectionOptions testOptions() {
   return options;
 }
 
+/// For tests that poll a source whose socket is still connecting: a deadline no slow runner
+/// reaches. Only the timeout tests keep the short one.
+FoxgloveConnectionOptions patientOptions() {
+  auto options = testOptions();
+  options.connect = std::chrono::seconds(10);
+  return options;
+}
+
 /// One FoxgloveSource bound to a recording host, with test-length deadlines.
 struct FoxgloveFixture {
   explicit FoxgloveFixture(bool demand_capable = true, FoxgloveConnectionOptions options = testOptions())
@@ -123,7 +131,7 @@ std::vector<std::string> ops(const FakeSocket& socket) {
 // --- Connection lifecycle ---
 
 TEST(FoxgloveConnectionTest, StartReturnsBeforeConnectionAndOffersBothSubprotocols) {
-  FoxgloveFixture fixture;
+  FoxgloveFixture fixture(/*demand_capable=*/true, patientOptions());
   const auto started = std::chrono::steady_clock::now();
   FakeSocket& socket = fixture.startWith({{"address", "10.0.0.2"}, {"port", 8765}});
   EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
@@ -184,13 +192,18 @@ TEST(FoxgloveConnectionTest, DemandModeAdvertisesSubscribesAndPushesInArrivalOrd
   const uint32_t sub_id = subscribe["subscriptions"][0]["id"].get<uint32_t>();
 
   // The pushed payload is a view into the queued frame: a frame short enough for the string's
-  // inline buffer (13-byte header + 2) and a heap-allocated one must both arrive intact.
+  // inline buffer (13-byte header + 2) and a heap-allocated one must both arrive intact, even
+  // when the host fetches them only after the poll has returned.
+  fixture.host.defer_fetch = true;
   const std::string large(4096, 'z');
   socket.deliverBinary(messageData(sub_id, 1'000'000'000, "abc"));
   socket.deliverBinary(messageData(sub_id + 99, 2, "unknown subscription"));
   socket.deliverBinary(messageData(sub_id, 3, "xy"));
   socket.deliverBinary(messageData(sub_id, 4, large));
   ASSERT_TRUE(fixture.source.poll());
+  socket.deliverBinary(std::string(256, '\x7f'));  // reuses the memory a dangling payload would point at
+  ASSERT_TRUE(fixture.source.poll());
+  fixture.host.fetchDeferred();
   ASSERT_EQ(fixture.host.pushes.size(), 3U);
   EXPECT_EQ(fixture.host.pushes[0].timestamp_ns, 1'000'000'000);
   EXPECT_EQ(fixture.host.pushes[0].bytes, "abc");
@@ -198,7 +211,28 @@ TEST(FoxgloveConnectionTest, DemandModeAdvertisesSubscribesAndPushesInArrivalOrd
   EXPECT_EQ(fixture.host.pushes[2].bytes, large);
 }
 
-TEST(FoxgloveConnectionTest, LegacyHostSubscribesTheSavedSelectionOnceOpen) {
+// Data and removals share one FIFO: a message queued before its channel's unadvertise is
+// ingested, one queued after it is not, even within one poll.
+TEST(FoxgloveConnectionTest, UnadvertiseBetweenTwoMessagesOfOneBatchStopsOnlyTheSecond) {
+  FoxgloveFixture fixture;
+  FakeSocket& socket = fixture.startWith({{"address", "robot"}});
+  socket.acceptConnection();
+  socket.deliverText(advertise({channel(7, "/speed")}));
+  fixture.setActiveTopics({"/speed"});
+  ASSERT_TRUE(fixture.source.poll());
+  const uint32_t sub_id = nlohmann::json::parse(socket.sent.back())["subscriptions"][0]["id"].get<uint32_t>();
+
+  socket.deliverBinary(messageData(sub_id, 1, "before"));
+  socket.deliverText(R"({"op":"unadvertise","channelIds":[7]})");
+  socket.deliverBinary(messageData(sub_id, 2, "after"));
+  ASSERT_TRUE(fixture.source.poll());
+  ASSERT_EQ(fixture.host.pushes.size(), 1U);
+  EXPECT_EQ(fixture.host.pushes[0].bytes, "before");
+}
+
+// The ids saved with the selection belong to an earlier server session: a fresh connection
+// subscribes the selected topics by name, from the server's advertise, once each.
+TEST(FoxgloveConnectionTest, LegacyHostSubscribesTheSavedSelectionFromTheAdvertise) {
   FoxgloveFixture fixture(/*demand_capable=*/false);
   nlohmann::json config{{"address", "robot"}};
   config["channels"] = nlohmann::json::array(
@@ -212,9 +246,12 @@ TEST(FoxgloveConnectionTest, LegacyHostSubscribesTheSavedSelectionOnceOpen) {
   EXPECT_TRUE(socket.sent.empty());  // nothing can be sent before the socket opens
 
   socket.acceptConnection();
+  socket.deliverText(advertise({channel(42, "/speed")}));  // the server renumbered the channel
   ASSERT_TRUE(fixture.source.poll());
   ASSERT_EQ(ops(socket), (std::vector<std::string>{"subscribe"}));
-  EXPECT_EQ(nlohmann::json::parse(socket.sent.back())["subscriptions"][0]["channelId"], 7);
+  const auto subscribe = nlohmann::json::parse(socket.sent.back());
+  ASSERT_EQ(subscribe["subscriptions"].size(), 1U);
+  EXPECT_EQ(subscribe["subscriptions"][0]["channelId"], 42);
 }
 
 TEST(FoxgloveConnectionTest, MalformedControlFramesAreDroppedWithoutStoppingTheStream) {
@@ -305,6 +342,25 @@ TEST(FoxgloveConnectionTest, LostConnectionIsRetriedAndStartsAFreshSession) {
   EXPECT_EQ(subscribe["subscriptions"][0]["id"], 1);  // subscription ids restart per session
 }
 
+TEST(FoxgloveConnectionTest, ReconnectingToAServerWithoutChannelsEmptiesTheHostsCatalog) {
+  FoxgloveFixture fixture;
+  FakeSocket& first = fixture.startWith({{"address", "robot"}});
+  first.acceptConnection();
+  first.deliverText(advertise({channel(7, "/speed")}));
+  ASSERT_TRUE(fixture.source.poll());
+  ASSERT_EQ(fixture.host.advertisements.back(), (std::vector<std::string>{"/speed"}));
+
+  first.closeFromServer("bridge restarting");
+  ASSERT_TRUE(fixture.source.poll());
+  std::this_thread::sleep_for(testOptions().reconnect + std::chrono::milliseconds(10));
+  ASSERT_TRUE(fixture.source.poll());
+  ASSERT_EQ(fakeSockets().size(), 2U);
+  fixture.lastSocket().acceptConnection();
+  fixture.lastSocket().deliverText(advertise({}));
+  ASSERT_TRUE(fixture.source.poll());
+  EXPECT_TRUE(fixture.host.advertisements.back().empty());
+}
+
 TEST(FoxgloveConnectionTest, FailedReconnectionIsRetriedAgain) {
   FoxgloveFixture fixture;
   FakeSocket& first = fixture.startWith({{"address", "robot"}});
@@ -326,7 +382,7 @@ TEST(FoxgloveConnectionTest, FailedReconnectionIsRetriedAgain) {
 }
 
 TEST(FoxgloveConnectionTest, StopUnsubscribesAndDropsLateEvents) {
-  FoxgloveFixture fixture;
+  FoxgloveFixture fixture(/*demand_capable=*/true, patientOptions());
   FakeSocket& socket = fixture.startWith({{"address", "robot"}});
   socket.acceptConnection();
   socket.deliverText(advertise({channel(7, "/speed")}));
@@ -412,6 +468,31 @@ TEST(FoxgloveConnectionTest, LegacyHostSubscribesTheDialogSelectionOnAnAdoptedCo
   EXPECT_EQ(nlohmann::json::parse(socket.sent.back())["subscriptions"][0]["channelId"], 8);
 }
 
+TEST(FoxgloveConnectionTest, AChannelRemovedWhileTheDialogIsOpenIsNotHandedToTheSource) {
+  FoxgloveFixture fixture;
+  FoxgloveDialog& dialog = fixture.dialog();
+  dialog.onTextChanged("lineEditAddress", "robot");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  FakeSocket& socket = fixture.lastSocket();
+  socket.acceptConnection();
+  socket.deliverText(advertise({channel(7, "/speed"), channel(8, "/accel")}));
+  ASSERT_TRUE(dialog.onTick());
+  socket.deliverText(R"({"op":"unadvertise","channelIds":[7]})");
+  ASSERT_TRUE(dialog.onTick());
+  EXPECT_EQ(dialog.widget_data().find("/speed"), std::string::npos);
+  dialog.onAccepted("{}");
+
+  ASSERT_TRUE(fixture.source.start());
+  fixture.setActiveTopics({"/speed", "/accel"});
+  ASSERT_TRUE(fixture.source.poll());
+  ASSERT_FALSE(fixture.host.advertisements.empty());
+  EXPECT_EQ(fixture.host.advertisements.back(), (std::vector<std::string>{"/accel"}));
+  ASSERT_EQ(ops(socket), (std::vector<std::string>{"subscribe"}));
+  const auto subscribe = nlohmann::json::parse(socket.sent.back());
+  ASSERT_EQ(subscribe["subscriptions"].size(), 1U);
+  EXPECT_EQ(subscribe["subscriptions"][0]["channelId"], 8);
+}
+
 TEST(FoxgloveConnectionTest, AnAdoptedConnectionIsRedialledWithTheFoxgloveSubprotocols) {
   FoxgloveFixture fixture;
   FoxgloveDialog& dialog = fixture.dialog();
@@ -455,6 +536,20 @@ TEST(FoxgloveConnectionTest, DialogKeepsAddressAndPortConfigCompatible) {
   ASSERT_TRUE(dialog.loadConfig(R"({})"));
   EXPECT_EQ(dialog.endpoint(), "ws://localhost:8765");
   EXPECT_FALSE(dialog.loadConfig(R"({"port":"not a number"})"));
+  EXPECT_FALSE(dialog.loadConfig(R"({"port":70000})"));  // not truncated to 4464
+  EXPECT_FALSE(dialog.loadConfig(R"({"port":-1})"));
+  ASSERT_TRUE(dialog.loadConfig(R"({"port":65535})"));
+  EXPECT_EQ(dialog.endpoint(), "ws://localhost:65535");
+}
+
+// The transport indicator follows the URL's scheme, so switching it must refresh the widgets.
+TEST(FoxgloveConnectionTest, DialogRefreshesWhenTheUrlSchemeChanges) {
+  FoxgloveDialog dialog;
+  EXPECT_FALSE(dialog.onTextChanged("lineEditAddress", "robot"));
+  EXPECT_TRUE(dialog.onTextChanged("lineEditAddress", "ws://robot:8765"));    // address -> URL
+  EXPECT_TRUE(dialog.onTextChanged("lineEditAddress", "wss://robot:8765"));   // ws -> wss
+  EXPECT_FALSE(dialog.onTextChanged("lineEditAddress", "wss://robot:8766"));  // same scheme
+  EXPECT_TRUE(dialog.onTextChanged("lineEditAddress", "ws://robot:8766"));    // wss -> ws
 }
 
 }  // namespace

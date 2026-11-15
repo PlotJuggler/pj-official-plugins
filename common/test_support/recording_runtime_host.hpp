@@ -43,6 +43,28 @@ class RecordingRuntimeHost {
     vtable_.notify_available_topics = demand_capable ? &notifyAvailableTopics : nullptr;
   }
 
+  RecordingRuntimeHost(const RecordingRuntimeHost&) = delete;
+  RecordingRuntimeHost& operator=(const RecordingRuntimeHost&) = delete;
+
+  ~RecordingRuntimeHost() {
+    for (auto& pending : deferred_) {
+      if (pending.fetcher.release != nullptr) {
+        pending.fetcher.release(pending.fetcher.ctx);
+      }
+    }
+  }
+
+  /// Fetches every payload deferred by `defer_fetch`, in push order, as a host that dispatches
+  /// after poll() has returned does.
+  void fetchDeferred() {
+    auto pending = std::move(deferred_);
+    deferred_.clear();
+    for (auto& push : pending) {
+      PJ_error_t error{};
+      fetch(*this, push.binding, push.timestamp_ns, push.fetcher, &error);
+    }
+  }
+
   [[nodiscard]] PJ_data_source_runtime_host_t raw() {
     return {this, &vtable_};
   }
@@ -61,6 +83,8 @@ class RecordingRuntimeHost {
   std::vector<Binding> bindings;
   std::vector<Push> pushes;
   std::vector<std::vector<std::string>> advertisements;
+  /// Keep pushed fetchers until fetchDeferred() instead of fetching inside push_message.
+  bool defer_fetch = false;
 
  private:
   static RecordingRuntimeHost& self(void* ctx) {
@@ -78,13 +102,28 @@ class RecordingRuntimeHost {
     *out = PJ_parser_binding_handle_t{static_cast<uint32_t>(host.bindings.size())};
     return true;
   }
+  struct DeferredPush {
+    PJ_parser_binding_handle_t binding;
+    int64_t timestamp_ns;
+    PJ_message_data_fetcher_t fetcher;
+  };
+
   static bool pushMessage(
       void* ctx, PJ_parser_binding_handle_t binding, int64_t timestamp_ns, PJ_message_data_fetcher_t fetcher,
       PJ_error_t* error) noexcept {
+    if (self(ctx).defer_fetch) {
+      self(ctx).deferred_.push_back({binding, timestamp_ns, fetcher});
+      return true;
+    }
+    return fetch(self(ctx), binding, timestamp_ns, fetcher, error);
+  }
+  static bool fetch(
+      RecordingRuntimeHost& host, PJ_parser_binding_handle_t binding, int64_t timestamp_ns,
+      PJ_message_data_fetcher_t fetcher, PJ_error_t* error) noexcept {
     PJ_payload_t payload{};
     const bool fetched = fetcher.fetchMessageData(fetcher.ctx, &payload, error);
     if (fetched) {
-      self(ctx).pushes.push_back(
+      host.pushes.push_back(
           {binding.id, timestamp_ns, std::string(reinterpret_cast<const char*>(payload.data), payload.size)});
       if (payload.anchor.release != nullptr) {
         payload.anchor.release(payload.anchor.ctx);
@@ -106,6 +145,7 @@ class RecordingRuntimeHost {
   }
 
   PJ_data_source_runtime_host_vtable_t vtable_{};
+  std::vector<DeferredPush> deferred_;
 };
 
 }  // namespace toolbox_testing

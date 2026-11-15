@@ -64,8 +64,13 @@ struct Task {
   std::string text;
 };
 
-/// Never waits: the task is queued, and the main thread runs it later on its own turn.
+/// Never waits: the task is queued, and the main thread runs it later on its own turn. Tasks run
+/// in the order they were posted from one thread (the queue is a FIFO per target thread), so a
+/// send posted before stop() runs before its close. False when the task cannot be queued.
 bool postToMainThread(void (*run)(Task&), StatePtr state, std::string text = {}) {
+  if (mainThreadQueue() == nullptr) {
+    return false;  // the queue could not be allocated
+  }
   auto* task = new Task{run, std::move(state), std::move(text)};
   const bool queued = emscripten_proxy_async(
       mainThreadQueue(), emscripten_main_runtime_thread_id(),
@@ -149,8 +154,10 @@ void createSocket(Task& task) {
 }
 
 void sendOnSocket(Task& task) {
+  // Not gated on stop_requested: a send posted before stop() (Foxglove's unsubscribe in onStop)
+  // still reaches the server, as closeSocket, posted after it, runs after it.
   const auto& state = *task.state;
-  if (state.socket > 0 && !state.stop_requested) {
+  if (state.socket > 0) {
     emscripten_websocket_send_utf8_text(state.socket, task.text.c_str());
   }
 }
@@ -186,8 +193,9 @@ PJ::Status Client::start(std::string url, EventSink sink, std::vector<std::strin
 }
 
 void Client::sendText(std::string text) {
-  if (isOpen()) {
-    postToMainThread(&sendOnSocket, state_, std::move(text));
+  if (isOpen() && !postToMainThread(&sendOnSocket, state_, std::move(text))) {
+    // A lost frame can break the protocol: fail the connection so its owner recovers.
+    state_->sink->push({Type::kError, "failed to send a frame to the browser WebSocket"});
   }
 }
 

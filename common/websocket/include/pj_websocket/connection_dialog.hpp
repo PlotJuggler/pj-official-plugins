@@ -55,13 +55,14 @@ struct Endpoint {
   std::optional<bool> onTextChanged(std::string_view widget_name, std::string_view text) {
     if (widget_name == "lineEditAddress") {
       const bool was_url = !url.empty();
+      const bool was_wss = url.starts_with("wss://");
       if (isWebSocketUrl(text)) {
         url = std::string(text);
       } else {
         url.clear();
         address = std::string(text);
       }
-      return was_url != !url.empty();
+      return was_url != !url.empty() || was_wss != url.starts_with("wss://");
     }
     if (widget_name == "lineEditPort") {
       if (const auto parsed = PJ::sdk::parsePort(text)) {
@@ -83,7 +84,8 @@ struct Endpoint {
 
   /// Reads what save() wrote, keeping `default_address` / `default_port` for absent keys. A
   /// present "url" must be a ws:// or wss:// string and wins over address/port, which are then
-  /// not read at all. Throws nlohmann::json::exception for a wrong-typed address or port.
+  /// not read at all. False for a port outside 0..65535. Throws nlohmann::json::exception for a
+  /// wrong-typed address or port.
   [[nodiscard]] bool load(const nlohmann::json& cfg, const std::string& default_address, int default_port) {
     std::string loaded_url;
     if (const auto it = cfg.find("url"); it != cfg.end()) {
@@ -96,8 +98,12 @@ struct Endpoint {
       }
     }
     if (loaded_url.empty()) {
+      const int64_t loaded_port = cfg.value("port", int64_t{default_port});
+      if (loaded_port < 0 || loaded_port > 65535) {
+        return false;
+      }
       address = cfg.value("address", default_address);
-      port = cfg.value("port", default_port);
+      port = static_cast<int>(loaded_port);
     }
     url = std::move(loaded_url);
     return true;
@@ -261,6 +267,10 @@ class DialogConnection {
     for (auto& event : events_->drain()) {
       switch (event.type) {
         case Event::Type::kOpen:
+          if (state_ == State::kConnecting && event.arrived >= attempt_deadline_) {
+            scheduleRetry("timed out");  // opened after the deadline, merely before this tick
+            return true;
+          }
           state_ = State::kConnected;
           retry_delay_ = options_.retry_first;
           last_error_.clear();

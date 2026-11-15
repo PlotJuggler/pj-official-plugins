@@ -178,7 +178,9 @@ class SourceConnection {
       return;
     }
     const EventSink queue = events_;  // its drops are still reported if a close drops events_
-    // Pop each event as it is applied, so a long batch frees its frames as it goes.
+    // Pop each event as it is applied, so a long batch frees its frames as it goes. While this
+    // batch (up to the queue's cap) is applied, the transport refills the queue up to the cap
+    // again: the inbound bound is about twice inbound_queue_bytes.
     auto pending = queue->drain();
     // A close, an error or fail() drops the queue: this connection's later events are moot.
     while (!pending.empty() && events_) {
@@ -186,7 +188,11 @@ class SourceConnection {
       pending.pop_front();
       switch (event.type) {
         case Event::Type::kOpen:
-          opened();
+          if ((phase_ == Phase::kConnecting || phase_ == Phase::kReconnecting) && event.arrived >= deadline_) {
+            down("timed out");  // opened after the deadline, merely before this poll
+          } else {
+            opened();
+          }
           break;
         case Event::Type::kText:
           try {

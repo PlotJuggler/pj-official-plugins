@@ -8,7 +8,8 @@ WebSocket client transport shared by the websocket streaming plugins
   and binary frames, close and errors arrive as owned `Event`s in an `EventQueue` that the
   owner drains from its own thread. The queue bounds pending data frames (512 MiB desktop,
   64 MiB browser) by dropping the oldest, never control events; `DropWarning` throttles the
-  warning about it.
+  warning about it. A source holds up to one drained batch while the queue refills, so its
+  inbound data peaks at about twice that cap (1 GiB desktop, 128 MiB browser).
 - `<pj_websocket/connection_dialog.hpp>`: the connection half of a streamer's dialog.
   `Endpoint` (address or full `ws://`/`wss://` URL, port, transport indicator, config keys)
   and `DialogConnection` (connect/cancel, per-attempt deadline, doubling capped retry

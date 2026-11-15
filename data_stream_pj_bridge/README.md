@@ -93,7 +93,8 @@ come from `<pj_websocket/connection_dialog.hpp>`.
   thread (on the dialog's tick while the dialog owns the connection), so parser
   bindings are only ever created and read from the poll thread.
 - The queue holds at most 512 MiB of unprocessed data frames on the desktop and 64 MiB
-  in the browser. When the poll thread falls behind, the OLDEST data frames are dropped
+  in the browser. The poll thread applies one drained batch while the queue refills, so
+  unprocessed data can peak at about twice that (1 GiB / 128 MiB). When the poll thread falls behind, the OLDEST data frames are dropped
   (the newest is always kept) and one warning reports the running count, repeated at
   most every 5 s; the stream keeps running. Control events (open, text, close, error)
   are never dropped. A PJRB frame is self-contained, so a drop leaves a gap in the plots,

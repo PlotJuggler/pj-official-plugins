@@ -140,6 +140,30 @@ TEST_F(SourceConnectionTest, AFirstConnectionTimingOutIsFatalEvenWithReconnect) 
   EXPECT_EQ(status.error(), "failed to connect to Test bridge at ws://robot:1: timed out");
 }
 
+// What counts is when the open arrived, not when the poll applied it.
+TEST_F(SourceConnectionTest, AnOpenArrivingAfterTheDeadlineIsATimeoutEvenBeforeThePoll) {
+  Recorder recorder;
+  SourceConnection connection({.name = "Test bridge", .connect = 10ms, .reconnect = std::nullopt}, recorder.handlers());
+  ASSERT_TRUE(connection.start("ws://robot:1"));
+  std::this_thread::sleep_for(20ms);
+  fakeSockets().at(0)->acceptConnection();  // too late, but queued before the poll
+  auto status = connection.poll();
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error(), "failed to connect to Test bridge at ws://robot:1: timed out");
+  EXPECT_TRUE(recorder.opens.empty());
+}
+
+TEST_F(SourceConnectionTest, ATimelyOpenIsAcceptedEvenWhenThePollComesLate) {
+  Recorder recorder;
+  SourceConnection connection({.name = "Test bridge", .connect = 10ms, .reconnect = std::nullopt}, recorder.handlers());
+  ASSERT_TRUE(connection.start("ws://robot:1"));
+  fakeSockets().at(0)->acceptConnection();
+  std::this_thread::sleep_for(20ms);  // the poll thread was busy past the deadline
+  ASSERT_TRUE(connection.poll());
+  EXPECT_TRUE(connection.isOpen());
+  EXPECT_EQ(recorder.opens, std::vector<bool>{false});
+}
+
 TEST_F(SourceConnectionTest, ALostConnectionIsRedialledWithItsSubprotocols) {
   Recorder recorder;
   SourceConnection connection({.name = "Test bridge", .connect = 1s, .reconnect = 10ms}, recorder.handlers());
