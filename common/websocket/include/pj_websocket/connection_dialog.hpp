@@ -9,6 +9,8 @@
 ///     doubling capped backoff until the user cancels, the status line (labelConnectionStatus),
 ///     and the handoff of the live connection to the source on OK.
 ///  Everything runs on the dialog thread and is polled from onTick(); nothing waits.
+///
+///  The dialog's .ui must provide those widgets, with exactly two transport items: ws://, wss://.
 
 #include <algorithm>
 #include <chrono>
@@ -16,6 +18,7 @@
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <pj_plugins/sdk/endpoint.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <pj_websocket/websocket_client.hpp>
@@ -47,9 +50,9 @@ struct Endpoint {
     wd.setCurrentIndex("comboBoxTransport", url.starts_with("wss://") ? 1 : 0);
   }
 
-  /// Applies an edit of `widget_name`. Returns whether it was a connection field, and sets
-  /// `refresh` when the UI must follow (the port field and the scheme follow the URL mode).
-  bool onTextChanged(std::string_view widget_name, std::string_view text, bool& refresh) {
+  /// Applies an edit of `widget_name`: nullopt when it is not a connection field, else whether
+  /// the UI must refresh (the port field and the scheme follow the URL mode).
+  std::optional<bool> onTextChanged(std::string_view widget_name, std::string_view text) {
     if (widget_name == "lineEditAddress") {
       const bool was_url = !url.empty();
       if (isWebSocketUrl(text)) {
@@ -58,17 +61,15 @@ struct Endpoint {
         url.clear();
         address = std::string(text);
       }
-      refresh = was_url != !url.empty();
-      return true;
+      return was_url != !url.empty();
     }
     if (widget_name == "lineEditPort") {
       if (const auto parsed = PJ::sdk::parsePort(text)) {
         port = *parsed;
       }
-      refresh = false;
-      return true;
+      return false;
     }
-    return false;
+    return std::nullopt;
   }
 
   /// Writes "address", "port" and, when set, "url".
@@ -124,14 +125,7 @@ struct Handoff {
 /// dialog's onClicked() and onTick(); attempts, deadlines and retries are polled, never waited on.
 class DialogConnection {
  public:
-  enum class State {
-    kIdle,        ///< not connecting (initially, after cancel/disconnect, after the handoff)
-    kConnecting,  ///< one attempt in flight until its deadline
-    kRetrying,    ///< the last attempt failed; the next starts when its delay ends
-    kConnected,
-  };
-
-  /// What tick() reports back to the dialog.
+  /// What the connection reports back to the dialog, from tick().
   struct Handlers {
     /// The socket opened; the dialog may send its first requests.
     std::function<void()> on_open;
@@ -142,9 +136,13 @@ class DialogConnection {
     std::function<void()> on_lost;
   };
 
-  explicit DialogConnection(DialogConnectionOptions options = {}) : options_(options) {}
+  /// The handlers usually capture the owning dialog, which cannot be copied or moved once it
+  /// holds a DialogConnection.
+  DialogConnection(DialogConnectionOptions options, Handlers handlers)
+      : options_(options), handlers_(std::move(handlers)) {}
 
-  /// [idle] Starts connecting to `url`, retrying with a fresh backoff until disconnect().
+  /// [idle] Starts connecting to `url`, retrying with a fresh backoff until disconnect(). Every
+  /// retry dials this same `url`: a config loaded meanwhile applies from the next connect().
   void connect(std::string url, std::vector<std::string> subprotocols = {}) {
     url_ = std::move(url);
     subprotocols_ = std::move(subprotocols);
@@ -167,13 +165,13 @@ class DialogConnection {
   }
 
   /// Applies queued events, the attempt deadline and the retry timer. True when the UI must refresh.
-  bool tick(const Handlers& handlers) {
+  bool tick() {
     if (state_ == State::kIdle) {
       return false;
     }
-    bool changed = events_ && pumpEvents(handlers);
+    bool changed = events_ && pumpEvents();
     if (state_ == State::kConnecting && Clock::now() >= attempt_deadline_) {
-      scheduleRetry("timed out", handlers);
+      scheduleRetry("timed out");
       changed = true;
     } else if (state_ == State::kRetrying) {
       if (Clock::now() >= next_attempt_) {
@@ -189,14 +187,11 @@ class DialogConnection {
 
   /// Sends a text frame when connected; otherwise it is dropped.
   void sendText(std::string text) {
-    if (socket_ && socket_->isOpen()) {
+    if (socket_) {
       socket_->sendText(std::move(text));
     }
   }
 
-  [[nodiscard]] State state() const {
-    return state_;
-  }
   [[nodiscard]] bool idle() const {
     return state_ == State::kIdle;
   }
@@ -211,6 +206,16 @@ class DialogConnection {
     wd.setChecked("buttonConnect", !idle());
     wd.setLabel("labelConnectionStatus", status());
   }
+
+ private:
+  using Clock = std::chrono::steady_clock;
+
+  enum class State {
+    kIdle,        ///< not connecting (initially, after cancel/disconnect, after the handoff)
+    kConnecting,  ///< one attempt in flight until its deadline
+    kRetrying,    ///< the last attempt failed; the next starts when its delay ends
+    kConnected,
+  };
 
   /// Connecting / retrying in N s with the last error / connected; empty when idle.
   [[nodiscard]] std::string status() const {
@@ -227,9 +232,6 @@ class DialogConnection {
     return {};
   }
 
- private:
-  using Clock = std::chrono::steady_clock;
-
   /// Starts one connection attempt with its own deadline.
   void attempt() {
     events_ = std::make_shared<EventQueue>(options_.inbound_queue_bytes);
@@ -237,16 +239,15 @@ class DialogConnection {
     state_ = State::kConnecting;
     attempt_deadline_ = Clock::now() + options_.connect;
     if (auto status = socket_->start(url_, events_, subprotocols_); !status) {
-      scheduleRetry(status.error(), {});
+      scheduleRetry(status.error());
     }
   }
 
   /// Drops the current attempt or connection and tries again after a doubling, capped delay.
-  void scheduleRetry(const std::string& reason, const Handlers& handlers) {
-    socket_.reset();  // stops it
-    events_.reset();
-    if (handlers.on_lost) {
-      handlers.on_lost();
+  void scheduleRetry(const std::string& reason) {
+    disconnect();
+    if (handlers_.on_lost) {
+      handlers_.on_lost();
     }
     last_error_ = reason.empty() ? "connection closed" : reason;
     state_ = State::kRetrying;
@@ -262,7 +263,7 @@ class DialogConnection {
 
   /// Data frames are ignored: a dialog subscribes to nothing. The queue never drops control
   /// events, so a close is always seen.
-  bool pumpEvents(const Handlers& handlers) {
+  bool pumpEvents() {
     bool changed = false;
     for (auto& event : events_->drain()) {
       switch (event.type) {
@@ -270,15 +271,15 @@ class DialogConnection {
           state_ = State::kConnected;
           retry_delay_ = options_.retry_first;
           last_error_.clear();
-          if (handlers.on_open) {
-            handlers.on_open();
+          if (handlers_.on_open) {
+            handlers_.on_open();
           }
           changed = true;
           break;
         case Event::Type::kText:
           try {
-            if (handlers.on_text) {
-              handlers.on_text(event.payload);
+            if (handlers_.on_text) {
+              handlers_.on_text(event.payload);
             }
           } catch (const nlohmann::json::exception&) {}
           changed = true;
@@ -287,7 +288,7 @@ class DialogConnection {
           break;
         case Event::Type::kClosed:
         case Event::Type::kError:
-          scheduleRetry(event.payload, handlers);  // releases this connection's queue; later events are moot
+          scheduleRetry(event.payload);  // releases this connection's queue; later events are moot
           return true;
       }
     }
@@ -295,6 +296,7 @@ class DialogConnection {
   }
 
   DialogConnectionOptions options_;
+  Handlers handlers_;
   State state_ = State::kIdle;
   std::string url_;
   std::vector<std::string> subprotocols_;

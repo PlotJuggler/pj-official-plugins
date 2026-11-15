@@ -91,28 +91,29 @@ TEST(EventQueueTest, CloseDropsPendingAndLateEvents) {
 TEST(DropWarningTest, ReportsTheFirstDropAtOnceThenThrottlesWithTheRunningTotal) {
   using namespace std::chrono_literals;
   PJ::WebSocket::EventQueue queue(100);
-  PJ::WebSocket::DropWarning warning(5s);
+  PJ::WebSocket::DropWarning warning;
   const auto t0 = PJ::WebSocket::DropWarning::Clock::now();
-  EXPECT_FALSE(warning.check(queue, "test stream", t0));  // nothing dropped yet
+  const auto at = [t0](auto offset) { return [t = t0 + offset] { return t; }; };
+  EXPECT_FALSE(warning.check(queue, "test stream", at(0s)));  // nothing dropped yet
 
   queue.push({EventType::kBinary, std::string(1000, 'a')});
   queue.push({EventType::kBinary, std::string(1000, 'b')});  // drops 'a'
-  const auto first = warning.check(queue, "test stream", t0);
+  const auto first = warning.check(queue, "test stream", at(0s));
   ASSERT_TRUE(first);
   EXPECT_EQ(
       *first,
       "PlotJuggler fell behind the test stream and dropped the oldest 1 data frames (0.0 MiB) so far; "
       "the plots have gaps where they were.");
-  EXPECT_FALSE(warning.check(queue, "test stream", t0 + 10s));  // no new drop
+  EXPECT_FALSE(warning.check(queue, "test stream", at(10s)));  // no new drop
 
-  queue.push({EventType::kBinary, std::string(1000, 'c')});    // drops 'b'
-  EXPECT_FALSE(warning.check(queue, "test stream", t0 + 1s));  // within the interval
-  const auto second = warning.check(queue, "test stream", t0 + 6s);
+  queue.push({EventType::kBinary, std::string(1000, 'c')});   // drops 'b'
+  EXPECT_FALSE(warning.check(queue, "test stream", at(1s)));  // within the interval
+  const auto second = warning.check(queue, "test stream", at(6s));
   ASSERT_TRUE(second);
   EXPECT_NE(second->find("oldest 2 data frames"), std::string::npos);
 
-  warning.reset();
-  EXPECT_TRUE(warning.check(queue, "test stream", t0 + 7s));  // a reset reports the total again
+  warning = {};
+  EXPECT_TRUE(warning.check(queue, "test stream", at(7s)));  // a fresh one reports the total again
 }
 
 }  // namespace

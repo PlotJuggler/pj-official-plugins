@@ -45,9 +45,11 @@ struct Event {
 /// Overflow policy: pending data frames (kBinary) are capped at `max_bytes` of payload plus a
 /// fixed per-frame overhead. Past the cap the OLDEST pending data frames are dropped and counted
 /// in dropped(); the newest frame is always kept. Control events (open, text, close, error) are
-/// never dropped and do not count against the cap: they are small and carry protocol state. The
-/// protocols this carries make each data frame self-contained, so a dropped one leaves a gap in
-/// the plots, never a broken stream.
+/// never dropped and do not count against the cap: they are small and carry protocol state. So a
+/// protocol carried over it must make every binary frame droppable on its own (a dropped one
+/// leaves a gap in the plots, never a broken stream) and send what has to arrive as text. PJRB
+/// data frames and Foxglove message data qualify; the other Foxglove binary frames (time,
+/// service and asset responses) are ignored by its consumer anyway.
 ///
 /// close() discards pending events and turns every later push() into a no-op: that is how a
 /// transport drops callbacks that land after stop().
@@ -194,23 +196,28 @@ class Client {
 };
 
 /// [owner thread] Throttles the warning that the owner fell behind and the queue dropped data
-/// frames: the first drop is reported at once, later ones at most once per `interval`, each time
-/// with the running total since the queue was created.
+/// frames: the first drop is reported at once, later ones at most once per kInterval, each time
+/// with the running total since the queue was created. Assign {} to start over for a new queue.
 class DropWarning {
  public:
   using Clock = std::chrono::steady_clock;
+  static constexpr std::chrono::seconds kInterval{5};
 
-  explicit DropWarning(Clock::duration interval = std::chrono::seconds(5)) : interval_(interval) {}
+  /// [called every poll] The warning to report now, if any. `stream` names what fell behind,
+  /// e.g. "PJ bridge stream at ws://robot:9090".
+  [[nodiscard]] std::optional<std::string> check(const EventQueue& queue, std::string_view stream) {
+    return check(queue, stream, [] { return Clock::now(); });
+  }
 
-  /// The warning to report now, if any. `stream` names what fell behind, e.g.
-  /// "PJ bridge stream at ws://robot:9090".
-  [[nodiscard]] std::optional<std::string> check(
-      const EventQueue& queue, std::string_view stream, Clock::time_point now = Clock::now()) {
+  /// check() with a test clock.
+  template <typename Now>
+  [[nodiscard]] std::optional<std::string> check(const EventQueue& queue, std::string_view stream, Now now_fn) {
     const auto dropped = queue.dropped();
     if (dropped.frames == reported_frames_) {
-      return std::nullopt;
+      return std::nullopt;  // the common case: no clock read, no string built
     }
-    if (reported_frames_ > 0 && now - last_warning_ < interval_) {
+    const Clock::time_point now = now_fn();
+    if (reported_frames_ > 0 && now - last_warning_ < kInterval) {
       return std::nullopt;
     }
     reported_frames_ = dropped.frames;
@@ -222,14 +229,7 @@ class DropWarning {
            " MiB) so far; the plots have gaps where they were.";
   }
 
-  /// Forget what was reported, for a fresh queue.
-  void reset() {
-    reported_frames_ = 0;
-    last_warning_ = {};
-  }
-
  private:
-  Clock::duration interval_;
   uint64_t reported_frames_ = 0;
   Clock::time_point last_warning_{};
 };

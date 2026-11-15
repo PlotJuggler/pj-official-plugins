@@ -89,6 +89,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
 
     endpoint_ = dialog_.endpoint();
+    drop_label_ = "PJ bridge stream at " + endpoint_;
     array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
@@ -221,7 +222,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     advertise_dirty_ = false;
     fatal_error_.clear();
     server_info_logged_ = false;
-    drop_warning_.reset();
+    drop_warning_ = {};
     paused_ = false;
     (void)desired_topics_slot_.take();  // drop any pending host command so it can't leak into the next start
   }
@@ -325,7 +326,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // [poll thread] The queue drops the oldest data frames when this thread falls behind (see
   // PJ::WebSocket::EventQueue); DropWarning throttles the warning.
   void reportDroppedData() {
-    if (auto warning = drop_warning_.check(*events_, "PJ bridge stream at " + endpoint_)) {
+    if (auto warning = drop_warning_.check(*events_, drop_label_)) {
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, *warning);
     }
   }
@@ -736,7 +737,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   PjBridgeDialog dialog_;
   BridgeConnectionOptions options_;
 
-  std::string endpoint_;  ///< the ws:// or wss:// URL of this start, for connection and messages
+  std::string endpoint_;    ///< the ws:// or wss:// URL of this start, for connection and messages
+  std::string drop_label_;  ///< names this stream in the dropped-frames warning
   PJ::sdk::ArrayLimit array_limit_;
   bool use_timestamp_ = false;
 

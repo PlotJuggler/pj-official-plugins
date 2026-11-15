@@ -1,8 +1,6 @@
 #pragma once
 
-#include <algorithm>
 #include <chrono>
-#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/text_utils.hpp>
@@ -21,20 +19,11 @@
 
 namespace {
 
-/// Deadlines and limits the source and the dialog enforce by polling; tests shorten them.
-struct BridgeConnectionOptions {
-  /// Per connection attempt, for the source and for each dialog attempt.
-  std::chrono::milliseconds connect{5000};
+/// Deadlines and limits the source and the dialog enforce by polling; tests shorten them. The
+/// base's connect deadline applies to the source's connection and to each dialog attempt.
+struct BridgeConnectionOptions : PJ::WebSocket::DialogConnectionOptions {
   /// Legacy mode: how long the source waits for the subscribe response before streaming anyway.
   std::chrono::milliseconds subscribe{5000};
-  /// Dialog retry backoff: first delay, doubled after each failure up to retry_max.
-  std::chrono::milliseconds retry_first{1000};
-  std::chrono::milliseconds retry_max{10000};
-  size_t inbound_queue_bytes = PJ::WebSocket::EventQueue::kDefaultMaxBytes;
-
-  [[nodiscard]] PJ::WebSocket::DialogConnectionOptions dialog() const {
-    return {connect, retry_first, retry_max, inbound_queue_bytes};
-  }
 };
 
 struct DiscoveredTopic {
@@ -63,7 +52,17 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  explicit PjBridgeDialog(BridgeConnectionOptions options = {}) : link_(options.dialog()) {}
+  explicit PjBridgeDialog(BridgeConnectionOptions options = {})
+      : link_(
+            options, {
+                         .on_open =
+                             [this] {
+                               tick_count_ = 0;
+                               requestTopics();
+                             },
+                         .on_text = [this](const std::string& text) { onServerMessage(text); },
+                         .on_lost = [this] { clearTopics(); },
+                     }) {}
 
   ~PjBridgeDialog() override {
     disconnect();
@@ -146,8 +145,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   }
 
   bool onTextChanged(std::string_view widget_name, std::string_view text) override {
-    if (bool refresh = false; endpoint_.onTextChanged(widget_name, text, refresh)) {
-      return refresh;
+    if (const auto refresh = endpoint_.onTextChanged(widget_name, text)) {
+      return *refresh;
     }
     if (widget_name == "lineEditFilter") {
       filter_ = std::string(text);
@@ -178,15 +177,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   }
 
   bool onTick() override {
-    const bool changed = link_.tick({
-        .on_open =
-            [this] {
-              tick_count_ = 0;
-              requestTopics();
-            },
-        .on_text = [this](const std::string& text) { onServerMessage(text); },
-        .on_lost = [this] { clearTopics(); },
-    });
+    const bool changed = link_.tick();
 
     // Periodic topic refresh (every ~1s = 20 ticks at 50ms)
     if (link_.connected() && ++tick_count_ >= 20) {
@@ -309,23 +300,11 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     std::lock_guard<std::mutex> lock(topics_mutex_);
     topics_.clear();
     for (const auto& v : json["topics"]) {
-      if (!v.is_object()) {
-        continue;
-      }
-      // stringField: a wrong-typed field of one entry degrades to empty instead of throwing
-      // away the whole list.
-      using PJ::BridgeProtocol::stringField;
-      DiscoveredTopic dt;
-      dt.name = stringField(v, "name");
-      dt.type = stringField(v, "type");
-      dt.schema_name = stringField(v, "schema_name");
-      if (dt.schema_name.empty()) {
-        dt.schema_name = dt.type;
-      }
-      dt.schema_encoding = stringField(v, "encoding");
-      dt.schema_definition = stringField(v, "definition");
-      if (!dt.name.empty()) {
-        topics_.push_back(std::move(dt));
+      // parseTopicEntry (shared with the source): a wrong-typed field of one entry degrades to
+      // empty instead of throwing away the whole list.
+      if (auto info = PJ::BridgeProtocol::parseTopicEntry(v)) {
+        topics_.push_back(
+            {info->name, PJ::BridgeProtocol::stringField(v, "type"), info->schema_name, info->encoding, info->schema});
       }
     }
 

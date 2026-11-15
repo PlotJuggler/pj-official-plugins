@@ -617,6 +617,23 @@ TEST(PjBridgeConnectionTest, DialogSeesACloseThatFollowsMalformedText) {
   EXPECT_NE(dialog.widget_data().find("Retrying in 1 s: bridge restarting"), std::string::npos) << dialog.widget_data();
 }
 
+TEST(PjBridgeConnectionTest, DialogKeepsTheValidTopicsWhenOneEntryIsMalformed) {
+  fakeSockets().clear();
+  PjBridgeDialog dialog(testOptions());
+  dialog.onTextChanged("lineEditAddress", "ws://robot:9090");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  const auto socket = fakeSockets().back();
+  socket->acceptConnection();
+  EXPECT_TRUE(dialog.onTick());
+
+  auto response = nlohmann::json::parse(getTopicsResponse({"/imu"}));
+  // A wrong-typed field, ahead of the valid entry so a throw would lose it.
+  response["topics"].insert(response["topics"].begin(), {{"name", "/bad"}, {"type", 5}});
+  socket->deliverText(response.dump());
+  dialog.onTick();
+  EXPECT_NE(dialog.widget_data().find("/imu"), std::string::npos) << dialog.widget_data();
+}
+
 TEST(PjBridgeConnectionTest, DialogUrlIgnoresAddressAndPortOfAnyType) {
   PjBridgeDialog dialog(testOptions());
   ASSERT_TRUE(dialog.loadConfig(R"({"url":"wss://robot.local/bridge","address":null,"port":"unused"})"));

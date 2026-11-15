@@ -2,7 +2,6 @@
 
 #include <zstd.h>
 
-#include <chrono>
 #include <cstring>
 #include <random>
 
@@ -112,8 +111,9 @@ std::string buildRequest(const std::string& command, const std::string& uuid) {
 
 std::string generateRequestId() {
   // thread_local: the source calls this from the host thread (pause/resume) and the poll thread
-  // (heartbeat, subscribe) at once, and a shared engine would be a data race.
-  thread_local std::mt19937 gen(static_cast<uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+  // (heartbeat, subscribe) at once, and a shared engine would be a data race. Seeded per thread
+  // from random_device, so two threads starting together still get different id streams.
+  thread_local std::mt19937 gen(std::random_device{}());
   thread_local std::uniform_int_distribution<uint32_t> dist;
 
   char buf[37];
