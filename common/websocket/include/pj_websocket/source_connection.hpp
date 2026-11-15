@@ -5,8 +5,8 @@
 ///  connects, fails and reconnects the same way: it adopts the dialog's open connection or dials
 ///  a fresh one, enforces the connect deadline, latches the first stream-stopping failure and,
 ///  when configured, re-dials a lost connection on a fixed delay. Frames reach the owner through
-///  Handlers in arrival order. Everything runs on the poll thread and is driven by poll();
-///  nothing waits.
+///  Handlers in arrival order. Everything runs on the poll thread (start() and adopt() on the
+///  thread that starts the source, before polling) and is driven by poll(); nothing waits.
 
 #include <chrono>
 #include <cstddef>
@@ -15,7 +15,6 @@
 #include <memory>
 #include <optional>
 #include <pj_base/sdk/data_source_host_views.hpp>
-#include <pj_websocket/connection_dialog.hpp>
 #include <pj_websocket/websocket_client.hpp>
 #include <string>
 #include <utility>
@@ -56,17 +55,19 @@ class SourceConnection {
   SourceConnection(SourceConnectionOptions options, Handlers handlers)
       : options_(std::move(options)), handlers_(std::move(handlers)) {}
 
-  /// [onStart] Takes over the dialog's connection when it is open and returns true; the owner
-  /// then applies that open itself, once it is ready to (on_open is not called for it). Frames
-  /// the dialog did not drain are delivered by the next poll().
-  bool adopt(Handoff handoff, std::string url) {
+  /// [onStart] Takes over the dialog's connection when it is open and returns true. The next
+  /// poll() reports it through on_open(false), as for a fresh connection, and then delivers the
+  /// frames the dialog did not drain. A reconnection dials the handoff's url and subprotocols.
+  bool adopt(Handoff handoff) {
     if (!handoff.socket || !handoff.socket->isOpen()) {
       return false;
     }
-    begin(std::move(url), {});
+    begin(std::move(handoff.url), std::move(handoff.subprotocols));
     socket_ = std::move(handoff.socket);
     events_ = std::move(handoff.events);
-    phase_ = Phase::kOpen;
+    phase_ = Phase::kConnecting;
+    deadline_ = Clock::time_point::max();  // already open: opened() runs before any deadline check
+    adopted_ = true;
     return true;
   }
 
@@ -84,6 +85,10 @@ class SourceConnection {
   /// [onPoll] Applies every queued event in arrival order, then the deadlines. Returns the
   /// first stream-stopping failure, latched until stop().
   [[nodiscard]] PJ::Status poll() {
+    if (adopted_) {
+      adopted_ = false;
+      opened();  // before the frames queued behind the dialog's own kOpen
+    }
     pump();
     const auto now = Clock::now();
     if ((phase_ == Phase::kConnecting || phase_ == Phase::kReconnecting) && now >= deadline_) {
@@ -95,21 +100,19 @@ class SourceConnection {
         down(status.error());
       }
     }
-    if (!fatal_error_.empty()) {
+    if (phase_ == Phase::kFailed) {
       return PJ::unexpected(fatal_error_);
     }
     return PJ::okStatus();
   }
 
-  /// Open, as far as the events applied so far tell: on_open has run (or adopt() succeeded) and
-  /// no close or error has been applied since.
+  /// Open, as far as the events applied so far tell: on_open has run and no close or error has
+  /// been applied since.
   [[nodiscard]] bool isOpen() const {
     return phase_ == Phase::kOpen;
   }
 
-  /// Sends a text frame when the socket is open; otherwise the frame is dropped. Without
-  /// `reconnect` it may be called from any thread between start() and stop(): only those replace
-  /// the socket.
+  /// Sends a text frame when the socket is open; otherwise the frame is dropped.
   void sendText(std::string text) {
     if (socket_) {
       socket_->sendText(std::move(text));
@@ -136,7 +139,9 @@ class SourceConnection {
     socket_.reset();  // stops it
     events_.reset();
     phase_ = Phase::kIdle;
+    adopted_ = false;
     fatal_error_.clear();
+    drop_warning_ = {};
   }
 
  private:
@@ -156,7 +161,6 @@ class SourceConnection {
     url_ = std::move(url);
     subprotocols_ = std::move(subprotocols);
     drop_label_ = options_.name + " stream at " + url_;
-    drop_warning_ = {};
   }
 
   /// One attempt on a fresh socket and queue, so a previous socket's late events are never seen.
@@ -173,8 +177,9 @@ class SourceConnection {
     if (!events_) {
       return;
     }
+    const EventSink queue = events_;  // its drops are still reported if a close drops events_
     // Pop each event as it is applied, so a long batch frees its frames as it goes.
-    auto pending = events_->drain();
+    auto pending = queue->drain();
     // A close, an error or fail() drops the queue: this connection's later events are moot.
     while (!pending.empty() && events_) {
       Event event = std::move(pending.front());
@@ -201,10 +206,7 @@ class SourceConnection {
           break;
       }
     }
-    if (!events_) {
-      return;
-    }
-    if (auto warning = drop_warning_.check(*events_, drop_label_)) {
+    if (auto warning = drop_warning_.check(*queue, drop_label_)) {
       handlers_.report(Level::kWarning, *warning);
     }
   }
@@ -218,7 +220,7 @@ class SourceConnection {
       handlers_.on_open(true);
       handlers_.report(Level::kInfo, "Reconnected to " + options_.name);
     }
-    // An adopted connection is already kOpen: a kOpen the dialog left queued is not news.
+    // A kOpen the dialog left queued for an adopted connection is not news.
   }
 
   /// A close, an error or a missed deadline.
@@ -248,6 +250,7 @@ class SourceConnection {
   std::unique_ptr<Client> socket_;
   EventSink events_;  ///< fresh per attempt
   Phase phase_ = Phase::kIdle;
+  bool adopted_ = false;  ///< adopt() succeeded; the next poll() reports the open
   Clock::time_point deadline_{};
   std::string fatal_error_;
   DropWarning drop_warning_;

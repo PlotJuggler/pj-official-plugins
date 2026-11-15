@@ -195,6 +195,16 @@ class Client {
   std::shared_ptr<State> state_;
 };
 
+/// A live connection handed from a dialog to its source on OK: the socket and the queue its
+/// events land in, events not yet drained included, and what it was dialled with, so the source
+/// re-dials the same way.
+struct Handoff {
+  std::unique_ptr<Client> socket;
+  EventSink events;
+  std::string url;
+  std::vector<std::string> subprotocols;
+};
+
 /// [owner thread] Throttles the warning that the owner fell behind and the queue dropped data
 /// frames: the first drop is reported at once, later ones at most once per kInterval, each time
 /// with the running total since the queue was created. Assign {} to start over for a new queue.

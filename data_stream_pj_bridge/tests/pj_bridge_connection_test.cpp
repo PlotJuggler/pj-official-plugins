@@ -370,18 +370,25 @@ TEST(PjBridgeConnectionTest, HeartbeatEveryThirtyPollsOnceOpen) {
   EXPECT_EQ(std::count(sent.begin(), sent.end(), "heartbeat"), 1);
 }
 
-TEST(PjBridgeConnectionTest, PauseAndResumeReachTheServerOnlyWhenOpen) {
+TEST(PjBridgeConnectionTest, PauseAndResumeReachTheServerOnTheNextPollOnceOpen) {
   BridgeFixture fixture;
   FakeSocket& socket = fixture.startWithUrl("ws://robot:9871");
   ASSERT_TRUE(fixture.source.pause());
+  ASSERT_TRUE(fixture.source.poll());
   EXPECT_TRUE(socket.sent.empty());
+  ASSERT_TRUE(fixture.source.resume());
 
   socket.acceptConnection();
   ASSERT_TRUE(fixture.source.poll());
   ASSERT_TRUE(fixture.source.pause());
+  EXPECT_NE(lastSent(socket).value("command", std::string{}), "pause");  // the host thread sends nothing
+  ASSERT_TRUE(fixture.source.poll());
   EXPECT_EQ(lastSent(socket).value("command", std::string{}), "pause");
   ASSERT_TRUE(fixture.source.resume());
+  ASSERT_TRUE(fixture.source.poll());
   EXPECT_EQ(lastSent(socket).value("command", std::string{}), "resume");
+  const auto sent = commands(socket);
+  EXPECT_EQ(std::count(sent.begin(), sent.end(), "pause"), 1);  // the pause/resume while connecting cancel out
 }
 
 TEST(PjBridgeConnectionTest, PauseBeforeTheConnectionOpensIsAppliedOnOpen) {
@@ -456,6 +463,7 @@ TEST(PjBridgeConnectionTest, DialogConnectionIsHandedToTheSource) {
 
   // OK: the source adopts the open connection instead of dialing again.
   ASSERT_TRUE(fixture.source.start());
+  ASSERT_TRUE(fixture.source.poll());
   EXPECT_EQ(fakeSockets().size(), 1U);
   EXPECT_EQ(commands(socket), (std::vector<std::string>{"get_topics", "subscribe_topic_updates", "get_topics"}));
   ASSERT_FALSE(fixture.host.advertisements.empty());

@@ -407,8 +407,28 @@ TEST(FoxgloveConnectionTest, LegacyHostSubscribesTheDialogSelectionOnAnAdoptedCo
   dialog.onAccepted("{}");
 
   ASSERT_TRUE(fixture.source.start());
+  ASSERT_TRUE(fixture.source.poll());
   ASSERT_EQ(ops(socket), (std::vector<std::string>{"subscribe"}));
   EXPECT_EQ(nlohmann::json::parse(socket.sent.back())["subscriptions"][0]["channelId"], 8);
+}
+
+TEST(FoxgloveConnectionTest, AnAdoptedConnectionIsRedialledWithTheFoxgloveSubprotocols) {
+  FoxgloveFixture fixture;
+  FoxgloveDialog& dialog = fixture.dialog();
+  dialog.onTextChanged("lineEditAddress", "robot");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  fixture.lastSocket().acceptConnection();
+  ASSERT_TRUE(dialog.onTick());
+  ASSERT_TRUE(fixture.source.start());
+  ASSERT_TRUE(fixture.source.poll());
+
+  fixture.lastSocket().closeFromServer("bridge restarted");
+  ASSERT_TRUE(fixture.source.poll());
+  std::this_thread::sleep_for(testOptions().reconnect + std::chrono::milliseconds(10));
+  ASSERT_TRUE(fixture.source.poll());
+  ASSERT_EQ(fakeSockets().size(), 2U);
+  EXPECT_EQ(fixture.lastSocket().subprotocols, PJ::FoxgloveProtocol::subprotocols());
+  EXPECT_EQ(fixture.lastSocket().url, fakeSockets().front()->url);
 }
 
 TEST(FoxgloveConnectionTest, DialogClearsTheCatalogWhenTheConnectionDrops) {

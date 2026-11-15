@@ -35,7 +35,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   explicit FoxgloveSource(FoxgloveConnectionOptions options = {})
       : dialog_(options),
         connection_(
-            {"Foxglove bridge", options.connect, options.reconnect, options.inbound_queue_bytes},
+            {.name = "Foxglove bridge",
+             .connect = options.connect,
+             .reconnect = options.reconnect,
+             .inbound_queue_bytes = options.inbound_queue_bytes},
             {[this](bool reconnected) { onOpen(reconnected); },
              [this](const std::string& text) { onTextMessage(text); },
              [this](std::string&& frame) { onBinaryMessage(std::move(frame)); },
@@ -80,7 +83,6 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       return PJ::unexpected("invalid dialog config");
     }
 
-    const std::string endpoint = dialog_.endpoint();
     array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
@@ -106,7 +108,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     // way start() returns before the connection completes: onPoll() drives the rest, and every
     // transport event (the server's one-shot serverInfo + "advertise" burst included) waits in
     // the connection's queue in arrival order until the poll thread applies it.
-    const bool adopted = connection_.adopt(dialog_.takeConnection(), endpoint);
+    const bool adopted = connection_.adopt(dialog_.takeConnection());
     if (adopted) {
       // The server already sent its one-shot "advertise" burst and will not re-send it. The
       // dialog discovered the FULL channel catalog during that burst (not just what the user
@@ -114,7 +116,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       for (const auto& ch : dialog_.allDiscoveredChannels()) {
         advertised_channels_[ch.id] = ch;
       }
-    } else if (auto status = connection_.start(endpoint, subprotocols()); !status) {
+    } else if (auto status = connection_.start(dialog_.endpoint(), subprotocols()); !status) {
       return status;
     }
 
@@ -136,11 +138,6 @@ class FoxgloveSource : public PJ::StreamSourceBase {
             "advertise topics on demand. Nothing will stream until the connection dialog is "
             "reopened and channels are selected.");
       }
-    }
-    // An adopted connection is already open: apply its open now (in legacy mode that subscribes
-    // the dialog's selection); a fresh one does so when its kOpen event is pumped.
-    if (adopted) {
-      onOpen(false);
     }
 
     return PJ::okStatus();

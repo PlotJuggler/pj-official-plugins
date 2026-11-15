@@ -114,13 +114,6 @@ struct DialogConnectionOptions {
   size_t inbound_queue_bytes = EventQueue::kDefaultMaxBytes;
 };
 
-/// A live dialog connection handed to the source on OK: the socket and the queue its events
-/// land in, events not yet drained included.
-struct Handoff {
-  std::unique_ptr<Client> socket;
-  EventSink events;
-};
-
 /// A dialog's own connection. Every transition happens on the dialog thread, driven by the
 /// dialog's onClicked() and onTick(); attempts, deadlines and retries are polled, never waited on.
 class DialogConnection {
@@ -161,7 +154,7 @@ class DialogConnection {
   /// dialog never connected.
   [[nodiscard]] Handoff take() {
     state_ = State::kIdle;
-    return {std::move(socket_), std::move(events_)};
+    return {std::move(socket_), std::move(events_), url_, subprotocols_};
   }
 
   /// Applies queued events, the attempt deadline and the retry timer. True when the UI must refresh.
