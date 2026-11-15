@@ -22,8 +22,11 @@ jobs:
   scope:
     runs-on: ubuntu-22.04
     outputs:
-      aggregate: ${{ steps.scope.outputs.aggregate }}
-      standalone: ${{ steps.scope.outputs.standalone }}
+      # Windows' own plan: it also builds the aggregate when a plugin's CMake or conanfile
+      # changes, the only check for a dependency missing from the root recipe or a target
+      # name clash across plugins (macOS stays scoped; see scripts/ci_affected_plugins.py).
+      aggregate: ${{ steps.scope.outputs.windows_aggregate }}
+      standalone: ${{ steps.scope.outputs.windows_standalone }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -216,8 +219,13 @@ jobs:
         shell: bash
         env:
           SCCACHE_GHA_ENABLED: "on"
+          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
           STANDALONE: ${{ needs.scope.outputs.standalone }}
         run: |
+          # build.sh passes no compiler launcher; CMake takes it from the environment.
+          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
+            export CMAKE_C_COMPILER_LAUNCHER=sccache CMAKE_CXX_COMPILER_LAUNCHER=sccache
+          fi
           for plugin in $STANDALONE; do
             echo "::group::$plugin"
             ./build.sh "$plugin"

@@ -1,4 +1,4 @@
-exclude: ^.vscode/|^deps/|^build/|^3rdparty/|/contrib/
+exclude: ^.vscode/|^deps/|^build/|^3rdparty/|/contrib/|\.md$
 repos:
 
   # Standard hooks
