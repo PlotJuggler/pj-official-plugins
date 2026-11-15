@@ -3,7 +3,7 @@ name: pre-commit
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main]
+    branches: [main, ci/affected-plugins]  # TEMP: scope probe PR, revert before merge
     paths-ignore: ['**/*.md']
   push:
     branches: [main]
