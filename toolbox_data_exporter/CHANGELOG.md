@@ -7,6 +7,7 @@ below; for earlier releases see the git history of `toolbox_data_exporter/`.
 
 ### Changed
 - Updated the bundled Apache Arrow from 23.0.1 to 26.0.1, picking up upstream bug and security fixes.
+- Emphasised text in the dialog's table headers uses DemiBold (600) instead of Bold, matching the app.
 
 ## [0.114.3] - 2026-11-05
 

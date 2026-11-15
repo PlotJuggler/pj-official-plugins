@@ -16,6 +16,9 @@ below; for earlier releases see the git history of `parser_ros/`.
 - A `robot_description` topic in a recorded file reaches the 3D view again;
   it was dropped on import, so no robot was shown.
 
+### Changed
+- Emphasised text in the dialog uses DemiBold (600) instead of Bold, matching the app.
+
 ## [1.3.1] - 2026-11-03
 
 ### Fixed

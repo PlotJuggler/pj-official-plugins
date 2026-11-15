@@ -119,7 +119,7 @@ QVariant LogTableModel::data(const QModelIndex& index, int role) const {
     case Qt::FontRole:
       if (row.level == Level::kFatal && palette_source_) {
         QFont font = palette_source_->font();
-        font.setBold(true);
+        font.setWeight(QFont::DemiBold);
         return font;
       }
       return {};

@@ -106,7 +106,7 @@
     <widget class="QLabel" name="labelStringParsing">
      <property name="font">
       <font>
-       <bold>true</bold>
+       <fontweight>DemiBold</fontweight>
       </font>
      </property>
      <property name="text">
