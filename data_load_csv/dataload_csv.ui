@@ -221,7 +221,7 @@
           <bool>true</bool>
          </property>
          <property name="styleSheet">
-          <string notr="true">color: #CC00CC; font-weight: bold; background: #FFFFFF;</string>
+          <string notr="true">color: #CC00CC; font-weight: 600; background: #FFFFFF;</string>
          </property>
         </widget>
        </item>

@@ -12,6 +12,9 @@ below; for earlier releases see the git history of `data_stream_ros2/`.
   ships this extension (`<env>/lib/plotjuggler/plugins/ros2-topic-subscriber/`),
   the payload is now loaded from there instead of from that copy.
 
+### Changed
+- Emphasised text in the dialog uses DemiBold (600) instead of Bold, matching the app.
+
 ## [1.2.0] - 2026-11-11
 
 ### Added

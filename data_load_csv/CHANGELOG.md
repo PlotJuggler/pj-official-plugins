@@ -10,6 +10,7 @@ below; for earlier releases see the git history of `data_load_csv/`.
   every cell into one array to sort it. Same records, in the same order; a
   260 MB CSV now peaks at 622 MiB instead of 3.7 GiB and imports about 3x
   faster.
+- Emphasised text in the dialog uses DemiBold (600) instead of Bold, matching the app.
 
 ## [1.0.7] - 2026-09-28
 

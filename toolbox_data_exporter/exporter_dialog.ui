@@ -209,7 +209,7 @@
             </property>
             <property name="styleSheet">
              <string notr="true">QTableView { border: none; }
-QHeaderView::section:horizontal { font-weight: bold; border: none; border-bottom: 1px solid palette(mid); }</string>
+QHeaderView::section:horizontal { font-weight: 600; border: none; border-bottom: 1px solid palette(mid); }</string>
             </property>
             <property name="acceptDrops">
              <bool>true</bool>
