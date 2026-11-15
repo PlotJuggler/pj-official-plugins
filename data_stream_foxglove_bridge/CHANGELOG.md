@@ -3,10 +3,22 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_foxglove_bridge/`.
 
-## [1.1.3] - 2026-11-13
+## [1.1.3] - 2026-11-15
+
+### Added
+- Ready for the browser build of PlotJuggler: the plugin's WebSocket transport (shared with the PlotJuggler Bridge) has a backend on the browser's own WebSocket.
+- A full `ws://` or `wss://` URL (path included, e.g. `wss://robot.local:8765`) can be typed into the address field, or saved as the `url` setting; it replaces address and port. A page served over `https://` can only open `wss://`, so the browser build needs TLS in front of `foxglove_bridge`.
+- The connection dialog retries a refused, timed-out or dropped connection with a capped backoff until cancelled, and shows connecting / retrying in N s with the last error / connected, as the PlotJuggler Bridge dialog does.
+
+### Changed
+- Starting the stream no longer blocks while connecting. A first connection that does not open within 5 s, or is refused, stops the stream with an error; a connection lost later is still retried every 5 s.
+- Unprocessed data is bounded (512 MiB on the desktop, 64 MiB in the browser): when PlotJuggler falls behind, the oldest messages are dropped and a warning reports how many, so the plots have gaps instead of memory growing without limit.
 
 ### Fixed
 - Connects to `foxglove_bridge` releases that predate the Foxglove SDK: the handshake now offers the older `foxglove.websocket.v1` subprotocol next to `foxglove.sdk.v1`, and the server picks the one it speaks. ROS 1 channels are still not decoded.
+- Messages, advertisements and removals are applied in the order the server sent them; before, a message that arrived just before its channel's `unadvertise` could be dropped.
+- A malformed control message from the server is dropped with a warning instead of escaping the poll.
+- Taking over the dialog's connection on OK no longer races with the socket's own thread.
 
 ## [1.1.2] - 2026-11-09
 

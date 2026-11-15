@@ -3,7 +3,7 @@
 #
 # The backend is chosen by source file, compiled into each consumer with its own flags:
 #   pj_websocket_native  websocket_client_native.cpp (IXWebSocket). Consumers link
-#                        ixwebsocket::ixwebsocket themselves, as with common/streaming_utils.
+#                        ixwebsocket::ixwebsocket themselves.
 #   pj_websocket_fake    testing/fake_websocket_client.cpp, for the consumers' connection tests.
 # A WebAssembly build (PlotJuggler's cmake/PjWasm*.cmake) compiles websocket_client_wasm.cpp
 # instead, ONCE for every consumer, and needs no IXWebSocket.
