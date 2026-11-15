@@ -1,3 +1,4 @@
+// CI scope probe: comment-only change, not for merge.
 #include "csv_dialog.hpp"
 
 // Generated at configure time
