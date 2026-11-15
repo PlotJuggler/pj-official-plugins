@@ -9,6 +9,9 @@ below; for earlier releases see the git history of `toolbox_transform_editor/`.
 - Creating a series no longer recomputes the preview over the whole source just before the editor
   closes, which shortens the pause after OK on long series.
 
+### Changed
+- Emphasised words in the help use DemiBold (600) instead of Bold, matching the app.
+
 ## [1.2.1] - 2026-10-27
 
 ### Fixed
