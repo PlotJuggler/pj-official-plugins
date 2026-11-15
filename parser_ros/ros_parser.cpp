@@ -568,13 +568,14 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   if (!schema_bound_) {
     return PJ::unexpected(std::string("no schema bound"));
   }
-  const std::string msg_type = normalizedMessageType(type_name_, schema_format_);
   if (schema_compiled_) {
+    // The per-message path (parseScalarsGeneric) lands here: no work, no allocation.
     if (register_specialized_handler) {
-      registerBoundSchemaHandler(selectCatalogEntry(msg_type));
+      registerBoundSchemaHandler(selectCatalogEntry(normalizedMessageType(type_name_, schema_format_)));
     }
     return PJ::okStatus();
   }
+  const std::string msg_type = normalizedMessageType(type_name_, schema_format_);
 
   // Normalize root names to the conventions used by rosx_introspection. ROS 2
   // .msg schemas use "pkg/msg/Type" externally and "pkg/Type" internally;
