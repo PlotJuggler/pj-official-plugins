@@ -7,7 +7,4 @@ pj_wasm_official_plugin(pj_wasm_mcap_source
   UI dialog_mcap.ui=kDialogMcapUi
   DATA_SOURCE McapSource DIALOG McapDialog
   LINKS nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static)
-# Zstd 1.5.5's CMake target does not publish its source-tree include directory consistently when
-# consumed through FetchContent.
-target_include_directories(pj_wasm_mcap_source SYSTEM PRIVATE
-  "${CMAKE_CURRENT_LIST_DIR}/contrib" "${zstd_SOURCE_DIR}/lib")
+target_include_directories(pj_wasm_mcap_source SYSTEM PRIVATE "${CMAKE_CURRENT_LIST_DIR}/contrib")

@@ -1,6 +1,6 @@
 # WebAssembly build of this plugin, included by PlotJuggler's browser build (cmake/PjWasmPlugin.cmake).
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/PjWasmPlugin.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/../common/toolbox_preview/wasm.cmake")
+pj_wasm_common_library(toolbox_preview)
 
 # The toolbox carries no script engine: it submits its rule through the host's
 # pj.data_processors.v1 service, so only the Luau-free helper layer is built.

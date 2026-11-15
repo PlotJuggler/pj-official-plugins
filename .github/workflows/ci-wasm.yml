@@ -2,56 +2,30 @@ name: CI WASM
 
 # Builds PlotJuggler's browser app (its own WebAssembly build, not a copy of it) against this
 # checkout's plugins, through their wasm.cmake files (README "WebAssembly build"). The app links
-# every plugin into one module, so this also catches a duplicate symbol between plugins or with
-# the host. No packaging, browser tests or size gate: PlotJuggler's own WASM CI runs those.
+# every plugin into one module, so this also catches a duplicate strong symbol between plugins or
+# with the host (the link runs without the host's Qt flush override, the one part of it built
+# with --allow-multiple-definition). No packaging, browser tests or size gate: PlotJuggler's own WASM CI runs those.
 
+# Any change can reach the browser build (a plugin's sources, common/, cmake/, LICENSE), so
+# only docs and native tests are skipped, rather than keeping a second copy of the host's list.
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - '**/wasm.cmake'
-      - 'cmake/PjWasmPlugin.cmake'
-      - 'cmake/EmbedManifest.cmake'
-      - 'cmake/EmbedUi.cmake'
-      - 'common/**'
-      # The plugins PlotJuggler's PJ_WASM_OFFICIAL_PLUGIN_DIRS lists.
-      - 'data_load_3d/**'
-      - 'data_load_blf/**'
-      - 'data_load_candump/**'
-      - 'data_load_csv/**'
-      - 'data_load_mcap/**'
-      - 'data_load_mf4/**'
-      - 'data_load_parquet/**'
-      - 'data_load_ulog/**'
-      - 'data_stream_dummy/**'
-      - 'data_stream_pj_bridge/**'
-      - 'parser_arrow/**'
-      - 'parser_data_tamer/**'
-      - 'parser_influx/**'
-      - 'parser_json/**'
-      - 'parser_navmap/**'
-      - 'parser_protobuf/**'
-      - 'parser_ros/**'
-      - 'toolbox_anomaly_detector/**'
-      - 'toolbox_data_exporter/**'
-      - 'toolbox_fft/**'
-      - 'toolbox_quaternion/**'
-      - 'toolbox_transform_editor/**'
-      - 'widget_log/**'
-      - '.github/workflows/ci-wasm.yml'
+    paths-ignore: &skip
+      - '**/*.md'
+      - '**/tests/**'
+      - 'docs/**'
   push:
     branches: [main]
+    paths-ignore: *skip
 
 concurrency:
   group: ci-wasm-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  # The PlotJuggler commit whose browser build this job runs: the one place the host is pinned.
-  # It must consume the per-plugin wasm.cmake files: until the PlotJuggler PR that introduced
-  # them (PlotJuggler/PlotJuggler, branch refactor/wasm-official-plugin-function) merges, a commit
-  # of that PR; afterwards a commit of PlotJuggler's main. A commit, not a branch, so the job
-  # does not break when the host moves.
+  # The PlotJuggler commit whose browser build this job runs (README "WebAssembly build"): a
+  # commit, not a branch, so the job does not break when the host moves.
   PJ_HOST_REF: d0799ab7aa5bbbf0f7527c136f1361006f23ef63
 
 jobs:
@@ -81,21 +55,17 @@ jobs:
           submodules: recursive
 
       - name: Read the host's toolchain versions
-        id: versions
         run: |
           set -euo pipefail
           source host/versions.env
           for name in PJ_QT_VERSION PJ_EMSCRIPTEN_VERSION PJ_WASM_NODE_VERSION; do
             echo "${name}=${!name}" >> "${GITHUB_ENV}"
           done
-          echo "qt=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "emscripten=${PJ_EMSCRIPTEN_VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "node=${PJ_WASM_NODE_VERSION}" >> "${GITHUB_OUTPUT}"
 
       - name: Install node (the host's CPython build runs it)
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ steps.versions.outputs.node }}
+          node-version: ${{ env.PJ_WASM_NODE_VERSION }}
 
       - name: Install build tools
         run: |
@@ -108,12 +78,12 @@ jobs:
             libgl1 libegl1 libfontconfig1 libfreetype6 libxkbcommon0 \
             libx11-6 libxcb1 libglib2.0-0 libdbus-1-3
 
-      - name: Cache Qt WebAssembly and host kits
+      - name: Restore Qt WebAssembly and host kits
         id: qt-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.qt-wasm
-          key: qt-wasm-${{ steps.versions.outputs.qt }}-multithread-shadertools-v1
+          key: qt-wasm-${{ env.PJ_QT_VERSION }}-multithread-shadertools-v1
 
       - name: Install Qt WebAssembly and host kits
         if: steps.qt-cache.outputs.cache-hit != 'true'
@@ -125,12 +95,12 @@ jobs:
           "${HOME}/.local/bin/aqt" install-qt all_os wasm "${PJ_QT_VERSION}" wasm_multithread \
             --outputdir ~/.qt-wasm -m qtshadertools
 
-      - name: Cache Emscripten SDK
+      - name: Restore Emscripten SDK
         id: emsdk-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.emsdk
-          key: emsdk-${{ steps.versions.outputs.emscripten }}-linux-x64-v1
+          key: emsdk-${{ env.PJ_EMSCRIPTEN_VERSION }}-linux-x64-v1
 
       - name: Install Emscripten SDK
         if: steps.emsdk-cache.outputs.cache-hit != 'true'
@@ -140,26 +110,30 @@ jobs:
           ~/.emsdk/emsdk install "${PJ_EMSCRIPTEN_VERSION}"
           ~/.emsdk/emsdk activate "${PJ_EMSCRIPTEN_VERSION}"
 
-      - name: Cache the host's WebAssembly CPython build
-        uses: actions/cache@v4
+      - name: Restore the host's WebAssembly CPython build
+        id: cpython-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/pj-wasm-cpython
-          key: wasm-cpython-${{ hashFiles('host/cmake/PjWasmPython.cmake', 'host/cmake/wasm_python/**') }}-emsdk-${{ steps.versions.outputs.emscripten }}
+          key: wasm-cpython-${{ hashFiles('host/cmake/PjWasmPython.cmake', 'host/cmake/wasm_python/**') }}-emsdk-${{ env.PJ_EMSCRIPTEN_VERSION }}
 
       - name: Restore compiler cache
-        # Saved only by pushes to main (below): this repository's Actions cache is at its 10 GB
-        # cap, and a PR's entry is visible to that PR alone, so saving one per PR run would evict
-        # the other workflows' caches. PRs start from main's latest entry.
+        # Every cache here is saved only by pushes to main (the last steps): this repository's
+        # Actions cache is at its 10 GB cap, and a PR's entry is visible to that PR alone, so
+        # saving one per PR run would evict the other workflows' caches. The Emscripten version
+        # is in the key because ccache cannot tell its releases apart (em++ is the same launcher).
+        id: ccache
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/ccache
-          key: ccache-wasm-${{ github.run_id }}
-          restore-keys: ccache-wasm-
+          key: ccache-wasm-${{ env.PJ_EMSCRIPTEN_VERSION }}-${{ github.run_id }}
+          restore-keys: ccache-wasm-${{ env.PJ_EMSCRIPTEN_VERSION }}-
 
       - name: Configure compiler cache
         run: |
-          # A cold build of the whole app stores about 0.11 GB (compressed).
-          ccache --set-config=max_size=1G
+          # A cold build of the whole app stores about 0.11 GB (compressed); the cap keeps dead
+          # objects from piling up across saved entries.
+          ccache --set-config=max_size=400M
           ccache --set-config=compression=true
           ccache --set-config=compiler_check=content
           ccache --set-config=hash_dir=false
@@ -181,6 +155,7 @@ jobs:
             -DPJ_BUILD_TESTS=OFF \
             -DPJ_BUILD_DEMOS=OFF \
             -DPJ_WASM_PYTHON_CACHE_DIR="${HOME}/.cache/pj-wasm-cpython" \
+            -DPJ_WASM_QT_FLUSH_OVERRIDE=OFF \
             -DFETCHCONTENT_SOURCE_DIR_PJ_OFFICIAL_PLUGINS="${GITHUB_WORKSPACE}/plugins"
           cmake --build build --target pj_app --parallel 4
 
@@ -188,9 +163,30 @@ jobs:
         if: always()
         run: ccache --show-stats
 
+      - name: Save Qt WebAssembly and host kits
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.qt-wasm
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
+
+      - name: Save Emscripten SDK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.emsdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.emsdk
+          key: ${{ steps.emsdk-cache.outputs.cache-primary-key }}
+
+      - name: Save the host's WebAssembly CPython build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cpython-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/pj-wasm-cpython
+          key: ${{ steps.cpython-cache.outputs.cache-primary-key }}
+
       - name: Save compiler cache
         if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/ccache
-          key: ccache-wasm-${{ github.run_id }}
+          key: ${{ steps.ccache.outputs.cache-primary-key }}

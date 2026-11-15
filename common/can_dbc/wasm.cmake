@@ -14,4 +14,4 @@ add_library(pj_can_dbc STATIC
 target_compile_features(pj_can_dbc PUBLIC cxx_std_20)
 target_include_directories(pj_can_dbc PUBLIC "${CMAKE_CURRENT_LIST_DIR}/include")
 target_link_libraries(pj_can_dbc PUBLIC plotjuggler_sdk::base PRIVATE pj_wasm_dbc_parser)
-pj_wasm_finalize_targets(pj_can_dbc)
+pj_wasm_finalize_target(pj_can_dbc)

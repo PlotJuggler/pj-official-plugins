@@ -148,8 +148,9 @@ PlotJuggler's browser build cannot load plugins at run time, so it compiles the
 plugins it ships into its own module, from a pinned commit of this repository. Each
 such plugin carries a `wasm.cmake` that declares that build with one
 `pj_wasm_official_plugin()` call (sources, manifest, `.ui` files, the exported plugin
-and dialog symbols, links) plus any browser-only quirk; a shared `common/` library it
-links has a `wasm.cmake` of its own. The native and Conan builds never read these files.
+and dialog symbols, links) plus any browser-only quirk; the shared `common/` libraries
+it links come from their native CMakeLists through `pj_wasm_common_library()`. The native
+and Conan builds never read these files.
 [`cmake/PjWasmPlugin.cmake`](cmake/PjWasmPlugin.cmake) defines the function and states
 the contract with the host build: the dependency targets it provides (under the names the
 plugins' native CMakeLists use) and how the registrations reach it.
