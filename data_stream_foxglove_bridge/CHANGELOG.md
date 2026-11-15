@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_foxglove_bridge/`.
 
-## [1.1.3] - 2026-11-15
+## [1.3.0] - 2026-11-15
 
 ### Added
 - Ready for the browser build of PlotJuggler: the plugin's WebSocket transport (shared with the PlotJuggler Bridge) has a backend on the browser's own WebSocket.
