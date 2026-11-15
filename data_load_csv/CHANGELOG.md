@@ -12,6 +12,10 @@ below; for earlier releases see the git history of `data_load_csv/`.
   faster.
 - Emphasised text in the dialog uses DemiBold (600) instead of Bold, matching the app.
 
+### Fixed
+- On Windows, files whose path contains non-ASCII characters (such as Chinese) open again;
+  the path was read in the system code page instead of as UTF-8.
+
 ## [1.0.7] - 2026-09-28
 
 ### Changed

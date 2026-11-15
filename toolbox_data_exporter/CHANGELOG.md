@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_data_exporter/`.
 
-## [0.114.4] - 2026-11-09
+## [1.0.0] - 2026-11-15
 
 ### Changed
 - Updated the bundled Apache Arrow from 23.0.1 to 26.0.1, picking up upstream bug and security fixes.
