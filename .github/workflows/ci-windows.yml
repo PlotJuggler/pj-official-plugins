@@ -4,8 +4,10 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    paths-ignore: ['**/*.md']
   push:
     branches: [main]
+    paths-ignore: ['**/*.md']
 
 concurrency:
   group: ci-windows-${{ github.ref }}
@@ -15,7 +17,28 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Which plugins this change can affect -- see the discover-plugins job in ci-linux.yml.
+  # On a Linux runner, so a change that touches no lane plugin never starts Windows.
+  scope:
+    runs-on: ubuntu-22.04
+    outputs:
+      # Windows' own plan: it also builds the aggregate when a plugin's CMake or conanfile
+      # changes, the only check for a dependency missing from the root recipe or a target
+      # name clash across plugins (macOS stays scoped; see scripts/ci_affected_plugins.py).
+      aggregate: ${{ steps.scope.outputs.windows_aggregate }}
+      standalone: ${{ steps.scope.outputs.windows_standalone }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: scope
+        # Explicit bash = -o pipefail, so a script failure is not hidden behind tee.
+        shell: bash
+        run: python3 scripts/ci_affected_plugins.py | tee -a "$GITHUB_OUTPUT"
+
   build:
+    needs: scope
+    if: needs.scope.outputs.aggregate == 'true' || needs.scope.outputs.standalone != ''
     # Pinned: windows-latest migrated to the VS18/MSVC 14.5x image, where the
     # libsodium/1.0.20 Conan recipe failed to build from source (MSB8052: default
     # toolset 14.44 is incompatible with the v145 platform toolset its bundled
@@ -141,6 +164,7 @@ jobs:
           echo "uploader started (pid $!)"
 
       - name: Build & Test
+        if: needs.scope.outputs.aggregate == 'true'
         shell: bash
         env:
           SCCACHE_GHA_ENABLED: "on"
@@ -180,7 +204,7 @@ jobs:
 
           ctest --test-dir build/Release -V --output-on-failure
 
-      - name: Build & Test plugins outside the aggregate
+      - name: Build & Test single plugins
         # The aggregate root recipe above leaves out the plugins whose dependency
         # pins clash with the Arrow/Flight stack, so this job never compiled them and
         # a green Windows check said nothing about them. That is not hypothetical: the
@@ -188,21 +212,21 @@ jobs:
         # broke both Windows legs of the very next release -- because liblsl is one of
         # those plugins and no Windows job had ever built it.
         #
-        # Same discovery rule and rationale as the step added to ci-macos.yml in #256
-        # (own conanfile.py + manifest.json, no release.sh), and ci-linux.yml already
-        # covers this through its discover-plugins matrix. Run in this job so the legs
-        # reuse the Conan cache the aggregate just warmed.
+        # The scope job (scripts/ci_affected_plugins.py) lists them here, and on a pull
+        # request that builds only some plugins, it lists exactly those instead of the
+        # aggregate. Run in this job so the legs reuse the Conan cache the aggregate
+        # just warmed.
         shell: bash
         env:
           SCCACHE_GHA_ENABLED: "on"
+          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
+          STANDALONE: ${{ needs.scope.outputs.standalone }}
         run: |
-          for d in */conanfile.py; do
-            plugin=$(dirname "$d")
-            [[ -f "$plugin/release.sh" ]] && continue
-            [[ -f "$plugin/manifest.json" ]] || continue
-            # Widget libraries link Qt: they build in ci-widgets.yml, not on this Qt-free lane.
-            grep -q '"category": *"widget"' "$plugin/manifest.json" && continue
-            grep -q "add_subdirectory($plugin)" CMakeLists.txt && continue
+          # build.sh passes no compiler launcher; CMake takes it from the environment.
+          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
+            export CMAKE_C_COMPILER_LAUNCHER=sccache CMAKE_CXX_COMPILER_LAUNCHER=sccache
+          fi
+          for plugin in $STANDALONE; do
             echo "::group::$plugin"
             ./build.sh "$plugin"
             ctest --test-dir "build/$plugin/Release" --output-on-failure -V
@@ -241,7 +265,8 @@ jobs:
         # restore caches saved by main, and a credential must never travel that
         # way. The remote itself is removed too so the cached remotes.json stays
         # neutral; every run re-adds it through configure_jfrog_conan.sh.
-        if: success() && steps.conan-cache.outputs.cache-hit != 'true'
+        # Only after an aggregate build: single-plugin builds leave the closure incomplete.
+        if: success() && steps.conan-cache.outputs.cache-hit != 'true' && needs.scope.outputs.aggregate == 'true'
         shell: bash
         run: |
           conan remote logout plotjuggler-conan 2>/dev/null || true
@@ -252,7 +277,7 @@ jobs:
         # Save only after a successful build and cleanup. A cancelled restore
         # can leave a partially extracted cache that would poison the new key.
         # Immutable keys make a re-save a no-op, so skip exact-key hits.
-        if: success() && steps.conan-cache.outputs.cache-hit != 'true'
+        if: success() && steps.conan-cache.outputs.cache-hit != 'true' && needs.scope.outputs.aggregate == 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.conan2

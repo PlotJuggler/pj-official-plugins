@@ -25,6 +25,7 @@ on:
       - 'QT_VERSION'
       - '.github/actions/install-qt/**'
       - '.github/workflows/ci-widgets.yml'
+      - '!**/*.md'
   push:
     branches: [main]
     paths:
@@ -39,6 +40,7 @@ on:
       - 'QT_VERSION'
       - '.github/actions/install-qt/**'
       - '.github/workflows/ci-widgets.yml'
+      - '!**/*.md'
 
 concurrency:
   group: ci-widgets-${{ github.ref }}

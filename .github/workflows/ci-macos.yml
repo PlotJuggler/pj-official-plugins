@@ -4,15 +4,35 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    paths-ignore: ['**/*.md']
   push:
     branches: [main]
+    paths-ignore: ['**/*.md']
 
 concurrency:
   group: ci-macos-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Which plugins this change can affect -- see the discover-plugins job in ci-linux.yml.
+  # On a cheap Linux runner, so a change that touches no lane plugin never starts a Mac.
+  scope:
+    runs-on: ubuntu-22.04
+    outputs:
+      aggregate: ${{ steps.scope.outputs.aggregate }}
+      standalone: ${{ steps.scope.outputs.standalone }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: scope
+        # Explicit bash = -o pipefail, so a script failure is not hidden behind tee.
+        shell: bash
+        run: python3 scripts/ci_affected_plugins.py | tee -a "$GITHUB_OUTPUT"
+
   build:
+    needs: scope
+    if: needs.scope.outputs.aggregate == 'true' || needs.scope.outputs.standalone != ''
     # Apple silicon, matching the only macOS leg the release matrix still builds.
     # Intel Macs are not a supported target for the time being.
     runs-on: macos-15
@@ -57,11 +77,23 @@ jobs:
         # build.sh, not an inline conan install: it is the path a release tag takes
         # and it carries the plugin-scoped Conan confs -- including the liblsl
         # ASIO_HAS_STD_INVOKE_RESULT define, without which liblsl does not compile
-        # under libc++.
+        # under libc++. The aggregate and/or single plugins, as the scope job decided
+        # (scripts/ci_affected_plugins.py).
         shell: bash
+        env:
+          AGGREGATE: ${{ needs.scope.outputs.aggregate }}
+          STANDALONE: ${{ needs.scope.outputs.standalone }}
         run: |
-          ./build.sh
-          ctest --test-dir build/all/Release -V --output-on-failure
+          if [[ "$AGGREGATE" == true ]]; then
+            ./build.sh
+            ctest --test-dir build/all/Release -V --output-on-failure
+          fi
+          for plugin in $STANDALONE; do
+            echo "::group::$plugin"
+            ./build.sh "$plugin"
+            ctest --test-dir "build/$plugin/Release" --output-on-failure -V
+            echo "::endgroup::"
+          done
 
       - name: Upload built Conan binaries to JFrog
         # Publish every dependency compiled above (macOS binaries) so the next
