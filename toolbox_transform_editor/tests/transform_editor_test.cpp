@@ -709,7 +709,7 @@ TEST(TransformEditorCreate, ASeriesRecipeStillGoesThroughCreateTransform) {
 }
 
 // The tick that creates also closes the editor: it must not replay the whole source into a preview
-// nobody will see (the prompt's name edit leaves the form dirty).
+// nobody will see. (Native builds refresh on every tick, so without the guard this tick would.)
 TEST(TransformEditorCreate, TheCreatingTickRebuildsNoPreview) {
   Rig rig;
   rig.refresh();
@@ -721,6 +721,20 @@ TEST(TransformEditorCreate, TheCreatingTickRebuildsNoPreview) {
   rig.createNamed("dbl");
   EXPECT_EQ(rig.dp.last_id, "dbl");
   EXPECT_EQ(refreshes, 0);
+}
+
+// A create the host refuses leaves the editor open, so that tick still refreshes the preview.
+TEST(TransformEditorCreate, AFailedCreateStillRefreshesThePreview) {
+  Rig rig;
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"a/x"});
+  rig.dialog().onCodeChanged("functionText", "return value*2");
+  rig.refresh();
+  int refreshes = 0;
+  rig.dialog().setOnRefreshPreview([&refreshes]() { ++refreshes; });
+  rig.dp.fail_create = true;
+  rig.createNamed("dbl");
+  EXPECT_EQ(refreshes, 1);
 }
 
 TEST(TransformEditorCreate, SeveralReturnedSeriesAreNamedNameSlashA) {
