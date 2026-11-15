@@ -308,6 +308,16 @@ TEST_F(LogLoaderTest, OlderHostCapKeepsWhatArrivedAndReportsIt) {
   // Unchanged history: no new full load on the next update.
   sync();
   EXPECT_EQ(loader_.fullLoads(), 1u);
+  // A grown history: the decimated rows stay and the new sample is appended, not the whole history
+  // decimated again (hosts from PlotJuggler 4.2, which this widget requires, do not clamp at all).
+  fill(0, {250.0});
+  sync();
+  EXPECT_EQ(loader_.fullLoads(), 1u);
+  EXPECT_EQ(loader_.incrementalLoads(), 1u);
+  EXPECT_EQ(store_.size(), 101u);
+  EXPECT_EQ(store_.row(store_.size() - 1).time, 250.0);
+  EXPECT_EQ(loader_.receivedSamples(), 101u);
+  EXPECT_EQ(loader_.hostSamples(), 251u);
 }
 
 TEST_F(LogLoaderTest, NonLogWireWarnsOnceAndShowsNothing) {
@@ -343,6 +353,168 @@ TEST_F(LogLoaderTest, UndeliverableFirstSampleKeepsTheWire) {
   sync();
   EXPECT_EQ(times(store_), (std::vector<double>{2.0, 3.0, 4.0}));
   EXPECT_TRUE(loader_.wires()[0].is_log);
+}
+
+// An entry the host counts but cannot deliver must not turn every later update into a full reload: the
+// new samples are still appended by a tail read.
+TEST_F(LogLoaderTest, UndeliverableSampleStillAppendsIncrementally) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 3.0});
+  host_.samples(0)[1].undeliverable = true;
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{1.0, 3.0}));
+  EXPECT_EQ(loader_.receivedSamples(), 2u);
+  EXPECT_EQ(loader_.hostSamples(), 3u);
+
+  fill(0, {4.0});
+  sync();
+  fill(0, {5.0, 5.0});
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{1.0, 3.0, 4.0, 5.0, 5.0}));
+  EXPECT_EQ(loader_.fullLoads(), 1u);
+  EXPECT_EQ(loader_.incrementalLoads(), 2u);
+  EXPECT_EQ(loader_.receivedSamples(), 5u);
+  EXPECT_EQ(loader_.hostSamples(), 6u);
+
+  // A late insert is still caught by the counts and reloads.
+  fill(0, {2.5});
+  sync();
+  EXPECT_EQ(loader_.fullLoads(), 2u);
+  EXPECT_EQ(times(store_), (std::vector<double>{1.0, 2.5, 3.0, 4.0, 5.0, 5.0}));
+}
+
+// An undeliverable entry in the appended tail is counted as missing, and the next append is incremental too.
+TEST_F(LogLoaderTest, UndeliverableSampleInTheTailIsCountedAsMissing) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0});
+  sync();
+  fill(0, {3.0, 4.0});
+  host_.samples(0)[2].undeliverable = true;
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{1.0, 2.0, 4.0}));
+  EXPECT_EQ(loader_.receivedSamples(), 3u);
+  EXPECT_EQ(loader_.hostSamples(), 4u);
+
+  fill(0, {5.0});
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{1.0, 2.0, 4.0, 5.0}));
+  EXPECT_EQ(loader_.fullLoads(), 1u);
+  EXPECT_EQ(loader_.incrementalLoads(), 2u);
+}
+
+// Without its first sample the widget cannot tell an offset change from an append: it reloads, in either direction.
+TEST_F(LogLoaderTest, UndeliverableFirstSampleReloadsOnAnOffsetShiftToEarlierTimes) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 3.0});
+  host_.samples(0).front().undeliverable = true;
+  sync();
+  host_.display_offset += std::chrono::milliseconds(500);
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{1.5, 2.5}));
+}
+
+TEST_F(LogLoaderTest, UndeliverableFrontWithEvictionShiftAndAppendInOneUpdate) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 3.0, 4.0});
+  host_.samples(0)[0].undeliverable = host_.samples(0)[1].undeliverable = true;
+  sync();
+  auto& samples = host_.samples(0);
+  samples.erase(samples.begin());
+  host_.display_offset += std::chrono::milliseconds(500);
+  fill(0, {4.0, 5.0});
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{2.5, 3.5, 4.0, 5.0}));
+}
+
+// An undeliverable first sample evicted while the count stays the same is a change, not an unchanged history.
+TEST_F(LogLoaderTest, UndeliverableFirstSampleEvictedWithTheCountUnchanged) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 3.0});
+  host_.samples(0).front().undeliverable = true;
+  sync();
+  auto& samples = host_.samples(0);
+  samples.erase(samples.begin());
+  fill(0, {4.0});
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{2.0, 3.0, 4.0}));
+}
+
+// Undeliverable samples leave the count with the samples the host evicts: received never exceeds what it holds.
+TEST_F(LogLoaderTest, EvictedUndeliverableSamplesLeaveTheMissingCount) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 3.0, 4.0});
+  auto& samples = host_.samples(0);
+  samples[1].undeliverable = true;
+  sync();
+  EXPECT_EQ(loader_.receivedSamples(), 3u);
+  samples.erase(samples.begin(), samples.begin() + 2);  // 1 and the undeliverable 2 leave
+  fill(0, {5.0});
+  sync();
+  EXPECT_EQ(loader_.incrementalLoads(), 1u);
+  EXPECT_EQ(loader_.receivedSamples(), 3u);
+  EXPECT_EQ(loader_.hostSamples(), 3u);
+}
+
+TEST_F(LogLoaderTest, HostDroppingEverythingClearsTheMissingCount) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 3.0});
+  host_.samples(0)[1].undeliverable = true;
+  sync();
+  host_.samples(0).clear();
+  sync();
+  EXPECT_EQ(loader_.receivedSamples(), 0u);
+  EXPECT_EQ(loader_.hostSamples(), 0u);
+  EXPECT_EQ(times(store_), (std::vector<double>{1.0, 3.0}));  // the rows already shown are kept
+}
+
+// A streaming buffer that still holds an undeliverable sample reloads on each eviction: store rows cannot tell a
+// late insert from that sample, and a reload stays exact. It stops once the sample leaves the buffer.
+TEST_F(LogLoaderTest, EvictionWithAnUndeliverableSampleInTheBufferStaysExact) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 3.0, 4.0, 5.0});
+  auto& samples = host_.samples(0);
+  samples[3].undeliverable = true;  // 4
+  sync();
+  for (double t : {6.0, 7.0, 8.0, 9.0, 10.0}) {
+    samples.erase(samples.begin());
+    fill(0, {t});
+    sync();
+  }
+  // A reload shows what the host holds, so the rows it had already evicted are gone; from the update after the
+  // undeliverable sample left, rows the host evicts are kept again.
+  EXPECT_EQ(times(store_), (std::vector<double>{5.0, 6.0, 7.0, 8.0, 9.0, 10.0}));
+  const size_t reloads = loader_.fullLoads();
+  samples.erase(samples.begin());  // the buffer no longer holds the undeliverable sample
+  fill(0, {11.0});
+  sync();
+  EXPECT_EQ(loader_.fullLoads(), reloads);
+  EXPECT_EQ(times(store_).back(), 11.0);
+}
+
+// An eviction that splits samples sharing a time leaves the widget more rows at that time than the host holds;
+// those surplus rows must not cancel out an undeliverable sample still held or a late insert.
+TEST_F(LogLoaderTest, EvictionSplittingEqualTimesKeepsAnUndeliverableSampleCounted) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 2.0, 3.0, 4.0});
+  auto& samples = host_.samples(0);
+  samples[3].undeliverable = true;
+  sync();
+  samples.erase(samples.begin(), samples.begin() + 2);  // 1 and the first 2 leave
+  fill(0, {5.0});
+  sync();
+  EXPECT_EQ(loader_.receivedSamples(), 3u);
+  EXPECT_EQ(loader_.hostSamples(), 4u);
+}
+
+TEST_F(LogLoaderTest, EvictionSplittingEqualTimesStillSeesALateInsert) {
+  host_.wire(0, "/rosout");
+  fill(0, {1.0, 2.0, 2.0, 3.0, 4.0});
+  sync();
+  auto& samples = host_.samples(0);
+  samples.erase(samples.begin(), samples.begin() + 2);
+  fill(0, {2.5, 5.0});
+  sync();
+  EXPECT_EQ(times(store_), (std::vector<double>{2.0, 2.5, 3.0, 4.0, 5.0}));
 }
 
 // The first sample tells an offset change from an unchanged history; without it, the last one does.

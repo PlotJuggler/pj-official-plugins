@@ -210,6 +210,7 @@ void LogLoader::fullLoad(
   wire.loaded = true;
   wire.missing = 0;
   wire.host_total = 0;
+  wire.probe_first = counted->first_time;
   if (counted->total == 0) {
     result.change.then(store_.removeWire(slot));
     return;
@@ -245,8 +246,8 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& hos
   if (counted && unchanged(slot, wire, *counted, host)) {
     return;
   }
-  if (wire.missing > 0 || wire.host_total == 0) {
-    // A reduced history cannot be extended sample by sample, and an empty one has nothing to extend.
+  if (wire.host_total == 0) {
+    // An empty history has nothing to extend.
     fullLoad(slot, wire, counted, host, result);
     return;
   }
@@ -256,13 +257,21 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& hos
   if (counted->total == 0) {
     // The host dropped everything it had: keep the rows already shown.
     wire.host_total = 0;
+    wire.missing = 0;
+    return;
+  }
+  if (!counted->first_time || !wire.probe_first) {
+    // The host's first sample was not delivered, now or at the load: an offset change or an eviction cannot
+    // be told from an append, so read it all. Samples the host counts but cannot deliver elsewhere in the
+    // history are extended like any other: the checks below compare host counts, which include them.
+    fullLoad(slot, wire, counted, host, result);
     return;
   }
 
   // A later first sample that the widget already holds means the host evicted old samples (streaming
   // buffer). Any other change of the first sample is a display offset change or an earlier insert.
   bool evicted = false;
-  if (counted->first_time && *counted->first_time != wire.host_first) {
+  if (*counted->first_time != wire.host_first) {
     const double first = *counted->first_time;
     if (first > wire.host_first && first <= wire.host_last && store_.wireHasTime(slot, first)) {
       evicted = true;
@@ -277,7 +286,19 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& hos
   if (!up_to_last) {
     return;
   }
-  const size_t expected = evicted ? store_.wireRowsFrom(slot, *counted->first_time) : wire.host_total;
+  // After an eviction the host's samples at the new first time, plus the rows held after it, are compared: an
+  // eviction can split samples sharing a time, so the rows held at that time may outnumber the host's. The rows
+  // hold no sample the host counted but did not deliver, so a window still holding one after the first time
+  // reloads (exact, unlike a tolerance that could hide a late insert), and a match means none is left there.
+  size_t expected = wire.host_total;
+  if (evicted) {
+    const double first = *counted->first_time;
+    auto at_first = probe(slot, first, host);
+    if (!at_first) {
+      return;
+    }
+    expected = at_first->total + store_.wireRowsFrom(slot, std::nextafter(first, kMaxTime));
+  }
   // The second guard keeps `fresh` below from wrapping if the host changed between the two reads.
   if (up_to_last->total != expected || up_to_last->total > counted->total) {
     fullLoad(slot, wire, probe(slot, kMaxTime, host), host, result);  // re-count: the host may have changed
@@ -285,8 +306,15 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& hos
   }
   const uint32_t fresh = counted->total - up_to_last->total;
   if (fresh == 0) {
+    if (!evicted) {
+      // Same count and first sample as loaded, yet not unchanged: reload rather than guess.
+      fullLoad(slot, wire, counted, host, result);
+      return;
+    }
     wire.host_total = counted->total;
-    wire.host_first = counted->first_time.value_or(wire.host_first);
+    wire.host_first = *counted->first_time;
+    wire.probe_first = counted->first_time;
+    wire.missing = 0;
     return;
   }
 
@@ -312,7 +340,11 @@ void LogLoader::refresh(uint32_t slot, Wire& wire, const PJ::WidgetHostView& hos
   }
   result.change.then(store_.insert(slot, std::move(collect.rows)));
   wire.host_total = counted->total;
-  wire.host_first = counted->first_time.value_or(wire.host_first);
+  wire.host_first = *counted->first_time;
+  wire.probe_first = counted->first_time;
+  if (evicted) {
+    wire.missing = 0;
+  }
   if (collect.delivered < fresh) {
     wire.missing += fresh - collect.delivered;
   }
@@ -329,8 +361,11 @@ bool LogLoader::unchanged(uint32_t slot, const Wire& wire, const Probe& counted,
   if (counted.total == 0) {
     return true;
   }
+  if (counted.first_time != wire.probe_first) {
+    return false;  // the first sample moved, or became deliverable or undeliverable
+  }
   if (counted.first_time) {
-    return *counted.first_time == wire.host_first;
+    return true;
   }
   // The first sample is not delivered: a read of two samples delivers the first and the last, and the last
   // one moves with the display offset as well.
@@ -367,7 +402,7 @@ size_t LogLoader::receivedSamples() const {
   size_t sum = 0;
   for (const auto& [slot, wire] : wires_) {
     if (wire.is_log) {
-      sum += wire.host_total - wire.missing;
+      sum += wire.host_total > wire.missing ? wire.host_total - wire.missing : 0;
     }
   }
   return sum;
