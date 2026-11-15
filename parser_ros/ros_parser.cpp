@@ -505,20 +505,19 @@ void RosParser::registerBoundSchemaHandler(const CatalogEntry& entry) {
   // the message receive time, exactly as before.
   PJ::sdk::SchemaHandler handler;
   handler.object_type = entry.object_type;
+  scalar_route_ = entry.parse_scalars;
   if (entry.parse_scalars) {
-    auto fn = std::bind_front(entry.parse_scalars, this);
-    handler.parse_scalars = [this, fn = std::move(fn)](
+    handler.parse_scalars = [this, fn = entry.parse_scalars](
                                 PJ::Timestamp ts,
                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-      auto fields = fn(ts, payload);
-      if (!fields) {
-        return PJ::unexpected(std::move(fields).error());
+      if (auto status = (this->*fn)(ts, payload); !status) {
+        return PJ::unexpected(std::move(status).error());
       }
       PJ::sdk::ScalarRecord record;
       if (use_embedded_timestamp_) {
         record.ts = current_timestamp_;
       }
-      record.fields = std::move(*fields);
+      record.fields.assign(fields_.begin(), fields_.end());
       return record;
     };
   }
@@ -701,19 +700,23 @@ PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> 
   if (!writeHostBound()) {
     return PJ::unexpected(std::string("write host not bound"));
   }
-  auto record = parseScalars(timestamp_ns, payload);
-  if (!record) {
-    return PJ::unexpected(std::move(record).error());
+  if (scalar_route_ == nullptr) {
+    // No schema bound, so no handler registered: the base reports that.
+    auto record = parseScalars(timestamp_ns, payload);
+    return record ? PJ::okStatus() : PJ::unexpected(std::move(record).error());
   }
-  if (record->fields.empty()) {
+  // The same route parseScalars dispatches to, called directly: fields_ is
+  // appended as it is, with no per-message copy of every field name.
+  if (auto status = (this->*scalar_route_)(timestamp_ns, payload); !status) {
+    return status;
+  }
+  if (fields_.empty()) {
     return PJ::okStatus();
   }
-  // Honor the parser-controlled timestamp when the scalar handler set one
-  // (use_embedded_timestamp_); otherwise fall back to the message receive
-  // time. The handler already folded the embedded stamp into the record.
-  const PJ::Timestamp ts = record->ts.value_or(timestamp_ns);
-  return bound_field_cache_.append(
-      writeHost(), ts, PJ::Span<const PJ::sdk::NamedFieldValue>(record->fields.data(), record->fields.size()));
+  // Honor the parser-controlled timestamp (use_embedded_timestamp_, resolved by
+  // the handler into current_timestamp_); otherwise the message receive time.
+  const PJ::Timestamp ts = use_embedded_timestamp_ ? current_timestamp_ : timestamp_ns;
+  return bound_field_cache_.append(writeHost(), ts, fields_.span());
 }
 
 // ---------------------------------------------------------------------------
@@ -723,8 +726,7 @@ PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> 
 // parseScalarsDiscardingLargeArrays below.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsGeneric(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parseScalarsGeneric(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   if (auto status = compileBoundSchema(false); !status) {
     return PJ::unexpected(std::move(status).error());
   }
@@ -732,18 +734,10 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsGener
     return PJ::unexpected(std::string("no schema bound"));
   }
   ensureDeserializer();
-  owned_fields_.clear();
-  string_storage_.clear();
-  named_fields_.clear();
+  fields_.clear();
   current_timestamp_ = ts;
   flattenGeneric(payload);
-
-  std::vector<PJ::sdk::NamedFieldValue> out;
-  out.reserve(owned_fields_.size());
-  for (const auto& f : owned_fields_) {
-    out.push_back({.name = f.name, .value = f.value});
-  }
-  return out;
+  return PJ::okStatus();
 }
 
 // ---------------------------------------------------------------------------
@@ -754,8 +748,7 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsGener
 // The user-configured array policy is restored on exit.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsDiscardingLargeArrays(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parseScalarsDiscardingLargeArrays(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   if (auto status = compileBoundSchema(false); !status) {
     return PJ::unexpected(std::move(status).error());
   }
@@ -779,10 +772,10 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsDisca
 // fields, so no scalar row is written). Decodes nothing — zero cost, zero risk.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsObjectOnly(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> /*payload*/) {
+PJ::Status RosParser::parseScalarsObjectOnly(PJ::Timestamp ts, PJ::Span<const uint8_t> /*payload*/) {
   current_timestamp_ = ts;
-  return std::vector<PJ::sdk::NamedFieldValue>{};
+  fields_.clear();
+  return PJ::okStatus();
 }
 
 // ---------------------------------------------------------------------------
@@ -794,20 +787,9 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsObjec
 
 void RosParser::beginDirectScalarRead(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   ensureDeserializer();
-  owned_fields_.clear();
-  string_storage_.clear();
-  named_fields_.clear();
+  fields_.clear();
   current_timestamp_ = ts;
   deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
-}
-
-std::vector<PJ::sdk::NamedFieldValue> RosParser::harvestOwnedFields() const {
-  std::vector<PJ::sdk::NamedFieldValue> out;
-  out.reserve(owned_fields_.size());
-  for (const auto& f : owned_fields_) {
-    out.push_back({.name = f.name, .value = f.value});
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -826,12 +808,11 @@ std::vector<PJ::sdk::NamedFieldValue> RosParser::harvestOwnedFields() const {
 // policy, and the canonical object never reaches the ObjectStore.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseHeaderOnlyScalars(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parseHeaderOnlyScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
     emitHeader(readHeader());
-    return harvestOwnedFields();
+    return PJ::okStatus();
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("header scalars: CDR read error: ") + e.what());
   }
@@ -907,17 +888,16 @@ void RosParser::findQuaternionPrefixes(
 // Field accumulation helpers
 // ---------------------------------------------------------------------------
 
-void RosParser::addField(const std::string& name, double value) {
-  owned_fields_.push_back({name, PJ::sdk::ValueRef{value}});
+void RosParser::addField(std::string_view name, double value) {
+  fields_.add(name, PJ::sdk::ValueRef{value});
 }
 
-void RosParser::addField(const std::string& name, PJ::sdk::ValueRef value) {
-  owned_fields_.push_back({name, value});
+void RosParser::addField(std::string_view name, PJ::sdk::ValueRef value) {
+  fields_.add(name, value);
 }
 
-void RosParser::addStringField(const std::string& name, const std::string& value) {
-  string_storage_.push_back(value);
-  owned_fields_.push_back({name, PJ::sdk::ValueRef{std::string_view(string_storage_.back())}});
+void RosParser::addStringField(std::string_view name, std::string_view value) {
+  fields_.addString(name, value);
 }
 
 // ---------------------------------------------------------------------------
@@ -925,13 +905,7 @@ void RosParser::addStringField(const std::string& name, const std::string& value
 // ---------------------------------------------------------------------------
 
 PJ::Status RosParser::emitRecord(PJ::Timestamp ts) {
-  named_fields_.clear();
-  named_fields_.reserve(owned_fields_.size());
-  for (const auto& f : owned_fields_) {
-    named_fields_.push_back({.name = f.name, .value = f.value});
-  }
-  return bound_field_cache_.append(
-      writeHost(), ts, PJ::Span<const PJ::sdk::NamedFieldValue>(named_fields_.data(), named_fields_.size()));
+  return bound_field_cache_.append(writeHost(), ts, fields_.span());
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,7 +979,7 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
     parser_->deserialize(
         RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()), &flat_msg_, deserializer_.get());
   } catch (const std::exception&) {
-    // CDR deserialization failed; bail and let the empty owned_fields_
+    // CDR deserialization failed; bail and let the empty fields_
     // signal "no record" to the outer parse() caller. The SDK base
     // class surfaces parse errors via PJ::unexpected() — best-effort
     // mid-flatten errors are silently dropped.
@@ -1051,17 +1025,16 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
       // Apply the string-to-number toggles before falling back to the string
       // representation. parseStringAsDouble returns false when either both
       // toggles are off or no rule matches; in that case we keep the string
-      // verbatim. The doubled storage (owned via string_storage_) is needed
+      // verbatim. The doubled storage (owned by fields_) is needed
       // because ValueRef holds a non-owning string_view.
       if ((boolean_strings_to_number_ || remove_suffix_from_strings_) &&
           parseStringAsDouble(extracted, numeric, remove_suffix_from_strings_, boolean_strings_to_number_)) {
-        owned_fields_.push_back({field_name, PJ::sdk::ValueRef{numeric}});
+        fields_.add(field_name, PJ::sdk::ValueRef{numeric});
       } else {
-        string_storage_.push_back(std::move(extracted));
-        owned_fields_.push_back({field_name, PJ::sdk::ValueRef{std::string_view(string_storage_.back())}});
+        fields_.addString(field_name, extracted);
       }
     } else {
-      owned_fields_.push_back({field_name, variantToValueRef(variant)});
+      fields_.add(field_name, variantToValueRef(variant));
     }
   }
 
@@ -1075,9 +1048,9 @@ void RosParser::addQuaternionRPY() {
 
   // Build name → index map for O(1) lookup.
   std::unordered_map<std::string, size_t> idx;
-  const size_t n = owned_fields_.size();
+  const size_t n = fields_.size();
   for (size_t i = 0; i < n; i++) {
-    idx.emplace(owned_fields_[i].name, i);
+    idx.emplace(fields_[i].name, i);
   }
 
   for (const auto& prefix : quaternion_prefixes_) {
@@ -1086,7 +1059,7 @@ void RosParser::addQuaternionRPY() {
       if (it == idx.end()) {
         return 0.0;
       }
-      return valueRefAsDouble(owned_fields_[it->second].value);
+      return valueRefAsDouble(fields_[it->second].value);
     };
 
     double x = find_val("/x");
@@ -1094,9 +1067,9 @@ void RosParser::addQuaternionRPY() {
     double z = find_val("/z");
     double w = find_val("/w");
     auto rpy = quaternionToRPY(x, y, z, w);
-    owned_fields_.push_back({prefix + "/roll", PJ::sdk::ValueRef{rpy.roll}});
-    owned_fields_.push_back({prefix + "/pitch", PJ::sdk::ValueRef{rpy.pitch}});
-    owned_fields_.push_back({prefix + "/yaw", PJ::sdk::ValueRef{rpy.yaw}});
+    fields_.add(prefix + "/roll", PJ::sdk::ValueRef{rpy.roll});
+    fields_.add(prefix + "/pitch", PJ::sdk::ValueRef{rpy.pitch});
+    fields_.add(prefix + "/yaw", PJ::sdk::ValueRef{rpy.yaw});
   }
 }
 

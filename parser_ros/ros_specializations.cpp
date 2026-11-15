@@ -381,8 +381,7 @@ void RosParser::handlePalStatisticsValues() {
   const auto& names = ver_it->second;
   size_t n = std::min(names.size(), values.size());
   // Clear the header fields already emitted — for PAL values we emit named fields only.
-  owned_fields_.clear();
-  string_storage_.clear();
+  fields_.clear();
   for (size_t i = 0; i < n; i++) {
     addField("/" + names[i], values[i]);
   }
@@ -414,21 +413,19 @@ void RosParser::handleTSLDefinition() {
   auto& queue = g_tsl_values_buffer[hash];
   while (!queue.empty()) {
     auto& [buf_ts, buf_values] = queue.front();
-    owned_fields_.clear();
-    string_storage_.clear();
+    fields_.clear();
     const auto& def = g_tsl_definitions[hash];
     size_t n = std::min(def.size(), buf_values.size());
     for (size_t i = 0; i < n; i++) {
       addField("/" + def[i], buf_values[i]);
     }
-    if (!owned_fields_.empty()) {
+    if (!fields_.empty()) {
       // Ignore error from buffered flush — best effort.
       (void)emitRecord(buf_ts);
     }
     queue.pop();
   }
-  owned_fields_.clear();
-  string_storage_.clear();
+  fields_.clear();
   // No fields to emit for the definition itself.
 }
 
