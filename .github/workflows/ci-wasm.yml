@@ -52,7 +52,7 @@ env:
   # them (PlotJuggler/PlotJuggler, branch refactor/wasm-official-plugin-function) merges, a commit
   # of that PR; afterwards a commit of PlotJuggler's main. A commit, not a branch, so the job
   # does not break when the host moves.
-  PJ_HOST_REF: a4e6ac30885443a80169ff49e196d532086732bd
+  PJ_HOST_REF: d0799ab7aa5bbbf0f7527c136f1361006f23ef63
 
 jobs:
   wasm:
