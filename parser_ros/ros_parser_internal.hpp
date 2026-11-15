@@ -112,6 +112,15 @@ class FieldBuffer {
     stored.assign(text);
     add(name, std::string_view(stored));
   }
+  void setValue(size_t i, PJ::sdk::ValueRef value) {
+    fields_[i].value = value;
+  }
+  void erase(size_t i) {
+    std::rotate(
+        fields_.begin() + static_cast<std::ptrdiff_t>(i), fields_.begin() + static_cast<std::ptrdiff_t>(i) + 1,
+        fields_.begin() + static_cast<std::ptrdiff_t>(size_));
+    --size_;
+  }
   [[nodiscard]] bool empty() const {
     return size_ == 0;
   }
@@ -313,7 +322,6 @@ class RosParser : public PJ::MessageParserPluginBase {
   // Parse state
   std::optional<RosMsgParser::Parser> parser_;
   std::unique_ptr<RosMsgParser::Deserializer> deserializer_;
-  RosMsgParser::FlatMessage flat_msg_;
   PJ::Timestamp current_timestamp_ = 0;
 
   // LaserScan -> PointCloud projector. One per parser instance (= per topic),
@@ -669,6 +677,15 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // Generic path
   void flattenGeneric(PJ::Span<const uint8_t> payload);
+  // Name of the value at walk position `index`. Rendered only when `leaf`
+  // (schema node + array indexes + @key suffixes) differs from the leaf seen
+  // at that position in the previous message; otherwise the cached name.
+  const std::string& leafName(size_t index, const RosMsgParser::FieldLeaf& leaf);
+  struct CachedLeaf {
+    RosMsgParser::FieldLeaf leaf;
+    std::string name;
+  };
+  std::vector<CachedLeaf> leaf_names_;  ///< by walk position; cleared with each new parser_
   void addQuaternionRPY();
 };
 

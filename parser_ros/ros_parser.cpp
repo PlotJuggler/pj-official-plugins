@@ -1,5 +1,6 @@
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <pj_base/sdk/text_utils.hpp>
@@ -589,6 +590,7 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
                                 ? ros2IdlDefinition(type_name_, schema_definition_)
                                 : schema_definition_;
     parser_.emplace("", RosMsgParser::ROSType(msg_type), definition, schema_format_);
+    leaf_names_.clear();  // keyed on the previous parser's schema nodes
     auto policy =
         discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
     parser_->setMaxArrayPolicy(policy, max_array_size_);
@@ -975,34 +977,87 @@ void RosParser::emitHeader(const HeaderData& h) {
 // Generic path
 // ---------------------------------------------------------------------------
 
-void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
-  try {
-    parser_->deserialize(
-        RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()), &flat_msg_, deserializer_.get());
-  } catch (const std::exception&) {
-    // CDR deserialization failed; bail and let the empty fields_
-    // signal "no record" to the outer parse() caller. The SDK base
-    // class surfaces parse errors via PJ::unexpected() — best-effort
-    // mid-flatten errors are silently dropped.
-    return;
+namespace {
+
+bool sameLeaf(const RosMsgParser::FieldLeaf& a, const RosMsgParser::FieldLeaf& b) {
+  if (a.node != b.node || a.index_array.size() != b.index_array.size() ||
+      a.key_suffixes.size() != b.key_suffixes.size()) {
+    return false;
+  }
+  if (!std::equal(a.index_array.begin(), a.index_array.end(), b.index_array.begin())) {
+    return false;
+  }
+  for (size_t i = 0; i < a.key_suffixes.size(); ++i) {
+    const auto& x = a.key_suffixes[i];
+    const auto& y = b.key_suffixes[i];
+    if (x.len != y.len || std::memcmp(x.data, y.data, x.len) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Streams the rosx schema walk straight into RosParser::fields_, in walk order,
+// with no FlatMessage in between (which copied every leaf and every string).
+// Keeps the first two values: with a std_msgs/Header they are its stamp.
+class FlattenWriter final : public RosMsgParser::MessageWriter {
+ public:
+  explicit FlattenWriter(RosParser& parser) : parser_(parser) {}
+
+  void writeValue(const RosMsgParser::FieldLeaf& leaf, const RosMsgParser::Variant& value) override {
+    if (count_ < first_.size()) {
+      first_[count_] = value;
+    }
+    parser_.fields_.add(parser_.leafName(count_++, leaf), variantToValueRef(value));
   }
 
-  // Extract embedded timestamp before field conversion.
-  if (use_embedded_timestamp_ && has_header_ && flat_msg_.value.size() >= 2) {
-    double ts = 0;
-    if (deserializer_->isROS2()) {
-      double sec = flat_msg_.value[0].second.convert<double>();
-      double nsec = flat_msg_.value[1].second.convert<double>();
-      ts = sec + 1e-9 * nsec;
+  void writeString(const RosMsgParser::FieldLeaf& leaf, const std::string& text) override {
+    const std::string& name = parser_.leafName(count_++, leaf);
+    double numeric = 0.0;
+    // Apply the string-to-number toggles before falling back to the string
+    // representation. parseStringAsDouble returns false when either both
+    // toggles are off or no rule matches; in that case we keep the string
+    // verbatim, copied into fields_ (ValueRef holds a non-owning string_view).
+    if ((parser_.boolean_strings_to_number_ || parser_.remove_suffix_from_strings_) &&
+        parseStringAsDouble(text, numeric, parser_.remove_suffix_from_strings_, parser_.boolean_strings_to_number_)) {
+      parser_.fields_.add(name, PJ::sdk::ValueRef{numeric});
     } else {
-      // ROS1: value[1] is stamp (Time builtin)
-      ts = flat_msg_.value[1].second.convert<double>();
-    }
-    if (ts > 0) {
-      current_timestamp_ = static_cast<int64_t>(ts * 1e9);
+      parser_.fields_.addString(name, text);
     }
   }
 
+  void writeEnum(const RosMsgParser::FieldLeaf& leaf, int32_t value, const std::string& /*name*/) override {
+    writeValue(leaf, RosMsgParser::Variant(value));  // as rosx's FlatMessageWriter does
+  }
+
+  [[nodiscard]] size_t count() const {
+    return count_;
+  }
+  [[nodiscard]] double first(size_t i) const {
+    return first_[i].convert<double>();
+  }
+
+ private:
+  RosParser& parser_;
+  size_t count_ = 0;
+  std::array<RosMsgParser::Variant, 2> first_{};
+};
+
+}  // namespace
+
+const std::string& RosParser::leafName(size_t index, const RosMsgParser::FieldLeaf& leaf) {
+  if (index >= leaf_names_.size()) {
+    leaf_names_.resize(index + 1);
+  }
+  auto& cached = leaf_names_[index];
+  if (!sameLeaf(cached.leaf, leaf)) {
+    cached.leaf = leaf;
+    leaf.toStr(cached.name);
+  }
+  return cached.name;
+}
+
+void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   // Combined /header/stamp (seconds) for ROS 2, whose std_msgs/Header flattens
   // to split sec/nanosec leaves: the single plottable stamp series the
   // specialized handlers emit via emitHeader(), a diagnostic aid for clock
@@ -1010,32 +1065,45 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   // use_embedded_timestamp toggle. ROS 1 must NOT get it: its `time` builtin
   // already flattens to one /header/stamp leaf in seconds, and a second column
   // of the same name makes the datastore reject the whole record.
-  // value[0]/value[1] are the sec/nanosec leaves — same assumption as above.
-  if (has_header_ && deserializer_->isROS2() && flat_msg_.value.size() >= 2) {
-    const double stamp_sec =
-        flat_msg_.value[0].second.convert<double>() + 1e-9 * flat_msg_.value[1].second.convert<double>();
-    addField("/header/stamp", stamp_sec);
+  // It comes first in the record; its slot is filled (or dropped) after the walk.
+  const bool combined_stamp = has_header_ && deserializer_->isROS2();
+  const size_t stamp_slot = fields_.size();
+  if (combined_stamp) {
+    addField("/header/stamp", 0.0);
   }
 
-  std::string field_name;
-  for (const auto& [key, variant] : flat_msg_.value) {
-    key.toStr(field_name);
-    if (variant.getTypeID() == RosMsgParser::STRING) {
-      auto extracted = variant.extract<std::string>();
-      double numeric = 0.0;
-      // Apply the string-to-number toggles before falling back to the string
-      // representation. parseStringAsDouble returns false when either both
-      // toggles are off or no rule matches; in that case we keep the string
-      // verbatim. The doubled storage (owned by fields_) is needed
-      // because ValueRef holds a non-owning string_view.
-      if ((boolean_strings_to_number_ || remove_suffix_from_strings_) &&
-          parseStringAsDouble(extracted, numeric, remove_suffix_from_strings_, boolean_strings_to_number_)) {
-        fields_.add(field_name, PJ::sdk::ValueRef{numeric});
-      } else {
-        fields_.addString(field_name, extracted);
-      }
+  FlattenWriter writer(*this);
+  try {
+    parser_->walkSchema(
+        RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()), deserializer_.get(), &writer);
+  } catch (const std::exception&) {
+    // CDR deserialization failed; bail and let the empty fields_
+    // signal "no record" to the outer parse() caller. The SDK base
+    // class surfaces parse errors via PJ::unexpected() — best-effort
+    // mid-flatten errors are silently dropped.
+    fields_.clear();
+    return;
+  }
+
+  // Embedded timestamp: the first two values are the header's stamp.
+  if (use_embedded_timestamp_ && has_header_ && writer.count() >= 2) {
+    double ts = 0;
+    if (deserializer_->isROS2()) {
+      ts = writer.first(0) + 1e-9 * writer.first(1);
     } else {
-      fields_.add(field_name, variantToValueRef(variant));
+      // ROS1: value[1] is stamp (Time builtin)
+      ts = writer.first(1);
+    }
+    if (ts > 0) {
+      current_timestamp_ = static_cast<int64_t>(ts * 1e9);
+    }
+  }
+
+  if (combined_stamp) {
+    if (writer.count() >= 2) {
+      fields_.setValue(stamp_slot, PJ::sdk::ValueRef{writer.first(0) + 1e-9 * writer.first(1)});
+    } else {
+      fields_.erase(stamp_slot);
     }
   }
 
