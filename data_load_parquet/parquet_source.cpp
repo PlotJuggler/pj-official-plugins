@@ -32,10 +32,24 @@ int64_t adjustTimezoneNanos(int64_t nanos, const std::string& tz_str) {
   if (tz_str.empty() || tz_str == "UTC") {
     return nanos;
   }
+  // Called per cell with the column's one zone name: look it up once, failures
+  // included (without a tz database, as in a browser, every lookup throws).
+  thread_local std::string cached_name;
+  thread_local const date::time_zone* cached_zone = nullptr;
+  if (tz_str != cached_name) {
+    cached_name = tz_str;
+    try {
+      cached_zone = date::locate_zone(tz_str);
+    } catch (...) {
+      cached_zone = nullptr;
+    }
+  }
+  if (cached_zone == nullptr) {
+    return nanos;
+  }
   try {
-    const auto* tz = date::locate_zone(tz_str);
     auto utc_tp = date::sys_seconds{std::chrono::seconds{nanos / 1'000'000'000LL}};
-    auto offset_s = tz->get_info(utc_tp).offset.count();
+    auto offset_s = cached_zone->get_info(utc_tp).offset.count();
     return nanos - offset_s * 1'000'000'000LL;
   } catch (...) {
     return nanos;
