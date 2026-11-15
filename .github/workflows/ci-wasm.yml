@@ -6,8 +6,9 @@ name: CI WASM
 # with the host (the link runs without the host's Qt flush override, the one part of it built
 # with --allow-multiple-definition). No packaging, browser tests or size gate: PlotJuggler's own WASM CI runs those.
 
-# Any change can reach the browser build (a plugin's sources, common/, cmake/, LICENSE), so
-# only docs and native tests are skipped, rather than keeping a second copy of the host's list.
+# The build costs 9 min warm, about 50 cold, so the `changes` job runs it only when a changed
+# file can reach the browser build: a directory with a wasm.cmake, common/, cmake/, LICENSE or
+# this workflow. Derived from the tree, not a copy of the host's plugin list.
 on:
   workflow_dispatch:
   pull_request:
@@ -29,7 +30,39 @@ env:
   PJ_HOST_REF: 840bfc82613af25487ec677c5255c35ea469ef78
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      wasm: ${{ steps.check.outputs.wasm }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: check
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          wasm=true  # a dispatch, a new branch or an unknown base builds
+          if [[ "${GITHUB_EVENT_NAME}" != workflow_dispatch && -n "${BASE}" && "${BASE}" != 0000000000000000000000000000000000000000 ]] \
+             && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            wasm=false
+            while read -r file; do
+              case "${file}" in *.md | */tests/* | docs/*) continue ;; esac
+              top="${file%%/*}"
+              if [[ "${file}" == LICENSE || "${top}" == cmake || "${top}" == common \
+                    || "${file}" == .github/workflows/ci-wasm.yml || -f "${top}/wasm.cmake" ]]; then
+                echo "reaches the browser build: ${file}"
+                wasm=true
+                break
+              fi
+            done < <(git diff --name-only "${BASE}...HEAD")
+          fi
+          echo "wasm=${wasm}" >> "${GITHUB_OUTPUT}"
+
   wasm:
+    needs: changes
+    if: needs.changes.outputs.wasm == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 180
 
