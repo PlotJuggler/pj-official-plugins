@@ -142,6 +142,39 @@ MessageParser shapes, end-to-end dispatch flow, authoring checklists,
 and pointers to `data_load_mcap` and `parser_ros` as reference
 implementations.
 
+## WebAssembly build
+
+PlotJuggler's browser build cannot load plugins at run time, so it compiles the
+plugins it ships into its own module, from a pinned commit of this repository. Each
+such plugin carries a `wasm.cmake` that declares that build with one
+`pj_wasm_official_plugin()` call (sources, manifest, `.ui` files, the exported plugin
+and dialog symbols, links) plus any browser-only quirk; the shared `common/` libraries
+it links come from their native CMakeLists through `pj_wasm_common_library()`. The native
+and Conan builds never read these files.
+[`cmake/PjWasmPlugin.cmake`](cmake/PjWasmPlugin.cmake) defines the function and states
+the contract with the host build: the dependency targets it provides (under the names the
+plugins' native CMakeLists use) and how the registrations reach it.
+
+To make a plugin available in the browser:
+
+1. Write its `wasm.cmake` (copy a similar plugin's, such as
+   [`parser_json/wasm.cmake`](parser_json/wasm.cmake)).
+   It needs no raw sockets, child processes or native middleware, and its export macros
+   must name an unqualified class (or use the `_NAMED` variants).
+2. In PlotJuggler, add its directory to `PJ_WASM_OFFICIAL_PLUGIN_DIRS`
+   (`cmake/PjWasmOfficialPlugins.cmake`) and pin a commit of this repository that has it
+   (`cmake/PjWasmDependencies.cmake`); try it before pinning with
+   `-DFETCHCONTENT_SOURCE_DIR_PJ_OFFICIAL_PLUGINS=<this checkout>`. A dependency the host
+   does not provide yet goes into its `PjWasmDependencies.cmake`, and every new static
+   archive needs the symbol-collision audit and notice entry PlotJuggler's `CLAUDE.md` asks for.
+
+The `ci-wasm` workflow builds PlotJuggler's browser app against this checkout, so a change
+here that breaks the browser build (a renamed source, a new dependency, a duplicate symbol
+at link time) fails its PR. It checks out PlotJuggler at `PJ_HOST_REF`, the one place the
+host is pinned (top of `.github/workflows/ci-wasm.yml`): a commit that consumes these
+`wasm.cmake` files. Move it forward, to a commit of PlotJuggler's `main`, when the host's
+side of the contract changes.
+
 ## Development Checklist
 
 When adding or changing a plugin:
