@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_transform_editor/`.
 
+## [1.2.2] - 2026-11-15
+
+### Fixed
+- Creating a series no longer recomputes the preview over the whole source just before the editor
+  closes. On a 30,000-row series in the browser, the pause after OK drops from about 64 ms to 36 ms
+  in Chromium and from about 170 ms to 137 ms in Firefox.
+
 ## [1.2.1] - 2026-10-27
 
 ### Fixed

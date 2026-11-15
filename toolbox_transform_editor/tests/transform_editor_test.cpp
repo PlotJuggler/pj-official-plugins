@@ -708,6 +708,21 @@ TEST(TransformEditorCreate, ASeriesRecipeStillGoesThroughCreateTransform) {
   EXPECT_EQ(rig.dp.submit_calls, 0);
 }
 
+// The tick that creates also closes the editor: it must not replay the whole source into a preview
+// nobody will see (the prompt's name edit leaves the form dirty).
+TEST(TransformEditorCreate, TheCreatingTickRebuildsNoPreview) {
+  Rig rig;
+  rig.refresh();
+  rig.dialog().onItemsDropped("tableSources", {"a/x"});
+  rig.dialog().onCodeChanged("functionText", "return value*2");
+  rig.refresh();
+  int refreshes = 0;
+  rig.dialog().setOnRefreshPreview([&refreshes]() { ++refreshes; });
+  rig.createNamed("dbl");
+  EXPECT_EQ(rig.dp.last_id, "dbl");
+  EXPECT_EQ(refreshes, 0);
+}
+
 TEST(TransformEditorCreate, SeveralReturnedSeriesAreNamedNameSlashA) {
   Rig rig;
   rig.refresh();
