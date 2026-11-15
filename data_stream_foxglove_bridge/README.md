@@ -47,8 +47,9 @@ the dialog's connection fields, retry and status line come from
 
 - Every transport event (open, text and binary frames, close, error) is copied into one
   bounded FIFO and applied in arrival order on the poll thread (on the dialog's tick while
-  the dialog owns the connection), so parser bindings are only ever created and read
-  there.
+  the dialog owns the connection), so no transport thread ever touches a parser binding.
+  (Starting on a connection adopted from the dialog subscribes the selection in `onStart`,
+  before polling begins.)
 - The queue holds at most 512 MiB of unprocessed binary frames on the desktop and 64 MiB
   in the browser. When the poll thread falls behind, the OLDEST are dropped and a warning
   reports the running count, at most every 5 s; text frames (advertise, unadvertise,

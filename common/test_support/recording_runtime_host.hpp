@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-namespace PJ::WebSocket::testing {
+namespace toolbox_testing {
 
 inline std::string toString(PJ_string_view_t view) {
   return view.data != nullptr ? std::string(view.data, static_cast<size_t>(view.size)) : std::string{};
@@ -108,4 +108,4 @@ class RecordingRuntimeHost {
   PJ_data_source_runtime_host_vtable_t vtable_{};
 };
 
-}  // namespace PJ::WebSocket::testing
+}  // namespace toolbox_testing

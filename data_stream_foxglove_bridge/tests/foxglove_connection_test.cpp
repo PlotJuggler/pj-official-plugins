@@ -15,8 +15,8 @@
 #include <cstring>
 #include <pj_plugins/host/service_registry_builder.hpp>
 #include <pj_websocket/testing/fake_websocket_client.hpp>
-#include <pj_websocket/testing/recording_runtime_host.hpp>
 #include <string>
+#include <test_support/recording_runtime_host.hpp>
 #include <thread>
 #include <vector>
 
@@ -26,7 +26,7 @@ namespace {
 
 using PJ::WebSocket::testing::FakeSocket;
 using PJ::WebSocket::testing::fakeSockets;
-using PJ::WebSocket::testing::RecordingRuntimeHost;
+using toolbox_testing::RecordingRuntimeHost;
 using EventType = PJ::WebSocket::Event::Type;
 
 /// Test-length deadlines; the queue keeps its platform default.
@@ -41,7 +41,8 @@ FoxgloveConnectionOptions testOptions() {
 
 /// One FoxgloveSource bound to a recording host, with test-length deadlines.
 struct FoxgloveFixture {
-  explicit FoxgloveFixture(bool demand_capable = true) : host(demand_capable), source(testOptions()) {
+  explicit FoxgloveFixture(bool demand_capable = true, FoxgloveConnectionOptions options = testOptions())
+      : host(demand_capable), source(options) {
     fakeSockets().clear();
     write_vtable.abi_version = PJ_PLUGIN_DATA_API_VERSION;
     write_vtable.struct_size = sizeof(write_vtable);
@@ -182,12 +183,19 @@ TEST(FoxgloveConnectionTest, DemandModeAdvertisesSubscribesAndPushesInArrivalOrd
   EXPECT_EQ(subscribe["subscriptions"][0]["channelId"], 7);
   const uint32_t sub_id = subscribe["subscriptions"][0]["id"].get<uint32_t>();
 
+  // The pushed payload is a view into the queued frame: a frame short enough for the string's
+  // inline buffer (13-byte header + 2) and a heap-allocated one must both arrive intact.
+  const std::string large(4096, 'z');
   socket.deliverBinary(messageData(sub_id, 1'000'000'000, "abc"));
   socket.deliverBinary(messageData(sub_id + 99, 2, "unknown subscription"));
+  socket.deliverBinary(messageData(sub_id, 3, "xy"));
+  socket.deliverBinary(messageData(sub_id, 4, large));
   ASSERT_TRUE(fixture.source.poll());
-  ASSERT_EQ(fixture.host.pushes.size(), 1U);
+  ASSERT_EQ(fixture.host.pushes.size(), 3U);
   EXPECT_EQ(fixture.host.pushes[0].timestamp_ns, 1'000'000'000);
   EXPECT_EQ(fixture.host.pushes[0].bytes, "abc");
+  EXPECT_EQ(fixture.host.pushes[1].bytes, "xy");
+  EXPECT_EQ(fixture.host.pushes[2].bytes, large);
 }
 
 TEST(FoxgloveConnectionTest, LegacyHostSubscribesTheSavedSelectionOnceOpen) {
@@ -213,15 +221,56 @@ TEST(FoxgloveConnectionTest, MalformedControlFramesAreDroppedWithoutStoppingTheS
   FoxgloveFixture fixture;
   FakeSocket& socket = fixture.startWith({{"address", "robot"}});
   socket.acceptConnection();
-  // Wrong-typed advertise fields degrade per field; a wrong-typed unadvertise id throws inside
-  // the handler, which drops that one frame with a warning.
+  // Malformed advertise entries and unadvertise ids are skipped; a frame whose handler still
+  // throws (a wrong-typed status level) is dropped with a warning.
   socket.deliverText(R"({"op":"advertise","channels":[{"id":"seven","topic":5}, 3]})");
   socket.deliverText(R"({"op":"unadvertise","channelIds":["bad"]})");
+  socket.deliverText(R"({"op":"status","level":"high","message":"x"})");
   socket.deliverText(advertise({channel(7, "/speed")}));
   ASSERT_TRUE(fixture.source.poll());
   EXPECT_TRUE(fixture.host.reported("Dropped malformed control frame"));
   ASSERT_FALSE(fixture.host.advertisements.empty());
   EXPECT_EQ(fixture.host.advertisements.back(), (std::vector<std::string>{"/speed"}));
+}
+
+TEST(FoxgloveConnectionTest, UnadvertiseSkipsAWrongTypedIdAndAppliesTheRest) {
+  FoxgloveFixture fixture;
+  FakeSocket& socket = fixture.startWith({{"address", "robot"}});
+  socket.acceptConnection();
+  socket.deliverText(advertise({channel(7, "/speed"), channel(8, "/accel")}));
+  ASSERT_TRUE(fixture.source.poll());
+
+  socket.deliverText(R"({"op":"unadvertise","channelIds":[7,"bad"]})");
+  ASSERT_TRUE(fixture.source.poll());
+  EXPECT_TRUE(fixture.host.reported("Server removed 1 channel(s): /speed"));
+  EXPECT_EQ(fixture.host.advertisements.back(), (std::vector<std::string>{"/accel"}));
+}
+
+TEST(FoxgloveConnectionTest, DroppedFramesAreReportedAgainAfterAReconnection) {
+  auto options = testOptions();
+  options.inbound_queue_bytes = 4096;  // room for three ~1 KB frames
+  FoxgloveFixture fixture(/*demand_capable=*/true, options);
+  const std::string frame = messageData(1, 1, std::string(1024, 'x'));
+  const auto overflow = [&](FakeSocket& socket) {
+    socket.acceptConnection();
+    for (int i = 0; i < 8; ++i) {
+      socket.deliverBinary(frame);
+    }
+    ASSERT_TRUE(fixture.source.poll());
+  };
+
+  FakeSocket& first = fixture.startWith({{"address", "robot"}});
+  overflow(first);
+  EXPECT_EQ(fixture.host.countReported("dropped the oldest"), 1);
+
+  first.closeFromServer("bridge restarting");
+  ASSERT_TRUE(fixture.source.poll());
+  std::this_thread::sleep_for(testOptions().reconnect + std::chrono::milliseconds(10));
+  ASSERT_TRUE(fixture.source.poll());
+  ASSERT_EQ(fakeSockets().size(), 2U);
+  // The new connection's queue counts from zero: the same number of drops is news again.
+  overflow(fixture.lastSocket());
+  EXPECT_EQ(fixture.host.countReported("dropped the oldest"), 2);
 }
 
 TEST(FoxgloveConnectionTest, LostConnectionIsRetriedAndStartsAFreshSession) {
@@ -287,11 +336,12 @@ TEST(FoxgloveConnectionTest, StopUnsubscribesAndDropsLateEvents) {
   fixture.source.stop();
   EXPECT_EQ(ops(socket), (std::vector<std::string>{"subscribe", "unsubscribe"}));
   EXPECT_TRUE(socket.stopped);
-  // The fake keeps its sink open; the source must still ignore it once a new session starts.
-  socket.deliverBinary(messageData(1, 5, "late"));
+  // The fake keeps its sink open; the source must still ignore it once a new session starts: a
+  // late close would make the new session's first connection fatal.
   ASSERT_TRUE(fixture.source.start());
-  ASSERT_TRUE(fixture.source.poll());
-  EXPECT_TRUE(fixture.host.pushes.empty());
+  socket.closeFromServer("late close of the previous session");
+  EXPECT_TRUE(fixture.source.poll());
+  EXPECT_FALSE(fixture.host.reported("failed to connect"));
 }
 
 // --- Dialog ---
@@ -326,28 +376,53 @@ TEST(FoxgloveConnectionTest, DialogConnectionIsHandedToTheSource) {
   EXPECT_EQ(nlohmann::json::parse(fixture.source.saveConfig()).value("url", std::string{}), socket.url);
 }
 
-TEST(FoxgloveConnectionTest, DialogRetriesARefusedConnectionAndClearsTheCatalogOnLoss) {
+// Retry and backoff are DialogConnection's, covered by the PJ Bridge tests; what is Foxglove's
+// own is that a dropped connection clears the discovered catalog.
+TEST(FoxgloveConnectionTest, EventsTheDialogHasNotDrainedReachTheSource) {
+  FoxgloveFixture fixture;
+  FoxgloveDialog& dialog = fixture.dialog();
+  dialog.onTextChanged("lineEditAddress", "robot");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  FakeSocket& socket = fixture.lastSocket();
+  socket.acceptConnection();
+  ASSERT_TRUE(dialog.onTick());                           // the dialog sees the open...
+  socket.deliverText(advertise({channel(7, "/speed")}));  // ...but not the burst behind it
+
+  ASSERT_TRUE(fixture.source.start());
+  ASSERT_TRUE(fixture.source.poll());
+  ASSERT_FALSE(fixture.host.advertisements.empty());
+  EXPECT_EQ(fixture.host.advertisements.back(), (std::vector<std::string>{"/speed"}));
+}
+
+TEST(FoxgloveConnectionTest, LegacyHostSubscribesTheDialogSelectionOnAnAdoptedConnection) {
+  FoxgloveFixture fixture(/*demand_capable=*/false);
+  FoxgloveDialog& dialog = fixture.dialog();
+  dialog.onTextChanged("lineEditAddress", "robot");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  FakeSocket& socket = fixture.lastSocket();
+  socket.acceptConnection();
+  socket.deliverText(advertise({channel(7, "/speed"), channel(8, "/accel")}));
+  ASSERT_TRUE(dialog.onTick());
+  dialog.onSelectionChanged("topicsList", {"/accel"});
+  dialog.onAccepted("{}");
+
+  ASSERT_TRUE(fixture.source.start());
+  ASSERT_EQ(ops(socket), (std::vector<std::string>{"subscribe"}));
+  EXPECT_EQ(nlohmann::json::parse(socket.sent.back())["subscriptions"][0]["channelId"], 8);
+}
+
+TEST(FoxgloveConnectionTest, DialogClearsTheCatalogWhenTheConnectionDrops) {
   fakeSockets().clear();
   FoxgloveDialog dialog(testOptions());
   dialog.onTextChanged("lineEditAddress", "robot");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
-  ASSERT_EQ(fakeSockets().size(), 1U);
-  EXPECT_NE(dialog.widget_data().find("Connecting to ws://robot:8765"), std::string::npos) << dialog.widget_data();
-
-  fakeSockets().back()->sink->push({EventType::kError, "connection refused"});
-  EXPECT_TRUE(dialog.onTick());
-  EXPECT_NE(dialog.widget_data().find("Retrying in 1 s: connection refused"), std::string::npos);
-
-  std::this_thread::sleep_for(testOptions().retry_first + std::chrono::milliseconds(10));
-  EXPECT_TRUE(dialog.onTick());
-  ASSERT_EQ(fakeSockets().size(), 2U);
-  const auto second = fakeSockets().back();
-  second->acceptConnection();
-  second->deliverText(advertise({channel(7, "/speed")}));
+  const auto socket = fakeSockets().back();
+  socket->acceptConnection();
+  socket->deliverText(advertise({channel(7, "/speed")}));
   EXPECT_TRUE(dialog.onTick());
   EXPECT_EQ(dialog.allDiscoveredChannels().size(), 1U);
 
-  second->closeFromServer("bridge restarting");
+  socket->closeFromServer("bridge restarting");
   EXPECT_TRUE(dialog.onTick());
   EXPECT_TRUE(dialog.allDiscoveredChannels().empty());
   EXPECT_NE(dialog.widget_data().find("Retrying in 1 s: bridge restarting"), std::string::npos);

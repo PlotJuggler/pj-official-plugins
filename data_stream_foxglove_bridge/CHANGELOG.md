@@ -17,7 +17,7 @@ below; for earlier releases see the git history of `data_stream_foxglove_bridge/
 ### Fixed
 - Connects to `foxglove_bridge` releases that predate the Foxglove SDK: the handshake now offers the older `foxglove.websocket.v1` subprotocol next to `foxglove.sdk.v1`, and the server picks the one it speaks. ROS 1 channels are still not decoded.
 - Messages, advertisements and removals are applied in the order the server sent them; before, a message that arrived just before its channel's `unadvertise` could be dropped.
-- A malformed control message from the server is dropped with a warning instead of escaping the poll.
+- A malformed control message from the server is dropped with a warning instead of escaping the poll; an advertised channel without a valid id is ignored, and the valid ids of a malformed removal are still applied.
 - Taking over the dialog's connection on OK no longer races with the socket's own thread.
 
 ## [1.1.2] - 2026-11-09

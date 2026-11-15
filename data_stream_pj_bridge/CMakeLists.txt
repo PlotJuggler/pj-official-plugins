@@ -73,7 +73,7 @@ target_include_directories(pj_bridge_connection_test PRIVATE
 )
 target_link_libraries(pj_bridge_connection_test PRIVATE
   plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json pj_bridge_protocol_lib
-  pj_websocket_fake GTest::gtest_main
+  pj_websocket_fake pj_test_support GTest::gtest_main
 )
 add_test(NAME pj_bridge_connection_test COMMAND pj_bridge_connection_test)
 

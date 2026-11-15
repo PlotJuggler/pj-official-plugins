@@ -60,7 +60,7 @@ target_include_directories(foxglove_connection_test PRIVATE
   ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_link_libraries(foxglove_connection_test PRIVATE
-  plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json pj_base64 pj_websocket_fake
+  plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json pj_base64 pj_websocket_fake pj_test_support
   GTest::gtest_main
 )
 add_test(NAME foxglove_connection_test COMMAND foxglove_connection_test)

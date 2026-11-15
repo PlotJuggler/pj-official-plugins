@@ -103,19 +103,14 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     if (adopted) {
       socket_ = std::move(handoff.socket);
       events_ = std::move(handoff.events);
-      phase_ = Phase::kStreaming;
-    } else if (auto status = connect(); !status) {
-      return PJ::unexpected("failed to connect to Foxglove bridge at " + endpoint_ + ": " + status.error());
-    }
-
-    // When the connection is adopted from the dialog the server already sent its initial
-    // "advertise" burst — it will not re-send it. The dialog discovered the FULL channel
-    // catalog during that burst (not just what the user selected); seed our view of it now,
-    // since this is the only way we learn about unselected topics on the adopted path.
-    if (adopted) {
+      // The server already sent its one-shot "advertise" burst and will not re-send it. The
+      // dialog discovered the FULL channel catalog during that burst (not just what the user
+      // selected); seeding from it is the only way to learn about unselected topics here.
       for (const auto& ch : dialog_.allDiscoveredChannels()) {
         advertised_channels_[ch.id] = ch;
       }
+    } else if (auto status = connect(); !status) {
+      return PJ::unexpected("failed to connect to Foxglove bridge at " + endpoint_ + ": " + status.error());
     }
 
     // Demand mode is decided ONCE per start, by the very first advertise attempt: a
@@ -136,11 +131,11 @@ class FoxgloveSource : public PJ::StreamSourceBase {
             "advertise topics on demand. Nothing will stream until the connection dialog is "
             "reopened and channels are selected.");
       }
-      // Subscribe directly using the channel info captured by the dialog; a fresh connection
-      // does so once it opens (see onOpen).
-      if (adopted) {
-        subscribeToSelectedChannels();
-      }
+    }
+    // An adopted connection is already open: apply its open now (in legacy mode that subscribes
+    // the dialog's selection); a fresh one does so when its kOpen event is pumped.
+    if (adopted) {
+      onOpen();
     }
 
     return PJ::okStatus();
@@ -462,7 +457,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       auto channel_ids = json.value("channelIds", nlohmann::json::array());
       std::vector<std::string> removed_topics;
       for (const auto& id_json : channel_ids) {
-        uint64_t removed_id = id_json.get<uint64_t>();
+        if (!id_json.is_number_unsigned()) {
+          continue;  // malformed: apply the valid ids, so the host's topic list stays in sync
+        }
+        const uint64_t removed_id = id_json.get<uint64_t>();
         auto it = advertised_channels_.find(removed_id);
         if (it != advertised_channels_.end()) {
           removed_topics.push_back(it->second.topic);
@@ -522,6 +520,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       socket_->stop();
     }
     events_ = std::make_shared<PJ::WebSocket::EventQueue>(options_.inbound_queue_bytes);
+    drop_warning_ = {};  // the new queue counts its drops from zero
     socket_ = std::make_unique<PJ::WebSocket::Client>();
     connect_deadline_ = Clock::now() + options_.connect;
     return socket_->start(endpoint_, events_, subprotocols());
@@ -537,7 +536,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     // reconnection swaps events_ mid-batch only through onPoll, never from in here.
     auto pending = events_->drain();
     while (!pending.empty()) {
-      const PJ::WebSocket::Event event = std::move(pending.front());
+      PJ::WebSocket::Event event = std::move(pending.front());
       pending.pop_front();
       switch (event.type) {
         case PJ::WebSocket::Event::Type::kOpen:
@@ -554,7 +553,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
           }
           break;
         case PJ::WebSocket::Event::Type::kBinary:
-          onBinaryMessage(event.payload);
+          onBinaryMessage(std::move(event.payload));
           break;
         case PJ::WebSocket::Event::Type::kClosed:
         case PJ::WebSocket::Event::Type::kError:
@@ -610,7 +609,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
   // [poll thread] One Foxglove binary frame: push a message-data frame to its subscription's parser.
-  void onBinaryMessage(const std::string& message) {
+  void onBinaryMessage(std::string&& message) {
     BinaryFrame frame;
     if (!parseBinaryFrame(reinterpret_cast<const uint8_t*>(message.data()), message.size(), frame)) {
       return;
@@ -619,12 +618,16 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     if (it == binding_by_subscription_.end()) {
       return;
     }
-    // Copy the payload into a shared_ptr-owned buffer so the PayloadView fetcher remains
-    // valid after onPoll returns (ObjectIngestPolicy may defer dispatch beyond this call).
-    auto payload = std::make_shared<std::vector<uint8_t>>(frame.payload_data, frame.payload_data + frame.payload_size);
+    // The queued frame itself anchors the payload, so the PayloadView fetcher stays valid after
+    // onPoll returns (ObjectIngestPolicy may defer dispatch) without copying it. The span is
+    // re-derived from the moved string by offset: a short string's bytes move with it.
+    const auto offset = static_cast<size_t>(frame.payload_data - reinterpret_cast<const uint8_t*>(message.data()));
+    auto frame_buffer = std::make_shared<const std::string>(std::move(message));
+    const PJ::Span<const uint8_t> bytes{
+        reinterpret_cast<const uint8_t*>(frame_buffer->data()) + offset, frame.payload_size};
     auto status = runtimeHost().pushMessage(
         it->second, PJ::Timestamp{static_cast<int64_t>(frame.log_time_ns)},
-        [payload]() -> PJ::sdk::PayloadView { return PJ::sdk::PayloadView{payload}; });
+        [frame_buffer, bytes]() -> PJ::sdk::PayloadView { return PJ::sdk::PayloadView{bytes, frame_buffer}; });
     if (!status) {
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "Failed to push message: " + status.error());
     }

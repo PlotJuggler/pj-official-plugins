@@ -24,8 +24,9 @@ struct ChannelInfo {
   std::string schema_encoding;
 };
 
-/// The channels of an "advertise" message. These come straight off the wire: a non-object
-/// entry is skipped and a wrong-typed field reads as empty (or 0), never throws.
+/// The channels of an "advertise" message. These come straight off the wire: an entry that is
+/// not an object or lacks an unsigned `id` is skipped (it could not be subscribed, and as id 0 it
+/// would shadow a real channel 0), and another wrong-typed field reads as empty; never throws.
 [[nodiscard]] inline std::vector<ChannelInfo> parseAdvertisedChannels(const nlohmann::json& advertise) {
   const auto string_field = [](const nlohmann::json& entry, const char* key) {
     const auto it = entry.find(key);
@@ -40,10 +41,12 @@ struct ChannelInfo {
     if (!entry.is_object()) {
       continue;
     }
-    ChannelInfo ch;
-    if (const auto id = entry.find("id"); id != entry.end() && id->is_number_unsigned()) {
-      ch.id = id->get<uint64_t>();
+    const auto id = entry.find("id");
+    if (id == entry.end() || !id->is_number_unsigned()) {
+      continue;
     }
+    ChannelInfo ch;
+    ch.id = id->get<uint64_t>();
     ch.topic = string_field(entry, "topic");
     ch.encoding = string_field(entry, "encoding");
     ch.schema_name = string_field(entry, "schemaName");

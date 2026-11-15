@@ -18,9 +18,9 @@
 #include <cstring>
 #include <pj_plugins/host/service_registry_builder.hpp>
 #include <pj_websocket/testing/fake_websocket_client.hpp>
-#include <pj_websocket/testing/recording_runtime_host.hpp>
 #include <random>
 #include <string>
+#include <test_support/recording_runtime_host.hpp>
 #include <thread>
 #include <vector>
 
@@ -52,7 +52,7 @@ std::string noise(size_t size, uint32_t seed) {
   return bytes;
 }
 
-using FakeRuntimeHost = PJ::WebSocket::testing::RecordingRuntimeHost;
+using FakeRuntimeHost = toolbox_testing::RecordingRuntimeHost;
 
 /// One PjBridgeSource bound to a recording host, with test-length deadlines.
 struct BridgeFixture {

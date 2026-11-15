@@ -236,6 +236,10 @@ endif()
 set(PJ_DERIVED_RECIPES_CONSUMERS toolbox_assistant_agent toolbox_transform_editor)
 if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_DERIVED_RECIPES_CONSUMERS)
   add_subdirectory(common/derived_recipes)
+endif()
+# Header-only fake hosts for unit tests (no external dependencies).
+if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_DERIVED_RECIPES_CONSUMERS OR
+   PJ_BUILD_PLUGIN IN_LIST PJ_WEBSOCKET_CONSUMERS)
   add_subdirectory(common/test_support)
 endif()
 
