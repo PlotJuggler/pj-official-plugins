@@ -9,6 +9,6 @@ below; for earlier releases see the git history of `data_load_parquet/`.
 - Updated the bundled Apache Arrow from 23.0.1 to 26.0.1, picking up upstream bug and security fixes.
 
 ### Fixed
-- Timestamps with a named time zone load faster: the zone is looked up once per column, not once per value. Where no time zone database is available (the browser app), this also stops a failed lookup per value.
+- Timestamps with a named time zone load faster: each zone is looked up once per file, not once per value. Where no time zone database is available (the browser app), this also stops a failed lookup per value.
 
 ## [1.0.2] - 2026-08-04

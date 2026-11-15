@@ -11,6 +11,7 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "parquet_dialog.hpp"
@@ -25,31 +26,35 @@ using pj::arrow_helpers::isSupportedArrowType;
 using PJ::ParquetHelpers::basenameWithoutExt;
 using PJ::ParquetHelpers::findTimestampColumn;
 
+/// Zones already looked up during one import, by name; nullptr for a name
+/// that failed. Scoped to the import so a failure (say, a tz database that
+/// could not be downloaded yet) is retried on the next file.
+using ZoneCache = std::unordered_map<std::string, const date::time_zone*>;
+
 /// Replicates the original PlotJuggler DataLoadParquet timezone adjustment:
 /// subtracts the UTC offset of the named timezone from the nanosecond timestamp.
 /// Uses Howard Hinnant's date library for cross-platform timezone support.
-int64_t adjustTimezoneNanos(int64_t nanos, const std::string& tz_str) {
+int64_t adjustTimezoneNanos(int64_t nanos, const std::string& tz_str, ZoneCache& zones) {
   if (tz_str.empty() || tz_str == "UTC") {
     return nanos;
   }
-  // Called per cell with the column's one zone name: look it up once, failures
-  // included (without a tz database, as in a browser, every lookup throws).
-  thread_local std::string cached_name;
-  thread_local const date::time_zone* cached_zone = nullptr;
-  if (tz_str != cached_name) {
-    cached_name = tz_str;
+  // Called per cell: look each name up once (without a tz database, as in a
+  // browser, every lookup throws).
+  auto it = zones.find(tz_str);
+  if (it == zones.end()) {
+    const date::time_zone* zone = nullptr;
     try {
-      cached_zone = date::locate_zone(tz_str);
-    } catch (...) {
-      cached_zone = nullptr;
+      zone = date::locate_zone(tz_str);
+    } catch (...) {  // NOLINT(bugprone-empty-catch): an unknown zone leaves the value unadjusted
     }
+    it = zones.emplace(tz_str, zone).first;
   }
-  if (cached_zone == nullptr) {
+  if (it->second == nullptr) {
     return nanos;
   }
   try {
     auto utc_tp = date::sys_seconds{std::chrono::seconds{nanos / 1'000'000'000LL}};
-    auto offset_s = cached_zone->get_info(utc_tp).offset.count();
+    auto offset_s = it->second->get_info(utc_tp).offset.count();
     return nanos - offset_s * 1'000'000'000LL;
   } catch (...) {
     return nanos;
@@ -69,20 +74,21 @@ std::string timestampTimezone(const std::shared_ptr<arrow::Array>& array, arrow:
 /// host timezone adjustment to TIMESTAMP cells (which the generic helper
 /// intentionally omits).
 PJ::sdk::ValueRef getArrowValueRef(
-    const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type) {
+    const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type, ZoneCache& zones) {
   auto value = pj::arrow_helpers::getArrowValueRef(array, index, arrow_type);
   if (arrow_type == arrow::Type::TIMESTAMP && std::holds_alternative<int64_t>(value)) {
-    value = adjustTimezoneNanos(std::get<int64_t>(value), timestampTimezone(array, arrow_type));
+    value = adjustTimezoneNanos(std::get<int64_t>(value), timestampTimezone(array, arrow_type), zones);
   }
   return value;
 }
 
 /// Production wrapper around PJ::ParquetHelpers::getTimestampNanos that adds
 /// the host timezone adjustment to TIMESTAMP cells.
-int64_t getTimestampNanos(const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type) {
+int64_t getTimestampNanos(
+    const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type, ZoneCache& zones) {
   const int64_t value = PJ::ParquetHelpers::getTimestampNanos(array, index, arrow_type);
   if (arrow_type == arrow::Type::TIMESTAMP && !array->IsNull(index)) {
-    return adjustTimezoneNanos(value, timestampTimezone(array, arrow_type));
+    return adjustTimezoneNanos(value, timestampTimezone(array, arrow_type), zones);
   }
   return value;
 }
@@ -203,6 +209,7 @@ class ParquetSource : public PJ::FileSourceBase {
 
     int64_t rows_processed = 0;
     std::shared_ptr<arrow::RecordBatch> batch;
+    ZoneCache zones;
 
     // Pre-allocate row fields vector (reused per row)
     std::vector<PJ::sdk::NamedFieldValue> row_fields;
@@ -230,7 +237,7 @@ class ParquetSource : public PJ::FileSourceBase {
       for (int64_t row = 0; row < batch_rows; row++) {
         int64_t ts_ns = 0;
         if (ts_col >= 0) {
-          ts_ns = getTimestampNanos(ts_array, row, ts_arrow_type);
+          ts_ns = getTimestampNanos(ts_array, row, ts_arrow_type, zones);
         } else {
           ts_ns = (rows_processed + row) * 1000000000LL;
         }
@@ -243,7 +250,7 @@ class ParquetSource : public PJ::FileSourceBase {
         row_fields.clear();
 
         for (size_t c = 0; c < columns.size(); c++) {
-          auto val = getArrowValueRef(col_arrays[c], row, columns[c].arrow_type);
+          auto val = getArrowValueRef(col_arrays[c], row, columns[c].arrow_type, zones);
           // Skip null cells — finishRow() auto-fills with null
           if (PJ::sdk::isNull(val)) {
             continue;
