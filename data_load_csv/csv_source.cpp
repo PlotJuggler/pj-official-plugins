@@ -130,10 +130,18 @@ class CsvSource : public PJ::FileSourceBase {
           detail += "Line " + std::to_string(warn.line_number) + ": " + warn.detail + "\n";
         }
       }
+      // Nothing survived parsing: fail like any other import error. Reporting success
+      // with zero rows makes the host commit an empty dataset, which on a reload
+      // silently replaces the data the user already had.
+      if (result.lines_processed == 0) {
+        return PJ::unexpected(
+            "No rows imported, " + std::to_string(result.lines_skipped) + " skipped" +
+            (detail.empty() ? std::string{} : " (first: " + detail.substr(0, detail.find('\n')) + ")"));
+      }
       if (!detail.empty()) {
         if (!runtimeHost().askContinue(
-                "Rows Skipped", "Some rows have an incorrect number of columns and will be skipped:\n\n" + detail +
-                                    "\nContinue loading?")) {
+                "Rows Skipped",
+                "Some rows were not parsed as expected and will be skipped:\n\n" + detail + "\nContinue loading?")) {
           return PJ::unexpected(std::string("Loading aborted by user"));
         }
       }
