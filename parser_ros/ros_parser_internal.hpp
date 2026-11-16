@@ -15,6 +15,7 @@
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <rosx_introspection/ros_parser.hpp>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -66,9 +67,109 @@ inline RPY quaternionToRPY(double x, double y, double z, double w) {
 // Helper types
 // ---------------------------------------------------------------------------
 
-struct FlattenedField {
-  std::string name;
-  PJ::sdk::ValueRef value;
+/// Appends a segment to a field-name buffer for one scope, and truncates the
+/// buffer back to its previous size when the scope ends (also on a throw).
+class PathSegment {
+ public:
+  PathSegment(std::string& path, std::string_view segment) : path_(path), size_(path.size()) {
+    path_.append(segment);
+  }
+  ~PathSegment() {
+    path_.resize(size_);
+  }
+  PathSegment(const PathSegment&) = delete;
+  PathSegment& operator=(const PathSegment&) = delete;
+
+ private:
+  std::string& path_;
+  size_t size_;
+};
+
+/// The fields of the message being parsed, in the shape the write host takes.
+/// Slots, their name strings and the text storage are reused from one message
+/// to the next, so a steady stream of messages allocates nothing here. String
+/// values point into `text_`, a deque (it never moves an element), and stay
+/// valid until the next clear().
+class FieldBuffer {
+ public:
+  void clear() {
+    size_ = 0;
+    text_size_ = 0;
+  }
+  /// A name id never handed out before. An id names exactly one string: the
+  /// caller that takes one never changes the string it stands for.
+  [[nodiscard]] uint64_t newNameId() {
+    return ++last_name_id_;
+  }
+  /// Every slot's name carries such an id, which lets BoundFieldCache skip
+  /// comparing names (nameIds()). `name_id`, when not 0, is the caller's id for
+  /// `name` (from newNameId()): a slot that holds that id already holds that
+  /// name, so it is neither compared nor copied. Otherwise the name is copied
+  /// only when it differs from the slot's, and a slot whose name changed without
+  /// a caller id gets a new id.
+  void add(std::string_view name, PJ::sdk::ValueRef value, uint64_t name_id = 0) {
+    if (size_ == fields_.size()) {
+      // name_ids_ grows first and to an exact size, so a throw at either step
+      // leaves it at least as long as fields_, and the next call completes it.
+      name_ids_.resize(size_ + 1);
+      fields_.emplace_back();
+    }
+    auto& field = fields_[size_];
+    auto& slot_id = name_ids_[size_];
+    if (name_id == 0 || slot_id != name_id) {
+      const bool renamed = slot_id == 0 || field.name != name;
+      if (renamed) {
+        field.name.assign(name);
+      }
+      if (name_id != 0) {
+        slot_id = name_id;
+      } else if (renamed) {
+        slot_id = newNameId();
+      }
+    }
+    field.value = value;
+    ++size_;
+  }
+  void addString(std::string_view name, std::string_view text, uint64_t name_id = 0) {
+    if (text_size_ == text_.size()) {
+      text_.emplace_back();
+    }
+    auto& stored = text_[text_size_++];
+    stored.assign(text);
+    add(name, std::string_view(stored), name_id);
+  }
+  void setValue(size_t i, PJ::sdk::ValueRef value) {
+    fields_[i].value = value;
+  }
+  [[nodiscard]] bool empty() const {
+    return size_ == 0;
+  }
+  [[nodiscard]] size_t size() const {
+    return size_;
+  }
+  [[nodiscard]] const PJ::sdk::NamedFieldValue& operator[](size_t i) const {
+    return fields_[i];
+  }
+  [[nodiscard]] const PJ::sdk::NamedFieldValue* begin() const {
+    return fields_.data();
+  }
+  [[nodiscard]] const PJ::sdk::NamedFieldValue* end() const {
+    return fields_.data() + size_;
+  }
+  [[nodiscard]] PJ::Span<const PJ::sdk::NamedFieldValue> span() const {
+    return {fields_.data(), size_};
+  }
+  [[nodiscard]] PJ::Span<const uint64_t> nameIds() const {
+    return {name_ids_.data(), size_};
+  }
+
+ private:
+  std::vector<PJ::sdk::NamedFieldValue> fields_;
+  std::vector<uint64_t> name_ids_;  ///< parallel to fields_ (at least as long); 0 = slot never named
+  uint64_t last_name_id_ = 0;
+  size_t size_ = 0;
+  std::deque<std::string> text_;
+  size_t text_size_ = 0;
 };
 
 inline PJ::sdk::ValueRef variantToValueRef(const RosMsgParser::Variant& variant) {
@@ -198,8 +299,8 @@ class RosParser : public PJ::MessageParserPluginBase {
 
     PJ::sdk::BuiltinObjectType object_type = PJ::sdk::BuiltinObjectType::kNone;
 
-    PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> (RosParser::*parse_scalars)(
-        PJ::Timestamp, PJ::Span<const uint8_t>) = nullptr;
+    // Fills fields_ with the message's scalar fields.
+    PJ::Status (RosParser::*parse_scalars)(PJ::Timestamp, PJ::Span<const uint8_t>) = nullptr;
 
     PJ::Expected<PJ::sdk::ObjectRecord> (RosParser::*parse_object)(PJ::Timestamp, PJ::sdk::PayloadView) = nullptr;
   };
@@ -216,6 +317,7 @@ class RosParser : public PJ::MessageParserPluginBase {
   bool boolean_strings_to_number_ = false;
   bool remove_suffix_from_strings_ = false;
   std::string topic_name_;
+  std::string pal_statistics_key_;  ///< palStatisticsKey(topic_name_)
 
   // Schema state
   std::string type_name_;
@@ -226,7 +328,16 @@ class RosParser : public PJ::MessageParserPluginBase {
   bool schema_bound_ = false;
   bool schema_compiled_ = false;
   bool has_header_ = false;
-  std::vector<std::string> quaternion_prefixes_;
+  // One geometry_msgs/Quaternion of the generic walk (not inside an array): the
+  // names its roll/pitch/yaw are computed from and written under, built once per
+  // schema, and where each component was found in the previous message.
+  struct QuaternionLeaves {
+    std::array<std::string, 4> component;  ///< <prefix>/x, /y, /z, /w
+    std::array<std::string, 3> angle;      ///< <prefix>/roll, /pitch, /yaw
+    std::array<uint64_t, 3> angle_id{};    ///< FieldBuffer name ids of `angle`
+    std::array<size_t, 4> index{};         ///< position of each component last time; checked by name
+  };
+  std::vector<QuaternionLeaves> quaternions_;
 
   // visualization_msgs/Marker layout flags, sniffed from the bound .msg
   // definition in bindSchema. The Marker wire layout gained a texture block
@@ -246,7 +357,6 @@ class RosParser : public PJ::MessageParserPluginBase {
   // Parse state
   std::optional<RosMsgParser::Parser> parser_;
   std::unique_ptr<RosMsgParser::Deserializer> deserializer_;
-  RosMsgParser::FlatMessage flat_msg_;
   PJ::Timestamp current_timestamp_ = 0;
 
   // LaserScan -> PointCloud projector. One per parser instance (= per topic),
@@ -254,7 +364,7 @@ class RosParser : public PJ::MessageParserPluginBase {
   // is computed once for a whole recording of a fixed scanner config.
   PJ::laser_scan::LaserScanProjector laser_projector_;
   // Reusable parseLaserScan scratch (cleared per call): avoids two per-message
-  // heap allocations on the hot path, same pattern as owned_fields_ below.
+  // heap allocations on the hot path, same pattern as fields_ below.
   std::vector<float> laserscan_ranges_scratch_;
   std::vector<float> laserscan_intensities_scratch_;
   // grid_map_msgs/GridMap scratch: one float vector per layer, reused across
@@ -262,9 +372,10 @@ class RosParser : public PJ::MessageParserPluginBase {
   std::vector<std::vector<float>> gridmap_layer_scratch_;
 
   // Output accumulation
-  std::vector<FlattenedField> owned_fields_;
-  std::vector<PJ::sdk::NamedFieldValue> named_fields_;
-  std::deque<std::string> string_storage_;
+  FieldBuffer fields_;
+  // The scalar route of the bound schema; parse() calls it directly and appends
+  // fields_ as they are, without the copy the functional parseScalars returns.
+  PJ::Status (RosParser::*scalar_route_)(PJ::Timestamp, PJ::Span<const uint8_t>) = nullptr;
   // Direct ingest (parse / emitRecord) appends by handle through this cache.
   BoundFieldCache bound_field_cache_;
 
@@ -293,9 +404,9 @@ class RosParser : public PJ::MessageParserPluginBase {
       const RosMsgParser::ROSMessage* msg, const std::string& prefix, const RosMsgParser::RosMessageLibrary& lib);
 
   // Field accumulation helpers
-  void addField(const std::string& name, double value);
-  void addField(const std::string& name, PJ::sdk::ValueRef value);
-  void addStringField(const std::string& name, const std::string& value);
+  void addField(std::string_view name, double value);
+  void addField(std::string_view name, PJ::sdk::ValueRef value);
+  void addStringField(std::string_view name, std::string_view value);
 
   // Emit record
   PJ::Status emitRecord(PJ::Timestamp ts);
@@ -312,7 +423,29 @@ class RosParser : public PJ::MessageParserPluginBase {
     std::string frame_id;
   };
 
-  HeaderData readHeader();
+  // Valid until the next readHeader(); copy it to keep it longer.
+  const HeaderData& readHeader();
+  HeaderData header_;
+  // Per-message scratch of the specialized handlers, reused for its capacity.
+  std::string child_frame_id_;
+  std::vector<std::string> joint_names_;
+  std::vector<double> joint_positions_;
+  std::vector<double> joint_velocities_;
+  std::vector<double> joint_efforts_;
+  std::string diag_name_;
+  std::string diag_message_text_;
+  std::string diag_hardware_id_;
+  std::string diag_key_;
+  std::string diag_value_;
+  // DiagnosticArray name -> {message it was last seen in, times seen there}.
+  std::unordered_map<std::string, std::pair<uint64_t, int>> diag_seen_;
+  uint64_t diag_message_ = 0;
+  std::vector<double> statistics_values_;  ///< PAL / TSL values of one message
+  // Reads an array length and checks it against the bytes left, given the
+  // smallest wire size of one element, before anything is sized from it:
+  // scratch vectors live as long as the parser, so a corrupt count must not
+  // stay resident. Throws std::runtime_error (a decode error) on overrun.
+  size_t readArrayCount(size_t min_element_wire_size);
   void emitHeader(const HeaderData& h);
 
   // Reads a BARE stamp (sec, nsec) at the cursor — the head of the
@@ -324,20 +457,26 @@ class RosParser : public PJ::MessageParserPluginBase {
   // (`time` in the .msg) is uint32.
   int64_t readBareTime();
 
-  // Composition parse helpers (used by specialization handlers)
-  void parseVector3(const std::string& prefix);
-  void parsePoint(const std::string& prefix);
-  void parseQuaternion(const std::string& prefix);
+  // Composition parse helpers (used by specialization handlers). Field names are
+  // built in one reused buffer, path_, instead of a temporary string per
+  // segment: each helper appends `segment` to path_ for its own fields and
+  // truncates it back when it returns (PathSegment). A handler sets path_ to
+  // its prefix (usually empty) once, then calls them.
+  void addFieldAt(std::string_view segment, double value);
+  void parseVector3(std::string_view segment);
+  void parsePoint(std::string_view segment);
+  void parseQuaternion(std::string_view segment);
   template <size_t N>
-  void parseCovariance(const std::string& prefix);
-  void parseTwist(const std::string& prefix);
-  void parsePose(const std::string& prefix);
-  // Emits an already-read Pose under `prefix` exactly as parsePose does
+  void parseCovariance(std::string_view segment);
+  void parseTwist(std::string_view segment);
+  void parsePose(std::string_view segment);
+  // Emits an already-read Pose under `segment` exactly as parsePose does
   // (position x/y/z, orientation x/y/z/w + roll/pitch/yaw).
-  void emitPose(const std::string& prefix, const PJ::sdk::Pose& pose);
-  void parseTransform(const std::string& prefix);
-  void parsePoseWithCovariance(const std::string& prefix);
-  void parseTwistWithCovariance(const std::string& prefix);
+  void emitPose(std::string_view segment, const PJ::sdk::Pose& pose);
+  void parseTransform(std::string_view segment);
+  void parsePoseWithCovariance(std::string_view segment);
+  void parseTwistWithCovariance(std::string_view segment);
+  std::string path_;  ///< field-name buffer of the specialized handlers
 
   // ----- Canonical-object handlers (route: parseScalars / parseObject) -----
   //
@@ -351,16 +490,14 @@ class RosParser : public PJ::MessageParserPluginBase {
   // hand-written scalar walker.
 
   // Shared scalar-side handler registered by every object-bearing schema.
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseScalarsDiscardingLargeArrays(
-      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+  PJ::Status parseScalarsDiscardingLargeArrays(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // Default-handler scalar route. Walks any ROS message whose schema is
   // known via rosx_introspection (flattenGeneric) and harvests all fields
   // honoring the user-configured array policy. Registered as the default
   // SchemaHandler in the constructor — fires for every type name not in
   // the specific table.
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseScalarsGeneric(
-      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+  PJ::Status parseScalarsGeneric(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // Slim scalar route for object-only schemas (markers) that carry no
   // meaningful scalar columns. Returns an EMPTY field set: enough for the
@@ -369,47 +506,37 @@ class RosParser : public PJ::MessageParserPluginBase {
   // ObjectIngestPolicy — not only kPureLazy. Without a parse_scalars, an
   // object-only handler makes parseScalars fail and the message push aborts on
   // non-kPureLazy policies (e.g. live streaming sources, which set no override).
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseScalarsObjectOnly(
-      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+  PJ::Status parseScalarsObjectOnly(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // ----- Slim direct-CDR scalar routes -----
   //
   // Shared prologue for every hand-written scalar route that reads the CDR wire
   // directly (no rosx_introspection flatten): resets the field accumulators —
-  // emitHeader()/addStringField() write into owned_fields_ + string_storage_ —
+  // emitHeader()/addStringField() write into fields_ —
   // seeds current_timestamp_ with the host time, and points the deserializer at
   // the payload. Mirrors the setup half of wrapVoidHandler().
   void beginDirectScalarRead(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
-
-  // Copies owned_fields_ into the vector shape parse_scalars returns. The
-  // string_view values keep pointing into string_storage_, which stays alive
-  // until the next parse on this instance — the same lifetime contract
-  // parseScalarsGeneric and wrapVoidHandler already rely on.
-  std::vector<PJ::sdk::NamedFieldValue> harvestOwnedFields() const;
 
   // Header-only scalar route: emits just the emitHeader() series. For
   // object-bearing schemas that lead with a std_msgs/Header but carry nothing
   // else worth plotting — visualization_msgs/Marker and
   // point_cloud_interfaces/CompressedPointCloud2 (whose blob is compressed, so
   // no point count can be measured from it).
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseHeaderOnlyScalars(
-      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+  PJ::Status parseHeaderOnlyScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // sensor_msgs/PointCloud2: the header series plus /num_points, measured as
   // len(data) / point_step — the points actually present, NOT the width*height
   // the producer declares. A full introspection flatten of a cloud is worthless
   // as time series (the bulk data[] is dropped anyway) and costs an entire
   // schema walk per message.
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parsePointCloud2Scalars(
-      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+  PJ::Status parsePointCloud2Scalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // foxglove_msgs/CompressedPointCloud: leads with a BARE
   // builtin_interfaces/Time (NOT a std_msgs/Header — readHeader() must not be
   // used, its ROS1 seq branch would consume the wrong word), then frame_id.
   // Emits /timestamp + /frame_id; the wire carries no point count (the cloud is
   // an opaque compressed blob), so there is nothing else to emit.
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseFoxgloveCompressedPointCloudScalars(
-      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+  PJ::Status parseFoxgloveCompressedPointCloudScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // sensor_msgs/Image
   PJ::Expected<PJ::sdk::ObjectRecord> parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
@@ -493,8 +620,7 @@ class RosParser : public PJ::MessageParserPluginBase {
   // GridMapInfo scalars (resolution, lengths, pose), /num_layers and the
   // /size_x, /size_y read from the first layer's layout. The float arrays are
   // never walked.
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseGridMapScalars(
-      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+  PJ::Status parseGridMapScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // foxglove_msgs/Grid -> sdk::GridMap (zero-copy view of data[], anchored to
   // the payload). Leads with a BARE time (readBareTime), not a Header.
@@ -502,8 +628,7 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // Slim scalar companion for foxglove_msgs/Grid: /timestamp, /frame_id,
   // /column_count, /row_count (derived), strides and /data_size.
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseFoxgloveGridScalars(
-      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+  PJ::Status parseFoxgloveGridScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // Reads the whole grid_map_msgs/GridMap body after the deserializer has
   // been positioned at the start of the message. `center` receives the full
@@ -540,8 +665,7 @@ class RosParser : public PJ::MessageParserPluginBase {
   // Slim scalar companion for yolo_msgs/DetectionArray: emits `num_detections`
   // so the object ingests under ANY policy (see parseScalarsObjectOnly) and
   // gives a useful plottable count. parse_object is unchanged.
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> parseYoloScalars(
-      PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
+  PJ::Status parseYoloScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload);
 
   // Reads one visualization_msgs/Marker from the deserializer at the current
   // cursor and appends the resulting entity (ADD/MODIFY) or deletion
@@ -561,7 +685,7 @@ class RosParser : public PJ::MessageParserPluginBase {
   // ----- Specialized scalar handlers -----
   //
   // Each one walks a specific ROS message type and pushes its decoded fields
-  // into owned_fields_ via addField/addStringField. They are imperative
+  // into fields_ via addField/addStringField. They are imperative
   // (return void, side-effect on the parser's accumulators).
   //
   // wrapVoidHandler<Handler> is a member-function template that decorates
@@ -572,15 +696,12 @@ class RosParser : public PJ::MessageParserPluginBase {
   // and you have a parse_scalars callable suitable for direct catalog
   // registration.
   template <void (RosParser::*Handler)()>
-  PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> wrapVoidHandler(
-      PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+  PJ::Status wrapVoidHandler(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
     if (!parser_.has_value()) {
       return PJ::unexpected(std::string("no schema bound"));
     }
     ensureDeserializer();
-    owned_fields_.clear();
-    string_storage_.clear();
-    named_fields_.clear();
+    fields_.clear();
     current_timestamp_ = ts;
     // The object handlers each carry their own try/catch; the scalar void handlers
     // do not, and this wrapper is the C-ABI-facing entry for them. A CDR decode
@@ -592,12 +713,7 @@ class RosParser : public PJ::MessageParserPluginBase {
     } catch (const std::exception& e) {
       return PJ::unexpected(std::string("ROS scalar decode error: ") + e.what());
     }
-    std::vector<PJ::sdk::NamedFieldValue> out;
-    out.reserve(owned_fields_.size());
-    for (const auto& f : owned_fields_) {
-      out.push_back({.name = f.name, .value = f.value});
-    }
-    return out;
+    return PJ::okStatus();
   }
 
   void handleEmpty();
@@ -619,21 +735,33 @@ class RosParser : public PJ::MessageParserPluginBase {
 
   // Generic path
   void flattenGeneric(PJ::Span<const uint8_t> payload);
+  // Name of the value at walk position `index`. Rendered only when `leaf`
+  // (schema node + array indexes + @key suffixes) differs from the leaf seen
+  // at that position in the previous message; otherwise the cached name.
+  struct CachedLeaf {
+    RosMsgParser::FieldLeaf leaf;
+    std::string name;
+    uint64_t name_id = 0;  ///< fields_.newNameId() at every rendering, so it names this exact string
+  };
+  const CachedLeaf& leafName(size_t index, const RosMsgParser::FieldLeaf& leaf);
+  std::vector<CachedLeaf> leaf_names_;  ///< by walk position; cleared with each new parser_
   void addQuaternionRPY();
 };
 
 // parseCovariance is a template — define it here.
 template <size_t N>
-void RosParser::parseCovariance(const std::string& prefix) {
+void RosParser::parseCovariance(std::string_view segment) {
+  static_assert(N <= 10, "cell names are built from single-digit indexes");
   std::array<double, N * N> cov{};
   for (auto& val : cov) {
     val = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
+  PathSegment matrix(path_, segment);
   for (size_t i = 0; i < N; i++) {
     for (size_t j = i; j < N; j++) {
-      size_t index = i * N + j;
-      std::string name = prefix + "/[" + std::to_string(i) + ";" + std::to_string(j) + "]";
-      addField(name, cov[index]);
+      // "/[i;j]": the upper triangle, row-major.
+      const std::array<char, 6> cell = {'/', '[', static_cast<char>('0' + i), ';', static_cast<char>('0' + j), ']'};
+      addFieldAt(std::string_view(cell.data(), cell.size()), cov[i * N + j]);
     }
   }
 }

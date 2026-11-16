@@ -486,8 +486,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
 // the combined /header/stamp series at all.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parsePointCloud2Scalars(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parsePointCloud2Scalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
     emitHeader(readHeader());
@@ -524,7 +523,7 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parsePointCloud2S
     if (point_step > 0) {
       addField("/num_points", PJ::sdk::ValueRef{static_cast<uint64_t>(data_size) / point_step});
     }
-    return harvestOwnedFields();
+    return PJ::okStatus();
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("PointCloud2 scalars: CDR read error: ") + e.what());
   }
@@ -680,8 +679,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud
 // the flat "/timestamp" + "/frame_id" pair rather than the /header/* series.
 // There is no point count anywhere in this schema (the cloud is an opaque
 // compressed blob), so nothing else is emitted.
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseFoxgloveCompressedPointCloudScalars(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parseFoxgloveCompressedPointCloudScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
 
@@ -696,7 +694,7 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseFoxgloveComp
     deserializer_->deserializeString(frame_id);
     addStringField("/frame_id", frame_id);
 
-    return harvestOwnedFields();
+    return PJ::okStatus();
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("CompressedPointCloud scalars: CDR read error: ") + e.what());
   }
@@ -1573,8 +1571,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseGridMap(PJ::Timestamp ts, PJ
   }
 }
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseGridMapScalars(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parseGridMapScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
     PJ::grid_map::GridMapMessage msg;
@@ -1583,6 +1580,7 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseGridMapScala
     addField("/info/resolution", msg.resolution);
     addField("/info/length_x", msg.length_x);
     addField("/info/length_y", msg.length_y);
+    path_.clear();
     emitPose("/info/pose", center);
     // Only the layer count is plottable, not the names; size_x / size_y live in
     // the first layer's layout (dim[1] / dim[0]).
@@ -1591,7 +1589,7 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseGridMapScala
       addField("/size_x", static_cast<double>(msg.data.front().dims[1].size));
       addField("/size_y", static_cast<double>(msg.data.front().dims[0].size));
     }
-    return harvestOwnedFields();
+    return PJ::okStatus();
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("GridMap scalars: CDR read error: ") + e.what());
   }
@@ -1669,8 +1667,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveGrid(PJ::Timestamp t
   }
 }
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseFoxgloveGridScalars(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parseFoxgloveGridScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
     // The full decode is a handful of scalar reads plus a length prefix (data[]
@@ -1686,7 +1683,7 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseFoxgloveGrid
     addField("/row_stride", PJ::sdk::ValueRef{static_cast<uint64_t>(grid->row_stride)});
     addField("/cell_stride", PJ::sdk::ValueRef{static_cast<uint64_t>(grid->cell_stride)});
     addField("/data_size", PJ::sdk::ValueRef{static_cast<uint64_t>(grid->data.size())});
-    return harvestOwnedFields();
+    return PJ::okStatus();
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("Grid scalars: CDR read error: ") + e.what());
   }

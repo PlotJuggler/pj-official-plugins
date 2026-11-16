@@ -139,6 +139,33 @@ if(benchmark_FOUND)
     plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host rosx_introspection benchmark::benchmark)
 endif()
 
+# --- Real-file decode benchmark (opt-in: a dev tool, never built by CI) ---
+#   mcap_decode_bench [--read-only] [--hash] file.mcap...
+# The vendored mcap reader needs lz4 + zstd. The root conanfile pins both (the
+# aggregate build has them); a per-plugin build installs them next to its own
+# deps, e.g. `conan install --requires=lz4/1.9.4 --requires=zstd/1.5.7 -g CMakeDeps
+# --output-folder=<dir>` and adds <dir> to CMAKE_PREFIX_PATH. System libraries are
+# not used: Ubuntu 22.04's lz4 is older than the reader needs.
+option(PARSER_ROS_BUILD_DECODE_BENCH "Build mcap_decode_bench (needs the Conan lz4 and zstd packages)" OFF)
+if(PARSER_ROS_BUILD_DECODE_BENCH)
+  find_package(lz4 QUIET)
+  find_package(zstd QUIET)
+  if(NOT TARGET LZ4::lz4_static OR NOT TARGET zstd::libzstd_static)
+    message(FATAL_ERROR
+      "PARSER_ROS_BUILD_DECODE_BENCH needs the Conan lz4 and zstd packages (targets LZ4::lz4_static and "
+      "zstd::libzstd_static). Build the aggregate (root conanfile), or run `conan install --requires=lz4/1.9.4 "
+      "--requires=zstd/1.5.7 -g CMakeDeps --output-folder=<dir>` and add <dir> to CMAKE_PREFIX_PATH.")
+  endif()
+  add_executable(mcap_decode_bench benchmarks/mcap_decode_bench.cpp)
+  target_compile_features(mcap_decode_bench PRIVATE cxx_std_20)
+  target_compile_definitions(mcap_decode_bench PRIVATE
+    PJ_ROS_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_ros_plugin>")
+  target_include_directories(mcap_decode_bench SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../data_load_mcap/contrib)
+  target_link_libraries(mcap_decode_bench PRIVATE
+    plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host LZ4::lz4_static zstd::libzstd_static)
+  add_dependencies(mcap_decode_bench parser_ros_plugin)
+endif()
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(parser_ros_plugin
   REQUIRED_EXPORTS PJ_get_message_parser_vtable PJ_get_dialog_vtable)

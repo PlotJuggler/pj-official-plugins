@@ -233,18 +233,16 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseYoloDetectionArray(PJ::Times
 // from aborting on this object-only schema (see parseScalarsObjectOnly) while
 // giving a useful plottable count. The full per-detection decode stays in
 // parseYoloDetectionArray.
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseYoloScalars(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parseYoloScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
     // The header used to be read and dropped here. It is the one part of a
     // DetectionArray that is genuinely a time series (sensor stamp + frame),
-    // so emit it: emitHeader appends into owned_fields_/string_storage_, which
-    // harvestOwnedFields() then copies out with the string views still valid.
+    // so emit it: emitHeader appends into fields_.
     emitHeader(readHeader());
     const uint32_t num_detections = deserializer_->deserializeUInt32();
     addField("num_detections", PJ::sdk::ValueRef{static_cast<uint64_t>(num_detections)});
-    return harvestOwnedFields();
+    return PJ::okStatus();
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("DetectionArray scalars: CDR read error: ") + e.what());
   }

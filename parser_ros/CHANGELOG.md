@@ -3,6 +3,17 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
+## [1.4.1] - 2026-11-16
+
+### Changed
+- ROS messages import and decode about twice as fast, with lower memory use.
+  The decoded fields and values are unchanged.
+
+### Fixed
+- A corrupt `sensor_msgs/JointState` message whose array length exceeds its
+  size is rejected before memory is reserved for it, so it no longer leaves
+  that memory held for the rest of the import.
+
 ## [1.4.0] - 2026-11-10
 
 ### Added

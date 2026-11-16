@@ -1,6 +1,9 @@
+#include <cassert>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <functional>
+#include <limits>
 #include <map>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
@@ -440,7 +443,7 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   schema_compiled_ = false;
   parser_.reset();
   has_header_ = false;
-  quaternion_prefixes_.clear();
+  quaternions_.clear();
 
   // Let the SDK base class record the bound type and run its own bind
   // bookkeeping (host registration, dialog config, …). We hand it the
@@ -506,19 +509,17 @@ void RosParser::registerBoundSchemaHandler(const CatalogEntry& entry) {
   PJ::sdk::SchemaHandler handler;
   handler.object_type = entry.object_type;
   if (entry.parse_scalars) {
-    auto fn = std::bind_front(entry.parse_scalars, this);
-    handler.parse_scalars = [this, fn = std::move(fn)](
+    handler.parse_scalars = [this, fn = entry.parse_scalars](
                                 PJ::Timestamp ts,
                                 PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-      auto fields = fn(ts, payload);
-      if (!fields) {
-        return PJ::unexpected(std::move(fields).error());
+      if (auto status = (this->*fn)(ts, payload); !status) {
+        return PJ::unexpected(std::move(status).error());
       }
       PJ::sdk::ScalarRecord record;
       if (use_embedded_timestamp_) {
         record.ts = current_timestamp_;
       }
-      record.fields = std::move(*fields);
+      record.fields.assign(fields_.begin(), fields_.end());
       return record;
     };
   }
@@ -532,6 +533,9 @@ void RosParser::registerBoundSchemaHandler(const CatalogEntry& entry) {
   // when calling classifySchema / parseScalars / parseObject — keeps lookups
   // symmetric regardless of "/msg/" presence).
   registerSchemaHandler(type_name_, std::move(handler));
+  // Only once the handler is registered, so parse() never runs a route the
+  // base class does not have.
+  scalar_route_ = entry.parse_scalars;
 }
 
 RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_type) const {
@@ -569,13 +573,14 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   if (!schema_bound_) {
     return PJ::unexpected(std::string("no schema bound"));
   }
-  const std::string msg_type = normalizedMessageType(type_name_, schema_format_);
   if (schema_compiled_) {
+    // The per-message path (parseScalarsGeneric) lands here: no work, no allocation.
     if (register_specialized_handler) {
-      registerBoundSchemaHandler(selectCatalogEntry(msg_type));
+      registerBoundSchemaHandler(selectCatalogEntry(normalizedMessageType(type_name_, schema_format_)));
     }
     return PJ::okStatus();
   }
+  const std::string msg_type = normalizedMessageType(type_name_, schema_format_);
 
   // Normalize root names to the conventions used by rosx_introspection. ROS 2
   // .msg schemas use "pkg/msg/Type" externally and "pkg/Type" internally;
@@ -589,6 +594,7 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
                                 ? ros2IdlDefinition(type_name_, schema_definition_)
                                 : schema_definition_;
     parser_.emplace("", RosMsgParser::ROSType(msg_type), definition, schema_format_);
+    leaf_names_.clear();  // keyed on the previous parser's schema nodes
     auto policy =
         discard_large_arrays_ ? RosMsgParser::Parser::DISCARD_LARGE_ARRAYS : RosMsgParser::Parser::KEEP_LARGE_ARRAYS;
     parser_->setMaxArrayPolicy(policy, max_array_size_);
@@ -658,6 +664,7 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
   boolean_strings_to_number_ = cfg.value("boolean_strings_to_number", false);
   remove_suffix_from_strings_ = cfg.value("remove_suffix_from_strings", false);
   topic_name_ = cfg.value("topic_name", std::string{});
+  pal_statistics_key_ = palStatisticsKey(topic_name_);
 
   const std::string requested_schema_encoding = cfg.value("schema_encoding", cfg.value("encoding", std::string{}));
   if (!requested_schema_encoding.empty()) {
@@ -673,7 +680,7 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
       schema_compiled_ = false;
       parser_.reset();
       has_header_ = false;
-      quaternion_prefixes_.clear();
+      quaternions_.clear();
     }
   }
 
@@ -701,19 +708,23 @@ PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> 
   if (!writeHostBound()) {
     return PJ::unexpected(std::string("write host not bound"));
   }
-  auto record = parseScalars(timestamp_ns, payload);
-  if (!record) {
-    return PJ::unexpected(std::move(record).error());
+  if (scalar_route_ == nullptr) {
+    // No schema bound, so no handler registered: the base reports that.
+    auto record = parseScalars(timestamp_ns, payload);
+    return record ? PJ::okStatus() : PJ::unexpected(std::move(record).error());
   }
-  if (record->fields.empty()) {
+  // The same route parseScalars dispatches to, called directly: fields_ is
+  // appended as it is, with no per-message copy of every field name.
+  if (auto status = (this->*scalar_route_)(timestamp_ns, payload); !status) {
+    return status;
+  }
+  if (fields_.empty()) {
     return PJ::okStatus();
   }
-  // Honor the parser-controlled timestamp when the scalar handler set one
-  // (use_embedded_timestamp_); otherwise fall back to the message receive
-  // time. The handler already folded the embedded stamp into the record.
-  const PJ::Timestamp ts = record->ts.value_or(timestamp_ns);
-  return bound_field_cache_.append(
-      writeHost(), ts, PJ::Span<const PJ::sdk::NamedFieldValue>(record->fields.data(), record->fields.size()));
+  // Honor the parser-controlled timestamp (use_embedded_timestamp_, resolved by
+  // the handler into current_timestamp_); otherwise the message receive time.
+  const PJ::Timestamp ts = use_embedded_timestamp_ ? current_timestamp_ : timestamp_ns;
+  return bound_field_cache_.append(writeHost(), ts, fields_.span(), fields_.nameIds());
 }
 
 // ---------------------------------------------------------------------------
@@ -723,8 +734,7 @@ PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> 
 // parseScalarsDiscardingLargeArrays below.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsGeneric(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parseScalarsGeneric(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   if (auto status = compileBoundSchema(false); !status) {
     return PJ::unexpected(std::move(status).error());
   }
@@ -732,18 +742,10 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsGener
     return PJ::unexpected(std::string("no schema bound"));
   }
   ensureDeserializer();
-  owned_fields_.clear();
-  string_storage_.clear();
-  named_fields_.clear();
+  fields_.clear();
   current_timestamp_ = ts;
   flattenGeneric(payload);
-
-  std::vector<PJ::sdk::NamedFieldValue> out;
-  out.reserve(owned_fields_.size());
-  for (const auto& f : owned_fields_) {
-    out.push_back({.name = f.name, .value = f.value});
-  }
-  return out;
+  return PJ::okStatus();
 }
 
 // ---------------------------------------------------------------------------
@@ -754,8 +756,7 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsGener
 // The user-configured array policy is restored on exit.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsDiscardingLargeArrays(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parseScalarsDiscardingLargeArrays(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   if (auto status = compileBoundSchema(false); !status) {
     return PJ::unexpected(std::move(status).error());
   }
@@ -779,10 +780,10 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsDisca
 // fields, so no scalar row is written). Decodes nothing — zero cost, zero risk.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsObjectOnly(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> /*payload*/) {
+PJ::Status RosParser::parseScalarsObjectOnly(PJ::Timestamp ts, PJ::Span<const uint8_t> /*payload*/) {
   current_timestamp_ = ts;
-  return std::vector<PJ::sdk::NamedFieldValue>{};
+  fields_.clear();
+  return PJ::okStatus();
 }
 
 // ---------------------------------------------------------------------------
@@ -794,20 +795,9 @@ PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseScalarsObjec
 
 void RosParser::beginDirectScalarRead(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   ensureDeserializer();
-  owned_fields_.clear();
-  string_storage_.clear();
-  named_fields_.clear();
+  fields_.clear();
   current_timestamp_ = ts;
   deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
-}
-
-std::vector<PJ::sdk::NamedFieldValue> RosParser::harvestOwnedFields() const {
-  std::vector<PJ::sdk::NamedFieldValue> out;
-  out.reserve(owned_fields_.size());
-  for (const auto& f : owned_fields_) {
-    out.push_back({.name = f.name, .value = f.value});
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -826,12 +816,11 @@ std::vector<PJ::sdk::NamedFieldValue> RosParser::harvestOwnedFields() const {
 // policy, and the canonical object never reaches the ObjectStore.
 // ---------------------------------------------------------------------------
 
-PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> RosParser::parseHeaderOnlyScalars(
-    PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::parseHeaderOnlyScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
     emitHeader(readHeader());
-    return harvestOwnedFields();
+    return PJ::okStatus();
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("header scalars: CDR read error: ") + e.what());
   }
@@ -875,7 +864,7 @@ void RosParser::detectSchemaFeatures() {
       !root_fields.empty() &&
       normalizedMessageType(root_fields.front().type().baseName(), RosMsgParser::ROS_MSG) == "std_msgs/Header";
 
-  quaternion_prefixes_.clear();
+  quaternions_.clear();
   findQuaternionPrefixes(schema->root_msg.get(), "", schema->msg_library);
 }
 
@@ -892,7 +881,19 @@ void RosParser::findQuaternionPrefixes(
     if (normalizedMessageType(type.baseName(), RosMsgParser::ROS_MSG) == "geometry_msgs/Quaternion") {
       // For arrays, the flattened name includes [i]; skip at bind time.
       if (!field.isArray()) {
-        quaternion_prefixes_.push_back(fp);
+        static constexpr std::array<std::string_view, 4> kComponents = {"/x", "/y", "/z", "/w"};
+        static constexpr std::array<std::string_view, 3> kAngles = {"/roll", "/pitch", "/yaw"};
+        auto& q = quaternions_.emplace_back();
+        for (size_t k = 0; k < kComponents.size(); ++k) {
+          q.component[k] = fp;
+          q.component[k] += kComponents[k];
+          q.index[k] = std::numeric_limits<size_t>::max();  // found by name on first use
+        }
+        for (size_t k = 0; k < kAngles.size(); ++k) {
+          q.angle[k] = fp;
+          q.angle[k] += kAngles[k];
+          q.angle_id[k] = fields_.newNameId();
+        }
       }
     } else if (type.typeID() == RosMsgParser::OTHER) {
       auto it = lib.find(type);
@@ -907,17 +908,16 @@ void RosParser::findQuaternionPrefixes(
 // Field accumulation helpers
 // ---------------------------------------------------------------------------
 
-void RosParser::addField(const std::string& name, double value) {
-  owned_fields_.push_back({name, PJ::sdk::ValueRef{value}});
+void RosParser::addField(std::string_view name, double value) {
+  fields_.add(name, PJ::sdk::ValueRef{value});
 }
 
-void RosParser::addField(const std::string& name, PJ::sdk::ValueRef value) {
-  owned_fields_.push_back({name, value});
+void RosParser::addField(std::string_view name, PJ::sdk::ValueRef value) {
+  fields_.add(name, value);
 }
 
-void RosParser::addStringField(const std::string& name, const std::string& value) {
-  string_storage_.push_back(value);
-  owned_fields_.push_back({name, PJ::sdk::ValueRef{std::string_view(string_storage_.back())}});
+void RosParser::addStringField(std::string_view name, std::string_view value) {
+  fields_.addString(name, value);
 }
 
 // ---------------------------------------------------------------------------
@@ -925,21 +925,17 @@ void RosParser::addStringField(const std::string& name, const std::string& value
 // ---------------------------------------------------------------------------
 
 PJ::Status RosParser::emitRecord(PJ::Timestamp ts) {
-  named_fields_.clear();
-  named_fields_.reserve(owned_fields_.size());
-  for (const auto& f : owned_fields_) {
-    named_fields_.push_back({.name = f.name, .value = f.value});
-  }
-  return bound_field_cache_.append(
-      writeHost(), ts, PJ::Span<const PJ::sdk::NamedFieldValue>(named_fields_.data(), named_fields_.size()));
+  return bound_field_cache_.append(writeHost(), ts, fields_.span(), fields_.nameIds());
 }
 
 // ---------------------------------------------------------------------------
 // Header helpers
 // ---------------------------------------------------------------------------
 
-RosParser::HeaderData RosParser::readHeader() {
-  HeaderData h;
+const RosParser::HeaderData& RosParser::readHeader() {
+  // Read into the member, so frame_id keeps its capacity from message to message.
+  HeaderData& h = header_;
+  h.seq = 0;
   // The stamp's `sec` word has a DIFFERENT SIGNEDNESS on the two wires, and the
   // raw 4 bytes are identical either way — only the interpretation differs:
   //   ROS 1  std_msgs/Header { uint32 seq; time stamp; ... }
@@ -1000,34 +996,90 @@ void RosParser::emitHeader(const HeaderData& h) {
 // Generic path
 // ---------------------------------------------------------------------------
 
-void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
-  try {
-    parser_->deserialize(
-        RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()), &flat_msg_, deserializer_.get());
-  } catch (const std::exception&) {
-    // CDR deserialization failed; bail and let the empty owned_fields_
-    // signal "no record" to the outer parse() caller. The SDK base
-    // class surfaces parse errors via PJ::unexpected() — best-effort
-    // mid-flatten errors are silently dropped.
-    return;
+namespace {
+
+bool sameLeaf(const RosMsgParser::FieldLeaf& a, const RosMsgParser::FieldLeaf& b) {
+  if (a.node != b.node || !(a.index_array == b.index_array) || a.key_suffixes.size() != b.key_suffixes.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.key_suffixes.size(); ++i) {
+    const auto& x = a.key_suffixes[i];
+    const auto& y = b.key_suffixes[i];
+    if (x.len != y.len || std::memcmp(x.data, y.data, x.len) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Streams the rosx schema walk straight into RosParser::fields_, in walk order,
+// with no FlatMessage in between (which copied every leaf and every string).
+// Keeps the first two values: with a std_msgs/Header they are its stamp.
+class FlattenWriter final : public RosMsgParser::MessageWriter {
+ public:
+  explicit FlattenWriter(RosParser& parser) : parser_(parser) {}
+
+  void writeValue(const RosMsgParser::FieldLeaf& leaf, const RosMsgParser::Variant& value) override {
+    if (count_ < first_.size()) {
+      first_[count_] = value;
+    }
+    const auto& name = parser_.leafName(count_++, leaf);
+    parser_.fields_.add(name.name, variantToValueRef(value), name.name_id);
   }
 
-  // Extract embedded timestamp before field conversion.
-  if (use_embedded_timestamp_ && has_header_ && flat_msg_.value.size() >= 2) {
-    double ts = 0;
-    if (deserializer_->isROS2()) {
-      double sec = flat_msg_.value[0].second.convert<double>();
-      double nsec = flat_msg_.value[1].second.convert<double>();
-      ts = sec + 1e-9 * nsec;
+  void writeString(const RosMsgParser::FieldLeaf& leaf, const std::string& text) override {
+    const auto& name = parser_.leafName(count_++, leaf);
+    double numeric = 0.0;
+    // Apply the string-to-number toggles before falling back to the string
+    // representation. parseStringAsDouble returns false when either both
+    // toggles are off or no rule matches; in that case we keep the string
+    // verbatim, copied into fields_ (ValueRef holds a non-owning string_view).
+    if ((parser_.boolean_strings_to_number_ || parser_.remove_suffix_from_strings_) &&
+        parseStringAsDouble(text, numeric, parser_.remove_suffix_from_strings_, parser_.boolean_strings_to_number_)) {
+      parser_.fields_.add(name.name, PJ::sdk::ValueRef{numeric}, name.name_id);
     } else {
-      // ROS1: value[1] is stamp (Time builtin)
-      ts = flat_msg_.value[1].second.convert<double>();
-    }
-    if (ts > 0) {
-      current_timestamp_ = static_cast<int64_t>(ts * 1e9);
+      parser_.fields_.addString(name.name, text, name.name_id);
     }
   }
 
+  void writeEnum(const RosMsgParser::FieldLeaf& leaf, int32_t value, const std::string& /*name*/) override {
+    writeValue(leaf, RosMsgParser::Variant(value));  // as rosx's FlatMessageWriter does
+  }
+
+  [[nodiscard]] size_t count() const {
+    return count_;
+  }
+  [[nodiscard]] double first(size_t i) const {
+    return first_[i].convert<double>();
+  }
+
+ private:
+  RosParser& parser_;
+  size_t count_ = 0;
+  std::array<RosMsgParser::Variant, 2> first_{};
+};
+
+}  // namespace
+
+const RosParser::CachedLeaf& RosParser::leafName(size_t index, const RosMsgParser::FieldLeaf& leaf) {
+  if (index >= leaf_names_.size()) {
+    leaf_names_.resize(index + 1);
+  }
+  auto& cached = leaf_names_[index];
+  if (!sameLeaf(cached.leaf, leaf)) {
+    // The entry matches nothing until it is complete: a throw while rendering
+    // must not leave the old name filed under the new leaf (or the reverse).
+    cached.leaf.node = nullptr;
+    leaf.toStr(cached.name);
+    cached.name_id = fields_.newNameId();
+    cached.leaf.index_array = leaf.index_array;
+    cached.leaf.key_suffixes = leaf.key_suffixes;
+    cached.leaf.node = leaf.node;
+  }
+  return cached;
+}
+
+void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   // Combined /header/stamp (seconds) for ROS 2, whose std_msgs/Header flattens
   // to split sec/nanosec leaves: the single plottable stamp series the
   // specialized handlers emit via emitHeader(), a diagnostic aid for clock
@@ -1035,68 +1087,75 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   // use_embedded_timestamp toggle. ROS 1 must NOT get it: its `time` builtin
   // already flattens to one /header/stamp leaf in seconds, and a second column
   // of the same name makes the datastore reject the whole record.
-  // value[0]/value[1] are the sec/nanosec leaves — same assumption as above.
-  if (has_header_ && deserializer_->isROS2() && flat_msg_.value.size() >= 2) {
-    const double stamp_sec =
-        flat_msg_.value[0].second.convert<double>() + 1e-9 * flat_msg_.value[1].second.convert<double>();
-    addField("/header/stamp", stamp_sec);
+  // It comes first in the record; its slot is filled after the walk.
+  const bool combined_stamp = has_header_ && deserializer_->isROS2();
+  const size_t stamp_slot = fields_.size();
+  if (combined_stamp) {
+    addField("/header/stamp", 0.0);
   }
 
-  std::string field_name;
-  for (const auto& [key, variant] : flat_msg_.value) {
-    key.toStr(field_name);
-    if (variant.getTypeID() == RosMsgParser::STRING) {
-      auto extracted = variant.extract<std::string>();
-      double numeric = 0.0;
-      // Apply the string-to-number toggles before falling back to the string
-      // representation. parseStringAsDouble returns false when either both
-      // toggles are off or no rule matches; in that case we keep the string
-      // verbatim. The doubled storage (owned via string_storage_) is needed
-      // because ValueRef holds a non-owning string_view.
-      if ((boolean_strings_to_number_ || remove_suffix_from_strings_) &&
-          parseStringAsDouble(extracted, numeric, remove_suffix_from_strings_, boolean_strings_to_number_)) {
-        owned_fields_.push_back({field_name, PJ::sdk::ValueRef{numeric}});
-      } else {
-        string_storage_.push_back(std::move(extracted));
-        owned_fields_.push_back({field_name, PJ::sdk::ValueRef{std::string_view(string_storage_.back())}});
-      }
+  FlattenWriter writer(*this);
+  try {
+    parser_->walkSchema(
+        RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()), deserializer_.get(), &writer);
+  } catch (const std::bad_alloc&) {
+    // Out of memory is not a malformed message: let it reach the caller (the SDK
+    // trampoline turns it into an error) instead of reporting "no record".
+    throw;
+  } catch (const std::exception&) {
+    // CDR deserialization failed; bail and let the empty fields_
+    // signal "no record" to the outer parse() caller. The SDK base
+    // class surfaces parse errors via PJ::unexpected() — best-effort
+    // mid-flatten errors are silently dropped.
+    fields_.clear();
+    return;
+  }
+
+  // Embedded timestamp: the first two values are the header's stamp.
+  if (use_embedded_timestamp_ && has_header_ && writer.count() >= 2) {
+    double ts = 0;
+    if (deserializer_->isROS2()) {
+      ts = writer.first(0) + 1e-9 * writer.first(1);
     } else {
-      owned_fields_.push_back({field_name, variantToValueRef(variant)});
+      // ROS1: value[1] is stamp (Time builtin)
+      ts = writer.first(1);
     }
+    if (ts > 0) {
+      current_timestamp_ = static_cast<int64_t>(ts * 1e9);
+    }
+  }
+
+  if (combined_stamp) {
+    // has_header_: the walk writes the header's stamp/sec and stamp/nanosec
+    // first, and a walk that throws returned above.
+    assert(writer.count() >= 2);
+    fields_.setValue(stamp_slot, PJ::sdk::ValueRef{writer.first(0) + 1e-9 * writer.first(1)});
   }
 
   addQuaternionRPY();
 }
 
 void RosParser::addQuaternionRPY() {
-  if (quaternion_prefixes_.empty()) {
-    return;
-  }
-
-  // Build name → index map for O(1) lookup.
-  std::unordered_map<std::string, size_t> idx;
-  const size_t n = owned_fields_.size();
-  for (size_t i = 0; i < n; i++) {
-    idx.emplace(owned_fields_[i].name, i);
-  }
-
-  for (const auto& prefix : quaternion_prefixes_) {
-    auto find_val = [&](const std::string& suffix) -> double {
-      auto it = idx.find(prefix + suffix);
-      if (it == idx.end()) {
-        return 0.0;
+  // Only the walked fields are searched, not the angles added below.
+  const size_t n = fields_.size();
+  for (auto& q : quaternions_) {
+    std::array<double, 4> v{};
+    for (size_t k = 0; k < v.size(); ++k) {
+      // The position from the previous message, checked by name; searched again
+      // (first field of that name) only when the message shape moved it.
+      size_t& i = q.index[k];
+      if (i >= n || fields_[i].name != q.component[k]) {
+        i = 0;
+        while (i < n && fields_[i].name != q.component[k]) {
+          ++i;
+        }
       }
-      return valueRefAsDouble(owned_fields_[it->second].value);
-    };
-
-    double x = find_val("/x");
-    double y = find_val("/y");
-    double z = find_val("/z");
-    double w = find_val("/w");
-    auto rpy = quaternionToRPY(x, y, z, w);
-    owned_fields_.push_back({prefix + "/roll", PJ::sdk::ValueRef{rpy.roll}});
-    owned_fields_.push_back({prefix + "/pitch", PJ::sdk::ValueRef{rpy.pitch}});
-    owned_fields_.push_back({prefix + "/yaw", PJ::sdk::ValueRef{rpy.yaw}});
+      v[k] = i < n ? valueRefAsDouble(fields_[i].value) : 0.0;
+    }
+    const auto rpy = quaternionToRPY(v[0], v[1], v[2], v[3]);
+    fields_.add(q.angle[0], PJ::sdk::ValueRef{rpy.roll}, q.angle_id[0]);
+    fields_.add(q.angle[1], PJ::sdk::ValueRef{rpy.pitch}, q.angle_id[1]);
+    fields_.add(q.angle[2], PJ::sdk::ValueRef{rpy.yaw}, q.angle_id[2]);
   }
 }
 

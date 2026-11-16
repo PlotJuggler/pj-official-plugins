@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -27,10 +28,15 @@ namespace ros_parser_detail {
 class BoundFieldCache {
  public:
   /// Appends one record: bound when every field is already known, by name otherwise.
+  ///
+  /// `name_ids` (optional, parallel to `fields`): a non-zero id stands for one
+  /// exact name string, never reused for another. A slot that last saw the same
+  /// id is known to hold the same name without comparing the strings.
   template <typename WriteHost>
   [[nodiscard]] PJ::Status append(
-      const WriteHost& host, PJ::Timestamp timestamp, PJ::Span<const PJ::sdk::NamedFieldValue> fields) {
-    if (bind(fields, bound_)) {
+      const WriteHost& host, PJ::Timestamp timestamp, PJ::Span<const PJ::sdk::NamedFieldValue> fields,
+      PJ::Span<const uint64_t> name_ids = {}) {
+    if (bind(fields, name_ids, bound_)) {
       auto status =
           host.appendBoundRecord(timestamp, PJ::Span<const PJ::sdk::BoundFieldValue>(bound_.data(), bound_.size()));
       if (status) {
@@ -52,7 +58,9 @@ class BoundFieldCache {
   /// record must be appended by name instead, so the host handles (or rejects,
   /// with its usual message) exactly what it did before: a field the cache has
   /// not learned yet, or a value whose type differs from its column's type.
-  [[nodiscard]] bool bind(PJ::Span<const PJ::sdk::NamedFieldValue> fields, std::vector<PJ::sdk::BoundFieldValue>& out) {
+  [[nodiscard]] bool bind(
+      PJ::Span<const PJ::sdk::NamedFieldValue> fields, PJ::Span<const uint64_t> name_ids,
+      std::vector<PJ::sdk::BoundFieldValue>& out) {
     out.clear();
     if (slots_.size() < fields.size()) {
       slots_.resize(fields.size());
@@ -60,13 +68,19 @@ class BoundFieldCache {
     for (std::size_t i = 0; i < fields.size(); ++i) {
       const auto& field = fields[i];
       Slot& slot = slots_[i];
-      if (!slot.valid || slot.name != field.name) {
+      const uint64_t name_id = i < name_ids.size() ? name_ids[i] : 0;
+      const bool same_name = slot.valid && ((name_id != 0 && slot.name_id == name_id) || slot.name == field.name);
+      if (!same_name) {
         const auto it = columns_.find(field.name);
         if (it == columns_.end()) {
           return false;
         }
-        slot = Slot{.valid = true, .name = field.name, .column = it->second};
+        // In place: the slot's string keeps its capacity, so a miss allocates nothing.
+        slot.valid = true;
+        slot.name.assign(field.name);
+        slot.column = it->second;
       }
+      slot.name_id = name_id;
       if (!PJ::sdk::isNull(field.value) && PJ::sdk::typeOf(field.value) != slot.column.type) {
         return false;
       }
@@ -100,6 +114,7 @@ class BoundFieldCache {
   struct Slot {
     bool valid = false;
     std::string name;
+    uint64_t name_id = 0;  ///< id `name` came with, 0 if none
     Column column{};
   };
   std::vector<Slot> slots_;                          ///< by position in the record
