@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_parquet/`.
 
+## [1.0.4] - 2026-11-16
+
+### Fixed
+- A time column stored as a time of day, a duration or a date (Parquet `TIME`, `DURATION` and `DATE`, as MATLAB writes timetables) now sets the time axis. Before, every row of such a file landed at time zero and plotted as a single point.
+
 ## [1.0.3] - 2026-11-09
 
 ### Changed

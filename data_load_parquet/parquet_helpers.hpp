@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <memory>
+#include <pj_base/time_math.hpp>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,25 @@ inline int findTimestampColumn(const std::shared_ptr<arrow::Schema>& schema) {
   return -1;
 }
 
+/// Scale a count of Arrow time units to nanoseconds; 0 when the result overflows int64.
+inline int64_t unitToNanos(int64_t value, arrow::TimeUnit::type unit) {
+  PJ::TimeUnit pj_unit = PJ::TimeUnit::kNanoseconds;
+  switch (unit) {
+    case arrow::TimeUnit::SECOND:
+      pj_unit = PJ::TimeUnit::kSeconds;
+      break;
+    case arrow::TimeUnit::MILLI:
+      pj_unit = PJ::TimeUnit::kMilliseconds;
+      break;
+    case arrow::TimeUnit::MICRO:
+      pj_unit = PJ::TimeUnit::kMicroseconds;
+      break;
+    case arrow::TimeUnit::NANO:
+      break;
+  }
+  return PJ::scaleToNanoseconds(value, pj_unit).value_or(0);
+}
+
 /// Extract timestamp in nanoseconds from an Arrow array cell (for the time axis).
 /// Does NOT apply timezone adjustment — callers that need the host-relative
 /// nanoseconds wrap this with their own timezone post-step (the production
@@ -62,21 +82,27 @@ inline int64_t getTimestampNanos(
 
   switch (arrow_type) {
     case arrow::Type::TIMESTAMP: {
-      auto ts_array = std::static_pointer_cast<arrow::TimestampArray>(array);
-      auto ts_type = std::static_pointer_cast<arrow::TimestampType>(ts_array->type());
-      int64_t value = ts_array->Value(index);
-      switch (ts_type->unit()) {
-        case arrow::TimeUnit::SECOND:
-          return value * 1'000'000'000LL;
-        case arrow::TimeUnit::MILLI:
-          return value * 1'000'000LL;
-        case arrow::TimeUnit::MICRO:
-          return value * 1'000LL;
-        case arrow::TimeUnit::NANO:
-          return value;
-      }
-      return value;
+      const auto& type = static_cast<const arrow::TimestampType&>(*array->type());
+      return unitToNanos(std::static_pointer_cast<arrow::TimestampArray>(array)->Value(index), type.unit());
     }
+    // TIME32/TIME64 hold a time of day, or an elapsed time (MATLAB timetables); DURATION an elapsed time.
+    case arrow::Type::TIME32: {
+      const auto& type = static_cast<const arrow::Time32Type&>(*array->type());
+      return unitToNanos(std::static_pointer_cast<arrow::Time32Array>(array)->Value(index), type.unit());
+    }
+    case arrow::Type::TIME64: {
+      const auto& type = static_cast<const arrow::Time64Type&>(*array->type());
+      return unitToNanos(std::static_pointer_cast<arrow::Time64Array>(array)->Value(index), type.unit());
+    }
+    case arrow::Type::DURATION: {
+      const auto& type = static_cast<const arrow::DurationType&>(*array->type());
+      return unitToNanos(std::static_pointer_cast<arrow::DurationArray>(array)->Value(index), type.unit());
+    }
+    case arrow::Type::DATE32:  // days since the UNIX epoch
+      return unitToNanos(
+          int64_t{std::static_pointer_cast<arrow::Date32Array>(array)->Value(index)} * 86'400, arrow::TimeUnit::SECOND);
+    case arrow::Type::DATE64:  // milliseconds since the UNIX epoch
+      return unitToNanos(std::static_pointer_cast<arrow::Date64Array>(array)->Value(index), arrow::TimeUnit::MILLI);
     case arrow::Type::INT64:
       return std::static_pointer_cast<arrow::Int64Array>(array)->Value(index);
     case arrow::Type::UINT64:

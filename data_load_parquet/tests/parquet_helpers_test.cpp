@@ -253,6 +253,62 @@ TEST(ParquetHelpersTest, GetTimestampNanosNull) {
   EXPECT_EQ(getTimestampNanos(array, 0, arrow::Type::INT64), 0);
 }
 
+// MATLAB writes a timetable's time column as Parquet TIME(MICROS), which Arrow reads as time64[us].
+TEST(ParquetHelpersTest, GetTimestampNanosFromTime64Micro) {
+  arrow::Time64Builder builder(arrow::time64(arrow::TimeUnit::MICRO), arrow::default_memory_pool());
+  ASSERT_TRUE(builder.Append(100'000).ok());  // 00:00:00.1
+  std::shared_ptr<arrow::Array> array;
+  ASSERT_TRUE(builder.Finish(&array).ok());
+
+  EXPECT_EQ(getTimestampNanos(array, 0, arrow::Type::TIME64), 100'000'000LL);
+}
+
+TEST(ParquetHelpersTest, GetTimestampNanosFromTime32Milli) {
+  arrow::Time32Builder builder(arrow::time32(arrow::TimeUnit::MILLI), arrow::default_memory_pool());
+  ASSERT_TRUE(builder.Append(1'500).ok());
+  std::shared_ptr<arrow::Array> array;
+  ASSERT_TRUE(builder.Finish(&array).ok());
+
+  EXPECT_EQ(getTimestampNanos(array, 0, arrow::Type::TIME32), 1'500'000'000LL);
+}
+
+// A value whose nanosecond count does not fit in int64 reads as 0, like a null cell.
+TEST(ParquetHelpersTest, GetTimestampNanosOverflowIsZero) {
+  arrow::DurationBuilder builder(arrow::duration(arrow::TimeUnit::SECOND), arrow::default_memory_pool());
+  ASSERT_TRUE(builder.Append(10'000'000'000LL).ok());  // ~317 years, past int64 nanoseconds
+  std::shared_ptr<arrow::Array> array;
+  ASSERT_TRUE(builder.Finish(&array).ok());
+
+  EXPECT_EQ(getTimestampNanos(array, 0, arrow::Type::DURATION), 0);
+}
+
+TEST(ParquetHelpersTest, GetTimestampNanosFromDuration) {
+  arrow::DurationBuilder builder(arrow::duration(arrow::TimeUnit::MILLI), arrow::default_memory_pool());
+  ASSERT_TRUE(builder.Append(250).ok());
+  std::shared_ptr<arrow::Array> array;
+  ASSERT_TRUE(builder.Finish(&array).ok());
+
+  EXPECT_EQ(getTimestampNanos(array, 0, arrow::Type::DURATION), 250'000'000LL);
+}
+
+TEST(ParquetHelpersTest, GetTimestampNanosFromDate32) {
+  arrow::Date32Builder builder;
+  ASSERT_TRUE(builder.Append(2).ok());  // 1970-01-03, in days since the epoch
+  std::shared_ptr<arrow::Array> array;
+  ASSERT_TRUE(builder.Finish(&array).ok());
+
+  EXPECT_EQ(getTimestampNanos(array, 0, arrow::Type::DATE32), 2LL * 86'400'000'000'000LL);
+}
+
+TEST(ParquetHelpersTest, GetTimestampNanosFromDate64) {
+  arrow::Date64Builder builder;
+  ASSERT_TRUE(builder.Append(86'400'000LL).ok());  // 1970-01-02, in milliseconds since the epoch
+  std::shared_ptr<arrow::Array> array;
+  ASSERT_TRUE(builder.Finish(&array).ok());
+
+  EXPECT_EQ(getTimestampNanos(array, 0, arrow::Type::DATE64), 86'400'000'000'000LL);
+}
+
 // --- getArrowValueRef ---
 
 TEST(ParquetHelpersTest, GetArrowValueRefInt32) {
