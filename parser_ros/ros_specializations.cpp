@@ -258,13 +258,26 @@ void RosParser::handleDiagnosticArray() {
 
   size_t status_count = deserializer_->deserializeUInt32();
   for (size_t st = 0; st < status_count; st++) {
-    // diagnostic_msgs/DiagnosticStatus wire order (ROS1 and ROS2): level, name,
-    // message, hardware_id, values[] (the OK/WARN/ERROR/STALE byte constants are
-    // not serialized). Read in exactly this order or the cursor desyncs.
-    uint8_t level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
-    deserializer_->deserializeString(diag_name_);
-    deserializer_->deserializeString(diag_message_text_);
-    deserializer_->deserializeString(diag_hardware_id_);
+    // diagnostic_msgs/DiagnosticStatus: level, name, message and hardware_id in the
+    // order the bound schema declares (standard: level first), then values[]. The
+    // OK/WARN/ERROR/STALE byte constants are not serialized.
+    uint8_t level = 0;
+    for (const DiagField field : *diag_order_) {  // set: this handler binds only then
+      switch (field) {
+        case DiagField::kLevel:
+          level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
+          break;
+        case DiagField::kName:
+          deserializer_->deserializeString(diag_name_);
+          break;
+        case DiagField::kMessage:
+          deserializer_->deserializeString(diag_message_text_);
+          break;
+        case DiagField::kHardwareId:
+          deserializer_->deserializeString(diag_hardware_id_);
+          break;
+      }
+    }
 
     // Prefix: /{hardware_id}/{name} or /{name}
     path_.assign("/");

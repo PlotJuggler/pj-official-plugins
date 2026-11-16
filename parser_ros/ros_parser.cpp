@@ -544,7 +544,8 @@ RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_typ
   // present in the catalog, so the second find always hits.
   const std::string catalog_type = normalizedMessageType(msg_type, RosMsgParser::ROS_MSG);
   auto it = catalog().find(catalog_type);
-  if (it == catalog().end()) {
+  // A DiagnosticArray layout handleDiagnosticArray cannot follow decodes generically.
+  if (it == catalog().end() || (catalog_type == "diagnostic_msgs/DiagnosticArray" && !diag_order_)) {
     it = catalog().find(CatalogEntry::kDefault);
   }
   CatalogEntry entry = it->second;
@@ -624,6 +625,9 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
       break;
     }
   }
+  if (ros_type == "diagnostic_msgs/DiagnosticArray") {
+    diag_order_ = readDiagnosticLayout();
+  }
   if (register_specialized_handler) {
     registerBoundSchemaHandler(selectCatalogEntry(msg_type));
   }
@@ -635,6 +639,76 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   schema_compiled_ = true;
 
   return PJ::okStatus();
+}
+
+std::optional<RosParser::DiagOrder> RosParser::readDiagnosticLayout() const {
+  // Walks from the root: DiagnosticArray is (header, status[]), DiagnosticStatus is
+  // level, name, message and hardware_id in any order then values[], KeyValue is
+  // (key, value). Constants (OK=0, WARN=1, ...) are not on the wire.
+  const auto& schema = *parser_->getSchema();
+  const auto data_fields = [](const RosMsgParser::ROSMessage& message) {
+    std::vector<const RosMsgParser::ROSField*> fields;
+    for (const auto& field : message.fields()) {
+      if (!field.isConstant()) {
+        fields.push_back(&field);
+      }
+    }
+    return fields;
+  };
+  const auto is_string = [](const RosMsgParser::ROSField* field) {
+    return !field->isArray() && field->type().typeID() == RosMsgParser::STRING;
+  };
+  // A sequence carries a length prefix on the wire; a fixed-size array does not.
+  const auto is_sequence = [](const RosMsgParser::ROSField* field) {
+    return field->isArray() && field->arraySize() == -1;
+  };
+
+  const auto root = data_fields(*schema.root_msg);
+  if (root.size() != 2 || root[0]->name() != "header" || root[1]->name() != "status" || !is_sequence(root[1])) {
+    return std::nullopt;
+  }
+  const auto status = root[1]->getMessagePtr(schema.msg_library);
+  if (!status) {
+    return std::nullopt;
+  }
+  const auto fields = data_fields(*status);
+  if (fields.size() != 5 || fields[4]->name() != "values" || !is_sequence(fields[4])) {
+    return std::nullopt;
+  }
+  const auto key_value = fields[4]->getMessagePtr(schema.msg_library);
+  if (!key_value) {
+    return std::nullopt;
+  }
+  const auto kv = data_fields(*key_value);
+  if (kv.size() != 2 || kv[0]->name() != "key" || kv[1]->name() != "value" || !is_string(kv[0]) || !is_string(kv[1])) {
+    return std::nullopt;
+  }
+
+  DiagOrder order{};
+  std::array<bool, 4> seen{};  // a repeated field would leave another one unread
+  for (size_t i = 0; i < order.size(); ++i) {
+    const auto* field = fields[i];
+    const auto id = field->type().typeID();
+    if (field->name() == "level" && !field->isArray() &&
+        (id == RosMsgParser::BYTE || id == RosMsgParser::UINT8 || id == RosMsgParser::INT8 ||
+         id == RosMsgParser::CHAR)) {
+      order[i] = DiagField::kLevel;
+    } else if (field->name() == "name" && is_string(field)) {
+      order[i] = DiagField::kName;
+    } else if (field->name() == "message" && is_string(field)) {
+      order[i] = DiagField::kMessage;
+    } else if (field->name() == "hardware_id" && is_string(field)) {
+      order[i] = DiagField::kHardwareId;
+    } else {
+      return std::nullopt;
+    }
+    auto& was_seen = seen[static_cast<size_t>(order[i])];
+    if (was_seen) {
+      return std::nullopt;
+    }
+    was_seen = true;
+  }
+  return order;
 }
 
 std::string RosParser::saveConfig() const {
