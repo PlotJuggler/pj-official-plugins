@@ -65,7 +65,10 @@ class BoundFieldCache {
         if (it == columns_.end()) {
           return false;
         }
-        slot = Slot{.valid = true, .name = field.name, .column = it->second};
+        // In place: the slot's string keeps its capacity, so a miss allocates nothing.
+        slot.valid = true;
+        slot.name.assign(field.name);
+        slot.column = it->second;
       }
       if (!PJ::sdk::isNull(field.value) && PJ::sdk::typeOf(field.value) != slot.column.type) {
         return false;
