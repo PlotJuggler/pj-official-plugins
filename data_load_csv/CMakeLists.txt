@@ -54,6 +54,15 @@ target_compile_options(csv_parser_test PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(csv_parser_test PRIVATE csv_parser_lib GTest::gtest_main)
 add_test(NAME csv_parser_test COMMAND csv_parser_test)
 
+# --- Import test: loads the built plugin and drives it end to end ---
+add_executable(csv_source_test tests/csv_source_test.cpp)
+target_compile_features(csv_source_test PRIVATE cxx_std_20)
+target_compile_options(csv_source_test PRIVATE ${PJ_WARNING_FLAGS})
+target_compile_definitions(csv_source_test PRIVATE CSV_SOURCE_PLUGIN_PATH="$<TARGET_FILE:csv_source_plugin>")
+target_link_libraries(csv_source_test PRIVATE plotjuggler_sdk::plugin_host GTest::gtest_main)
+add_dependencies(csv_source_test csv_source_plugin)
+add_test(NAME csv_source_test COMMAND csv_source_test)
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(csv_source_plugin
   REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)

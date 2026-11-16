@@ -3,6 +3,16 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_csv/`.
 
+## [1.0.9] - 2026-11-16
+
+### Fixed
+- A load in which every row is skipped (for example a custom time format that
+  matches no row) now fails with "No rows imported" and the first skip reason,
+  instead of succeeding with no data. Reloading a file this way used to silently
+  remove the dataset already loaded; it is now kept.
+- The "Rows Skipped" prompt no longer says rows have an incorrect number of
+  columns when they were skipped for an invalid timestamp.
+
 ## [1.0.8] - 2026-11-08
 
 ### Changed
