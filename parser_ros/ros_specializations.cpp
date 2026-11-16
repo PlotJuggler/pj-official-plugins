@@ -141,7 +141,7 @@ void RosParser::handlePose() {
 }
 
 void RosParser::handlePoseStamped() {
-  auto h = readHeader();
+  const auto& h = readHeader();
   emitHeader(h);
   path_.assign("/pose");
   parsePose(path_);
@@ -153,17 +153,16 @@ void RosParser::handleTransform() {
 }
 
 void RosParser::handleTransformStamped() {
-  auto h = readHeader();
+  const auto& h = readHeader();
   emitHeader(h);
-  std::string child_frame_id;
-  deserializer_->deserializeString(child_frame_id);
-  addStringField("/child_frame_id", child_frame_id);
+  deserializer_->deserializeString(child_frame_id_);
+  addStringField("/child_frame_id", child_frame_id_);
   path_.assign("/transform");
   parseTransform(path_);
 }
 
 void RosParser::handleImu() {
-  auto h = readHeader();
+  const auto& h = readHeader();
   emitHeader(h);
   path_.assign("/orientation");
   parseQuaternion(path_);
@@ -180,11 +179,10 @@ void RosParser::handleImu() {
 }
 
 void RosParser::handleOdometry() {
-  auto h = readHeader();
+  const auto& h = readHeader();
   emitHeader(h);
-  std::string child_frame_id;
-  deserializer_->deserializeString(child_frame_id);
-  addStringField("/child_frame_id", child_frame_id);
+  deserializer_->deserializeString(child_frame_id_);
+  addStringField("/child_frame_id", child_frame_id_);
   path_.assign("/pose");
   parsePoseWithCovariance(path_);
   path_.assign("/twist");
@@ -192,29 +190,35 @@ void RosParser::handleOdometry() {
 }
 
 void RosParser::handleJointState() {
-  auto h = readHeader();
+  const auto& h = readHeader();
   emitHeader(h);
 
+  // Member scratch: the vectors and the name strings keep their capacity.
+  auto& names = joint_names_;
+  auto& positions = joint_positions_;
+  auto& velocities = joint_velocities_;
+  auto& efforts = joint_efforts_;
+
   size_t name_count = deserializer_->deserializeUInt32();
-  std::vector<std::string> names(name_count);
+  names.resize(name_count);
   for (auto& name : names) {
     deserializer_->deserializeString(name);
   }
 
   size_t pos_count = deserializer_->deserializeUInt32();
-  std::vector<double> positions(pos_count);
+  positions.resize(pos_count);
   for (auto& p : positions) {
     p = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
 
   size_t vel_count = deserializer_->deserializeUInt32();
-  std::vector<double> velocities(vel_count);
+  velocities.resize(vel_count);
   for (auto& v : velocities) {
     v = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
 
   size_t eff_count = deserializer_->deserializeUInt32();
-  std::vector<double> efforts(eff_count);
+  efforts.resize(eff_count);
   for (auto& e : efforts) {
     e = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
@@ -233,7 +237,7 @@ void RosParser::handleJointState() {
 }
 
 void RosParser::handleDiagnosticArray() {
-  auto h = readHeader();
+  const auto& h = readHeader();
   emitHeader(h);
 
   // Field names must be unique within one message, but real diagnostics repeat
@@ -295,9 +299,8 @@ void RosParser::handleDiagnosticArray() {
 void RosParser::handleTFMessage() {
   size_t transform_count = deserializer_->deserializeUInt32();
   for (size_t i = 0; i < transform_count; i++) {
-    auto h = readHeader();
-    std::string child_frame_id;
-    deserializer_->deserializeString(child_frame_id);
+    const auto& h = readHeader();
+    deserializer_->deserializeString(child_frame_id_);
 
     // Prefix: /{frame_id}/{child_frame_id}, or /{child_frame_id} without a frame_id.
     path_.assign("/");
@@ -305,7 +308,7 @@ void RosParser::handleTFMessage() {
       path_ += h.frame_id;
       path_ += '/';
     }
-    path_ += child_frame_id;
+    path_ += child_frame_id_;
     // Per-transform header (the batch has no single message-level Header). The
     // parent frame_id is already the path prefix, so only the stamp (seconds) —
     // and seq on ROS1 — are emitted, matching the /header/stamp series elsewhere.
@@ -393,7 +396,7 @@ void RosParser::handlePalStatisticsNames() {
 }
 
 void RosParser::handlePalStatisticsValues() {
-  auto h = readHeader();
+  const auto& h = readHeader();
   emitHeader(h);
 
   size_t count = deserializer_->deserializeUInt32();

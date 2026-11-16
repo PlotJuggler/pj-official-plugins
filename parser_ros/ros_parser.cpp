@@ -915,8 +915,10 @@ PJ::Status RosParser::emitRecord(PJ::Timestamp ts) {
 // Header helpers
 // ---------------------------------------------------------------------------
 
-RosParser::HeaderData RosParser::readHeader() {
-  HeaderData h;
+const RosParser::HeaderData& RosParser::readHeader() {
+  // Read into the member, so frame_id keeps its capacity from message to message.
+  HeaderData& h = header_;
+  h.seq = 0;
   // The stamp's `sec` word has a DIFFERENT SIGNEDNESS on the two wires, and the
   // raw 4 bytes are identical either way — only the interpretation differs:
   //   ROS 1  std_msgs/Header { uint32 seq; time stamp; ... }

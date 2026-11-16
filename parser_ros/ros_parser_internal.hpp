@@ -388,7 +388,15 @@ class RosParser : public PJ::MessageParserPluginBase {
     std::string frame_id;
   };
 
-  HeaderData readHeader();
+  // Valid until the next readHeader(); copy it to keep it longer.
+  const HeaderData& readHeader();
+  HeaderData header_;
+  // Per-message scratch of the specialized handlers, reused for its capacity.
+  std::string child_frame_id_;
+  std::vector<std::string> joint_names_;
+  std::vector<double> joint_positions_;
+  std::vector<double> joint_velocities_;
+  std::vector<double> joint_efforts_;
   void emitHeader(const HeaderData& h);
 
   // Reads a BARE stamp (sec, nsec) at the cursor — the head of the
