@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +16,8 @@
 #include <rosx_introspection/serializer.hpp>
 #include <string>
 #include <tuple>
+#include <type_traits>
+#include <variant>
 #include <vector>
 
 #include "../../common/builtin_object_compat.hpp"
@@ -5207,6 +5210,222 @@ TEST(RosParserTest, DataTamerFullWidthHashAndTextField) {
   payload.push_back(0);  // one byte more than the schema describes
   EXPECT_FALSE(snapshot.parse(dataTamerSnapshotMessage(123456790, hash, {0x03}, payload)));
   EXPECT_EQ(snapshot.recorder.rows().size(), 1U);
+}
+
+// ---- Reuse across messages: one instance == a fresh instance per message ----
+//
+// The parser keeps its scratch (field slots, name strings, cached leaf names,
+// path buffers) from one message to the next. These tests feed ONE instance a
+// sequence of messages whose shape changes (array lengths, strings, joint and
+// status counts) and check that every row equals what a FRESH instance, with
+// nothing to reuse, produces for the same payload. Both scalar routes: parse()
+// (direct ingest) and the functional parseScalars().
+
+std::string renderNumber(auto value) {
+  std::array<char, 64> buf{};
+  const auto result = std::to_chars(buf.data(), buf.data() + buf.size(), value);
+  return {buf.data(), result.ptr};
+}
+
+std::vector<std::string> renderRow(const PJ::sdk::testing::RecordedRow& row) {
+  std::vector<std::string> out{"ts=" + std::to_string(row.timestamp)};
+  for (const auto& f : row.fields) {
+    out.push_back(
+        f.name + '|' + std::to_string(static_cast<int>(f.type)) + '|' + (f.is_null ? "null" : "") + '|' +
+        renderNumber(f.numeric) + '|' + f.string_value);
+  }
+  return out;
+}
+
+std::vector<std::string> renderFields(const PJ::sdk::ScalarRecord& record) {
+  std::vector<std::string> out{"ts=" + (record.ts ? std::to_string(*record.ts) : std::string("none"))};
+  for (const auto& f : record.fields) {
+    const std::string value = std::visit(
+        [](const auto& v) -> std::string {
+          using T = std::decay_t<decltype(v)>;
+          if constexpr (std::is_same_v<T, std::string_view>) {
+            return std::string(v);
+          } else if constexpr (std::is_same_v<T, bool>) {
+            return v ? "true" : "false";
+          } else if constexpr (std::is_arithmetic_v<T>) {
+            return renderNumber(v);
+          } else if constexpr (std::is_same_v<T, PJ::sdk::TypedNull>) {
+            return "null:" + std::to_string(static_cast<int>(v.type));
+          } else {
+            return "null";
+          }
+        },
+        f.value);
+    out.push_back(f.name + '|' + std::to_string(f.value.index()) + '|' + value);
+  }
+  return out;
+}
+
+void expectReuseMatchesFresh(
+    std::string_view type_name, const std::string& definition, const std::vector<std::vector<uint8_t>>& payloads) {
+  RosParserFixture via_parse;
+  via_parse.setUp();
+  ASSERT_TRUE(via_parse.bindSchema(type_name, definition));
+  RosParserFixture via_scalars;
+  via_scalars.setUp();
+  ASSERT_TRUE(via_scalars.bindSchema(type_name, definition));
+  auto* reused_base = static_cast<PJ::MessageParserPluginBase*>(via_scalars.handle.context());
+  ASSERT_NE(reused_base, nullptr);
+
+  for (size_t i = 0; i < payloads.size(); ++i) {
+    SCOPED_TRACE("message " + std::to_string(i));
+    const auto& payload = payloads[i];
+    const PJ::Span<const uint8_t> bytes(payload.data(), payload.size());
+    const int64_t ts = 1000 + static_cast<int64_t>(i);
+
+    RosParserFixture fresh;
+    fresh.setUp();
+    ASSERT_TRUE(fresh.bindSchema(type_name, definition));
+    ASSERT_TRUE(via_parse.parse(payload, ts));
+    ASSERT_TRUE(fresh.parse(payload, ts));
+    ASSERT_EQ(fresh.recorder.rows().size(), 1u);
+    ASSERT_EQ(via_parse.recorder.rows().size(), i + 1);
+    EXPECT_EQ(renderRow(via_parse.recorder.rows().back()), renderRow(fresh.recorder.rows().front()));
+
+    RosParserFixture fresh_scalars;
+    fresh_scalars.setUp();
+    ASSERT_TRUE(fresh_scalars.bindSchema(type_name, definition));
+    auto* fresh_base = static_cast<PJ::MessageParserPluginBase*>(fresh_scalars.handle.context());
+    ASSERT_NE(fresh_base, nullptr);
+    auto reused = reused_base->parseScalars(ts, bytes);
+    ASSERT_TRUE(reused.has_value()) << reused.error();
+    const auto reused_rendered = renderFields(*reused);
+    auto reference = fresh_base->parseScalars(ts, bytes);
+    ASSERT_TRUE(reference.has_value()) << reference.error();
+    EXPECT_EQ(reused_rendered, renderFields(*reference));
+  }
+}
+
+void serializeF64s(RosMsgParser::NanoCDR_Serializer& enc, const std::vector<double>& values) {
+  enc.serializeUInt32(static_cast<uint32_t>(values.size()));
+  for (double v : values) {
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(v));
+  }
+}
+
+TEST(RosParserReuseTest, GenericMessageOfChangingShapeMatchesFreshInstance) {
+  // Header (combined /header/stamp), two variable-length arrays (they shift every
+  // later leaf, and put one array's elements at another walk position with another
+  // index), a string, and a quaternion whose RPY is looked up by name.
+  const std::string def =
+      "std_msgs/Header header\n"
+      "float64[] values\n"
+      "int32[] counts\n"
+      "string label\n"
+      "geometry_msgs/Quaternion q\n"
+      "================\n"
+      "MSG: std_msgs/Header\n"
+      "builtin_interfaces/Time stamp\nstring frame_id\n"
+      "================\n"
+      "MSG: builtin_interfaces/Time\n"
+      "int32 sec\nuint32 nanosec\n"
+      "================\n"
+      "MSG: geometry_msgs/Quaternion\n"
+      "float64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
+  const std::vector<size_t> lengths = {3, 2, 3, 0, 3};
+  const std::vector<size_t> count_lengths = {2, 3, 2, 3, 0};
+  const std::vector<std::string> labels = {"a", "bb", "", "a", "a label longer than any small-string buffer"};
+  const std::vector<std::string> frames = {"map", "odom", "map", "", "base_link_with_a_long_name"};
+  std::vector<std::vector<uint8_t>> payloads;
+  for (size_t m = 0; m < lengths.size(); ++m) {
+    payloads.push_back(serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+      serializeHeader(enc, static_cast<int32_t>(100 + m), static_cast<uint32_t>(m * 1000), frames[m]);
+      std::vector<double> values;
+      for (size_t k = 0; k < lengths[m]; ++k) {
+        values.push_back(static_cast<double>(m * 10 + k) + 0.5);
+      }
+      serializeF64s(enc, values);
+      enc.serializeUInt32(static_cast<uint32_t>(count_lengths[m]));
+      for (size_t k = 0; k < count_lengths[m]; ++k) {
+        enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(static_cast<int32_t>(m * 100 + k)));
+      }
+      enc.serializeString(labels[m]);
+      serializeQuaternion(enc, 0.1 * static_cast<double>(m), 0.2, 0.3, 0.9);
+    }));
+  }
+  expectReuseMatchesFresh("pkg/msg/ReuseProbe", def, payloads);
+}
+
+TEST(RosParserReuseTest, JointStateOfChangingCountMatchesFreshInstance) {
+  const std::vector<std::vector<std::string>> names = {
+      {"shoulder", "elbow", "wrist"}, {"elbow", "shoulder"}, {"a", "b", "c"}, {}, {"shoulder", "elbow", "wrist"}};
+  std::vector<std::vector<uint8_t>> payloads;
+  for (size_t m = 0; m < names.size(); ++m) {
+    payloads.push_back(serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+      serializeHeader(enc, static_cast<int32_t>(10 + m), 0, m % 2 == 0 ? "" : "base");
+      enc.serializeUInt32(static_cast<uint32_t>(names[m].size()));
+      for (const auto& name : names[m]) {
+        enc.serializeString(name);
+      }
+      std::vector<double> values;
+      for (size_t k = 0; k < names[m].size(); ++k) {
+        values.push_back(static_cast<double>(m) + 0.25 * static_cast<double>(k));
+      }
+      serializeF64s(enc, values);                                      // position
+      serializeF64s(enc, m == 1 ? std::vector<double>{} : values);     // velocity, absent once
+      serializeF64s(enc, m == 2 ? std::vector<double>{1.0} : values);  // effort, shorter once
+    }));
+  }
+  expectReuseMatchesFresh("sensor_msgs/msg/JointState", kJointStateDef, payloads);
+}
+
+TEST(RosParserReuseTest, DiagnosticArrayAcrossMessagesMatchesFreshInstance) {
+  struct Status {
+    uint8_t level;
+    std::string name, message, hardware_id;
+    std::vector<std::pair<std::string, std::string>> values;
+  };
+  const std::vector<std::vector<Status>> messages = {
+      {{0, "Network", "OK", "", {{"Interface Name", "eth0"}, {"Interface Name", "wlan0"}, {"MTU", "1500"}}},
+       {1, "CPU", "warm", "cpu0", {{"temperature", "65.5"}}}},
+      {{2, "CPU", "hot", "cpu0", {{"temperature", "91"}, {"", ""}, {"state", "throttled"}}}},
+      {{0, "Network", "OK", "", {{"Interface Name", "eth0"}, {"Interface Name", "wlan0"}, {"MTU", "1500"}}},
+       {0, "Network", "again", "", {{"MTU", "9000"}}}},
+      {},
+      {{1, "Battery", "Low", "", {{"voltage", "11.2"}}}},
+  };
+  std::vector<std::vector<uint8_t>> payloads;
+  for (const auto& statuses : messages) {
+    payloads.push_back(serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+      serializeHeader(enc, 1, 0, "");
+      enc.serializeUInt32(static_cast<uint32_t>(statuses.size()));
+      for (const auto& st : statuses) {
+        enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(st.level));
+        enc.serializeString(st.name);
+        enc.serializeString(st.message);
+        enc.serializeString(st.hardware_id);
+        enc.serializeUInt32(static_cast<uint32_t>(st.values.size()));
+        for (const auto& [key, value] : st.values) {
+          enc.serializeString(key);
+          enc.serializeString(value);
+        }
+      }
+    }));
+  }
+  expectReuseMatchesFresh("diagnostic_msgs/msg/DiagnosticArray", kDiagnosticArrayDef, payloads);
+}
+
+TEST(RosParserReuseTest, TFMessageOfChangingFramesMatchesFreshInstance) {
+  const std::vector<std::vector<std::pair<std::string, std::string>>> messages = {
+      {{"map", "odom"}, {"odom", "base_link"}}, {{"odom", "base_link"}}, {{"", "orphan"}, {"map", "odom"}}};
+  std::vector<std::vector<uint8_t>> payloads;
+  for (size_t m = 0; m < messages.size(); ++m) {
+    payloads.push_back(serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+      enc.serializeUInt32(static_cast<uint32_t>(messages[m].size()));
+      for (const auto& [parent, child] : messages[m]) {
+        serializeHeader(enc, static_cast<int32_t>(5 + m), 7, parent);
+        enc.serializeString(child);
+        serializeVector3(enc, 1.0 * static_cast<double>(m), 2.0, 3.0);
+        serializeQuaternion(enc, 0.0, 0.0, 0.1 * static_cast<double>(m), 1.0);
+      }
+    }));
+  }
+  expectReuseMatchesFresh("tf2_msgs/msg/TFMessage", kTFMessageDef, payloads);
 }
 
 }  // namespace
