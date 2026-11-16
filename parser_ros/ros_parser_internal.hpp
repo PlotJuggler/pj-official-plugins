@@ -347,6 +347,16 @@ class RosParser : public PJ::MessageParserPluginBase {
   bool marker_has_texture_block_ = false;
   bool marker_has_mesh_file_ = false;
 
+  // diagnostic_msgs/DiagnosticStatus: the order of its four leading fields as the
+  // bound schema declares them, read in compileBoundSchema. The standard order is
+  // level, name, message, hardware_id; Waymo's MCAP converter writes name first.
+  // A status layout handleDiagnosticArray cannot follow binds the generic walker.
+  enum class DiagField : uint8_t { kLevel, kName, kMessage, kHardwareId };
+  std::array<DiagField, 4> diag_order_{
+      DiagField::kLevel, DiagField::kName, DiagField::kMessage, DiagField::kHardwareId};
+  bool diag_layout_known_ = true;
+  bool readDiagnosticLayout();
+
   // Latches the one-time "trailing bytes" warning in parseYoloDetectionArray
   // (#4): a corrupt-but-in-bounds count can desync the positional CDR decode
   // without overrunning, so the try/catch never sees it. We warn once instead

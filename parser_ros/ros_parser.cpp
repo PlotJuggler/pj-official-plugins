@@ -547,6 +547,9 @@ RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_typ
   if (it == catalog().end()) {
     it = catalog().find(CatalogEntry::kDefault);
   }
+  if (catalog_type == "diagnostic_msgs/DiagnosticArray" && !diag_layout_known_) {
+    it = catalog().find(CatalogEntry::kDefault);  // a status layout the specialized reader cannot follow
+  }
   CatalogEntry entry = it->second;
 
   // Topic-conditional override: a std_msgs/String on a robot_description topic
@@ -624,6 +627,9 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
       break;
     }
   }
+  if (ros_type == "diagnostic_msgs/DiagnosticArray") {
+    diag_layout_known_ = readDiagnosticLayout();
+  }
   if (register_specialized_handler) {
     registerBoundSchemaHandler(selectCatalogEntry(msg_type));
   }
@@ -635,6 +641,69 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   schema_compiled_ = true;
 
   return PJ::okStatus();
+}
+
+bool RosParser::readDiagnosticLayout() {
+  const RosMsgParser::ROSMessage* status = nullptr;
+  const RosMsgParser::ROSMessage* key_value = nullptr;
+  for (const auto& [type, message] : parser_->getSchema()->msg_library) {
+    const std::string name = normalizedMessageType(type.baseName(), RosMsgParser::ROS_MSG);
+    if (name == "diagnostic_msgs/DiagnosticStatus") {
+      status = message.get();
+    } else if (name == "diagnostic_msgs/KeyValue") {
+      key_value = message.get();
+    }
+  }
+  if (status == nullptr || key_value == nullptr) {
+    return false;
+  }
+  // The serialized fields: constants (OK=0, WARN=1, ...) are not on the wire.
+  const auto data_fields = [](const RosMsgParser::ROSMessage& message) {
+    std::vector<const RosMsgParser::ROSField*> fields;
+    for (const auto& field : message.fields()) {
+      if (!field.isConstant()) {
+        fields.push_back(&field);
+      }
+    }
+    return fields;
+  };
+  const auto is_string = [](const RosMsgParser::ROSField* field) {
+    return !field->isArray() && field->type().typeID() == RosMsgParser::STRING;
+  };
+  const auto kv = data_fields(*key_value);
+  if (kv.size() != 2 || kv[0]->name() != "key" || kv[1]->name() != "value" || !is_string(kv[0]) || !is_string(kv[1])) {
+    return false;
+  }
+  const auto fields = data_fields(*status);
+  if (fields.size() != 5 || fields[4]->name() != "values" || !fields[4]->isArray()) {
+    return false;
+  }
+  std::array<DiagField, 4> order{};
+  std::array<bool, 4> seen{};
+  for (size_t i = 0; i < order.size(); ++i) {
+    const auto* field = fields[i];
+    const auto id = field->type().typeID();
+    if (field->name() == "level" && !field->isArray() &&
+        (id == RosMsgParser::BYTE || id == RosMsgParser::UINT8 || id == RosMsgParser::INT8 ||
+         id == RosMsgParser::CHAR)) {
+      order[i] = DiagField::kLevel;
+    } else if (field->name() == "name" && is_string(field)) {
+      order[i] = DiagField::kName;
+    } else if (field->name() == "message" && is_string(field)) {
+      order[i] = DiagField::kMessage;
+    } else if (field->name() == "hardware_id" && is_string(field)) {
+      order[i] = DiagField::kHardwareId;
+    } else {
+      return false;
+    }
+    auto& was_seen = seen[static_cast<size_t>(order[i])];
+    if (was_seen) {
+      return false;
+    }
+    was_seen = true;
+  }
+  diag_order_ = order;
+  return true;
 }
 
 std::string RosParser::saveConfig() const {

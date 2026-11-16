@@ -1304,6 +1304,96 @@ TEST(RosParserTest, DiagnosticArray) {
   EXPECT_DOUBLE_EQ(voltage->numeric, 11.2);
 }
 
+// Waymo's MCAP converter declares DiagnosticStatus with `name` before `level` and
+// serializes in that order. The fields are read in the order the schema declares.
+TEST(RosParserTest, DiagnosticArrayFollowsTheSchemaFieldOrder) {
+  static const char* kNameFirstDef =
+      "std_msgs/Header header\n"
+      "diagnostic_msgs/DiagnosticStatus[] status\n"
+      "================\n"
+      "MSG: std_msgs/Header\n"
+      "builtin_interfaces/Time stamp\nstring frame_id\n"
+      "================\n"
+      "MSG: builtin_interfaces/Time\n"
+      "int32 sec\nuint32 nanosec\n"
+      "================\n"
+      "MSG: diagnostic_msgs/DiagnosticStatus\n"
+      "byte OK=0\nbyte WARN=1\nbyte ERROR=2\nbyte STALE=3\n"
+      "string name\nbyte level\nstring message\nstring hardware_id\n"
+      "diagnostic_msgs/KeyValue[] values\n"
+      "================\n"
+      "MSG: diagnostic_msgs/KeyValue\n"
+      "string key\nstring value\n";
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("diagnostic_msgs/msg/DiagnosticArray", kNameFirstDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "");
+    enc.serializeUInt32(1);
+    enc.serializeString("Environmental Context");                                       // name
+    enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(2)));  // level ERROR
+    enc.serializeString("OK");                                                          // message
+    enc.serializeString("sensor");                                                      // hardware_id
+    enc.serializeUInt32(1);
+    enc.serializeString("rain");
+    enc.serializeString("0.25");
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  auto* level = findField(row, "/sensor/Environmental Context/level");
+  ASSERT_NE(level, nullptr);
+  EXPECT_DOUBLE_EQ(level->numeric, 2.0);
+  auto* rain = findField(row, "/sensor/Environmental Context/rain");
+  ASSERT_NE(rain, nullptr);
+  EXPECT_DOUBLE_EQ(rain->numeric, 0.25);
+}
+
+// A DiagnosticStatus with a field the specialized reader does not know is decoded
+// by the generic walker, which follows any schema, instead of desyncing.
+TEST(RosParserTest, DiagnosticArrayWithAnUnknownStatusLayoutUsesTheGenericWalker) {
+  static const char* kExtraFieldDef =
+      "std_msgs/Header header\n"
+      "diagnostic_msgs/DiagnosticStatus[] status\n"
+      "================\n"
+      "MSG: std_msgs/Header\n"
+      "builtin_interfaces/Time stamp\nstring frame_id\n"
+      "================\n"
+      "MSG: builtin_interfaces/Time\n"
+      "int32 sec\nuint32 nanosec\n"
+      "================\n"
+      "MSG: diagnostic_msgs/DiagnosticStatus\n"
+      "byte level\nstring name\nstring message\nstring hardware_id\nuint32 code\n"
+      "diagnostic_msgs/KeyValue[] values\n"
+      "================\n"
+      "MSG: diagnostic_msgs/KeyValue\n"
+      "string key\nstring value\n";
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("diagnostic_msgs/msg/DiagnosticArray", kExtraFieldDef));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "");
+    enc.serializeUInt32(1);
+    enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(1)));
+    enc.serializeString("Battery");
+    enc.serializeString("Low");
+    enc.serializeString("");
+    enc.serializeUInt32(42);  // code
+    enc.serializeUInt32(0);   // no values
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  EXPECT_EQ(findField(row, "/Battery/level"), nullptr) << "the specialized reader would misread this layout";
+  auto* code = findField(row, "/status[0]/code");
+  ASSERT_NE(code, nullptr);
+  EXPECT_DOUBLE_EQ(code->numeric, 42.0);
+}
+
 TEST(RosParserTest, DiagnosticArrayRepeatedAndEmptyKeys) {
   RosParserFixture f;
   f.setUp();

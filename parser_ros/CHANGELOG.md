@@ -3,6 +3,15 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
+## [1.4.2] - 2026-11-16
+
+### Fixed
+- `diagnostic_msgs/DiagnosticArray` is read in the field order its schema
+  declares. Recordings whose DiagnosticStatus puts `name` before `level`, such
+  as Waymo's converted MCAP files, failed to decode every message and now plot
+  as `/{hardware_id}/{name}/...` like the standard layout. A status layout with
+  fields the plugin does not know is decoded generically instead of failing.
+
 ## [1.4.1] - 2026-11-16
 
 ### Changed
