@@ -48,6 +48,17 @@ target_link_libraries(parquet_helpers_test PRIVATE
 )
 add_test(NAME parquet_helpers_test COMMAND parquet_helpers_test)
 
+# --- End-to-end test: the built plugin imports a Parquet file through a recording host ---
+add_executable(parquet_source_test tests/parquet_source_test.cpp)
+target_compile_features(parquet_source_test PRIVATE cxx_std_20)
+target_compile_options(parquet_source_test PRIVATE ${PJ_WARNING_FLAGS})
+target_compile_definitions(parquet_source_test PRIVATE
+  PARQUET_SOURCE_PLUGIN_PATH="$<TARGET_FILE:parquet_source_plugin>")
+target_link_libraries(parquet_source_test PRIVATE
+  plotjuggler_sdk::plugin_host Arrow::arrow_static Parquet::parquet_static GTest::gtest_main)
+add_dependencies(parquet_source_test parquet_source_plugin)
+add_test(NAME parquet_source_test COMMAND parquet_source_test)
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(parquet_source_plugin
   REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)
