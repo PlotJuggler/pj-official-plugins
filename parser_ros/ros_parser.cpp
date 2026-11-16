@@ -719,7 +719,7 @@ PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> 
   // Honor the parser-controlled timestamp (use_embedded_timestamp_, resolved by
   // the handler into current_timestamp_); otherwise the message receive time.
   const PJ::Timestamp ts = use_embedded_timestamp_ ? current_timestamp_ : timestamp_ns;
-  return bound_field_cache_.append(writeHost(), ts, fields_.span());
+  return bound_field_cache_.append(writeHost(), ts, fields_.span(), fields_.nameIds());
 }
 
 // ---------------------------------------------------------------------------
@@ -908,7 +908,7 @@ void RosParser::addStringField(std::string_view name, std::string_view value) {
 // ---------------------------------------------------------------------------
 
 PJ::Status RosParser::emitRecord(PJ::Timestamp ts) {
-  return bound_field_cache_.append(writeHost(), ts, fields_.span());
+  return bound_field_cache_.append(writeHost(), ts, fields_.span(), fields_.nameIds());
 }
 
 // ---------------------------------------------------------------------------
@@ -1010,11 +1010,12 @@ class FlattenWriter final : public RosMsgParser::MessageWriter {
     if (count_ < first_.size()) {
       first_[count_] = value;
     }
-    parser_.fields_.add(parser_.leafName(count_++, leaf), variantToValueRef(value));
+    const auto& name = parser_.leafName(count_++, leaf);
+    parser_.fields_.add(name.name, variantToValueRef(value), name.name_id);
   }
 
   void writeString(const RosMsgParser::FieldLeaf& leaf, const std::string& text) override {
-    const std::string& name = parser_.leafName(count_++, leaf);
+    const auto& name = parser_.leafName(count_++, leaf);
     double numeric = 0.0;
     // Apply the string-to-number toggles before falling back to the string
     // representation. parseStringAsDouble returns false when either both
@@ -1022,9 +1023,9 @@ class FlattenWriter final : public RosMsgParser::MessageWriter {
     // verbatim, copied into fields_ (ValueRef holds a non-owning string_view).
     if ((parser_.boolean_strings_to_number_ || parser_.remove_suffix_from_strings_) &&
         parseStringAsDouble(text, numeric, parser_.remove_suffix_from_strings_, parser_.boolean_strings_to_number_)) {
-      parser_.fields_.add(name, PJ::sdk::ValueRef{numeric});
+      parser_.fields_.add(name.name, PJ::sdk::ValueRef{numeric}, name.name_id);
     } else {
-      parser_.fields_.addString(name, text);
+      parser_.fields_.addString(name.name, text, name.name_id);
     }
   }
 
@@ -1047,7 +1048,7 @@ class FlattenWriter final : public RosMsgParser::MessageWriter {
 
 }  // namespace
 
-const std::string& RosParser::leafName(size_t index, const RosMsgParser::FieldLeaf& leaf) {
+const RosParser::CachedLeaf& RosParser::leafName(size_t index, const RosMsgParser::FieldLeaf& leaf) {
   if (index >= leaf_names_.size()) {
     leaf_names_.resize(index + 1);
   }
@@ -1055,8 +1056,9 @@ const std::string& RosParser::leafName(size_t index, const RosMsgParser::FieldLe
   if (!sameLeaf(cached.leaf, leaf)) {
     cached.leaf = leaf;
     leaf.toStr(cached.name);
+    cached.name_id = ++last_name_id_;
   }
-  return cached.name;
+  return cached;
 }
 
 void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {

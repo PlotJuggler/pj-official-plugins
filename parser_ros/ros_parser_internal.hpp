@@ -96,29 +96,39 @@ class FieldBuffer {
     size_ = 0;
     text_size_ = 0;
   }
-  void add(std::string_view name, PJ::sdk::ValueRef value) {
+  /// `name_id`, when not 0, identifies one rendering of `name` (see
+  /// RosParser::leafName): a slot that already holds that id holds that name,
+  /// so the copy is skipped, and BoundFieldCache can skip comparing it.
+  void add(std::string_view name, PJ::sdk::ValueRef value, uint64_t name_id = 0) {
     if (size_ == fields_.size()) {
       fields_.emplace_back();
+      name_ids_.push_back(0);
     }
-    auto& field = fields_[size_++];
-    field.name.assign(name);
+    auto& field = fields_[size_];
+    auto& slot_id = name_ids_[size_];
+    ++size_;
+    if (name_id == 0 || slot_id != name_id) {
+      field.name.assign(name);
+      slot_id = name_id;
+    }
     field.value = value;
   }
-  void addString(std::string_view name, std::string_view text) {
+  void addString(std::string_view name, std::string_view text, uint64_t name_id = 0) {
     if (text_size_ == text_.size()) {
       text_.emplace_back();
     }
     auto& stored = text_[text_size_++];
     stored.assign(text);
-    add(name, std::string_view(stored));
+    add(name, std::string_view(stored), name_id);
   }
   void setValue(size_t i, PJ::sdk::ValueRef value) {
     fields_[i].value = value;
   }
   void erase(size_t i) {
-    std::rotate(
-        fields_.begin() + static_cast<std::ptrdiff_t>(i), fields_.begin() + static_cast<std::ptrdiff_t>(i) + 1,
-        fields_.begin() + static_cast<std::ptrdiff_t>(size_));
+    const auto first = static_cast<std::ptrdiff_t>(i);
+    const auto last = static_cast<std::ptrdiff_t>(size_);
+    std::rotate(fields_.begin() + first, fields_.begin() + first + 1, fields_.begin() + last);
+    std::rotate(name_ids_.begin() + first, name_ids_.begin() + first + 1, name_ids_.begin() + last);
     --size_;
   }
   [[nodiscard]] bool empty() const {
@@ -139,9 +149,13 @@ class FieldBuffer {
   [[nodiscard]] PJ::Span<const PJ::sdk::NamedFieldValue> span() const {
     return {fields_.data(), size_};
   }
+  [[nodiscard]] PJ::Span<const uint64_t> nameIds() const {
+    return {name_ids_.data(), size_};
+  }
 
  private:
   std::vector<PJ::sdk::NamedFieldValue> fields_;
+  std::vector<uint64_t> name_ids_;  ///< parallel to fields_
   size_t size_ = 0;
   std::deque<std::string> text_;
   size_t text_size_ = 0;
@@ -688,11 +702,13 @@ class RosParser : public PJ::MessageParserPluginBase {
   // Name of the value at walk position `index`. Rendered only when `leaf`
   // (schema node + array indexes + @key suffixes) differs from the leaf seen
   // at that position in the previous message; otherwise the cached name.
-  const std::string& leafName(size_t index, const RosMsgParser::FieldLeaf& leaf);
   struct CachedLeaf {
     RosMsgParser::FieldLeaf leaf;
     std::string name;
+    uint64_t name_id = 0;  ///< new for every rendering, so it names this exact string
   };
+  const CachedLeaf& leafName(size_t index, const RosMsgParser::FieldLeaf& leaf);
+  uint64_t last_name_id_ = 0;
   std::vector<CachedLeaf> leaf_names_;  ///< by walk position; cleared with each new parser_
   void addQuaternionRPY();
 };

@@ -188,9 +188,9 @@ struct Pair {
   std::string reference_log;
   std::string bound_log;
 
-  void feed(PJ::Timestamp ts, const Record& record) {
+  void feed(PJ::Timestamp ts, const Record& record, const std::vector<uint64_t>& name_ids = {}) {
     reference_log += describe(ts, reference.appendRecord(ts, span(record)));
-    bound_log += describe(ts, cache.append(bound, ts, span(record)));
+    bound_log += describe(ts, cache.append(bound, ts, span(record), {name_ids.data(), name_ids.size()}));
   }
 };
 
@@ -280,6 +280,35 @@ TEST(BoundFieldCache, TfLikeShiftingShapesStoreExactlyWhatAppendRecordStores) {
       std::shuffle(transforms.begin(), transforms.end(), rng);
       transforms.resize(1 + rng() % transforms.size());
       p.feed(i, tfRecord(transforms, static_cast<double>(i)));
+    }
+    ASSERT_TRUE(matchesReference(p));
+  }
+}
+
+// Same shifting shapes, with name ids as the generic path passes them: one id
+// per rendering of a name, a fresh id when a name is rendered again, 0 for
+// names without one. The ids must never change what is stored.
+TEST(BoundFieldCache, NameIdsStoreExactlyWhatAppendRecordStores) {
+  for (unsigned seed = 1; seed <= 50; ++seed) {
+    SCOPED_TRACE("seed " + std::to_string(seed));
+    std::mt19937 rng(seed);
+    Pair p;
+    std::map<std::string, uint64_t> id_of;
+    uint64_t last_id = 0;
+    for (int i = 0; i < 300; ++i) {
+      auto transforms = tfFrames();
+      std::shuffle(transforms.begin(), transforms.end(), rng);
+      transforms.resize(1 + rng() % transforms.size());
+      const Record record = tfRecord(transforms, static_cast<double>(i));
+      std::vector<uint64_t> ids;
+      for (const auto& field : record) {
+        uint64_t& id = id_of[field.name];
+        if (id == 0 || rng() % 10 == 0) {
+          id = ++last_id;  // rendered (again)
+        }
+        ids.push_back(rng() % 20 == 0 ? 0 : id);
+      }
+      p.feed(i, record, ids);
     }
     ASSERT_TRUE(matchesReference(p));
   }
