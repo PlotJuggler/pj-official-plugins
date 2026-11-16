@@ -411,6 +411,14 @@ class RosParser : public PJ::MessageParserPluginBase {
   std::vector<double> joint_positions_;
   std::vector<double> joint_velocities_;
   std::vector<double> joint_efforts_;
+  std::string diag_name_;
+  std::string diag_message_text_;
+  std::string diag_hardware_id_;
+  std::string diag_key_;
+  std::string diag_value_;
+  // DiagnosticArray name -> {message it was last seen in, times seen there}.
+  std::unordered_map<std::string, std::pair<uint64_t, int>> diag_seen_;
+  uint64_t diag_message_ = 0;
   void emitHeader(const HeaderData& h);
 
   // Reads a BARE stamp (sec, nsec) at the cursor — the head of the

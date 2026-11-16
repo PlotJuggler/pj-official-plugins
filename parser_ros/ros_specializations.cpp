@@ -243,12 +243,24 @@ void RosParser::handleDiagnosticArray() {
   // Field names must be unique within one message, but real diagnostics repeat
   // keys (e.g. one "Interface Name" per network interface) and repeat status
   // names. Suffix repeats as name[1], name[2], ... so nothing is dropped.
-  std::unordered_map<std::string, int> seen;
-  const auto unique = [&seen](const std::string& name) {
-    int& count = seen[name];
-    const std::string out = count == 0 ? name : name + "[" + std::to_string(count) + "]";
+  // The counts live in a member map stamped with the message they belong to, so
+  // a recurring name costs a lookup, not an allocation.
+  if (diag_seen_.size() > 4096) {
+    diag_seen_.clear();  // bounds the map when keys are not a fixed set
+  }
+  ++diag_message_;
+  const auto unique = [this](std::string& name) {
+    auto& [message, count] = diag_seen_.try_emplace(name, 0, 0).first->second;
+    if (message != diag_message_) {
+      message = diag_message_;
+      count = 0;
+    }
+    if (count > 0) {
+      name += '[';
+      name += std::to_string(count);
+      name += ']';
+    }
     ++count;
-    return out;
   };
 
   size_t status_count = deserializer_->deserializeUInt32();
@@ -257,41 +269,46 @@ void RosParser::handleDiagnosticArray() {
     // message, hardware_id, values[] (the OK/WARN/ERROR/STALE byte constants are
     // not serialized). Read in exactly this order or the cursor desyncs.
     uint8_t level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
-    std::string name;
-    deserializer_->deserializeString(name);
-    std::string message;
-    deserializer_->deserializeString(message);
-    std::string hardware_id;
-    deserializer_->deserializeString(hardware_id);
+    deserializer_->deserializeString(diag_name_);
+    deserializer_->deserializeString(diag_message_text_);
+    deserializer_->deserializeString(diag_hardware_id_);
 
-    // Build prefix: /{hardware_id}/{name} or /{name}
-    std::string status_prefix;
-    if (hardware_id.empty()) {
-      status_prefix = "/" + name;
-    } else {
-      status_prefix = "/" + hardware_id + "/" + name;
+    // Prefix: /{hardware_id}/{name} or /{name}
+    path_.assign("/");
+    if (!diag_hardware_id_.empty()) {
+      path_ += diag_hardware_id_;
+      path_ += '/';
     }
+    path_ += diag_name_;
+    const size_t prefix_size = path_.size();
 
-    addField(unique(status_prefix + "/level"), static_cast<double>(level));
-    addStringField(unique(status_prefix + "/message"), message);
+    path_ += "/level";
+    unique(path_);
+    addField(path_, static_cast<double>(level));
+    path_.resize(prefix_size);
+    path_ += "/message";
+    unique(path_);
+    addStringField(path_, diag_message_text_);
+    path_.resize(prefix_size);
 
     size_t kv_count = deserializer_->deserializeUInt32();
     for (size_t kv = 0; kv < kv_count; kv++) {
-      std::string key;
-      deserializer_->deserializeString(key);
-      std::string value_str;
-      deserializer_->deserializeString(value_str);
+      deserializer_->deserializeString(diag_key_);
+      deserializer_->deserializeString(diag_value_);
 
-      if (key.empty()) {
+      if (diag_key_.empty()) {
         continue;  // Padding entries some publishers emit; they carry nothing.
       }
-      const std::string field = unique(status_prefix + "/" + key);
-      auto [dval, ok] = tryParseDouble(value_str);
+      path_ += '/';
+      path_ += diag_key_;
+      unique(path_);
+      auto [dval, ok] = tryParseDouble(diag_value_);
       if (ok) {
-        addField(field, dval);
+        addField(path_, dval);
       } else {
-        addStringField(field, value_str);
+        addStringField(path_, diag_value_);
       }
+      path_.resize(prefix_size);
     }
   }
 }
