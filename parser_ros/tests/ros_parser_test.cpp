@@ -1227,6 +1227,35 @@ TEST(RosParserTest, JointStatePartial) {
   EXPECT_EQ(findField(f.recorder.rows()[0], "/j1/effort"), nullptr);
 }
 
+TEST(RosParserTest, JointStateWithCountBeyondPayloadIsRejected) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("sensor_msgs/JointState", kJointStateDef));
+
+  // A name count no payload of this size can hold: rejected as a decode error
+  // before anything is sized from it.
+  auto corrupt = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 10, 0, "");
+    enc.serializeUInt32(1u << 20);
+    enc.serializeString("j1");
+  });
+  EXPECT_FALSE(f.parse(corrupt));
+  EXPECT_TRUE(f.recorder.rows().empty());
+
+  auto valid = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 11, 0, "");
+    enc.serializeUInt32(1);
+    enc.serializeString("j1");
+    enc.serializeUInt32(1);
+    enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(4.0));
+    enc.serializeUInt32(0);
+    enc.serializeUInt32(0);
+  });
+  ASSERT_TRUE(f.parse(valid));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_DOUBLE_EQ(findField(f.recorder.rows()[0], "/j1/position")->numeric, 4.0);
+}
+
 TEST(RosParserTest, DiagnosticArray) {
   RosParserFixture f;
   f.setUp();

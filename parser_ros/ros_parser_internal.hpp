@@ -104,9 +104,11 @@ class FieldBuffer {
   /// holds that name, so even the comparison is skipped.
   void add(std::string_view name, PJ::sdk::ValueRef value, uint64_t source_id = 0) {
     if (size_ == fields_.size()) {
+      // The id vectors grow first and to an exact size, so a throw at any step
+      // leaves them at least as long as fields_, and the next call completes it.
+      name_ids_.resize(size_ + 1);
+      source_ids_.resize(size_ + 1);
       fields_.emplace_back();
-      name_ids_.push_back(0);
-      source_ids_.push_back(0);
     }
     auto& field = fields_[size_];
     auto& slot_source = source_ids_[size_];

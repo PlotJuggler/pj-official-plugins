@@ -506,7 +506,6 @@ void RosParser::registerBoundSchemaHandler(const CatalogEntry& entry) {
   // the message receive time, exactly as before.
   PJ::sdk::SchemaHandler handler;
   handler.object_type = entry.object_type;
-  scalar_route_ = entry.parse_scalars;
   if (entry.parse_scalars) {
     handler.parse_scalars = [this, fn = entry.parse_scalars](
                                 PJ::Timestamp ts,
@@ -532,6 +531,9 @@ void RosParser::registerBoundSchemaHandler(const CatalogEntry& entry) {
   // when calling classifySchema / parseScalars / parseObject — keeps lookups
   // symmetric regardless of "/msg/" presence).
   registerSchemaHandler(type_name_, std::move(handler));
+  // Only once the handler is registered, so parse() never runs a route the
+  // base class does not have.
+  scalar_route_ = entry.parse_scalars;
 }
 
 RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_type) const {
@@ -1054,9 +1056,14 @@ const RosParser::CachedLeaf& RosParser::leafName(size_t index, const RosMsgParse
   }
   auto& cached = leaf_names_[index];
   if (!sameLeaf(cached.leaf, leaf)) {
-    cached.leaf = leaf;
+    // The entry matches nothing until it is complete: a throw while rendering
+    // must not leave the old name filed under the new leaf (or the reverse).
+    cached.leaf.node = nullptr;
     leaf.toStr(cached.name);
     cached.name_id = ++last_name_id_;
+    cached.leaf.index_array = leaf.index_array;
+    cached.leaf.key_suffixes = leaf.key_suffixes;
+    cached.leaf.node = leaf.node;
   }
   return cached;
 }
@@ -1080,6 +1087,10 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   try {
     parser_->walkSchema(
         RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()), deserializer_.get(), &writer);
+  } catch (const std::bad_alloc&) {
+    // Out of memory is not a malformed message: let it reach the caller (the SDK
+    // trampoline turns it into an error) instead of reporting "no record".
+    throw;
   } catch (const std::exception&) {
     // CDR deserialization failed; bail and let the empty fields_
     // signal "no record" to the outer parse() caller. The SDK base

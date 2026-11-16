@@ -199,25 +199,35 @@ void RosParser::handleJointState() {
   auto& velocities = joint_velocities_;
   auto& efforts = joint_efforts_;
 
-  size_t name_count = deserializer_->deserializeUInt32();
+  // A count is checked against the bytes left before it sizes a vector: the
+  // vectors live as long as the parser, so a corrupt count must not stay resident.
+  const auto read_count = [this](size_t min_wire_size) -> size_t {
+    const size_t count = deserializer_->deserializeUInt32();
+    if (count > deserializer_->bytesLeft() / min_wire_size) {
+      throw std::runtime_error("JointState array count exceeds the message payload (truncated or corrupt message)");
+    }
+    return count;
+  };
+
+  const size_t name_count = read_count(sizeof(uint32_t));  // a string is at least its length word
   names.resize(name_count);
   for (auto& name : names) {
     deserializer_->deserializeString(name);
   }
 
-  size_t pos_count = deserializer_->deserializeUInt32();
+  const size_t pos_count = read_count(sizeof(double));
   positions.resize(pos_count);
   for (auto& p : positions) {
     p = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
 
-  size_t vel_count = deserializer_->deserializeUInt32();
+  const size_t vel_count = read_count(sizeof(double));
   velocities.resize(vel_count);
   for (auto& v : velocities) {
     v = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
 
-  size_t eff_count = deserializer_->deserializeUInt32();
+  const size_t eff_count = read_count(sizeof(double));
   efforts.resize(eff_count);
   for (auto& e : efforts) {
     e = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
