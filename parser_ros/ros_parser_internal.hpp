@@ -96,30 +96,35 @@ class FieldBuffer {
     size_ = 0;
     text_size_ = 0;
   }
-  /// `name_id`, when not 0, identifies one rendering of `name` (see
-  /// RosParser::leafName): a slot that already holds that id holds that name,
-  /// so the copy is skipped, and BoundFieldCache can skip comparing it.
-  void add(std::string_view name, PJ::sdk::ValueRef value, uint64_t name_id = 0) {
+  /// Every slot's name carries an id, new each time the slot's name changes:
+  /// the same id means the same string, which lets BoundFieldCache skip
+  /// comparing names (nameIds()). A name equal to the one already in the slot
+  /// is not copied again. `source_id`, when not 0, identifies one rendering of
+  /// `name` (RosParser::leafName): a slot that last received that id already
+  /// holds that name, so even the comparison is skipped.
+  void add(std::string_view name, PJ::sdk::ValueRef value, uint64_t source_id = 0) {
     if (size_ == fields_.size()) {
       fields_.emplace_back();
       name_ids_.push_back(0);
+      source_ids_.push_back(0);
     }
     auto& field = fields_[size_];
-    auto& slot_id = name_ids_[size_];
-    ++size_;
-    if (name_id == 0 || slot_id != name_id) {
+    auto& slot_source = source_ids_[size_];
+    if ((source_id == 0 || slot_source != source_id) && (name_ids_[size_] == 0 || field.name != name)) {
       field.name.assign(name);
-      slot_id = name_id;
+      name_ids_[size_] = ++last_name_id_;
     }
+    slot_source = source_id;
     field.value = value;
+    ++size_;
   }
-  void addString(std::string_view name, std::string_view text, uint64_t name_id = 0) {
+  void addString(std::string_view name, std::string_view text, uint64_t source_id = 0) {
     if (text_size_ == text_.size()) {
       text_.emplace_back();
     }
     auto& stored = text_[text_size_++];
     stored.assign(text);
-    add(name, std::string_view(stored), name_id);
+    add(name, std::string_view(stored), source_id);
   }
   void setValue(size_t i, PJ::sdk::ValueRef value) {
     fields_[i].value = value;
@@ -129,6 +134,7 @@ class FieldBuffer {
     const auto last = static_cast<std::ptrdiff_t>(size_);
     std::rotate(fields_.begin() + first, fields_.begin() + first + 1, fields_.begin() + last);
     std::rotate(name_ids_.begin() + first, name_ids_.begin() + first + 1, name_ids_.begin() + last);
+    std::rotate(source_ids_.begin() + first, source_ids_.begin() + first + 1, source_ids_.begin() + last);
     --size_;
   }
   [[nodiscard]] bool empty() const {
@@ -155,7 +161,9 @@ class FieldBuffer {
 
  private:
   std::vector<PJ::sdk::NamedFieldValue> fields_;
-  std::vector<uint64_t> name_ids_;  ///< parallel to fields_
+  std::vector<uint64_t> name_ids_;    ///< parallel to fields_; 0 = slot never named
+  std::vector<uint64_t> source_ids_;  ///< parallel to fields_
+  uint64_t last_name_id_ = 0;
   size_t size_ = 0;
   std::deque<std::string> text_;
   size_t text_size_ = 0;
