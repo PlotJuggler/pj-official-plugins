@@ -38,93 +38,92 @@ constexpr std::array<RosMsgParser::BuiltinType, 11> kTslTypeOrder = {
 // Composition parse helpers
 // ---------------------------------------------------------------------------
 
-void RosParser::addFieldAt(std::string& path, std::string_view suffix, double value) {
-  PathSegment segment(path, suffix);
-  addField(path, value);
+void RosParser::addFieldAt(std::string_view segment, double value) {
+  PathSegment field(path_, segment);
+  addField(path_, value);
 }
 
-void RosParser::parseVector3(std::string& path) {
+void RosParser::parseVector3(std::string_view segment) {
   double x = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   double y = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   double z = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-  addFieldAt(path, "/x", x);
-  addFieldAt(path, "/y", y);
-  addFieldAt(path, "/z", z);
+  PathSegment vector(path_, segment);
+  addFieldAt("/x", x);
+  addFieldAt("/y", y);
+  addFieldAt("/z", z);
 }
 
-void RosParser::parsePoint(std::string& path) {
-  parseVector3(path);  // same wire format: 3 × float64
+void RosParser::parsePoint(std::string_view segment) {
+  parseVector3(segment);  // same wire format: 3 × float64
 }
 
-void RosParser::parseQuaternion(std::string& path) {
+void RosParser::parseQuaternion(std::string_view segment) {
   double x = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   double y = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   double z = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   double w = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
-  addFieldAt(path, "/x", x);
-  addFieldAt(path, "/y", y);
-  addFieldAt(path, "/z", z);
-  addFieldAt(path, "/w", w);
+  PathSegment quaternion(path_, segment);
+  addFieldAt("/x", x);
+  addFieldAt("/y", y);
+  addFieldAt("/z", z);
+  addFieldAt("/w", w);
 
   auto rpy = quaternionToRPY(x, y, z, w);
-  addFieldAt(path, "/roll", rpy.roll);
-  addFieldAt(path, "/pitch", rpy.pitch);
-  addFieldAt(path, "/yaw", rpy.yaw);
+  addFieldAt("/roll", rpy.roll);
+  addFieldAt("/pitch", rpy.pitch);
+  addFieldAt("/yaw", rpy.yaw);
 }
 
-void RosParser::parseTwist(std::string& path) {
-  {
-    PathSegment segment(path, "/linear");
-    parseVector3(path);
-  }
-  PathSegment segment(path, "/angular");
-  parseVector3(path);
+void RosParser::parseTwist(std::string_view segment) {
+  PathSegment twist(path_, segment);
+  parseVector3("/linear");
+  parseVector3("/angular");
 }
 
-void RosParser::parsePose(std::string& path) {
-  emitPose(path, readPose());
+void RosParser::parsePose(std::string_view segment) {
+  emitPose(segment, readPose());
 }
 
-void RosParser::emitPose(std::string& path, const PJ::sdk::Pose& pose) {
-  addFieldAt(path, "/position/x", pose.position.x);
-  addFieldAt(path, "/position/y", pose.position.y);
-  addFieldAt(path, "/position/z", pose.position.z);
+void RosParser::emitPose(std::string_view segment, const PJ::sdk::Pose& pose) {
+  PathSegment prefix(path_, segment);
+  addFieldAt("/position/x", pose.position.x);
+  addFieldAt("/position/y", pose.position.y);
+  addFieldAt("/position/z", pose.position.z);
   const auto& q = pose.orientation;
-  addFieldAt(path, "/orientation/x", q.x);
-  addFieldAt(path, "/orientation/y", q.y);
-  addFieldAt(path, "/orientation/z", q.z);
-  addFieldAt(path, "/orientation/w", q.w);
+  addFieldAt("/orientation/x", q.x);
+  addFieldAt("/orientation/y", q.y);
+  addFieldAt("/orientation/z", q.z);
+  addFieldAt("/orientation/w", q.w);
   const auto rpy = quaternionToRPY(q.x, q.y, q.z, q.w);
-  addFieldAt(path, "/orientation/roll", rpy.roll);
-  addFieldAt(path, "/orientation/pitch", rpy.pitch);
-  addFieldAt(path, "/orientation/yaw", rpy.yaw);
+  addFieldAt("/orientation/roll", rpy.roll);
+  addFieldAt("/orientation/pitch", rpy.pitch);
+  addFieldAt("/orientation/yaw", rpy.yaw);
 }
 
-void RosParser::parseTransform(std::string& path) {
-  {
-    PathSegment segment(path, "/translation");
-    parsePoint(path);
-  }
-  PathSegment segment(path, "/rotation");
-  parseQuaternion(path);
+void RosParser::parseTransform(std::string_view segment) {
+  PathSegment transform(path_, segment);
+  parsePoint("/translation");
+  parseQuaternion("/rotation");
 }
 
-void RosParser::parsePoseWithCovariance(std::string& path) {
-  {
-    PathSegment segment(path, "/pose");
-    parsePose(path);
-  }
-  PathSegment segment(path, "/covariance");
-  parseCovariance<6>(path);
+void RosParser::parsePoseWithCovariance(std::string_view segment) {
+  PathSegment prefix(path_, segment);
+  parsePose("/pose");
+  parseCovariance<6>("/covariance");
 }
 
-void RosParser::parseTwistWithCovariance(std::string& path) {
-  {
-    PathSegment segment(path, "/twist");
-    parseTwist(path);
+void RosParser::parseTwistWithCovariance(std::string_view segment) {
+  PathSegment prefix(path_, segment);
+  parseTwist("/twist");
+  parseCovariance<6>("/covariance");
+}
+
+size_t RosParser::readArrayCount(size_t min_element_wire_size) {
+  const size_t count = deserializer_->deserializeUInt32();
+  if (count > deserializer_->bytesLeft() / min_element_wire_size) {
+    throw std::runtime_error("array count exceeds the message payload (truncated or corrupt message)");
   }
-  PathSegment segment(path, "/covariance");
-  parseCovariance<6>(path);
+  return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,19 +136,19 @@ void RosParser::handleEmpty() {
 
 void RosParser::handlePose() {
   path_.clear();
-  parsePose(path_);
+  parsePose("");
 }
 
 void RosParser::handlePoseStamped() {
   const auto& h = readHeader();
   emitHeader(h);
-  path_.assign("/pose");
-  parsePose(path_);
+  path_.clear();
+  parsePose("/pose");
 }
 
 void RosParser::handleTransform() {
   path_.clear();
-  parseTransform(path_);
+  parseTransform("");
 }
 
 void RosParser::handleTransformStamped() {
@@ -157,25 +156,20 @@ void RosParser::handleTransformStamped() {
   emitHeader(h);
   deserializer_->deserializeString(child_frame_id_);
   addStringField("/child_frame_id", child_frame_id_);
-  path_.assign("/transform");
-  parseTransform(path_);
+  path_.clear();
+  parseTransform("/transform");
 }
 
 void RosParser::handleImu() {
   const auto& h = readHeader();
   emitHeader(h);
-  path_.assign("/orientation");
-  parseQuaternion(path_);
-  path_.assign("/orientation_covariance");
-  parseCovariance<3>(path_);
-  path_.assign("/angular_velocity");
-  parseVector3(path_);
-  path_.assign("/angular_velocity_covariance");
-  parseCovariance<3>(path_);
-  path_.assign("/linear_acceleration");
-  parseVector3(path_);
-  path_.assign("/linear_acceleration_covariance");
-  parseCovariance<3>(path_);
+  path_.clear();
+  parseQuaternion("/orientation");
+  parseCovariance<3>("/orientation_covariance");
+  parseVector3("/angular_velocity");
+  parseCovariance<3>("/angular_velocity_covariance");
+  parseVector3("/linear_acceleration");
+  parseCovariance<3>("/linear_acceleration_covariance");
 }
 
 void RosParser::handleOdometry() {
@@ -183,10 +177,9 @@ void RosParser::handleOdometry() {
   emitHeader(h);
   deserializer_->deserializeString(child_frame_id_);
   addStringField("/child_frame_id", child_frame_id_);
-  path_.assign("/pose");
-  parsePoseWithCovariance(path_);
-  path_.assign("/twist");
-  parseTwistWithCovariance(path_);
+  path_.clear();
+  parsePoseWithCovariance("/pose");
+  parseTwistWithCovariance("/twist");
 }
 
 void RosParser::handleJointState() {
@@ -199,46 +192,36 @@ void RosParser::handleJointState() {
   auto& velocities = joint_velocities_;
   auto& efforts = joint_efforts_;
 
-  // A count is checked against the bytes left before it sizes a vector: the
-  // vectors live as long as the parser, so a corrupt count must not stay resident.
-  const auto read_count = [this](size_t min_wire_size) -> size_t {
-    const size_t count = deserializer_->deserializeUInt32();
-    if (count > deserializer_->bytesLeft() / min_wire_size) {
-      throw std::runtime_error("JointState array count exceeds the message payload (truncated or corrupt message)");
-    }
-    return count;
-  };
-
-  const size_t name_count = read_count(sizeof(uint32_t));  // a string is at least its length word
+  const size_t name_count = readArrayCount(sizeof(uint32_t));  // a string is at least its length word
   names.resize(name_count);
   for (auto& name : names) {
     deserializer_->deserializeString(name);
   }
 
-  const size_t pos_count = read_count(sizeof(double));
+  const size_t pos_count = readArrayCount(sizeof(double));
   positions.resize(pos_count);
   for (auto& p : positions) {
     p = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
 
-  const size_t vel_count = read_count(sizeof(double));
+  const size_t vel_count = readArrayCount(sizeof(double));
   velocities.resize(vel_count);
   for (auto& v : velocities) {
     v = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
 
-  const size_t eff_count = read_count(sizeof(double));
+  const size_t eff_count = readArrayCount(sizeof(double));
   efforts.resize(eff_count);
   for (auto& e : efforts) {
     e = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
 
+  path_.assign("/");
   const auto add_joint_fields = [this, &names](
                                     size_t count, const std::vector<double>& values, std::string_view suffix) {
     for (size_t i = 0; i < count; i++) {
-      path_.assign("/");
-      path_ += names[i];
-      addFieldAt(path_, suffix, values[i]);
+      PathSegment joint(path_, names[i]);
+      addFieldAt(suffix, values[i]);
     }
   };
   add_joint_fields(std::min(name_count, pos_count), positions, "/position");
@@ -339,11 +322,11 @@ void RosParser::handleTFMessage() {
     // Per-transform header (the batch has no single message-level Header). The
     // parent frame_id is already the path prefix, so only the stamp (seconds) —
     // and seq on ROS1 — are emitted, matching the /header/stamp series elsewhere.
-    addFieldAt(path_, "/header/stamp", static_cast<double>(h.sec) + static_cast<double>(h.nsec) * 1e-9);
+    addFieldAt("/header/stamp", static_cast<double>(h.sec) + static_cast<double>(h.nsec) * 1e-9);
     if (!deserializer_->isROS2()) {
-      addFieldAt(path_, "/header/seq", static_cast<double>(h.seq));
+      addFieldAt("/header/seq", static_cast<double>(h.seq));
     }
-    parseTransform(path_);
+    parseTransform("");
   }
 }
 
@@ -407,8 +390,7 @@ void RosParser::handleDataTamerSnapshot() {
 }
 
 void RosParser::handlePalStatisticsNames() {
-  auto h = readHeader();
-  // Don't emit header fields for this meta-message.
+  readHeader();  // Don't emit header fields for this meta-message.
 
   size_t count = deserializer_->deserializeUInt32();
   std::vector<std::string> names(count);
@@ -417,8 +399,7 @@ void RosParser::handlePalStatisticsNames() {
   }
   uint32_t version = deserializer_->deserializeUInt32();
 
-  std::string key = palStatisticsKey(topic_name_);
-  g_pal_statistics_names[key][version] = std::move(names);
+  g_pal_statistics_names[pal_statistics_key_][version] = std::move(names);
   // No fields to emit.
 }
 
@@ -426,15 +407,14 @@ void RosParser::handlePalStatisticsValues() {
   const auto& h = readHeader();
   emitHeader(h);
 
-  size_t count = deserializer_->deserializeUInt32();
-  std::vector<double> values(count);
+  auto& values = statistics_values_;
+  values.resize(readArrayCount(sizeof(double)));
   for (auto& v : values) {
     v = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   }
   uint32_t version = deserializer_->deserializeUInt32();
 
-  std::string key = palStatisticsKey(topic_name_);
-  auto topic_it = g_pal_statistics_names.find(key);
+  auto topic_it = g_pal_statistics_names.find(pal_statistics_key_);
   if (topic_it == g_pal_statistics_names.end()) {
     return;
   }
@@ -448,8 +428,9 @@ void RosParser::handlePalStatisticsValues() {
   size_t n = std::min(names.size(), values.size());
   // Clear the header fields already emitted — for PAL values we emit named fields only.
   fields_.clear();
+  path_.assign("/");
   for (size_t i = 0; i < n; i++) {
-    addField("/" + names[i], values[i]);
+    addFieldAt(names[i], values[i]);
   }
 }
 
@@ -477,13 +458,14 @@ void RosParser::handleTSLDefinition() {
 
   // Flush buffered values.
   auto& queue = g_tsl_values_buffer[hash];
+  path_.assign("/");
   while (!queue.empty()) {
     auto& [buf_ts, buf_values] = queue.front();
     fields_.clear();
     const auto& def = g_tsl_definitions[hash];
     size_t n = std::min(def.size(), buf_values.size());
     for (size_t i = 0; i < n; i++) {
-      addField("/" + def[i], buf_values[i]);
+      addFieldAt(def[i], buf_values[i]);
     }
     if (!fields_.empty()) {
       // Ignore error from buffered flush — best effort.
@@ -500,9 +482,10 @@ void RosParser::handleTSLValues() {
   (void)deserializer_->deserializeUInt32();  // stamp nsec
   uint64_t hash = deserializer_->deserialize(RosMsgParser::UINT64).extract<uint64_t>();
 
-  std::vector<double> values;
+  auto& values = statistics_values_;
+  values.clear();
   for (auto type_id : kTslTypeOrder) {
-    size_t num = deserializer_->deserializeUInt32();
+    size_t num = readArrayCount(1);  // the smallest TSL type is one byte
     size_t base = values.size();
     values.resize(base + num);
     for (size_t i = base; i < values.size(); i++) {
@@ -521,8 +504,9 @@ void RosParser::handleTSLValues() {
 
   const auto& def = g_tsl_definitions[hash];
   size_t n = std::min(def.size(), values.size());
+  path_.assign("/");
   for (size_t i = 0; i < n; i++) {
-    addField("/" + def[i], values[i]);
+    addFieldAt(def[i], values[i]);
   }
 }
 

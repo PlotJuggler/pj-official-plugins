@@ -1,7 +1,9 @@
+#include <cassert>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <map>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
@@ -441,7 +443,7 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   schema_compiled_ = false;
   parser_.reset();
   has_header_ = false;
-  quaternion_prefixes_.clear();
+  quaternions_.clear();
 
   // Let the SDK base class record the bound type and run its own bind
   // bookkeeping (host registration, dialog config, …). We hand it the
@@ -662,6 +664,7 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
   boolean_strings_to_number_ = cfg.value("boolean_strings_to_number", false);
   remove_suffix_from_strings_ = cfg.value("remove_suffix_from_strings", false);
   topic_name_ = cfg.value("topic_name", std::string{});
+  pal_statistics_key_ = palStatisticsKey(topic_name_);
 
   const std::string requested_schema_encoding = cfg.value("schema_encoding", cfg.value("encoding", std::string{}));
   if (!requested_schema_encoding.empty()) {
@@ -677,7 +680,7 @@ PJ::Status RosParser::loadConfig(std::string_view config_json) {
       schema_compiled_ = false;
       parser_.reset();
       has_header_ = false;
-      quaternion_prefixes_.clear();
+      quaternions_.clear();
     }
   }
 
@@ -861,7 +864,7 @@ void RosParser::detectSchemaFeatures() {
       !root_fields.empty() &&
       normalizedMessageType(root_fields.front().type().baseName(), RosMsgParser::ROS_MSG) == "std_msgs/Header";
 
-  quaternion_prefixes_.clear();
+  quaternions_.clear();
   findQuaternionPrefixes(schema->root_msg.get(), "", schema->msg_library);
 }
 
@@ -878,7 +881,19 @@ void RosParser::findQuaternionPrefixes(
     if (normalizedMessageType(type.baseName(), RosMsgParser::ROS_MSG) == "geometry_msgs/Quaternion") {
       // For arrays, the flattened name includes [i]; skip at bind time.
       if (!field.isArray()) {
-        quaternion_prefixes_.push_back(fp);
+        static constexpr std::array<std::string_view, 4> kComponents = {"/x", "/y", "/z", "/w"};
+        static constexpr std::array<std::string_view, 3> kAngles = {"/roll", "/pitch", "/yaw"};
+        auto& q = quaternions_.emplace_back();
+        for (size_t k = 0; k < kComponents.size(); ++k) {
+          q.component[k] = fp;
+          q.component[k] += kComponents[k];
+          q.index[k] = std::numeric_limits<size_t>::max();  // found by name on first use
+        }
+        for (size_t k = 0; k < kAngles.size(); ++k) {
+          q.angle[k] = fp;
+          q.angle[k] += kAngles[k];
+          q.angle_id[k] = fields_.newNameId();
+        }
       }
     } else if (type.typeID() == RosMsgParser::OTHER) {
       auto it = lib.find(type);
@@ -984,11 +999,7 @@ void RosParser::emitHeader(const HeaderData& h) {
 namespace {
 
 bool sameLeaf(const RosMsgParser::FieldLeaf& a, const RosMsgParser::FieldLeaf& b) {
-  if (a.node != b.node || a.index_array.size() != b.index_array.size() ||
-      a.key_suffixes.size() != b.key_suffixes.size()) {
-    return false;
-  }
-  if (!std::equal(a.index_array.begin(), a.index_array.end(), b.index_array.begin())) {
+  if (a.node != b.node || !(a.index_array == b.index_array) || a.key_suffixes.size() != b.key_suffixes.size()) {
     return false;
   }
   for (size_t i = 0; i < a.key_suffixes.size(); ++i) {
@@ -1060,7 +1071,7 @@ const RosParser::CachedLeaf& RosParser::leafName(size_t index, const RosMsgParse
     // must not leave the old name filed under the new leaf (or the reverse).
     cached.leaf.node = nullptr;
     leaf.toStr(cached.name);
-    cached.name_id = ++last_name_id_;
+    cached.name_id = fields_.newNameId();
     cached.leaf.index_array = leaf.index_array;
     cached.leaf.key_suffixes = leaf.key_suffixes;
     cached.leaf.node = leaf.node;
@@ -1076,7 +1087,7 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   // use_embedded_timestamp toggle. ROS 1 must NOT get it: its `time` builtin
   // already flattens to one /header/stamp leaf in seconds, and a second column
   // of the same name makes the datastore reject the whole record.
-  // It comes first in the record; its slot is filled (or dropped) after the walk.
+  // It comes first in the record; its slot is filled after the walk.
   const bool combined_stamp = has_header_ && deserializer_->isROS2();
   const size_t stamp_slot = fields_.size();
   if (combined_stamp) {
@@ -1115,45 +1126,36 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   }
 
   if (combined_stamp) {
-    if (writer.count() >= 2) {
-      fields_.setValue(stamp_slot, PJ::sdk::ValueRef{writer.first(0) + 1e-9 * writer.first(1)});
-    } else {
-      fields_.erase(stamp_slot);
-    }
+    // has_header_: the walk writes the header's stamp/sec and stamp/nanosec
+    // first, and a walk that throws returned above.
+    assert(writer.count() >= 2);
+    fields_.setValue(stamp_slot, PJ::sdk::ValueRef{writer.first(0) + 1e-9 * writer.first(1)});
   }
 
   addQuaternionRPY();
 }
 
 void RosParser::addQuaternionRPY() {
-  if (quaternion_prefixes_.empty()) {
-    return;
-  }
-
-  // Build name → index map for O(1) lookup.
-  std::unordered_map<std::string, size_t> idx;
+  // Only the walked fields are searched, not the angles added below.
   const size_t n = fields_.size();
-  for (size_t i = 0; i < n; i++) {
-    idx.emplace(fields_[i].name, i);
-  }
-
-  for (const auto& prefix : quaternion_prefixes_) {
-    auto find_val = [&](const std::string& suffix) -> double {
-      auto it = idx.find(prefix + suffix);
-      if (it == idx.end()) {
-        return 0.0;
+  for (auto& q : quaternions_) {
+    std::array<double, 4> v{};
+    for (size_t k = 0; k < v.size(); ++k) {
+      // The position from the previous message, checked by name; searched again
+      // (first field of that name) only when the message shape moved it.
+      size_t& i = q.index[k];
+      if (i >= n || fields_[i].name != q.component[k]) {
+        i = 0;
+        while (i < n && fields_[i].name != q.component[k]) {
+          ++i;
+        }
       }
-      return valueRefAsDouble(fields_[it->second].value);
-    };
-
-    double x = find_val("/x");
-    double y = find_val("/y");
-    double z = find_val("/z");
-    double w = find_val("/w");
-    auto rpy = quaternionToRPY(x, y, z, w);
-    fields_.add(prefix + "/roll", PJ::sdk::ValueRef{rpy.roll});
-    fields_.add(prefix + "/pitch", PJ::sdk::ValueRef{rpy.pitch});
-    fields_.add(prefix + "/yaw", PJ::sdk::ValueRef{rpy.yaw});
+      v[k] = i < n ? valueRefAsDouble(fields_[i].value) : 0.0;
+    }
+    const auto rpy = quaternionToRPY(v[0], v[1], v[2], v[3]);
+    fields_.add(q.angle[0], PJ::sdk::ValueRef{rpy.roll}, q.angle_id[0]);
+    fields_.add(q.angle[1], PJ::sdk::ValueRef{rpy.pitch}, q.angle_id[1]);
+    fields_.add(q.angle[2], PJ::sdk::ValueRef{rpy.yaw}, q.angle_id[2]);
   }
 }
 
