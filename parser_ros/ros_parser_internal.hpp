@@ -8,6 +8,7 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <numbers>
+#include <optional>
 #include <pj_base/builtin/builtin_object.hpp>
 #include <pj_base/number_parse.hpp>
 #include <pj_grid_map/grid_map_transcoder.hpp>
@@ -350,12 +351,11 @@ class RosParser : public PJ::MessageParserPluginBase {
   // diagnostic_msgs/DiagnosticStatus: the order of its four leading fields as the
   // bound schema declares them, read in compileBoundSchema. The standard order is
   // level, name, message, hardware_id; Waymo's MCAP converter writes name first.
-  // A status layout handleDiagnosticArray cannot follow binds the generic walker.
+  // Empty for a layout handleDiagnosticArray cannot follow: the generic walker binds.
   enum class DiagField : uint8_t { kLevel, kName, kMessage, kHardwareId };
-  std::array<DiagField, 4> diag_order_{
-      DiagField::kLevel, DiagField::kName, DiagField::kMessage, DiagField::kHardwareId};
-  bool diag_layout_known_ = true;
-  bool readDiagnosticLayout();
+  using DiagOrder = std::array<DiagField, 4>;
+  std::optional<DiagOrder> diag_order_ =
+      DiagOrder{DiagField::kLevel, DiagField::kName, DiagField::kMessage, DiagField::kHardwareId};
 
   // Latches the one-time "trailing bytes" warning in parseYoloDetectionArray
   // (#4): a corrupt-but-in-bounds count can desync the positional CDR decode
@@ -390,6 +390,7 @@ class RosParser : public PJ::MessageParserPluginBase {
   BoundFieldCache bound_field_cache_;
 
   // Setup helpers
+  std::optional<DiagOrder> readDiagnosticLayout() const;
   PJ::Status compileBoundSchema(bool register_specialized_handler);
   void registerBoundSchemaHandler(const CatalogEntry& entry);
   // Resolve the catalog entry for a bound schema, applying topic-conditional

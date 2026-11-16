@@ -888,25 +888,29 @@ static const char* kJointStateDef =
     "MSG: builtin_interfaces/Time\n"
     "int32 sec\nuint32 nanosec\n";
 
-static const char* kDiagnosticArrayDef =
-    "std_msgs/Header header\n"
-    "diagnostic_msgs/DiagnosticStatus[] status\n"
-    "================\n"
-    "MSG: std_msgs/Header\n"
-    "builtin_interfaces/Time stamp\nstring frame_id\n"
-    "================\n"
-    "MSG: builtin_interfaces/Time\n"
-    "int32 sec\nuint32 nanosec\n"
-    "================\n"
-    "MSG: diagnostic_msgs/DiagnosticStatus\n"
-    // Canonical field order (matches diagnostic_msgs/msg/DiagnosticStatus): the
-    // byte constants are NOT serialized, then `level` precedes `name` on the wire.
-    "byte OK=0\nbyte WARN=1\nbyte ERROR=2\nbyte STALE=3\n"
-    "byte level\nstring name\nstring message\nstring hardware_id\n"
-    "diagnostic_msgs/KeyValue[] values\n"
-    "================\n"
-    "MSG: diagnostic_msgs/KeyValue\n"
-    "string key\nstring value\n";
+// A ROS 2 .msg DiagnosticArray whose DiagnosticStatus declares `status_fields`.
+static std::string diagnosticArrayDef(const std::string& status_fields) {
+  return "std_msgs/Header header\n"
+         "diagnostic_msgs/DiagnosticStatus[] status\n"
+         "================\n"
+         "MSG: std_msgs/Header\n"
+         "builtin_interfaces/Time stamp\nstring frame_id\n"
+         "================\n"
+         "MSG: builtin_interfaces/Time\n"
+         "int32 sec\nuint32 nanosec\n"
+         "================\n"
+         "MSG: diagnostic_msgs/DiagnosticStatus\n"
+         "byte OK=0\nbyte WARN=1\nbyte ERROR=2\nbyte STALE=3\n" +
+         status_fields +
+         "================\n"
+         "MSG: diagnostic_msgs/KeyValue\n"
+         "string key\nstring value\n";
+}
+
+// Canonical field order (matches diagnostic_msgs/msg/DiagnosticStatus): the byte
+// constants are NOT serialized, then `level` precedes `name` on the wire.
+static const std::string kDiagnosticArrayDef = diagnosticArrayDef(
+    "byte level\nstring name\nstring message\nstring hardware_id\ndiagnostic_msgs/KeyValue[] values\n");
 
 static const char* kTFMessageDef =
     "geometry_msgs/TransformStamped[] transforms\n"
@@ -1307,26 +1311,11 @@ TEST(RosParserTest, DiagnosticArray) {
 // Waymo's MCAP converter declares DiagnosticStatus with `name` before `level` and
 // serializes in that order. The fields are read in the order the schema declares.
 TEST(RosParserTest, DiagnosticArrayFollowsTheSchemaFieldOrder) {
-  static const char* kNameFirstDef =
-      "std_msgs/Header header\n"
-      "diagnostic_msgs/DiagnosticStatus[] status\n"
-      "================\n"
-      "MSG: std_msgs/Header\n"
-      "builtin_interfaces/Time stamp\nstring frame_id\n"
-      "================\n"
-      "MSG: builtin_interfaces/Time\n"
-      "int32 sec\nuint32 nanosec\n"
-      "================\n"
-      "MSG: diagnostic_msgs/DiagnosticStatus\n"
-      "byte OK=0\nbyte WARN=1\nbyte ERROR=2\nbyte STALE=3\n"
-      "string name\nbyte level\nstring message\nstring hardware_id\n"
-      "diagnostic_msgs/KeyValue[] values\n"
-      "================\n"
-      "MSG: diagnostic_msgs/KeyValue\n"
-      "string key\nstring value\n";
+  const std::string name_first_def = diagnosticArrayDef(
+      "string name\nbyte level\nstring message\nstring hardware_id\ndiagnostic_msgs/KeyValue[] values\n");
   RosParserFixture f;
   f.setUp();
-  ASSERT_TRUE(f.bindSchema("diagnostic_msgs/msg/DiagnosticArray", kNameFirstDef));
+  ASSERT_TRUE(f.bindSchema("diagnostic_msgs/msg/DiagnosticArray", name_first_def));
 
   auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
     serializeHeader(enc, 1, 0, "");
@@ -1354,25 +1343,12 @@ TEST(RosParserTest, DiagnosticArrayFollowsTheSchemaFieldOrder) {
 // A DiagnosticStatus with a field the specialized reader does not know is decoded
 // by the generic walker, which follows any schema, instead of desyncing.
 TEST(RosParserTest, DiagnosticArrayWithAnUnknownStatusLayoutUsesTheGenericWalker) {
-  static const char* kExtraFieldDef =
-      "std_msgs/Header header\n"
-      "diagnostic_msgs/DiagnosticStatus[] status\n"
-      "================\n"
-      "MSG: std_msgs/Header\n"
-      "builtin_interfaces/Time stamp\nstring frame_id\n"
-      "================\n"
-      "MSG: builtin_interfaces/Time\n"
-      "int32 sec\nuint32 nanosec\n"
-      "================\n"
-      "MSG: diagnostic_msgs/DiagnosticStatus\n"
+  const std::string extra_field_def = diagnosticArrayDef(
       "byte level\nstring name\nstring message\nstring hardware_id\nuint32 code\n"
-      "diagnostic_msgs/KeyValue[] values\n"
-      "================\n"
-      "MSG: diagnostic_msgs/KeyValue\n"
-      "string key\nstring value\n";
+      "diagnostic_msgs/KeyValue[] values\n");
   RosParserFixture f;
   f.setUp();
-  ASSERT_TRUE(f.bindSchema("diagnostic_msgs/msg/DiagnosticArray", kExtraFieldDef));
+  ASSERT_TRUE(f.bindSchema("diagnostic_msgs/msg/DiagnosticArray", extra_field_def));
 
   auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
     serializeHeader(enc, 1, 0, "");
@@ -1392,6 +1368,87 @@ TEST(RosParserTest, DiagnosticArrayWithAnUnknownStatusLayoutUsesTheGenericWalker
   auto* code = findField(row, "/status[0]/code");
   ASSERT_NE(code, nullptr);
   EXPECT_DOUBLE_EQ(code->numeric, 42.0);
+}
+
+// A fixed-size values array has no length prefix on the wire, so the
+// specialized reader (which reads one) must not bind.
+TEST(RosParserTest, DiagnosticArrayWithFixedSizeValuesUsesTheGenericWalker) {
+  const std::string fixed_values_def = diagnosticArrayDef(
+      "byte level\nstring name\nstring message\nstring hardware_id\ndiagnostic_msgs/KeyValue[1] values\n");
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("diagnostic_msgs/msg/DiagnosticArray", fixed_values_def));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "");
+    enc.serializeUInt32(1);
+    enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(1)));
+    enc.serializeString("Battery");
+    enc.serializeString("Low");
+    enc.serializeString("");
+    enc.serializeString("voltage");  // values[0], no count before it
+    enc.serializeString("11.2");
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(findField(f.recorder.rows()[0], "/Battery/level"), nullptr);
+}
+
+// The ros2idl form of the standard layout (octet level, constants in their own
+// module) keeps the specialized reader.
+TEST(RosParserTest, DiagnosticArrayIdlStandardLayoutStaysSpecialized) {
+  const auto section = [](const std::string& name, const std::string& body) {
+    return std::string(80, '=') + "\nIDL: " + name + "\n" + body;
+  };
+  const std::string idl =
+      section(
+          "diagnostic_msgs/msg/DiagnosticArray",
+          "#include \"diagnostic_msgs/msg/DiagnosticStatus.idl\"\n#include \"std_msgs/msg/Header.idl\"\n"
+          "module diagnostic_msgs {\n  module msg {\n    struct DiagnosticArray {\n"
+          "      std_msgs::msg::Header header;\n"
+          "      sequence<diagnostic_msgs::msg::DiagnosticStatus> status;\n    };\n  };\n};\n") +
+      section(
+          "diagnostic_msgs/msg/DiagnosticStatus",
+          "#include \"diagnostic_msgs/msg/KeyValue.idl\"\n"
+          "module diagnostic_msgs {\n  module msg {\n    module DiagnosticStatus_Constants {\n"
+          "      const octet OK = 0;\n      const octet WARN = 1;\n    };\n    struct DiagnosticStatus {\n"
+          "      octet level;\n      string name;\n      string message;\n      string hardware_id;\n"
+          "      sequence<diagnostic_msgs::msg::KeyValue> values;\n    };\n  };\n};\n") +
+      section(
+          "diagnostic_msgs/msg/KeyValue",
+          "module diagnostic_msgs {\n  module msg {\n    struct KeyValue {\n"
+          "      string key;\n      string value;\n    };\n  };\n};\n") +
+      section(
+          "std_msgs/msg/Header",
+          "#include \"builtin_interfaces/msg/Time.idl\"\n"
+          "module std_msgs {\n  module msg {\n    struct Header {\n"
+          "      builtin_interfaces::msg::Time stamp;\n      string frame_id;\n    };\n  };\n};\n") +
+      section(
+          "builtin_interfaces/msg/Time",
+          "module builtin_interfaces {\n  module msg {\n    struct Time {\n"
+          "      int32 sec;\n      uint32 nanosec;\n    };\n  };\n};\n");
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("diagnostic_msgs/msg/DiagnosticArray", idl, "ros2idl"));
+
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 1, 0, "");
+    enc.serializeUInt32(1);
+    enc.serialize(RosMsgParser::BYTE, RosMsgParser::Variant(static_cast<uint8_t>(2)));
+    enc.serializeString("Battery");
+    enc.serializeString("Low");
+    enc.serializeString("hw");
+    enc.serializeUInt32(1);
+    enc.serializeString("voltage");
+    enc.serializeString("11.2");
+  });
+
+  ASSERT_TRUE(f.parse(payload));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  auto* level = findField(f.recorder.rows()[0], "/hw/Battery/level");
+  ASSERT_NE(level, nullptr) << "not decoded by the specialized reader";
+  EXPECT_DOUBLE_EQ(level->numeric, 2.0);
 }
 
 TEST(RosParserTest, DiagnosticArrayRepeatedAndEmptyKeys) {

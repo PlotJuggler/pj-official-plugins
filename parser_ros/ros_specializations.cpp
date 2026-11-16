@@ -262,7 +262,7 @@ void RosParser::handleDiagnosticArray() {
     // order the bound schema declares (standard: level first), then values[]. The
     // OK/WARN/ERROR/STALE byte constants are not serialized.
     uint8_t level = 0;
-    for (const DiagField field : diag_order_) {
+    for (const DiagField field : *diag_order_) {  // set: this handler binds only then
       switch (field) {
         case DiagField::kLevel:
           level = deserializer_->deserialize(RosMsgParser::BYTE).convert<uint8_t>();
