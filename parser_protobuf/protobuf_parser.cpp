@@ -68,16 +68,18 @@ constexpr double timestampSeconds(PJ::Timestamp ts_ns) {
 /// A field with explicit presence that the sender omitted (proto2 fields, proto3
 /// `optional`, inactive oneof members, unset sub-messages) produces nothing, so the
 /// store records null instead of the type's default. Implicit-presence proto3
-/// scalars cannot tell "omitted" from the default and still read as 0.
+/// scalars cannot tell "omitted" from the default and still read as 0. A map
+/// entry is exempt: its omitted key or value still means the default.
 void flattenMessage(
     const gp::Message& msg, const std::string& prefix, bool is_map, unsigned max_array_size, bool clamp_arrays,
     std::vector<FlattenedField>& out) {
   const gp::Reflection* reflection = msg.GetReflection();
   const gp::Descriptor* descriptor = msg.GetDescriptor();
+  const bool is_map_entry = descriptor->options().map_entry();
 
   for (int i = 0; i < descriptor->field_count(); ++i) {
     const gp::FieldDescriptor* field = descriptor->field(i);
-    if (field->has_presence() && !reflection->HasField(msg, field)) {
+    if (!is_map_entry && field->has_presence() && !reflection->HasField(msg, field)) {
       continue;
     }
 

@@ -815,9 +815,11 @@ std::string serializeWith(
   return out;
 }
 
+// Every recorded field must carry a real double: a named null would read as 0 too.
 std::map<std::string, double> recordedValues(const PJ::sdk::testing::RecordedRow& row) {
   std::map<std::string, double> values;
   for (const auto& field : row.fields) {
+    EXPECT_FALSE(field.is_null) << field.name;
     values[field.name] = field.numeric;
   }
   return values;
@@ -901,12 +903,66 @@ TEST(ProtobufParserTest, PresenceOmittedEmbeddedTimestampKeepsHostTimestamp) {
   const auto with_ts = serializeWith(file_proto, "PresenceTs", [](gp::Message& m, const gp::Descriptor& d) {
     m.GetReflection()->SetDouble(&m, d.FindFieldByName("timestamp"), 12.5);
   });
+  const auto with_zero_ts = serializeWith(file_proto, "PresenceTs", [](gp::Message& m, const gp::Descriptor& d) {
+    m.GetReflection()->SetDouble(&m, d.FindFieldByName("timestamp"), 0.0);
+  });
   ASSERT_TRUE(f.parse(without_ts, 9999));
   ASSERT_TRUE(f.parse(with_ts, 9999));
+  ASSERT_TRUE(f.parse(with_zero_ts, 9999));
 
-  ASSERT_EQ(f.recorder.rows().size(), 2u);
+  ASSERT_EQ(f.recorder.rows().size(), 3u);
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);  // omitted: not 0 (1970)
   EXPECT_EQ(f.recorder.rows()[1].timestamp, 12500000000LL);
+  EXPECT_EQ(f.recorder.rows()[2].timestamp, 0);  // sent as 0: presence, not value, decides
+}
+
+TEST(ProtobufParserTest, PresenceMapEntryWithoutValueEqualsDefaultValue) {
+  ProtobufParserFixture f;
+  f.setUp();
+  // proto3: message PresenceMapInner { double x = 1; }
+  //         message PresenceMap { map<int32, PresenceMapInner> m = 1; }
+  gp::FileDescriptorProto file_proto;
+  file_proto.set_name("presence_map.proto");
+  file_proto.set_syntax("proto3");
+  auto* inner = file_proto.add_message_type();
+  inner->set_name("PresenceMapInner");
+  addDoubleField(inner, "x", 1);
+  auto* msg = file_proto.add_message_type();
+  msg->set_name("PresenceMap");
+  auto* entry = msg->add_nested_type();
+  entry->set_name("MEntry");
+  entry->mutable_options()->set_map_entry(true);
+  auto* key = entry->add_field();
+  key->set_name("key");
+  key->set_number(1);
+  key->set_type(gp::FieldDescriptorProto::TYPE_INT32);
+  key->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+  auto* value = entry->add_field();
+  value->set_name("value");
+  value->set_number(2);
+  value->set_type(gp::FieldDescriptorProto::TYPE_MESSAGE);
+  value->set_type_name(".PresenceMapInner");
+  value->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+  auto* map_field = msg->add_field();
+  map_field->set_name("m");
+  map_field->set_number(1);
+  map_field->set_type(gp::FieldDescriptorProto::TYPE_MESSAGE);
+  map_field->set_type_name(".PresenceMap.MEntry");
+  map_field->set_label(gp::FieldDescriptorProto::LABEL_REPEATED);
+  ASSERT_TRUE(f.bindSchema("PresenceMap", schemaBytes(file_proto)));
+
+  // Raw wire, because a serializer always writes both key and value. Field 1
+  // (length-delimited) holds one entry with key 7: first without a value, then
+  // with an empty value. Both mean m[7] = PresenceMapInner{}.
+  const std::string key_only("\x0A\x02\x08\x07", 4);
+  const std::string empty_value("\x0A\x04\x08\x07\x12\x00", 6);
+  ASSERT_TRUE(f.parse(key_only));
+  ASSERT_TRUE(f.parse(empty_value));
+
+  ASSERT_EQ(f.recorder.rows().size(), 2u);
+  const auto first = recordedValues(f.recorder.rows()[0]);
+  EXPECT_EQ(first, recordedValues(f.recorder.rows()[1]));
+  EXPECT_EQ(first.count("m[0]/7/value/x"), 1u);
 }
 
 // ---------------------------------------------------------------------------
