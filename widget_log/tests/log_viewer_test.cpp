@@ -17,6 +17,7 @@
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSignalSpy>
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QTest>
 #include <QToolButton>
@@ -24,6 +25,7 @@
 #include <QWheelEvent>
 #include <QWidget>
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -127,6 +129,8 @@ struct Panel {
   }
 
   FakeLogHost host;
+  /// The host's vtable as a host built before SDK 1.1 declares it (bound with `floor_host`).
+  PJ_widget_host_vtable_t floor_vtable{};
   FakePlayback playback;
   PJ::ServiceRegistryBuilder registry;
   PJ::WidgetHandle handle;
@@ -143,14 +147,22 @@ class LogViewerTest : public ::testing::Test {
   }
 
   /// A panel bound to the fake host (and to the fake playback when @p with_playback), not yet created.
-  std::unique_ptr<Panel> bound(bool with_playback = true) {
+  /// @p floor_host: the host's vtable ends before notify_config_changed, as on a host older than SDK 1.1.
+  std::unique_ptr<Panel> bound(bool with_playback = true, bool floor_host = false) {
     auto handle = library_->createHandle("log_viewer");
     EXPECT_TRUE(handle) << handle.error();
     if (!handle) {
       return nullptr;
     }
     auto panel = std::make_unique<Panel>(std::move(*handle));
-    panel->registry.registerService<PJ::sdk::WidgetHostService>(panel->host.makeHost());
+    PJ_widget_host_t host = panel->host.makeHost();
+    if (floor_host) {
+      // The slot stays set: only struct_size tells the widget the host lacks it.
+      panel->floor_vtable = *host.vtable;
+      panel->floor_vtable.struct_size = offsetof(PJ_widget_host_vtable_t, notify_config_changed);
+      host.vtable = &panel->floor_vtable;
+    }
+    panel->registry.registerService<PJ::sdk::WidgetHostService>(host);
     if (with_playback) {
       panel->registry.registerService<PJ::sdk::PlaybackHostService>(panel->playback.raw());
     }
@@ -570,6 +582,76 @@ TEST_F(LogViewerTest, ConfigRoundTrip) {
 
   EXPECT_FALSE(panel->handle.loadConfig(R"({"levels":"info"})"));
   EXPECT_FALSE(panel->handle.loadConfig("not json"));
+}
+
+TEST_F(LogViewerTest, APanelChangeTellsTheHostAndARestoreDoesNot) {
+  auto panel = open();
+  ASSERT_NE(panel, nullptr);
+  panel->host.wire(0, "/rosout");
+  panel->host.wire(1, "/other");
+  panel->host.add(0, 1.0, makeLog(Level::kInfo, "ready", "/a"));
+  panel->host.add(0, 2.0, makeLog(Level::kError, "battery", "/b", "power"));
+  panel->host.add(1, 3.0, makeLog(Level::kWarning, "late", "/a"));
+  panel->update(10.0);
+  int expected = 0;
+  ASSERT_EQ(panel->host.config_changed_calls, expected) << "new entries are not the user's doing";
+
+  QTest::mouseClick(panel->widget->findChild<QToolButton*>("levelDebug"), Qt::LeftButton);
+  EXPECT_EQ(panel->host.config_changed_calls, ++expected) << "level";
+  auto* sources = panel->widget->findChild<QComboBox*>("sourceCombo");
+  sources->setFocus();
+  QTest::keyClick(sources, Qt::Key_Down);
+  EXPECT_EQ(panel->host.config_changed_calls, ++expected) << "source";
+  auto* categories = panel->widget->findChild<QComboBox*>("categoryCombo");
+  categories->setFocus();
+  QTest::keyClick(categories, Qt::Key_Down);
+  EXPECT_EQ(panel->host.config_changed_calls, ++expected) << "category";
+  QTest::keyClicks(panel->widget->findChild<QLineEdit*>("filterEdit"), "b");
+  EXPECT_EQ(panel->host.config_changed_calls, ++expected) << "text, at the keystroke";
+  QAction* topic = panel->widget->findChild<QToolButton*>("topicsButton")->menu()->actions().at(1);
+  topic->trigger();
+  EXPECT_EQ(panel->host.config_changed_calls, ++expected) << "hidden topic";
+  emit panel->widget->findChild<QSplitter*>("splitter")->splitterMoved(200, 1);  // a handle drag's signal
+  EXPECT_EQ(panel->host.config_changed_calls, ++expected) << "splitter";
+
+  // A column drag: the press, the resize it makes, the release.
+  QHeaderView* header = panel->view()->header();
+  const QPoint grip(header->sectionViewportPosition(0) + header->sectionSize(0) - 1, header->height() / 2);
+  QTest::mousePress(header->viewport(), Qt::LeftButton, Qt::NoModifier, grip);
+  header->resizeSection(0, header->sectionSize(0) + 40);
+  QTest::mouseRelease(header->viewport(), Qt::LeftButton, Qt::NoModifier, grip);
+  EXPECT_EQ(panel->host.config_changed_calls, ++expected) << "column width";
+  QTest::mouseClick(header->viewport(), Qt::LeftButton, Qt::NoModifier, grip);
+  EXPECT_EQ(panel->host.config_changed_calls, expected) << "a click that resizes nothing";
+
+  // The host's load_config, as an undo applies it, sets every control without a report.
+  std::string saved;
+  ASSERT_TRUE(panel->handle.saveConfig(saved));
+  ASSERT_TRUE(panel->handle.loadConfig(
+      R"({"levels":["info"],"source_filter":"/a","category_filter":"","text_filter":"x","hidden_topics":[],)"
+      R"("splitter_sizes":[300,100],"column_widths":[90,60,120,120,150]})"));
+  ASSERT_TRUE(panel->handle.loadConfig(saved));
+  panel->update(11.0);
+  QTest::qWait(400);  // the text filter's debounce
+  EXPECT_EQ(panel->host.config_changed_calls, expected);
+}
+
+TEST_F(LogViewerTest, OnAFloorHostAPanelChangeFiltersAndReportsNothing) {
+  auto panel = bound(/*with_playback=*/true, /*floor_host=*/true);
+  ASSERT_NE(panel, nullptr);
+  realize(*panel);
+  panel->host.wire(0, "/rosout");
+  panel->host.add(0, 1.0, makeLog(Level::kDebug, "spin", "/a"));
+  panel->host.add(0, 2.0, makeLog(Level::kInfo, "ready", "/a"));
+  panel->update(10.0);
+  ASSERT_EQ(panel->model()->rowCount(), 2);
+
+  QTest::mouseClick(panel->widget->findChild<QToolButton*>("levelDebug"), Qt::LeftButton);
+  EXPECT_EQ(panel->model()->rowCount(), 1) << "the filter works as on any host";
+  EXPECT_EQ(panel->host.config_changed_calls, 0) << "a host without the slot is never called";
+  std::string saved;
+  ASSERT_TRUE(panel->handle.saveConfig(saved));
+  EXPECT_EQ(nlohmann::json::parse(saved).at("levels").size(), 4U) << "and the layout still saves it";
 }
 
 TEST_F(LogViewerTest, ShowsANoticeWhenTheHostCapsTheHistory) {

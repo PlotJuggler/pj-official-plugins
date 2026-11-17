@@ -10,6 +10,9 @@ One entry per released version (newest first).
   The date and time is always the entry's instant: PlotJuggler's time offset is undone (it needs the host's
   playback service; without it, or for a topic name several datasets share, the time is shown as received).
   A time before 2001 is taken for a relative one and stays in seconds.
+- A change made in the panel (a level, source, category or text filter, a hidden topic, the splitter, a column
+  width) reaches PlotJuggler's undo history: Ctrl+Z brings the previous filters back. Needs a host on SDK 1.1.0
+  (`notify_config_changed`); on an older one the panel works as before.
 
 ## [1.0.1] - 2026-11-15
 
