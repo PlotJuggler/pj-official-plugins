@@ -40,7 +40,8 @@ A wired topic that does not carry `kLog` objects is reported as a warning and sh
 - A host that delivers fewer samples than asked (older hosts cap a history read) leaves a notice
   "Showing N of M log entries".
 
-The filters, hidden topics, splitter and column sizes are saved with the layout.
+The filters, hidden topics, splitter and column sizes are saved with the layout. A change to any of them is
+an undo step in PlotJuggler (a host on SDK 1.1.0 or later).
 
 ## Building
 

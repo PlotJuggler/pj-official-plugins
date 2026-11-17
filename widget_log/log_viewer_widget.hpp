@@ -79,6 +79,11 @@ class LogViewerWidget : public QWidget {
   bool fitTimeColumn();
   /// Ask the playback service for each wire's display offset, so the date and time is the entry's instant.
   void refreshWireOffsets();
+  /// The user changed what state() returns in the panel's own controls: the host snapshots it for undo.
+  /// Connected only to signals a user gesture emits (clicked, activated, textEdited, triggered, splitterMoved,
+  /// a column drag), so applyState, and with it the host's load_config, never reports. Does nothing on a host older
+  /// than SDK 1.1.
+  void reportStateChanged();
 
   Ui::LogViewerForm ui_{};
   LogStore store_;
@@ -94,6 +99,7 @@ class LogViewerWidget : public QWidget {
   size_t sources_listed_ = 0;
   size_t categories_listed_ = 0;
   std::vector<int> column_widths_;
+  std::vector<int> widths_at_press_;  ///< column_widths_ when the header was last pressed
   std::vector<int> pending_splitter_;
   bool splitter_sized_ = false;
   bool columns_fixed_ = false;  ///< saved or user-set widths exist: never auto-size

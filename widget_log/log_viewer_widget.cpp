@@ -10,6 +10,7 @@
 #include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QSignalBlocker>
+#include <QSplitter>
 #include <QStringList>
 #include <QStyle>
 #include <QTextDocument>
@@ -130,16 +131,22 @@ LogViewerWidget::LogViewerWidget(
   ui_.logView->installEventFilter(this);
   ui_.logView->viewport()->installEventFilter(this);
   ui_.logView->verticalScrollBar()->installEventFilter(this);
+  header->viewport()->installEventFilter(this);  // a column drag ends with a release: reportStateChanged
 
   for (QToolButton* toggle : levelToggles()) {
     connect(toggle, &QToolButton::toggled, this, &LogViewerWidget::applyFilters);
+    connect(toggle, &QToolButton::clicked, this, &LogViewerWidget::reportStateChanged);
   }
   connect(ui_.sourceCombo, &QComboBox::currentIndexChanged, this, &LogViewerWidget::applyFilters);
+  connect(ui_.sourceCombo, &QComboBox::activated, this, &LogViewerWidget::reportStateChanged);
   connect(ui_.categoryCombo, &QComboBox::currentIndexChanged, this, &LogViewerWidget::applyFilters);
+  connect(ui_.categoryCombo, &QComboBox::activated, this, &LogViewerWidget::reportStateChanged);
   text_timer_.setSingleShot(true);
   text_timer_.setInterval(kTextDebounceMs);
   connect(&text_timer_, &QTimer::timeout, this, &LogViewerWidget::applyFilters);
   connect(ui_.filterEdit, &QLineEdit::textChanged, this, [this]() { text_timer_.start(); });
+  connect(ui_.filterEdit, &QLineEdit::textEdited, this, &LogViewerWidget::reportStateChanged);
+  connect(ui_.splitter, &QSplitter::splitterMoved, this, &LogViewerWidget::reportStateChanged);
   // A click only selects (the detail pane shows the entry); a double click seeks to it.
   connect(ui_.logView, &QAbstractItemView::doubleClicked, this, &LogViewerWidget::onRowDoubleClicked);
   // The detail shows the current row when it is selected: follow both, since Qt moves the current row
@@ -347,6 +354,7 @@ void LogViewerWidget::refreshTopics() {
       }
       applyFilters();
     });
+    connect(action, &QAction::triggered, this, &LogViewerWidget::reportStateChanged);
   }
   const bool several = wires.size() > 1;
   ui_.topicsButton->setVisible(several);
@@ -429,6 +437,14 @@ void LogViewerWidget::setScrollLocked(bool locked) {
 }
 
 bool LogViewerWidget::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == ui_.logView->header()->viewport()) {
+    if (event->type() == QEvent::MouseButtonPress) {
+      widths_at_press_ = column_widths_;
+    } else if (event->type() == QEvent::MouseButtonRelease && column_widths_ != widths_at_press_) {
+      reportStateChanged();
+    }
+    return QWidget::eventFilter(watched, event);
+  }
   if (locked_) {
     if (event->type() == QEvent::Wheel) {
       return true;
@@ -512,6 +528,10 @@ void LogViewerWidget::onRowDoubleClicked(const QModelIndex& index) {
   if (!playback_->seek(time)) {
     pending_seek_.reset();
   }
+}
+
+void LogViewerWidget::reportStateChanged() {
+  host_.notifyConfigChanged();
 }
 
 ViewState LogViewerWidget::state() const {
