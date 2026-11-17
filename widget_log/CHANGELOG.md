@@ -2,6 +2,15 @@
 
 One entry per released version (newest first).
 
+## [1.1.0] - Unreleased
+
+### Added
+- The Time column and the detail pane show a local date and time with milliseconds, as PlotJuggler's clock
+  time does. The setting "Time as date and time" (`time_as_datetime`, on by default) switches back to seconds.
+  The date and time is always the entry's instant: PlotJuggler's time offset is undone (it needs the host's
+  playback service; without it, or for a topic name several datasets share, the time is shown as received).
+  A time before 2001 is taken for a relative one and stays in seconds.
+
 ## [1.0.1] - 2026-11-15
 
 ### Fixed

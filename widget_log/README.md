@@ -13,6 +13,7 @@ the playback tracker. It reads `kLog` objects: the canonical log type that parse
 | Setting | Values | Default |
 |---|---|---|
 | `future_rows` | `grey`, `hide` | `grey` |
+| `time_as_datetime` | `true`, `false` | `true` |
 
 A wired topic that does not carry `kLog` objects is reported as a warning and shows nothing.
 
@@ -30,6 +31,9 @@ A wired topic that does not carry `kLog` objects is reported as a warning and sh
   letters, applied 150 ms after typing stops) and, with more than one topic, a Topics menu. The Topic column appears only with
   more than one topic; the Category column and filter only once an entry has a category (ROS logs
   have none).
+- The Time column shows a local date and time with milliseconds (`time_as_datetime`), the instant of the
+  entry: PlotJuggler's time offset is undone through the playback service. With the setting off, or for a
+  time before 2001 (a relative one), it shows display seconds.
 - The detail pane shows the selected entry: display time, the message stamp, level, source, topic,
   category (when set) and the full message. Copy puts that text on the clipboard.
 - At most 1,000,000 entries are kept; the oldest are dropped first.

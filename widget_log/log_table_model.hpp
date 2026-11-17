@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -41,6 +42,11 @@ class LogTableModel : public QAbstractTableModel {
   void applyStoreChange(const StoreChange& change);
   void setTracker(double tracker);
   void setFutureRows(FutureRows mode);
+  /// Time column as a local date and time with milliseconds (the default), or as display seconds.
+  void setTimeAsDateTime(bool on);
+  /// Per wire, what to add to a row's display time to get its absolute seconds (the host's display offset,
+  /// undone for the date and time). A wire missing here adds nothing.
+  void setWireOffsets(std::map<uint32_t, double> offsets);
 
   [[nodiscard]] FutureRows futureRows() const {
     return future_rows_;
@@ -54,9 +60,19 @@ class LogTableModel : public QAbstractTableModel {
   /// Model row showing store index @p index, or -1.
   [[nodiscard]] int rowOf(size_t index) const;
 
+  [[nodiscard]] bool timeAsDateTime() const {
+    return time_as_datetime_;
+  }
+  [[nodiscard]] const std::map<uint32_t, double>& wireOffsets() const {
+    return wire_offsets_;
+  }
+  /// The text of @p row's Time column.
+  [[nodiscard]] QString timeText(const LogRow& row) const;
+
   static QString levelName(Level level);
-  /// The text of the Time column.
-  static QString formatTime(double time);
+  /// @p time in seconds, or with @p datetime as a local date and time with milliseconds when @p time is an
+  /// instant (seconds since the epoch).
+  static QString formatTime(double time, bool datetime = false);
 
  private:
   int visibleCount() const;
@@ -75,6 +91,8 @@ class LogTableModel : public QAbstractTableModel {
   size_t pending_drop_ = 0;
   double tracker_ = 0.0;
   FutureRows future_rows_ = FutureRows::kGrey;
+  bool time_as_datetime_ = true;
+  std::map<uint32_t, double> wire_offsets_;
 };
 
 }  // namespace log_viewer

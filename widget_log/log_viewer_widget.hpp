@@ -44,6 +44,9 @@ class LogViewerWidget : public QWidget {
 
   void onUpdate(PJ::Span<const PJ_widget_value_t> values, double time);
   void setFutureRows(FutureRows mode);
+  /// Time column (and detail pane) as a local date and time, the host's time offset undone, or as the
+  /// display seconds.
+  void setTimeAsDateTime(bool on);
 
   [[nodiscard]] ViewState state() const;
   void applyState(const ViewState& state);
@@ -70,6 +73,12 @@ class LogViewerWidget : public QWidget {
   void onRowDoubleClicked(const QModelIndex& index);
   /// Fit the Time and Level columns once, when rows first appear and the user has no widths of their own.
   void autoSizeColumns();
+  /// Width of @p column that fits @p text and the column title.
+  [[nodiscard]] int fitWidth(const QString& text, int column) const;
+  /// Fit the Time column to the last row's text. False when there is no row to measure.
+  bool fitTimeColumn();
+  /// Ask the playback service for each wire's display offset, so the date and time is the entry's instant.
+  void refreshWireOffsets();
 
   Ui::LogViewerForm ui_{};
   LogStore store_;

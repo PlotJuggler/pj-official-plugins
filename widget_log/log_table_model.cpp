@@ -1,6 +1,7 @@
 #include "log_table_model.hpp"
 
 #include <QColor>
+#include <QDateTime>
 #include <QFont>
 #include <QPalette>
 #include <algorithm>
@@ -56,8 +57,25 @@ QString LogTableModel::levelName(Level level) {
   return QString::fromLatin1(label.data(), static_cast<qsizetype>(label.size()));
 }
 
-QString LogTableModel::formatTime(double time) {
-  return QString::number(time, 'f', 3);
+QString LogTableModel::formatTime(double time, bool datetime) {
+  // ponytail: a time before 2001-09-09 (1e9 s) is taken for a relative one and stays in seconds; an offset
+  // the host could not report (no playback service, a topic name in several datasets) leaves one too.
+  constexpr double kEarliestInstant = 1e9;
+  constexpr double kLatestInstant = 1e12;  // year 33658: keeps the milliseconds inside an int64
+  if (!datetime || !(time >= kEarliestInstant && time < kLatestInstant)) {
+    return QString::number(time, 'f', 3);
+  }
+  // Rounded once in milliseconds, so .9996 carries into the next second.
+  return QDateTime::fromMSecsSinceEpoch(std::llround(time * 1000.0))
+      .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"));
+}
+
+QString LogTableModel::timeText(const LogRow& row) const {
+  if (!time_as_datetime_) {
+    return formatTime(row.time);
+  }
+  const auto offset = wire_offsets_.find(row.wire);
+  return formatTime(row.time + (offset == wire_offsets_.end() ? 0.0 : offset->second), true);
 }
 
 int LogTableModel::visibleCount() const {
@@ -85,7 +103,7 @@ QVariant LogTableModel::data(const QModelIndex& index, int role) const {
     case Qt::DisplayRole:
       switch (index.column()) {
         case kTime:
-          return formatTime(row.time);
+          return timeText(row);
         case kLevel:
           return levelName(row.level);
         case kSource:
@@ -280,6 +298,26 @@ void LogTableModel::setFutureRows(FutureRows mode) {
   beginResetModel();
   future_rows_ = mode;
   endResetModel();
+}
+
+void LogTableModel::setTimeAsDateTime(bool on) {
+  if (on == time_as_datetime_) {
+    return;
+  }
+  time_as_datetime_ = on;
+  if (rowCount() > 0) {
+    emit dataChanged(index(0, kTime), index(rowCount() - 1, kTime), {Qt::DisplayRole});
+  }
+}
+
+void LogTableModel::setWireOffsets(std::map<uint32_t, double> offsets) {
+  if (offsets == wire_offsets_) {
+    return;
+  }
+  wire_offsets_ = std::move(offsets);
+  if (time_as_datetime_ && rowCount() > 0) {
+    emit dataChanged(index(0, kTime), index(rowCount() - 1, kTime), {Qt::DisplayRole});
+  }
 }
 
 std::optional<size_t> LogTableModel::storeIndex(int row) const {

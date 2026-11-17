@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <QAbstractItemModelTester>
+#include <QDateTime>
 #include <QGuiApplication>
 #include <string>
 #include <vector>
@@ -99,6 +100,17 @@ TEST_P(LogTableModelEviction, FilteredRowsShiftByTheEvictedStoreRows) {
   EXPECT_EQ(message(model_, 0), "t=6");
   EXPECT_EQ(model_.storeIndex(0), 1u);  // t=5 is store row 0, and hidden
   EXPECT_EQ(model_.rowOf(0), -1);
+}
+
+// A time before 2001 is taken for a relative one (the host's time offset) and stays in seconds; an instant
+// rounds once to milliseconds, carrying into the seconds.
+TEST(LogTableModelTime, DateAndTimeOnlyForAnInstant) {
+  EXPECT_EQ(LogTableModel::formatTime(12.5, true), "12.500");
+  EXPECT_EQ(LogTableModel::formatTime(1779215727.239, false), "1779215727.239");
+  EXPECT_EQ(
+      LogTableModel::formatTime(1779215727.239, true),
+      QDateTime::fromMSecsSinceEpoch(1779215727239).toString("yyyy-MM-dd HH:mm:ss.zzz"));
+  EXPECT_TRUE(LogTableModel::formatTime(1779215727.9996, true).endsWith(":28.000"));
 }
 
 INSTANTIATE_TEST_SUITE_P(
