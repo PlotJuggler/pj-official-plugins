@@ -6,12 +6,14 @@
 #include <QAbstractItemModel>
 #include <QApplication>
 #include <QComboBox>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSignalSpy>
@@ -25,6 +27,7 @@
 #include <cstdio>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/host/service_registry_builder.hpp>
 #include <pj_plugins/host/widget_library.hpp>
@@ -76,9 +79,17 @@ struct FakePlayback {
     *out = PJ_playback_state_t{self->playing, self->time, 0.0, 1000.0, 1.0};
     return true;
   }
+  /// The display offset of every topic (display = absolute - offset); unset = the call fails.
+  std::optional<double> display_offset;
+
   static bool toDisplayTime(
-      void* /*ctx*/, PJ_string_view_t /*topic*/, int64_t /*ns*/, double* /*out*/, PJ_error_t* /*err*/) noexcept {
-    return false;
+      void* ctx, PJ_string_view_t /*topic*/, int64_t ns, double* out, PJ_error_t* /*err*/) noexcept {
+    const auto* self = static_cast<FakePlayback*>(ctx);
+    if (!self->display_offset) {
+      return false;
+    }
+    *out = static_cast<double>(ns) * 1e-9 - *self->display_offset;
+    return true;
   }
 };
 
@@ -422,6 +433,46 @@ TEST_F(LogViewerTest, FutureRowsGreyOrHidden) {
   EXPECT_EQ(model->rowCount(), 101);
 
   EXPECT_FALSE(panel->handle.loadConfig(R"({"future_rows":"blink"})"));
+}
+
+TEST_F(LogViewerTest, TimeColumnShowsDateAndTimeUnlessTurnedOff) {
+  auto panel = open();
+  ASSERT_NE(panel, nullptr);
+  panel->host.wire(0, "/rosout");
+  panel->host.add(0, 1779215727.239, makeLog(Level::kInfo, "at an epoch time", "/node"));
+  panel->update(1779215800.0);
+  QAbstractItemModel* model = panel->model();
+  ASSERT_EQ(model->rowCount(), 1);
+
+  // Checked by default: local date and time with milliseconds, as PlotJuggler's clock time.
+  const QString datetime = model->index(0, 0).data().toString();
+  EXPECT_TRUE(QRegularExpression(R"(^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.239$)").match(datetime).hasMatch())
+      << datetime.toStdString();
+  EXPECT_EQ(datetime, QDateTime::fromMSecsSinceEpoch(1779215727239).toString("yyyy-MM-dd HH:mm:ss.zzz"));
+
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"time_as_datetime":false})"));
+  EXPECT_EQ(model->index(0, 0).data().toString(), "1779215727.239");
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"time_as_datetime":true})"));
+  EXPECT_EQ(model->index(0, 0).data().toString(), datetime);
+  EXPECT_FALSE(panel->handle.loadConfig(R"({"time_as_datetime":"yes"})"));
+}
+
+// With the host's time offset on, the date and time is still the entry's instant: the offset is undone.
+// The seconds keep it, as the plots' axis does.
+TEST_F(LogViewerTest, DateAndTimeIgnoresTheHostTimeOffset) {
+  auto panel = open();
+  ASSERT_NE(panel, nullptr);
+  panel->playback.display_offset = 1779215700.0;
+  panel->host.wire(0, "/rosout");
+  panel->host.add(0, 27.239, makeLog(Level::kInfo, "27 s after the offset", "/node"));
+  panel->update(100.0);
+  QAbstractItemModel* model = panel->model();
+  ASSERT_EQ(model->rowCount(), 1);
+  EXPECT_EQ(
+      model->index(0, 0).data().toString(),
+      QDateTime::fromMSecsSinceEpoch(1779215727239).toString("yyyy-MM-dd HH:mm:ss.zzz"));
+  ASSERT_TRUE(panel->handle.loadConfig(R"({"time_as_datetime":false})"));
+  EXPECT_EQ(model->index(0, 0).data().toString(), "27.239");
 }
 
 TEST_F(LogViewerTest, LevelColoursAndFirstLine) {

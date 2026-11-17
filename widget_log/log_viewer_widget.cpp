@@ -186,6 +186,7 @@ void LogViewerWidget::onUpdate(PJ::Span<const PJ_widget_value_t> values, double 
     refreshCategories();
   }
   refreshNotice();
+  refreshWireOffsets();
 
   const bool moved = !tracker_ || !sameTime(time, *tracker_);
   tracker_ = time;
@@ -227,6 +228,36 @@ void LogViewerWidget::setFutureRows(FutureRows mode) {
   const std::optional<size_t> selected = selectedStoreRow();
   model_->setFutureRows(mode);
   selectStoreRow(selected);
+}
+
+void LogViewerWidget::setTimeAsDateTime(bool on) {
+  if (on == model_->timeAsDateTime()) {
+    return;
+  }
+  model_->setTimeAsDateTime(on);
+  // The texts change width by half: fit the column again, even over a width the user set.
+  fitTimeColumn();
+  detail_valid_ = false;
+  updateDetail();
+}
+
+void LogViewerWidget::refreshWireOffsets() {
+  if (!playback_) {
+    return;
+  }
+  // display = absolute - offset, so the display time of the epoch is -offset. Asked per wire: each topic's
+  // dataset may be aligned on its own.
+  std::map<uint32_t, double> offsets;
+  for (const WireInfo& wire : loader_.wires()) {
+    if (const auto epoch = playback_->toDisplayTime(wire.label, 0)) {
+      offsets.emplace(wire.id, -*epoch);
+    }
+  }
+  if (offsets != model_->wireOffsets()) {
+    model_->setWireOffsets(std::move(offsets));
+    detail_valid_ = false;
+    updateDetail();
+  }
 }
 
 bool LogViewerWidget::isPlaying() const {
@@ -359,7 +390,9 @@ void LogViewerWidget::updateDetail() {
   if (selected && *selected < store_.size()) {
     const LogRow& row = store_.row(*selected);
     QStringList lines;
-    lines << QStringLiteral("Time: %1 s").arg(row.time, 0, 'f', 6);
+    lines
+        << (model_->timeAsDateTime() ? QStringLiteral("Time: %1").arg(model_->timeText(row))
+                                     : QStringLiteral("Time: %1 s").arg(row.time, 0, 'f', 6));
     lines << QStringLiteral("Stamp: %1").arg(formatStamp(row.stamp_ns));
     lines << QStringLiteral("Level: %1").arg(LogTableModel::levelName(row.level));
     lines << QStringLiteral("Source: %1").arg(QString::fromStdString(store_.text(row.source)));
@@ -424,37 +457,45 @@ void LogViewerWidget::showEvent(QShowEvent* event) {
   }
 }
 
-void LogViewerWidget::autoSizeColumns() {
-  if (columns_fixed_ || model_->rowCount() == 0) {
-    return;
-  }
-  const std::optional<size_t> last = model_->storeIndex(model_->rowCount() - 1);
-  if (!last || *last >= store_.size()) {
-    return;
-  }
+int LogViewerWidget::fitWidth(const QString& text, int column) const {
   QHeaderView* header = ui_.logView->header();
-  const QFontMetrics body = ui_.logView->fontMetrics();
-  const QFontMetrics head = header->fontMetrics();
   // Cell text gets the item margins; the header gets its section padding (and a sort/arrow slack).
   const int cell_pad = ui_.logView->style()->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, ui_.logView) * 2 + 8;
   const int head_pad = header->style()->pixelMetric(QStyle::PM_HeaderMargin, nullptr, header) * 2 + 8;
-  const auto fit = [&](const QString& text, const QString& title) {
-    return std::max(body.horizontalAdvance(text) + cell_pad, head.horizontalAdvance(title) + head_pad);
-  };
-  int level_width = 0;
-  for (const LevelName& name : kLevelNames) {
-    level_width = std::max(level_width, body.horizontalAdvance(LogTableModel::levelName(name.level)));
+  const QString title = model_->headerData(column, Qt::Horizontal).toString();
+  return std::max(
+      ui_.logView->fontMetrics().horizontalAdvance(text) + cell_pad,
+      header->fontMetrics().horizontalAdvance(title) + head_pad);
+}
+
+bool LogViewerWidget::fitTimeColumn() {
+  if (model_->rowCount() == 0) {
+    return false;
   }
-  const int time_width =
-      fit(LogTableModel::formatTime(store_.row(*last).time),
-          model_->headerData(LogTableModel::kTime, Qt::Horizontal).toString());
-  level_width = std::max(
-      level_width + cell_pad,
-      head.horizontalAdvance(model_->headerData(LogTableModel::kLevel, Qt::Horizontal).toString()) + head_pad);
+  const std::optional<size_t> last = model_->storeIndex(model_->rowCount() - 1);
+  if (!last || *last >= store_.size()) {
+    return false;
+  }
+  ui_.logView->header()->resizeSection(
+      LogTableModel::kTime, fitWidth(model_->timeText(store_.row(*last)), LogTableModel::kTime));
+  return true;
+}
+
+void LogViewerWidget::autoSizeColumns() {
   // Once: later growth of the times does not move the columns under the user (sectionResized sets
   // columns_fixed_).
-  header->resizeSection(LogTableModel::kTime, time_width);
-  header->resizeSection(LogTableModel::kLevel, level_width);
+  if (columns_fixed_ || !fitTimeColumn()) {
+    return;
+  }
+  QString widest_level;
+  for (const LevelName& name : kLevelNames) {
+    const QString level = LogTableModel::levelName(name.level);
+    if (ui_.logView->fontMetrics().horizontalAdvance(level) >
+        ui_.logView->fontMetrics().horizontalAdvance(widest_level)) {
+      widest_level = level;
+    }
+  }
+  ui_.logView->header()->resizeSection(LogTableModel::kLevel, fitWidth(widest_level, LogTableModel::kLevel));
   columns_fixed_ = true;
 }
 

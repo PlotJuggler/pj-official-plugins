@@ -22,8 +22,8 @@ using log_viewer::kLevelNames;
 using log_viewer::kToggleLevels;
 using log_viewer::ViewState;
 
-// saveConfig keys. They share the load_config object with the manifest settings (`future_rows`), so none
-// of them may reuse a setting key.
+// saveConfig keys. They share the load_config object with the manifest settings (`future_rows`,
+// `time_as_datetime`), so none of them may reuse a setting key.
 constexpr const char* kLevelsKey = "levels";
 constexpr const char* kSourceKey = "source_filter";
 constexpr const char* kCategoryKey = "category_filter";
@@ -32,6 +32,7 @@ constexpr const char* kHiddenTopicsKey = "hidden_topics";
 constexpr const char* kSplitterKey = "splitter_sizes";
 constexpr const char* kColumnsKey = "column_widths";
 constexpr const char* kFutureRowsSetting = "future_rows";
+constexpr const char* kTimeAsDateTimeSetting = "time_as_datetime";
 
 nlohmann::json toJson(const ViewState& state) {
   nlohmann::json levels = nlohmann::json::array();
@@ -141,6 +142,7 @@ class LogViewerPlugin : public PJ::WidgetPluginBase {
     auto* widget = new log_viewer::LogViewerWidget(widgetHost(), playback_, warn, static_cast<QWidget*>(parent));
     widget_ = widget;
     widget->setFutureRows(future_rows_);
+    widget->setTimeAsDateTime(time_as_datetime_);
     widget->applyState(state_);
     return widget;
   }
@@ -168,14 +170,23 @@ class LogViewerPlugin : public PJ::WidgetPluginBase {
       }
       future_rows = *found == "hide" ? FutureRows::kHide : FutureRows::kGrey;
     }
+    bool time_as_datetime = time_as_datetime_;
+    if (const auto found = config.find(kTimeAsDateTimeSetting); found != config.end() && !found->is_null()) {
+      if (!found->is_boolean()) {
+        return PJ::unexpected("time_as_datetime must be true or false");
+      }
+      time_as_datetime = found->get<bool>();
+    }
     ViewState state = widget_ ? widget_->state() : state_;
     if (auto status = readState(config, state); !status) {
       return status;
     }
     future_rows_ = future_rows;
+    time_as_datetime_ = time_as_datetime;
     state_ = std::move(state);
     if (widget_) {
       widget_->setFutureRows(future_rows_);
+      widget_->setTimeAsDateTime(time_as_datetime_);
       widget_->applyState(state_);
     }
     return PJ::okStatus();
@@ -184,6 +195,7 @@ class LogViewerPlugin : public PJ::WidgetPluginBase {
  private:
   std::optional<PJ::sdk::PlaybackHostView> playback_;
   FutureRows future_rows_ = FutureRows::kGrey;
+  bool time_as_datetime_ = true;
   ViewState state_;
   QPointer<log_viewer::LogViewerWidget> widget_;
 };
