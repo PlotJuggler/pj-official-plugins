@@ -3,6 +3,17 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_protobuf/`.
 
+## [1.3.1] - 2026-11-17
+
+### Fixed
+- A field the sender left out of a message is no longer plotted as 0 (or as its
+  proto2 default). This covers proto2 fields, proto3 `optional` fields, the
+  inactive members of a oneof and unset sub-messages: the series has no sample
+  for that message. Plain proto3 fields cannot be told apart from 0 and are
+  unchanged.
+- With "use embedded timestamp" on, a message that leaves out an `optional`
+  timestamp field keeps its log/receive time instead of landing at 1970.
+
 ## [1.3.0] - 2026-11-14
 
 ### Added

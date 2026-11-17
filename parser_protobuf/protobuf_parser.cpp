@@ -65,14 +65,23 @@ constexpr double timestampSeconds(PJ::Timestamp ts_ns) {
 /// Recursively flatten a protobuf message into scalar fields.
 /// Nested messages use "/" separator. Repeated fields use "[i]" suffix.
 /// Map fields: skip the "key" field, extract the "value" field.
+/// A field with explicit presence that the sender omitted (proto2 fields, proto3
+/// `optional`, inactive oneof members, unset sub-messages) produces nothing, so the
+/// store records null instead of the type's default. Implicit-presence proto3
+/// scalars cannot tell "omitted" from the default and still read as 0. A map
+/// entry is exempt: its omitted key or value still means the default.
 void flattenMessage(
     const gp::Message& msg, const std::string& prefix, bool is_map, unsigned max_array_size, bool clamp_arrays,
     std::vector<FlattenedField>& out) {
   const gp::Reflection* reflection = msg.GetReflection();
   const gp::Descriptor* descriptor = msg.GetDescriptor();
+  const bool is_map_entry = descriptor->options().map_entry();
 
   for (int i = 0; i < descriptor->field_count(); ++i) {
     const gp::FieldDescriptor* field = descriptor->field(i);
+    if (!is_map_entry && field->has_presence() && !reflection->HasField(msg, field)) {
+      continue;
+    }
 
     std::string field_name(field->name());
     std::string key;
@@ -486,9 +495,12 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::unexpected(std::move(msg).error());
     }
 
-    // Extract embedded timestamp if available (overrides the provided timestamp)
-    if (timestamp_field_ != nullptr) {
-      double ts_seconds = (*msg)->GetReflection()->GetDouble(**msg, timestamp_field_);
+    // Extract embedded timestamp if available (overrides the provided timestamp).
+    // An omitted presence-tracked timestamp would read as 0 (1970): keep the provided one.
+    const gp::Reflection* reflection = (*msg)->GetReflection();
+    if (timestamp_field_ != nullptr &&
+        (!timestamp_field_->has_presence() || reflection->HasField(**msg, timestamp_field_))) {
+      double ts_seconds = reflection->GetDouble(**msg, timestamp_field_);
       timestamp_ns = static_cast<PJ::Timestamp>(ts_seconds * 1e9);
     }
 
