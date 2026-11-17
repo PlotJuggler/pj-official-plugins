@@ -10,7 +10,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
+#include <map>
+#include <memory>
 #include <pj_laser_scan/laser_scan_projector.hpp>
 #include <string>
 #include <unordered_map>
@@ -725,6 +728,185 @@ TEST(ProtobufParserTest, EmbeddedTimestampMissingFieldFallsBackToHost) {
   ASSERT_TRUE(f.parse(payload, 9999));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);
+}
+
+// ---------------------------------------------------------------------------
+// Field presence: a field the sender omitted is left out of the record (the
+// store keeps it null), instead of being written as its default value.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+gp::FieldDescriptorProto* addDoubleField(gp::DescriptorProto* msg, const std::string& name, int number) {
+  auto* field = msg->add_field();
+  field->set_name(name);
+  field->set_number(number);
+  field->set_type(gp::FieldDescriptorProto::TYPE_DOUBLE);
+  field->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+  return field;
+}
+
+// proto3 message covering every kind of presence:
+//   message <name>Inner { double x = 1; }
+//   message <name> {
+//     oneof choice { double a = 3; double b = 4; }
+//     optional double opt = 1;
+//     double plain = 2;               // implicit presence: unset reads as 0
+//     <name>Inner inner = 5;
+//     optional double timestamp = 6;
+//   }
+gp::FileDescriptorProto presenceFileProto(const std::string& msg_name) {
+  gp::FileDescriptorProto file_proto;
+  file_proto.set_name("presence_" + msg_name + ".proto");
+  file_proto.set_syntax("proto3");
+
+  auto* inner = file_proto.add_message_type();
+  inner->set_name(msg_name + "Inner");
+  addDoubleField(inner, "x", 1);
+
+  auto* msg = file_proto.add_message_type();
+  msg->set_name(msg_name);
+  // Real oneofs come before the synthetic ones that back proto3 `optional`.
+  msg->add_oneof_decl()->set_name("choice");
+  msg->add_oneof_decl()->set_name("_opt");
+  msg->add_oneof_decl()->set_name("_timestamp");
+
+  auto* opt = addDoubleField(msg, "opt", 1);
+  opt->set_proto3_optional(true);
+  opt->set_oneof_index(1);
+  addDoubleField(msg, "plain", 2);
+  addDoubleField(msg, "a", 3)->set_oneof_index(0);
+  addDoubleField(msg, "b", 4)->set_oneof_index(0);
+  auto* inner_field = msg->add_field();
+  inner_field->set_name("inner");
+  inner_field->set_number(5);
+  inner_field->set_type(gp::FieldDescriptorProto::TYPE_MESSAGE);
+  inner_field->set_type_name(msg_name + "Inner");
+  inner_field->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+  auto* ts = addDoubleField(msg, "timestamp", 6);
+  ts->set_proto3_optional(true);
+  ts->set_oneof_index(2);
+  return file_proto;
+}
+
+std::string schemaBytes(const gp::FileDescriptorProto& file_proto) {
+  gp::FileDescriptorSet fd_set;
+  *fd_set.add_file() = file_proto;
+  std::string out;
+  fd_set.SerializeToString(&out);
+  return out;
+}
+
+// Serializes `msg_name` from `file_proto` in a local pool after `fill` sets its fields.
+std::string serializeWith(
+    const gp::FileDescriptorProto& file_proto, const std::string& msg_name,
+    const std::function<void(gp::Message&, const gp::Descriptor&)>& fill) {
+  gp::DescriptorPool pool;
+  const gp::FileDescriptor* file_desc = pool.BuildFile(file_proto);
+  if (file_desc == nullptr) {
+    return {};
+  }
+  const gp::Descriptor* desc = pool.FindMessageTypeByName(msg_name);
+  gp::DynamicMessageFactory factory(&pool);
+  std::unique_ptr<gp::Message> msg(factory.GetPrototype(desc)->New());
+  fill(*msg, *desc);
+  std::string out;
+  msg->SerializeToString(&out);
+  return out;
+}
+
+std::map<std::string, double> recordedValues(const PJ::sdk::testing::RecordedRow& row) {
+  std::map<std::string, double> values;
+  for (const auto& field : row.fields) {
+    values[field.name] = field.numeric;
+  }
+  return values;
+}
+
+}  // namespace
+
+TEST(ProtobufParserTest, PresenceOmittedFieldsAreLeftOut) {
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto file_proto = presenceFileProto("PresenceOmitted");
+  ASSERT_TRUE(f.bindSchema("PresenceOmitted", schemaBytes(file_proto)));
+
+  // Only `plain` is on the wire: the optional, the oneof, the sub-message and the
+  // timestamp were all omitted by the sender.
+  const auto payload = serializeWith(file_proto, "PresenceOmitted", [](gp::Message& m, const gp::Descriptor& d) {
+    m.GetReflection()->SetDouble(&m, d.FindFieldByName("plain"), 1.5);
+  });
+  ASSERT_FALSE(payload.empty());
+  ASSERT_TRUE(f.parse(payload));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto values = recordedValues(f.recorder.rows()[0]);
+  EXPECT_EQ(values, (std::map<std::string, double>{{"plain", 1.5}}));
+}
+
+TEST(ProtobufParserTest, PresenceFieldsSetToZeroAreKept) {
+  ProtobufParserFixture f;
+  f.setUp();
+  const auto file_proto = presenceFileProto("PresenceZero");
+  ASSERT_TRUE(f.bindSchema("PresenceZero", schemaBytes(file_proto)));
+
+  // `opt` and the oneof member `b` are explicitly 0; `inner` is present with an
+  // implicit-presence `x` it never set, and `plain` is omitted.
+  const auto payload = serializeWith(file_proto, "PresenceZero", [](gp::Message& m, const gp::Descriptor& d) {
+    const auto* r = m.GetReflection();
+    r->SetDouble(&m, d.FindFieldByName("opt"), 0.0);
+    r->SetDouble(&m, d.FindFieldByName("b"), 0.0);
+    (void)r->MutableMessage(&m, d.FindFieldByName("inner"));
+  });
+  ASSERT_TRUE(f.parse(payload));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto values = recordedValues(f.recorder.rows()[0]);
+  // Implicit-presence scalars cannot tell "omitted" from 0, so `plain` and
+  // `inner/x` still read as 0.
+  EXPECT_EQ(values, (std::map<std::string, double>{{"opt", 0.0}, {"plain", 0.0}, {"b", 0.0}, {"inner/x", 0.0}}));
+}
+
+TEST(ProtobufParserTest, PresenceProto2OmittedFieldIsNotItsDefault) {
+  ProtobufParserFixture f;
+  f.setUp();
+  gp::FileDescriptorProto file_proto;
+  file_proto.set_name("presence_proto2.proto");
+  file_proto.set_syntax("proto2");
+  auto* msg = file_proto.add_message_type();
+  msg->set_name("PresenceProto2");
+  addDoubleField(msg, "with_default", 1)->set_default_value("5");
+  addDoubleField(msg, "value", 2);
+  ASSERT_TRUE(f.bindSchema("PresenceProto2", schemaBytes(file_proto)));
+
+  const auto payload = serializeWith(file_proto, "PresenceProto2", [](gp::Message& m, const gp::Descriptor& d) {
+    m.GetReflection()->SetDouble(&m, d.FindFieldByName("value"), 2.0);
+  });
+  ASSERT_TRUE(f.parse(payload));
+
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  EXPECT_EQ(recordedValues(f.recorder.rows()[0]), (std::map<std::string, double>{{"value", 2.0}}));
+}
+
+TEST(ProtobufParserTest, PresenceOmittedEmbeddedTimestampKeepsHostTimestamp) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
+  const auto file_proto = presenceFileProto("PresenceTs");
+  ASSERT_TRUE(f.bindSchema("PresenceTs", schemaBytes(file_proto)));
+
+  const auto without_ts = serializeWith(file_proto, "PresenceTs", [](gp::Message& m, const gp::Descriptor& d) {
+    m.GetReflection()->SetDouble(&m, d.FindFieldByName("plain"), 1.0);
+  });
+  const auto with_ts = serializeWith(file_proto, "PresenceTs", [](gp::Message& m, const gp::Descriptor& d) {
+    m.GetReflection()->SetDouble(&m, d.FindFieldByName("timestamp"), 12.5);
+  });
+  ASSERT_TRUE(f.parse(without_ts, 9999));
+  ASSERT_TRUE(f.parse(with_ts, 9999));
+
+  ASSERT_EQ(f.recorder.rows().size(), 2u);
+  EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);  // omitted: not 0 (1970)
+  EXPECT_EQ(f.recorder.rows()[1].timestamp, 12500000000LL);
 }
 
 // ---------------------------------------------------------------------------

@@ -9,6 +9,10 @@ FileDescriptorSet schemas.
 - Nested messages (recursive flattening with `/` separator)
 - Repeated fields with bracket notation (`field[0]`, `field[1]`)
 - Map fields with key-based paths
+- Field presence: a field the sender omitted (proto2 fields, proto3 `optional`,
+  inactive oneof members, unset sub-messages) is left out of the row, so the
+  series has no sample there instead of a default value. An omitted
+  presence-tracked embedded timestamp keeps the transport timestamp.
 - Pre-registration of fields at schema bind time for performance
 
 ## Encoding
@@ -98,6 +102,8 @@ separate colormap source. `parser_ros` produces the **same** canonical `rgba` fi
 
 ## Known Limitations
 
+- Plain proto3 scalars (no `optional`) cannot tell "omitted" from their
+  default, so an omitted one still reads as 0
 - Embedded timestamp extraction not implemented (original auto-detects
   "timestamp" double field)
 - Enum values stored as int32 (original stored as human-readable strings)
