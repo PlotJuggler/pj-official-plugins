@@ -138,7 +138,7 @@ class ParquetSource : public PJ::FileSourceBase {
 
     auto infile_result = arrow::io::ReadableFile::Open(filepath);
     if (!infile_result.ok()) {
-      return PJ::unexpected(std::string("cannot open file: ") + filepath);
+      return PJ::unexpected("cannot open file: " + filepath + ": " + infile_result.status().ToString());
     }
     auto infile = *infile_result;
 

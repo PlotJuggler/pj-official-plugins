@@ -150,7 +150,7 @@ TEST(ParquetSourceTest, ImportsZstdCompressedColumns) {
 TEST(ParquetSourceTest, UnsupportedCodecErrorNamesArrowsReason) {
   RecordingHost host;
   const auto error = runImport(std::filesystem::path(PARQUET_TEST_DATA_DIR) / "brotli_values.parquet", host);
-  EXPECT_NE(error.find("brotli"), std::string::npos) << error;
+  EXPECT_NE(error.find("Support for codec 'brotli' not built"), std::string::npos) << error;
 }
 
 }  // namespace

@@ -264,6 +264,7 @@ TEST(LoadDatasetModelV3, ReadsZstdCompressedShards) {
   const auto written =
       parquet::arrow::WriteTable(*buildEpisodesShardTable(), arrow::default_memory_pool(), *outfile_or, 65536, zstd);
   ASSERT_TRUE(written.ok()) << written.ToString();
+  ASSERT_TRUE((*outfile_or)->Close().ok());
 
   auto model_or = loadDatasetModel(root / "meta" / "info.json");
   ASSERT_TRUE(model_or.has_value()) << (model_or.has_value() ? "" : model_or.error());
