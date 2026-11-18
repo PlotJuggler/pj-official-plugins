@@ -288,7 +288,7 @@ std::optional<double> FormatParseTimestamp(const std::string& str, const std::st
   std::chrono::nanoseconds fractional_ns{0};
   std::string adjusted_input = trimmed;
 
-  size_t zzz_pos = format.find(".zzz");
+  size_t zzz_pos = format.find(".z");
   if (zzz_pos != std::string::npos) {
     size_t z_count = 0;
     size_t z_start = zzz_pos + 1;
@@ -296,7 +296,7 @@ std::optional<double> FormatParseTimestamp(const std::string& str, const std::st
       z_count++;
     }
 
-    // The dots before ".zzz" in the format are the input's leading dots (date separators), whatever separates the time
+    // The dots before ".z" in the format are the input's leading dots (date separators), whatever separates the time
     // fields; the fraction follows the next one.
     const auto dots_before = std::count(format.begin(), format.begin() + static_cast<std::ptrdiff_t>(zzz_pos), '.');
     size_t input_dot_pos = FindNthDot(adjusted_input, static_cast<size_t>(dots_before));
