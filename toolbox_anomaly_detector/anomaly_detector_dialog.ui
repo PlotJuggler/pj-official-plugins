@@ -7,7 +7,7 @@
  <class>AnomalyDetectorDialog</class>
  <widget class="QWidget" name="AnomalyDetectorDialog">
   <property name="windowTitle">
-   <string>Anomaly Detector</string>
+   <string>Marker Editor</string>
   </property>
   <!-- Edge to edge, like toolbox_quaternion: the panel is the window, so an outer margin
        here only draws a grey gutter around everything. Padding belongs inside the rows

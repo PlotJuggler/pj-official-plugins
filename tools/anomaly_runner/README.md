@@ -1,7 +1,7 @@
 # anomaly_runner — headless Anomaly Detection pipeline (Task F)
 
 A standalone CLI that runs the **same** Lua anomaly-detection rules you author and
-test in the PlotJuggler GUI (the *Anomaly Detector* toolbox), but with **no GUI** —
+test in the PlotJuggler GUI (the *Marker Editor* toolbox), but with **no GUI** —
 against a data file on a server / in CI. It loads the file through a PlotJuggler
 DataSource plugin, runs the rule **in-process** via the `anomaly_core` engine, and
 prints a **structured JSON report** (pass/fail + anomalies + severities). The process
@@ -182,7 +182,7 @@ preserved via `nlohmann::ordered_json`), not alphabetical.
 
 ## Rule files (portable, shareable)
 
-A rule is one JSON document — authored/saved in the GUI (*Anomaly Detector* → Save rule)
+A rule is one JSON document — authored/saved in the GUI (*Marker Editor* → Save rule)
 and run unchanged here with `--rule`:
 
 ```json

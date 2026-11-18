@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// Anomaly Detector toolbox (demo), styled after the host Filter Editor: a Preview
+// Marker Editor toolbox, styled after the host Filter Editor: a Preview
 // chart on top, then Source | Function | Lua editor. Picking a predefined
 // Function fills the editor with its Lua (targeting the selected source); the
 // "-- No function --" entry leaves a blank template to write your own. Apply runs

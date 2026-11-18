@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 # The headless anomaly_runner CLI (and its Luau engine layer: anomaly_core +
 # pj_scripting_core) is OFF by default. The cross-platform plugin CI builds only the
-# host-driven, Luau-FREE GUI plugins (the GUI Anomaly Detector submits rules to the host,
+# host-driven, Luau-FREE GUI plugins (the GUI Marker Editor submits rules to the host,
 # which runs Lua), so it does NOT need the private pj_scripting_core package. Build the
 # runner with `./build.sh tools/anomaly_runner` (its recipe provides pj_scripting_core)
 # or pass -DPJ_BUILD_ANOMALY_RUNNER=ON.

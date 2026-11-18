@@ -1,14 +1,15 @@
-# Anomaly Detector
+# Marker Editor
 
-Detect anomalies in your timeseries with small **Lua rules** that emit **plot markers**
-(events, regions, value bands). Author and test a rule interactively in the **PlotJuggler
+Draw **plot markers** (events, regions, value bands) from small **Lua rules** over your
+timeseries: flag anomalies, mark phases, or shade the background by a series' value (what
+PlotJuggler 3 called a color map). Author and test a rule interactively in the **PlotJuggler
 GUI**, then run that exact same rule **headless** on a server / in CI. Rules are saved as a
 portable JSON file that both sides consume.
 
 ```
             author + test                          run unattended
    ┌──────────────────────────┐   rule.json   ┌──────────────────────────┐
-   │  GUI: Anomaly Detector   │ ────────────▶ │  CLI: anomaly_runner     │
+   │  GUI: Marker Editor      │ ────────────▶ │  CLI: anomaly_runner     │
    │  (host runs the rule)    │               │  (runs the rule itself)  │
    └──────────────────────────┘               └──────────────────────────┘
               same Lua rule  ·  same PlotMarkers  ·  same result
@@ -27,7 +28,7 @@ GUI produces identical markers in CI — only *who invokes the engine* differs.
 
 ## Using the GUI
 
-1. Open **Toolbox → Anomaly Detector** (it reads the currently loaded timeseries). It opens
+1. Open **Toolbox → Marker Editor** (it reads the currently loaded timeseries). It opens
    with **no source selected**.
 2. Choose a **source series**, either way round: **drag & drop** one from the Datasets tree on
    the left, or pick it from the source list (with the **Filter** box to narrow a long

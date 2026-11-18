@@ -38,7 +38,7 @@
 | [![toolbox_data_exporter](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_data_exporter.json)](toolbox_data_exporter/) | Toolbox | Export selected series to CSV or Parquet |
 | [![toolbox_mosaico](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_mosaico.json)](toolbox_mosaico/) | Toolbox | Mosaico cloud server browsing (Arrow Flight) |
 | [![toolbox_transform_editor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/toolbox_transform_editor.json)](toolbox_transform_editor/) | Toolbox | Lua-based editor for derived series and 2D/3D objects |
-| [toolbox_anomaly_detector](toolbox_anomaly_detector/) | Toolbox | Lua anomaly detection → plot markers (shares its engine with the headless runner) |
+| [toolbox_anomaly_detector](toolbox_anomaly_detector/) | Toolbox | Marker Editor: Lua rules → plot markers (anomalies, phases, color by value; shares its engine with the headless runner) |
 | [toolbox_assistant_agent](toolbox_assistant_agent/) | Toolbox | LLM assistant driving PlotJuggler's own MCP tools through your Claude Code / Codex CLI (Linux/macOS runtime; PlotJuggler 4.2+) |
 | [widget_basic](widget_basic/) | Widget | Gauge, numeric indicator, traffic light and value table dock widgets (links Qt; Linux x86_64 and Windows x64 only) |
 

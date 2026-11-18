@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// anomaly_helpers — the Luau-FREE part of the Anomaly Detector core: the predefined
+// anomaly_helpers — the Luau-FREE part of the Marker Editor core: the predefined
 // detection-function library, the JSON report, and the portable-rule
 // (de)serialization. It depends ONLY on pj_base (PlotMarker types) + nlohmann_json —
 // NOT on pj_scripting_core / Luau. The GUI toolbox plugin links THIS (so the plugin

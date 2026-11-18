@@ -53,7 +53,7 @@ class PjOfficialPluginsConan(ConanFile):
         "lua/5.4.6",
         "sol2/3.5.0",
         # libcurl powers anomaly_runner's notification sinks. (pj_scripting_core — the
-        # Luau engine — is NOT required here: the GUI Anomaly Detector is host-driven /
+        # Luau engine — is NOT required here: the GUI Marker Editor is host-driven /
         # Luau-free, and the headless runner is built separately via its own recipe with
         # -DPJ_BUILD_ANOMALY_RUNNER=ON.)
         "libcurl/8.23.0",

@@ -1,8 +1,8 @@
 {
   "id": "toolbox-anomaly-detector",
-  "name": "Anomaly Detector",
-  "version": "0.2.1",
-  "description": "Write Lua rules that check your time series and mark the regions or moments where a rule fires directly on the plots.",
+  "name": "Marker Editor",
+  "version": "0.3.0",
+  "description": "Write Lua rules that draw markers on your plots: shade regions (for example, color the background by a series' value), flag moments, draw value bands.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
@@ -12,8 +12,9 @@
   "category": "toolbox",
   "tags": [
     "lua",
-    "anomaly",
     "markers",
+    "anomaly",
+    "colormap",
     "toolbox"
   ],
   "min_sdk_required": "0.28.0",

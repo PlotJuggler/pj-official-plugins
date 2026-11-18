@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// Unit tests for the Luau-FREE half of the Anomaly Detector core. This layer is
+// Unit tests for the Luau-FREE half of the Marker Editor core. This layer is
 // shared verbatim by the GUI toolbox and the headless runner, so a regression here
 // shows up in both at once — and unlike the runner's notify_test (gated behind
 // PJ_BUILD_ANOMALY_RUNNER), this target builds with the plugin and therefore runs in CI.

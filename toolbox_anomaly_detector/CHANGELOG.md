@@ -3,6 +3,15 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 
+## [0.3.0] - 2026-11-18
+
+### Changed
+- Renamed **Marker Editor** (was Anomaly Detector): its rules draw any plot
+  marker, anomalies being one use among others (phases, coloring the background
+  by a series' value). The plugin id `toolbox-anomaly-detector` and the
+  `anomaly_runner` CLI keep their names, so saved layouts, installs and CI
+  scripts are unaffected.
+
 ## [0.2.1] - 2026-09-17
 
 ### Fixed
