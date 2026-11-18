@@ -7,6 +7,7 @@
 #include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/host/data_source_library.hpp>
 #include <pj_plugins/host/service_registry_builder.hpp>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,7 @@ namespace {
 
 struct RecordingHost {
   int records = 0;
+  uint32_t fields = 0;
   std::vector<std::string> prompts;  // "title|message" of every message box, answered with Continue
 
   static bool ensureTopic(void*, PJ_string_view_t, PJ_topic_handle_t* out, PJ_error_t*) noexcept {
@@ -21,13 +23,22 @@ struct RecordingHost {
     return true;
   }
   static bool ensureField(
-      void*, PJ_topic_handle_t topic, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out,
+      void* ctx, PJ_topic_handle_t topic, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out,
       PJ_error_t*) noexcept {
-    *out = PJ_field_handle_t{topic, 1};
+    *out = PJ_field_handle_t{topic, ++static_cast<RecordingHost*>(ctx)->fields};
     return true;
   }
+  // Refuses a record naming a field twice, as the datastore does.
   static bool appendBoundRecord(
-      void* ctx, PJ_topic_handle_t, int64_t, const PJ_bound_field_value_t*, uint64_t, PJ_error_t*) noexcept {
+      void* ctx, PJ_topic_handle_t, int64_t, const PJ_bound_field_value_t* values, uint64_t count,
+      PJ_error_t* error) noexcept {
+    std::set<uint32_t> seen;
+    for (uint64_t i = 0; i < count; ++i) {
+      if (!seen.insert(values[i].field.id).second) {
+        PJ::sdk::fillError(error, 1, "test", "duplicate field id");
+        return false;
+      }
+    }
     ++static_cast<RecordingHost*>(ctx)->records;
     return true;
   }
@@ -121,6 +132,15 @@ TEST(CsvSourceTest, RowsSkippedPromptDoesNotBlameColumnCountForBadTimestamps) {
   ASSERT_EQ(host.prompts.size(), 1u);
   EXPECT_NE(host.prompts[0].find("Invalid timestamp"), std::string::npos) << host.prompts[0];
   EXPECT_EQ(host.prompts[0].find("incorrect number of columns"), std::string::npos) << host.prompts[0];
+}
+
+// QA repro: a time column that repeats a value failed the whole load with "duplicate field id".
+TEST(CsvSourceTest, RepeatedTimestampsLoadEveryRow) {
+  RecordingHost host;
+  const auto outcome =
+      importCsv("t,a,b\n0,1,10\n0,2,20\n1,3,30\n2,4,40\n", R"({"time_mode":"column","time_column_index":0})", host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+  EXPECT_EQ(host.records, 4);
 }
 
 }  // namespace

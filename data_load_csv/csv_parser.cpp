@@ -459,8 +459,9 @@ bool ForEachRecord(
     return toNanoseconds(cursor.text ? data.string_points[cursor.next].first : data.numeric_points[cursor.next].first);
   };
 
-  // Min-heap on (timestamp, rank): equal timestamps pop in rank order, and a column's next cell at the same timestamp
-  // re-enters ahead of every later rank, which keeps its row order.
+  // Min-heap on (timestamp, rank): equal timestamps pop in rank order. A column advanced by a record re-enters the heap
+  // only after the record is emitted, so a record holds a column at most once (the datastore refuses a field named
+  // twice) and rows sharing a timestamp become consecutive records in row order.
   using Head = std::pair<int64_t, size_t>;
   std::priority_queue<Head, std::vector<Head>, std::greater<>> heads;
   for (size_t rank = 0; rank < cursors.size(); ++rank) {
@@ -470,9 +471,11 @@ bool ForEachRecord(
   }
 
   std::vector<RecordCell> cells;
+  std::vector<size_t> advanced;
   while (!heads.empty()) {
     const int64_t timestamp = heads.top().first;
     cells.clear();
+    advanced.clear();
     while (!heads.empty() && heads.top().first == timestamp) {
       const size_t rank = heads.top().second;
       heads.pop();
@@ -484,11 +487,14 @@ bool ForEachRecord(
         cells.push_back({.column = cursor.column, .number = &data.numeric_points[cursor.next].second});
       }
       if (++cursor.next < cursor.size) {
-        heads.emplace(timestampAt(cursor), rank);
+        advanced.push_back(rank);
       }
     }
     if (!emit(timestamp, cells)) {
       return false;
+    }
+    for (size_t rank : advanced) {
+      heads.emplace(timestampAt(cursors[rank]), rank);
     }
   }
   return true;
