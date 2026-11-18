@@ -151,7 +151,7 @@ class ParquetSource : public PJ::FileSourceBase {
     std::shared_ptr<arrow::Schema> schema;
     auto status = reader->GetSchema(&schema);
     if (!status.ok()) {
-      return PJ::unexpected(std::string("failed to read schema"));
+      return PJ::unexpected("failed to read schema: " + status.ToString());
     }
 
     // Determine time column: dialog selection takes priority, then heuristic
@@ -203,7 +203,7 @@ class ParquetSource : public PJ::FileSourceBase {
     // Read via RecordBatchReader
     auto batch_reader_result = reader->GetRecordBatchReader();
     if (!batch_reader_result.ok()) {
-      return PJ::unexpected(std::string("failed to create batch reader"));
+      return PJ::unexpected("failed to create batch reader: " + batch_reader_result.status().ToString());
     }
     std::shared_ptr<arrow::RecordBatchReader> batch_reader = std::move(batch_reader_result).ValueUnsafe();
 
@@ -215,7 +215,8 @@ class ParquetSource : public PJ::FileSourceBase {
     std::vector<PJ::sdk::NamedFieldValue> row_fields;
     row_fields.reserve(columns.size());
 
-    while (batch_reader->ReadNext(&batch).ok() && batch) {
+    arrow::Status read_status;
+    while ((read_status = batch_reader->ReadNext(&batch)).ok() && batch) {
       int64_t batch_rows = batch->num_rows();
 
       // Cache column arrays for this batch
@@ -281,6 +282,9 @@ class ParquetSource : public PJ::FileSourceBase {
         break;
       }
       (void)runtimeHost().progressUpdate(static_cast<uint64_t>(rows_processed));
+    }
+    if (!read_status.ok()) {
+      return PJ::unexpected("failed to read Parquet rows: " + read_status.ToString());
     }
 
     runtimeHost().reportMessage(

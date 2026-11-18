@@ -25,6 +25,10 @@ class DataLoadLerobotConan(ConanFile):
         "*:shared": False,
         "arrow/*:parquet": True,
         "arrow/*:with_snappy": True,
+        # The codecs common writers pick (zstd: polars, DuckDB, Arrow's own writers with
+        # compression set), matching the aggregate build and the browser build.
+        "arrow/*:with_lz4": True,
+        "arrow/*:with_zstd": True,
         # mimalloc uses initial-exec TLS, making every .so linking it require static
         # TLS and fail to dlopen once the process's static-TLS surplus is exhausted.
         "arrow/*:with_mimalloc": False,
