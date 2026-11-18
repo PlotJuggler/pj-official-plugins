@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 
+## [0.3.1] - 2026-11-18
+
+### Fixed
+- 0.3.0 could be offered to PlotJuggler 4.1, whose rules lack `when()`, so its
+  built-in functions failed there. The marketplace picks a release by SDK, so
+  0.3.1 requires SDK 1.0.0 (PlotJuggler 4.2): 4.1 keeps 0.2.1.
+
 ## [0.3.0] - 2026-11-18
 
 ### Changed
