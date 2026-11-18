@@ -598,6 +598,41 @@ TEST_F(CsvCommaDecimalLocale, Issue238CsvLoadsCompletely) {
 
 }  // namespace
 
+// --- FormatParseTimestamp ---
+
+// The format says where the seconds' fraction is: it must be read whatever separates the time fields.
+TEST(CsvFormatParseTimestamp, ReadsTheFractionWhenTheTimeHasNoColon) {
+  const auto base = FormatParseTimestamp("05/03/2024 10-00-01", "dd/MM/yyyy hh-mm-ss");
+  ASSERT_TRUE(base.has_value());
+  const auto with_fraction = FormatParseTimestamp("05/03/2024 10-00-01.500", "dd/MM/yyyy hh-mm-ss.zzz");
+  ASSERT_TRUE(with_fraction.has_value());
+  EXPECT_NEAR(*with_fraction - *base, 0.5, 1e-6);
+}
+
+TEST(CsvFormatParseTimestamp, ReadsTheFractionAfterColonSeparatedTime) {
+  const auto base = FormatParseTimestamp("2024-03-05 10:00:01", "yyyy-MM-dd hh:mm:ss");
+  ASSERT_TRUE(base.has_value());
+  const auto with_fraction = FormatParseTimestamp("2024-03-05 10:00:01.250", "yyyy-MM-dd hh:mm:ss.zzz");
+  ASSERT_TRUE(with_fraction.has_value());
+  EXPECT_NEAR(*with_fraction - *base, 0.25, 1e-6);
+  // Dots in the date too: only the one after the seconds is the fraction.
+  const auto dotted = FormatParseTimestamp("05.03.2024 10:00:01.250", "dd.MM.yyyy hh:mm:ss.zzz");
+  ASSERT_TRUE(dotted.has_value());
+  EXPECT_NEAR(*dotted, *with_fraction, 1e-6);
+}
+
+// The help dialog documents `z` and `s.z`: a one- or two-digit fraction is read too.
+TEST(CsvFormatParseTimestamp, ReadsAShortFraction) {
+  const auto base = FormatParseTimestamp("2024-03-05 10:00:01", "yyyy-MM-dd hh:mm:ss");
+  ASSERT_TRUE(base.has_value());
+  const auto tenths = FormatParseTimestamp("2024-03-05 10:00:01.5", "yyyy-MM-dd hh:mm:ss.z");
+  ASSERT_TRUE(tenths.has_value());
+  EXPECT_NEAR(*tenths - *base, 0.5, 1e-6);
+  const auto hundredths = FormatParseTimestamp("2024-03-05 10:00:01.25", "yyyy-MM-dd hh:mm:ss.zz");
+  ASSERT_TRUE(hundredths.has_value());
+  EXPECT_NEAR(*hundredths - *base, 0.25, 1e-6);
+}
+
 // --- ForEachRecord ---
 
 namespace {
