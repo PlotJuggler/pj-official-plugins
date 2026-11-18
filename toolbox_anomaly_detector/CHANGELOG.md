@@ -11,6 +11,14 @@ below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
   by a series' value). The plugin id `toolbox-anomaly-detector` and the
   `anomaly_runner` CLI keep their names, so saved layouts, installs and CI
   scripts are unaffected.
+- Requires PlotJuggler 4.2.0 or newer (earlier hosts keep 0.2.1).
+
+### Added
+- A **Color map (region)** function, PlotJuggler 3's ColorMap in one line:
+  `colorRegions("--SOURCE--", ranges(...))` shades the background by the series'
+  value. The README's "Migrating from PlotJuggler 3's ColorMap" shows the other
+  mappings (a value table, `lessThan`/`greaterThan`, your own function).
+- `colorRegions("name", ...)` declares `name` as a rule input, like `series("name")`.
 
 ## [0.2.1] - 2026-09-17
 

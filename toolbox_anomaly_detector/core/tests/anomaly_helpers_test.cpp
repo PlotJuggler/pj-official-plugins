@@ -144,6 +144,16 @@ TEST(ParseSeriesRefs, FindsLiteralCallsInOrderWithoutDuplicates) {
   EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"x/1", "y/2"}));
 }
 
+// colorRegions("name", ...) reads the series by name, so its literal first argument is an input too.
+TEST(ParseSeriesRefs, CountsColorRegionsNameArguments) {
+  const std::string code =
+      "colorRegions(\"mode/state\", { [0] = \"gray\" })\n"
+      "local s = series(\"speed/v\")\n"
+      "colorRegions(s, lessThan(1, \"green\"))\n"
+      "colorRegions( 'mode/state', greaterThan(2, \"red\"))\n";
+  EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"mode/state", "speed/v"}));
+}
+
 TEST(ParseSeriesRefs, IgnoresNonLiteralArguments) {
   const std::string code = "local n = 'x'\nlocal s = series(n)\nlocal t = series(\"a\"..n)\n";
   EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"a"}));

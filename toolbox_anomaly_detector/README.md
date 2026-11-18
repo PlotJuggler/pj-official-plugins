@@ -119,6 +119,7 @@ constant is the threshold you typically tune.
 | `-- No function --` | — | Empty template — write your own rule | — |
 | `Showcase (all markers)` | all | One of every marker kind, each colored + labelled (visual check) | — |
 | `Severity colors (lines)` | value band | Four horizontal lines in the info/warning/error/critical palette | — |
+| `Color map (region)` | region | Shades the background by value: one color per range (`colorRegions` + `ranges`) | the ranges |
 | `Threshold (line)` | event (vline) | A vertical line at every sample above a threshold | `TH = 0.5` |
 | `Out of range (region)` | region | Shades the span while the value is outside `[LO, HI]` | `LO,HI = -0.5,0.5` |
 | `Spike (point)` | event (point) | A point at a sudden jump between consecutive samples | `JUMP = 0.8` |
@@ -152,6 +153,13 @@ createHorizontalMarker(y, opts?)  -- a horizontal line at y    (shortcut for cre
 createPointMarker(x, y, opts?)    -- a point at (x, y)         (shortcut for createMarker(x, y))
 createBandMarker(low, high, opts?) -- a shaded value band [low, high]
 
+-- Color the background by value (PlotJuggler 3's ColorMap), one region per run of equal results
+colorRegions(s_or_name, mapping)  -- mapping: a table { [value] = color }, or a function(v) returning
+                                  -- a color, { color = .., label = .. }, or nil (no region)
+ranges({min, max, color}, ...)    -- a mapping: the first range with min <= v < max wins (inf = math.huge)
+lessThan(limit, color)            -- a mapping: color where v < limit
+greaterThan(limit, color)         -- a mapping: color where v > limit
+
 -- Spectral helper
 bandPower(s, fLo, fHi)            -- summed FFT power in [fLo,fHi] Hz, DC-removed (needs a real time axis)
 
@@ -165,10 +173,40 @@ GetSeriesNames()                  -- list of all available series names
 |---|---|---|
 | `label` | string | Pill text on the plot (and the report `label`). No pill if unset. |
 | `severity` | `"info"`/`"warning"`/`"error"`/`"critical"` | Default color + report severity (and the CLI `--fail-on` gate). |
-| `color` | `"#rrggbb"` | Explicit color override; defaults from `severity`. |
+| `color` | `"#rrggbb"`, `"#rgb"` or a Qt color name (`"orange"`, `"steelblue"`, ...) | Explicit color override; defaults from `severity`. An unknown color fails the rule. |
 | `status` | `"none"`/`"pass"`/`"fail"` | Verdict; a `fail` fails the CLI run regardless of severity. |
 | `category` | string | Free-form class, e.g. `"spectral"`, `"flag"`, `"overspeed"`. |
 | `description` | string | Optional longer text carried into the report. |
+
+## Migrating from PlotJuggler 3's ColorMap
+
+A 3.x ColorMap was a function from a value to a color. In a rule, hand the same idea to
+`colorRegions`:
+
+```lua
+-- a discrete state, one color per value
+colorRegions("/robot/mode", { [0] = "gray", [1] = "green", [2] = "orange", [3] = "red" })
+
+-- a level, by range
+colorRegions("/robot/speed", ranges({-inf, 1.0, "green"}, {1.0, 2.0, "yellow"}, {2.0, inf, "red"}))
+
+-- a flag, with a label
+colorRegions("/robot/estop", greaterThan(0, { color = "red", label = "E-STOP" }))
+
+-- anything else: your own function, the old ColorMap body
+local function modeColor(v)
+  if v == 1 then
+    return "green"
+  elseif v >= 2 then
+    return { color = "red", label = "fault" }
+  end
+end
+
+colorRegions("/robot/mode", modeColor)
+```
+
+Pick **Global** or **Dataset** scope to shade every plot, as the 3.x color map did. `colorRegions`,
+`ranges`, `lessThan`, `greaterThan` and color names need PlotJuggler 4.2 or newer.
 
 ## Portable rule file
 

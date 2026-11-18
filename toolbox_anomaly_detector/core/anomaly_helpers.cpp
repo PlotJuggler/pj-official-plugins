@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <nlohmann/json.hpp>
+#include <string_view>
 
 namespace anomaly_core {
 
@@ -21,7 +22,9 @@ const std::vector<NamedFunction>& builtinFunctions() {
        "-- startMarker(t) / closeMarker(t, opts)   createBandMarker(low, high, opts)\n"
        "-- createMarker(x, y, opts): only x = Vline | only y = Hline | both = point\n"
        "--   or: createVerticalMarker(x) / createHorizontalMarker(y) / createPointMarker(x, y)\n"
-       "-- opts (optional table) = {label=.., color=\"#rrggbb\", severity=\"info|warning|error|critical\"}\n"
+       "-- colorRegions(series, mapping): shade the background by value (see \"Color map\")\n"
+       "-- opts (optional table) = {label=.., color=\"#rrggbb\" or a Qt name like \"orange\",\n"
+       "--                          severity=\"info|warning|error|critical\"}\n"
        "local s = series(\"--SOURCE--\")\n"},
       {"Showcase (all markers)",
        "-- One of EVERY marker, each with its own colour + label pill.\n"
@@ -55,6 +58,13 @@ const std::vector<NamedFunction>& builtinFunctions() {
        "  local p = s:at(i)\n"
        "  if p.v > TH then createVerticalMarker(p.t) end\n"
        "end\n"},
+      {"Color map (region)",
+       "-- Shade the background by the series' value (PlotJuggler 3's ColorMap).\n"
+       "-- A mapping returns a color (\"#rrggbb\" or a Qt name), {color=, label=}, or nil for none:\n"
+       "--   ranges({min, max, color}, ...)   the first range with min <= v < max wins\n"
+       "--   lessThan(limit, color), greaterThan(limit, color)\n"
+       "--   a table { [0] = \"gray\", [1] = \"green\" }, or your own function(v)\n"
+       "colorRegions(\"--SOURCE--\", ranges({-inf, 0, \"steelblue\"}, {0, 1, \"green\"}, {1, inf, \"red\"}))\n"},
       {"Out of range (region)",
        "-- Shade a region while the value is outside [LO, HI].\n"
        "local s = series(\"--SOURCE--\")\n"
@@ -254,10 +264,23 @@ std::string blankLuaComments(const std::string& code) {
 std::vector<std::string> parseSeriesRefs(const std::string& code) {
   const std::string source = blankLuaComments(code);
   std::vector<std::string> refs;
-  const std::string token = "series(";
+  // colorRegions("name", ...) resolves the series by name inside the host's prelude.
+  const std::string_view tokens[] = {"series(", "colorRegions("};
   std::size_t pos = 0;
-  while ((pos = source.find(token, pos)) != std::string::npos) {
-    pos += token.size();
+  while (true) {
+    std::size_t next = std::string::npos;
+    std::size_t token_size = 0;
+    for (const std::string_view token : tokens) {
+      const std::size_t at = source.find(token, pos);
+      if (at < next) {
+        next = at;
+        token_size = token.size();
+      }
+    }
+    if (next == std::string::npos) {
+      break;
+    }
+    pos = next + token_size;
     while (pos < source.size() && (source[pos] == ' ' || source[pos] == '\t')) {
       ++pos;
     }
