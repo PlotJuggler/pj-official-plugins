@@ -50,14 +50,8 @@ static constexpr size_t NUM_UNAMBIGUOUS_FORMATS = sizeof(UNAMBIGUOUS_FORMATS) / 
 static constexpr int64_t EPOCH_FIRST = 1400000000;
 static constexpr int64_t EPOCH_LAST = 2000000000;
 
-static std::pair<std::string, std::chrono::nanoseconds> ExtractFractionalSeconds(const std::string& input) {
-  size_t dot_pos = input.rfind('.');
-  size_t colon_pos = input.rfind(':');
-
-  if (dot_pos == std::string::npos || colon_pos == std::string::npos || dot_pos <= colon_pos) {
-    return {input, std::chrono::nanoseconds{0}};
-  }
-
+// Cuts the digits after input[dot_pos] (and the dot) out of `input`; they are the fraction of a second.
+static std::pair<std::string, std::chrono::nanoseconds> SplitFractionAt(const std::string& input, size_t dot_pos) {
   size_t frac_start = dot_pos + 1;
   size_t frac_end = frac_start;
 
@@ -84,6 +78,26 @@ static std::pair<std::string, std::chrono::nanoseconds> ExtractFractionalSeconds
 
   std::string base_str = input.substr(0, dot_pos) + input.substr(frac_end);
   return {base_str, fractional_ns};
+}
+
+// Position of the n-th (0-based) '.' of `input`, or npos.
+static size_t FindNthDot(const std::string& input, size_t n) {
+  size_t pos = input.find('.');
+  for (; n > 0 && pos != std::string::npos; --n) {
+    pos = input.find('.', pos + 1);
+  }
+  return pos;
+}
+
+// Guesses where the fraction is: the last '.', when a ':' precedes it (so a date's dots are not taken for it).
+static std::pair<std::string, std::chrono::nanoseconds> ExtractFractionalSeconds(const std::string& input) {
+  size_t dot_pos = input.rfind('.');
+  size_t colon_pos = input.rfind(':');
+
+  if (dot_pos == std::string::npos || colon_pos == std::string::npos || dot_pos <= colon_pos) {
+    return {input, std::chrono::nanoseconds{0}};
+  }
+  return SplitFractionAt(input, dot_pos);
 }
 
 static std::optional<double> TryParseFormat(
@@ -282,9 +296,12 @@ std::optional<double> FormatParseTimestamp(const std::string& str, const std::st
       z_count++;
     }
 
-    size_t input_dot_pos = adjusted_input.find('.', zzz_pos > 0 ? zzz_pos - 5 : 0);
+    // The dots before ".zzz" in the format are the input's leading dots (date separators), whatever separates the time
+    // fields; the fraction follows the next one.
+    const auto dots_before = std::count(format.begin(), format.begin() + static_cast<std::ptrdiff_t>(zzz_pos), '.');
+    size_t input_dot_pos = FindNthDot(adjusted_input, static_cast<size_t>(dots_before));
     if (input_dot_pos != std::string::npos) {
-      auto [base, frac] = ExtractFractionalSeconds(adjusted_input);
+      auto [base, frac] = SplitFractionAt(adjusted_input, input_dot_pos);
       fractional_ns = frac;
       adjusted_input = base;
       adjusted_format = format.substr(0, zzz_pos) + format.substr(z_start + z_count);
