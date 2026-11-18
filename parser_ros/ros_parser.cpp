@@ -818,8 +818,7 @@ PJ::Status RosParser::parseScalarsGeneric(PJ::Timestamp ts, PJ::Span<const uint8
   ensureDeserializer();
   fields_.clear();
   current_timestamp_ = ts;
-  flattenGeneric(payload);
-  return PJ::okStatus();
+  return flattenGeneric(payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -1153,7 +1152,7 @@ const RosParser::CachedLeaf& RosParser::leafName(size_t index, const RosMsgParse
   return cached;
 }
 
-void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
+PJ::Status RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   // Combined /header/stamp (seconds) for ROS 2, whose std_msgs/Header flattens
   // to split sec/nanosec leaves: the single plottable stamp series the
   // specialized handlers emit via emitHeader(), a diagnostic aid for clock
@@ -1176,13 +1175,9 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
     // Out of memory is not a malformed message: let it reach the caller (the SDK
     // trampoline turns it into an error) instead of reporting "no record".
     throw;
-  } catch (const std::exception&) {
-    // CDR deserialization failed; bail and let the empty fields_
-    // signal "no record" to the outer parse() caller. The SDK base
-    // class surfaces parse errors via PJ::unexpected() — best-effort
-    // mid-flatten errors are silently dropped.
+  } catch (const std::exception& e) {
     fields_.clear();
-    return;
+    return PJ::unexpected(std::string("CDR read error: ") + e.what());
   }
 
   // Embedded timestamp: the first two values are the header's stamp.
@@ -1207,6 +1202,7 @@ void RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
   }
 
   addQuaternionRPY();
+  return PJ::okStatus();
 }
 
 void RosParser::addQuaternionRPY() {

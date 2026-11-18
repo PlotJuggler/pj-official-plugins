@@ -85,12 +85,10 @@ class McapSource : public PJ::FileSourceBase {
 #endif
   // Progress / log throttling.
   static constexpr uint64_t kProgressUpdateInterval = 1000;
-  // Push-failure threshold + log throttling. A handful of transient push
-  // failures is acceptable (parser binding temporarily backpressured); a
-  // sustained run means something structural is broken and the import
-  // should abort rather than spam the message panel.
+  // Push failures in a row after which a topic is skipped for the rest of the
+  // import (typically its messages do not decode against its schema). Counted
+  // per topic, so one bad topic never stops the others.
   static constexpr uint64_t kMaxConsecutivePushFailures = 100;
-  static constexpr uint64_t kPushFailureLogInterval = 25;
 
  public:
   PJ_borrowed_dialog_t getDialog() override {
@@ -380,7 +378,18 @@ class McapSource : public PJ::FileSourceBase {
 
     uint64_t msg_count = 0;       // messages processed (drives the progress bar)
     uint64_t accepted_count = 0;  // messages the host actually accepted
-    uint64_t consecutive_push_failures = 0;
+    // Per binding id. Each topic with failures is reported once, after the read.
+    struct TopicPushFailures {
+      std::string topic;
+      std::string first_error;
+      uint64_t failed = 0;
+      uint64_t consecutive = 0;
+      bool skipped = false;
+    };
+    std::unordered_map<uint32_t, TopicPushFailures> push_failures;
+    const auto bound_topics = static_cast<size_t>(std::count_if(
+        binding_by_topic.begin(), binding_by_topic.end(), [](const auto& entry) { return entry.second.has_value(); }));
+    size_t skipped_topics = 0;
     const bool use_log_time = dialog_.useLogTime();
 
     // Authoritative recording window (log-time envelope) from the MCAP summary,
@@ -428,8 +437,8 @@ class McapSource : public PJ::FileSourceBase {
     };
 
     // Track terminal failure so we can return PJ::unexpected after the message
-    // view and parallel reader cleanly destruct. A failed push run or a thrown
-    // exception must propagate to FileLoader as a load failure, not get silently
+    // view and parallel reader cleanly destruct. A thrown exception must
+    // propagate to FileLoader as a load failure, not get silently
     // downgraded to okStatus() with a warning toast.
     std::optional<std::string> import_failure;
 
@@ -442,7 +451,7 @@ class McapSource : public PJ::FileSourceBase {
 
     // Bindings of the file currently being read (channel ids are per file).
     const BindingMap* bindings = nullptr;
-    // Set when a push returns false (cancel or push-failure abort): stops the
+    // Set when a push returns false (cancel, or every topic skipped): stops the
     // whole recording, not just the current file.
     bool stopped = false;
 
@@ -465,24 +474,29 @@ class McapSource : public PJ::FileSourceBase {
           use_log_time ? static_cast<PJ::Timestamp>(mv.message.logTime)
                        : static_cast<PJ::Timestamp>(header_in_window ? pub_time : mv.message.logTime);
 
-      auto push_status = runtimeHost().pushMessage(binding_it->second, timestamp_ns, std::move(fetch_payload));
-      if (!push_status) {
-        ++consecutive_push_failures;
-        if (consecutive_push_failures % kPushFailureLogInterval == 1) {
-          runtimeHost().reportMessage(
-              PJ::DataSourceMessageLevel::kWarning,
-              std::string("push failed on '") + mv.channel->topic + "': " + push_status.error() +
-                  " (consecutive failures: " + std::to_string(consecutive_push_failures) + ")");
+      const uint32_t binding_id = binding_it->second.id;
+      auto failures_it = push_failures.find(binding_id);
+      if (failures_it == push_failures.end() || !failures_it->second.skipped) {
+        auto push_status = runtimeHost().pushMessage(binding_it->second, timestamp_ns, std::move(fetch_payload));
+        if (!push_status) {
+          auto& failures = push_failures[binding_id];
+          if (failures.failed++ == 0) {
+            failures.topic = mv.channel->topic;
+            failures.first_error = push_status.error();
+          }
+          if (++failures.consecutive >= kMaxConsecutivePushFailures) {
+            failures.skipped = true;
+            // Nothing left to import: stop reading instead of skipping the rest of the file.
+            if (++skipped_topics == bound_topics) {
+              return false;
+            }
+          }
+        } else {
+          if (failures_it != push_failures.end()) {
+            failures_it->second.consecutive = 0;
+          }
+          ++accepted_count;
         }
-        if (consecutive_push_failures >= kMaxConsecutivePushFailures) {
-          import_failure = "MCAP import aborted: " + std::to_string(consecutive_push_failures) +
-                           " consecutive push failures (loaded " + std::to_string(msg_count) + " messages)";
-          runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, *import_failure);
-          return false;
-        }
-      } else {
-        consecutive_push_failures = 0;
-        ++accepted_count;
       }
 
       ++msg_count;
@@ -627,9 +641,25 @@ class McapSource : public PJ::FileSourceBase {
       import_failure = msg;
     }
 
-    // A push-failure abort or a thrown exception already recorded a specific
-    // reason; it wins over anything the outcome rule would say, and must not
-    // be overwritten by the more generic view-status message.
+    std::vector<const TopicPushFailures*> failed_topics;
+    for (const auto& [id, failures] : push_failures) {
+      failed_topics.push_back(&failures);
+    }
+    std::sort(
+        failed_topics.begin(), failed_topics.end(), [](const auto* a, const auto* b) { return a->topic < b->topic; });
+    for (const auto* failures : failed_topics) {
+      std::string msg = "'" + failures->topic + "': " + std::to_string(failures->failed) +
+                        " message(s) could not be loaded: " + failures->first_error;
+      if (failures->skipped) {
+        msg += " (the rest of the topic was skipped after " + std::to_string(kMaxConsecutivePushFailures) +
+               " failures in a row)";
+      }
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
+    }
+
+    // A thrown exception already recorded a specific reason; it wins over
+    // anything the outcome rule would say, and must not be overwritten by the
+    // more generic view-status message.
     if (import_failure) {
       return PJ::unexpected(*import_failure);
     }

@@ -4,6 +4,7 @@
 #define MCAP_IMPLEMENTATION
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -60,7 +61,29 @@ struct ImportResult {
   PJ::sdk::testing::DelegatedIngestFixture::Recording recording;
 };
 
-ImportResult importPath(const fs::path& path) {
+// A host whose parser rejects every message of one topic, as when its payloads do not decode: wraps the
+// fixture's push_message and fails the pushes on that topic's binding.
+struct RefusingHost {
+  static inline PJ::sdk::testing::DelegatedIngestFixture* fixture = nullptr;
+  static inline const PJ_data_source_runtime_host_vtable_t* inner = nullptr;
+  static inline std::string refused_topic;
+
+  static bool pushMessage(
+      void* context, PJ_parser_binding_handle_t handle, std::int64_t timestamp_ns, PJ_message_data_fetcher_t fetch,
+      PJ_error_t* error) noexcept {
+    const auto bindings = fixture->snapshot().bindings;
+    if (handle.id > 0 && handle.id <= bindings.size() && bindings[handle.id - 1].topic == refused_topic) {
+      if (fetch.release) {
+        fetch.release(fetch.ctx);
+      }
+      PJ::sdk::fillError(error, 1, "test", "CDR read error: not enough data to decode");
+      return false;
+    }
+    return inner->push_message(context, handle, timestamp_ns, fetch, error);
+  }
+};
+
+ImportResult importPath(const fs::path& path, const std::string& refused_topic = {}) {
   ImportResult result;
   auto library = PJ::DataSourceLibrary::load(std::string(MCAP_SOURCE_PLUGIN_PATH));
   if (!library) {
@@ -80,7 +103,17 @@ ImportResult importPath(const fs::path& path) {
   }();
   registry.registerService<PJ::sdk::SourceWriteHostService>(
       PJ_source_write_host_t{.ctx = &fixture, .vtable = &kNoWrites});
-  registry.registerService<PJ::sdk::DataSourceRuntimeHostService>(fixture.dataSourceView().raw());
+  PJ_data_source_runtime_host_t runtime_host = fixture.dataSourceView().raw();
+  PJ_data_source_runtime_host_vtable_t refusing_vtable{};
+  if (!refused_topic.empty()) {
+    RefusingHost::fixture = &fixture;
+    RefusingHost::inner = runtime_host.vtable;
+    RefusingHost::refused_topic = refused_topic;
+    refusing_vtable = *runtime_host.vtable;
+    refusing_vtable.push_message = &RefusingHost::pushMessage;
+    runtime_host.vtable = &refusing_vtable;
+  }
+  registry.registerService<PJ::sdk::DataSourceRuntimeHostService>(runtime_host);
   if (auto st = handle.bind(registry.view()); !st) {
     result.error = "bind: " + st.error();
     return result;
@@ -191,6 +224,72 @@ TEST_F(SplitBagImport, SqliteBagIsRejectedWithoutPushingAnything) {
   EXPECT_NE(result.error.find("sqlite3"), std::string::npos) << result.error;
   EXPECT_TRUE(result.recording.bindings.empty());
   EXPECT_TRUE(result.recording.pushes.empty());
+}
+
+// One topic whose every message fails to decode must not take the others down: a high-rate bad topic
+// recorded before a good one used to hit the consecutive-failure cap and abort the whole import.
+TEST_F(SplitBagImport, UndecodableTopicDoesNotAbortTheOthers) {
+  const fs::path merged = dir_ / "rec.mcap";
+  {
+    // One file, every /bad message logged before the first /good one.
+    mcap::McapWriter writer;
+    ASSERT_TRUE(writer.open(merged.string(), mcap::McapWriterOptions("ros2")).ok());
+    mcap::Schema schema("std_msgs/msg/Int32", "ros2msg", "int32 data");
+    writer.addSchema(schema);
+    mcap::Channel bad("/bad", "cdr", schema.id);
+    writer.addChannel(bad);
+    mcap::Channel good("/good", "cdr", schema.id);
+    writer.addChannel(good);
+    const std::string payload("\x00\x01\x00\x00\x2a\x00\x00\x00", 8);
+    auto write = [&](mcap::ChannelId id, mcap::Timestamp t) {
+      mcap::Message msg;
+      msg.channelId = id;
+      msg.logTime = msg.publishTime = t;
+      msg.data = reinterpret_cast<const std::byte*>(payload.data());
+      msg.dataSize = payload.size();
+      ASSERT_TRUE(writer.write(msg).ok());
+    };
+    for (mcap::Timestamp i = 0; i < 150; ++i) {
+      write(bad.id, 1000 + i);
+    }
+    for (mcap::Timestamp i = 0; i < 10; ++i) {
+      write(good.id, 2000 + i);
+    }
+    writer.close();
+  }
+
+  const ImportResult result = importPath(merged, "/bad");
+  ASSERT_TRUE(result.ok) << result.error;
+
+  uint32_t good_id = 0;
+  for (size_t i = 0; i < result.recording.bindings.size(); ++i) {
+    if (result.recording.bindings[i].topic == "/good") {
+      good_id = static_cast<uint32_t>(i + 1);
+    }
+  }
+  ASSERT_NE(good_id, 0u);
+  size_t good_pushes = 0;
+  for (const auto& push : result.recording.pushes) {
+    good_pushes += push.binding == good_id ? 1 : 0;
+  }
+  EXPECT_EQ(good_pushes, 10u);
+
+  std::vector<std::string> about_bad;
+  for (const auto& note : result.recording.notifications) {
+    if (note.find("/bad") != std::string::npos) {
+      about_bad.push_back(note);
+    }
+  }
+  ASSERT_EQ(about_bad.size(), 1u) << ::testing::PrintToString(result.recording.notifications);
+  EXPECT_NE(about_bad.front().find("CDR read error"), std::string::npos) << about_bad.front();
+}
+
+// Every message failing is still a failed load.
+TEST_F(SplitBagImport, ImportWhoseEveryMessageFailsIsAnError) {
+  writeSplit(dir_ / "rec.mcap", {"/bad"}, 150, 1000);
+  const ImportResult result = importPath(dir_ / "rec.mcap", "/bad");
+  EXPECT_FALSE(result.ok);
+  EXPECT_NE(result.error.find("loaded no messages"), std::string::npos) << result.error;
 }
 
 }  // namespace

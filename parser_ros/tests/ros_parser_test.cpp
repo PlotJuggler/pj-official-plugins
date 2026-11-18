@@ -1016,6 +1016,24 @@ TEST(RosParserTest, TruncatedScalarMessageDoesNotTerminate) {
   EXPECT_FALSE(f.parse(payload)) << "truncated scalar message must fail cleanly, not terminate";
 }
 
+// A message the generic route cannot deserialize is a parse error, not an empty record: the bytes of a
+// real MCAP whose writer aligned the float64 to 4 instead of 8 (CDR alignment is counted after the
+// 4-byte encapsulation header), so the read of `value` runs past the end. Reporting success here made
+// a file of such messages load nothing and say nothing.
+TEST(RosParserTest, UndecodableGenericMessageIsAParseError) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("pkg/StampedValue", "int32 sec\nuint32 nanosec\nstring frame_id\nfloat64 value\n"));
+
+  const std::vector<uint8_t> misaligned = {0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                           0x00, 0x07, 0x00, 0x00, 0x00, 's',  'e',  'n',  's',  'o',  'r',
+                                           0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x40};
+  const auto status = f.handle.parse(1000, PJ::Span<const uint8_t>(misaligned.data(), misaligned.size()));
+  ASSERT_FALSE(status.has_value());
+  EXPECT_FALSE(status.error().empty());
+  EXPECT_TRUE(f.recorder.rows().empty());
+}
+
 TEST(RosParserTest, ImuRPY) {
   RosParserFixture f;
   f.setUp();
