@@ -744,8 +744,8 @@ class RosParser : public PJ::MessageParserPluginBase {
   void handleTSLDefinition();
   void handleTSLValues();
 
-  // Generic path
-  void flattenGeneric(PJ::Span<const uint8_t> payload);
+  // Generic path. An error when the payload does not deserialize against the bound schema.
+  PJ::Status flattenGeneric(PJ::Span<const uint8_t> payload);
   // Name of the value at walk position `index`. Rendered only when `leaf`
   // (schema node + array indexes + @key suffixes) differs from the leaf seen
   // at that position in the previous message; otherwise the cached name.

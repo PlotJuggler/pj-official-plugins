@@ -46,8 +46,8 @@ def cdr_header_float64(sec: int, nanosec: int, frame_id: str, value: float) -> b
     buf.extend(struct.pack("<iI", sec, nanosec))
     buf.extend(struct.pack("<I", len(frame_bytes)))
     buf.extend(frame_bytes)
-    # Align to 8 bytes for float64
-    while len(buf) % 8 != 0:
+    # Align to 8 bytes for float64; CDR counts alignment after the 4-byte encapsulation header
+    while (len(buf) - 4) % 8 != 0:
         buf.append(0)
     buf.extend(struct.pack("<d", value))
     return bytes(buf)
