@@ -136,4 +136,21 @@ TEST(ParquetSourceTest, Time64MicroColumnSetsTheTimeAxis) {
   EXPECT_EQ(host.timestamps, expected_nanos);
 }
 
+// Arrow 26 writes zstd pages by default from several writers (here parquet-cpp-arrow 26.0.1: time
+// snappy, value zstd). The import used to fail with a bare "failed to create batch reader".
+TEST(ParquetSourceTest, ImportsZstdCompressedColumns) {
+  RecordingHost host;
+  const auto error = runImport(std::filesystem::path(PARQUET_TEST_DATA_DIR) / "zstd_values.parquet", host);
+  ASSERT_TRUE(error.empty()) << error;
+  EXPECT_EQ(host.timestamps, (std::vector<int64_t>{1'000'000'000, 2'000'000'000, 3'000'000'000}));
+}
+
+// The same file with the value column's codec set to brotli, which this plugin does not build: the
+// reported error carries Arrow's reason.
+TEST(ParquetSourceTest, UnsupportedCodecErrorNamesArrowsReason) {
+  RecordingHost host;
+  const auto error = runImport(std::filesystem::path(PARQUET_TEST_DATA_DIR) / "brotli_values.parquet", host);
+  EXPECT_NE(error.find("Support for codec 'brotli' not built"), std::string::npos) << error;
+}
+
 }  // namespace

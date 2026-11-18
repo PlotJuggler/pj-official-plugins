@@ -53,7 +53,8 @@ add_executable(parquet_source_test tests/parquet_source_test.cpp)
 target_compile_features(parquet_source_test PRIVATE cxx_std_20)
 target_compile_options(parquet_source_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(parquet_source_test PRIVATE
-  PARQUET_SOURCE_PLUGIN_PATH="$<TARGET_FILE:parquet_source_plugin>")
+  PARQUET_SOURCE_PLUGIN_PATH="$<TARGET_FILE:parquet_source_plugin>"
+  PARQUET_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
 target_link_libraries(parquet_source_test PRIVATE
   plotjuggler_sdk::plugin_host Arrow::arrow_static Parquet::parquet_static GTest::gtest_main)
 add_dependencies(parquet_source_test parquet_source_plugin)

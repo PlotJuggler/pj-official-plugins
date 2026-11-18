@@ -253,6 +253,25 @@ TEST(LoadDatasetModelV3, AcceptsCodebaseVersionAndPopulatesShards) {
   fs::remove_all(root);
 }
 
+// Shards written with zstd (Arrow's writers with compression set, polars, DuckDB) must load.
+TEST(LoadDatasetModelV3, ReadsZstdCompressedShards) {
+  const fs::path root = makeV3Fixture();
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+  const fs::path shard = root / "meta" / "episodes" / "chunk-000" / "file-000.parquet";
+  auto outfile_or = arrow::io::FileOutputStream::Open(shard.string());
+  ASSERT_TRUE(outfile_or.ok()) << outfile_or.status().message();
+  const auto zstd = parquet::WriterProperties::Builder().compression(parquet::Compression::ZSTD)->build();
+  const auto written =
+      parquet::arrow::WriteTable(*buildEpisodesShardTable(), arrow::default_memory_pool(), *outfile_or, 65536, zstd);
+  ASSERT_TRUE(written.ok()) << written.ToString();
+  ASSERT_TRUE((*outfile_or)->Close().ok());
+
+  auto model_or = loadDatasetModel(root / "meta" / "info.json");
+  ASSERT_TRUE(model_or.has_value()) << (model_or.has_value() ? "" : model_or.error());
+  EXPECT_EQ(model_or->episodes.size(), 2u);
+  fs::remove_all(root);
+}
+
 TEST(LoadDatasetModelV3, PathTemplateExpandsChunkAndFileIndex) {
   // Sanity check that the generic expandPathTemplate honours v3.0's
   // {chunk_index} / {file_index} placeholders (the schema in info.json).

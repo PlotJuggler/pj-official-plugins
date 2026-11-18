@@ -300,16 +300,16 @@ class LeRobotSource : public PJ::FileSourceBase {
   static PJ::Expected<OpenedParquet> openParquetReader(const std::string& path) {
     auto infile = arrow::io::ReadableFile::Open(path);
     if (!infile.ok()) {
-      return PJ::unexpected("cannot open parquet: " + path);
+      return PJ::unexpected("cannot open parquet: " + path + ": " + infile.status().ToString());
     }
     auto reader = parquet::arrow::OpenFile(*infile, arrow::default_memory_pool());
     if (!reader.ok()) {
-      return PJ::unexpected("failed to open parquet: " + path);
+      return PJ::unexpected("failed to open parquet: " + path + ": " + reader.status().ToString());
     }
     OpenedParquet out;
     out.reader = std::move(*reader);
-    if (!out.reader->GetSchema(&out.schema).ok()) {
-      return PJ::unexpected("failed to read schema: " + path);
+    if (auto status = out.reader->GetSchema(&out.schema); !status.ok()) {
+      return PJ::unexpected("failed to read schema: " + path + ": " + status.ToString());
     }
     return out;
   }
@@ -400,7 +400,7 @@ class LeRobotSource : public PJ::FileSourceBase {
 
     auto batches_result = reader.GetRecordBatchReader();
     if (!batches_result.ok()) {
-      return PJ::unexpected("failed to create batch reader: " + path);
+      return PJ::unexpected("failed to create batch reader: " + path + ": " + batches_result.status().ToString());
     }
     std::shared_ptr<arrow::RecordBatchReader> batches = std::move(batches_result).ValueUnsafe();
 
