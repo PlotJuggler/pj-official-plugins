@@ -14,11 +14,14 @@ below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 - Requires PlotJuggler 4.2.0 or newer (earlier hosts keep 0.2.1).
 
 ### Added
-- A **Color map (region)** function, PlotJuggler 3's ColorMap in one line:
-  `colorRegions("--SOURCE--", ranges(...))` shades the background by the series'
-  value. The README's "Migrating from PlotJuggler 3's ColorMap" shows the other
-  mappings (a value table, `lessThan`/`greaterThan`, your own function).
-- `colorRegions("name", ...)` declares `name` as a rule input, like `series("name")`.
+- Rules can say "when this series does X, draw Y" in one call, without a loop:
+  `when(series, above(x)):backgroundColor("red")`, `:event()`, `:verticalLine()`, with
+  conditions `above`, `below`, `between`, `outside`, `equals`, `isTrue`, `changes` or a
+  function. The Threshold, Out of range, Spike, Flatline, Rate of change and Boolean flag
+  functions use it; Threshold now draws one line per crossing, not one per sample.
+- A **Color map (region)** function, PlotJuggler 3's ColorMap: `when(series)` with no
+  condition takes a value-to-color table or function.
+- `when("name", ...)` declares `name` as a rule input, like `series("name")`.
 
 ## [0.2.1] - 2026-09-17
 

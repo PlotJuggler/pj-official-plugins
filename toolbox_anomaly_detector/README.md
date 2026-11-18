@@ -119,13 +119,13 @@ constant is the threshold you typically tune.
 | `-- No function --` | — | Empty template — write your own rule | — |
 | `Showcase (all markers)` | all | One of every marker kind, each colored + labelled (visual check) | — |
 | `Severity colors (lines)` | value band | Four horizontal lines in the info/warning/error/critical palette | — |
-| `Color map (region)` | region | Shades the background by value: one color per range (`colorRegions` + `ranges`) | the ranges |
-| `Threshold (line)` | event (vline) | A vertical line at every sample above a threshold | `TH = 0.5` |
+| `Color map (region)` | region | Shades the background by value: one color per range (`when` + `backgroundColor`) | the ranges |
+| `Threshold (line)` | event (vline) | A vertical line where the value rises above a threshold | `TH = 0.5` |
 | `Out of range (region)` | region | Shades the span while the value is outside `[LO, HI]` | `LO,HI = -0.5,0.5` |
 | `Spike (point)` | event (point) | A point at a sudden jump between consecutive samples | `JUMP = 0.8` |
 | `Incoherent point` | event (point) | An isolated outlier far from **both** neighbours | `DEV = 1.0` |
-| `Flatline (region)` | region | Shades a span where the value is stuck (barely changes) | `EPS = 1e-4` |
-| `Rate of change (line)` | event (vline) | A line where the slope `dv/dt` exceeds a limit | `RATE = 5.0` |
+| `Flatline (region)` | region | Shades a span where the value is stuck (barely changes) | `EPS = 1e-4`, `MIN_S = 0.5` |
+| `Rate of change (line)` | event (vline) | A line where the slope `dv/dt` starts to exceed a limit | `RATE = 5.0` |
 | `Limit lines (horizontal)` | value band | Two horizontal lines at the allowed limits `LO`, `HI` | `LO,HI = -0.5,0.5` |
 | `Limit band` | value band | The allowed band `[LO, HI]` as a shaded horizontal band | `LO,HI = -0.5,0.5` |
 | `Spectral band power (vibration)` | region | Flags excessive FFT energy in a frequency band `[F_LO, F_HI]` Hz | `LIMIT = 0.02` |
@@ -153,12 +153,17 @@ createHorizontalMarker(y, opts?)  -- a horizontal line at y    (shortcut for cre
 createPointMarker(x, y, opts?)    -- a point at (x, y)         (shortcut for createMarker(x, y))
 createBandMarker(low, high, opts?) -- a shaded value band [low, high]
 
--- Color the background by value (PlotJuggler 3's ColorMap), one region per run of equal results
-colorRegions(s_or_name, mapping)  -- mapping: a table { [value] = color }, or a function(v) returning
-                                  -- a color, { color = .., label = .. }, or nil (no region)
-ranges({min, max, color}, ...)    -- a mapping: the first range with min <= v < max wins (inf = math.huge)
-lessThan(limit, color)            -- a mapping: color where v < limit
-greaterThan(limit, color)         -- a mapping: color where v > limit
+-- Conditions and actions: one call instead of a loop
+when(s_or_name, condition?)       -- condition: above(x) below(x) between(a, b) outside(a, b) equals(x)
+                                  -- isTrue() changes(), or function(v, t, prev, prev_t) -> boolean
+  :backgroundColor(color?, opts?) -- shade while the condition holds (no color: the severity color);
+                                  -- opts.minDuration (s) drops shorter regions
+  :event(opts?)                   -- a point where the condition starts to hold
+  :verticalLine(opts?)            -- a line where the condition starts to hold
+                                  -- (opts.every = true: at every sample; opts.minGap (s) skips marks
+                                  -- closer than that; opts.label may be a function(v, prev))
+when(s_or_name):backgroundColor(map) -- no condition: color by value, map = { [value] = color } or a
+                                  -- function(v, t) returning a color, { color = .., label = .. }, or nil
 
 -- Spectral helper
 bandPower(s, fLo, fHi)            -- summed FFT power in [fLo,fHi] Hz, DC-removed (needs a real time axis)
@@ -178,20 +183,48 @@ GetSeriesNames()                  -- list of all available series names
 | `category` | string | Free-form class, e.g. `"spectral"`, `"flag"`, `"overspeed"`. |
 | `description` | string | Optional longer text carried into the report. |
 
+## Writing rules with `when`
+
+Most rules are "when this series does X, draw Y": write them as one `when(...)` call instead of a
+loop. The engine does the scan, opens and closes regions, and fires a mark once per stretch
+rather than on every matching sample:
+
+```lua
+when("/robot/speed", above(2.0)):backgroundColor("red", { label = "too fast" })
+when("/robot/estop", isTrue()):backgroundColor("red", { label = "E-STOP", minDuration = 0.5 })
+when("/imu/acc_x", outside(-3, 3)):event({ label = "overload", minGap = 1.0 })
+when("/robot/mode", changes()):verticalLine({ label = function(v, prev) return prev .. " -> " .. v end })
+```
+
+Any function works as the condition. It gets the value, the time (ns) and the previous sample,
+and may read other series:
+
+```lua
+local speed = series("/robot/speed")
+
+local function movingInFault(v, t)
+  return v == 2 and speed:atTime(t) > 1.5
+end
+
+when("/robot/mode", movingInFault):backgroundColor("red", { label = "moving while in fault" })
+```
+
+Keep a loop for windows and multi-step state (a moving average, "A then B within 2 s"), with
+`startMarker` / `closeMarker` and the `create*Marker` functions.
+
 ## Migrating from PlotJuggler 3's ColorMap
 
-A 3.x ColorMap was a function from a value to a color. In a rule, hand the same idea to
-`colorRegions`:
+A 3.x ColorMap was a function from a value to a color. Give the same function, or a table, to
+`backgroundColor` with no condition:
 
 ```lua
 -- a discrete state, one color per value
-colorRegions("/robot/mode", { [0] = "gray", [1] = "green", [2] = "orange", [3] = "red" })
+when("/robot/mode"):backgroundColor({ [0] = "gray", [1] = "green", [2] = "orange", [3] = "red" })
 
 -- a level, by range
-colorRegions("/robot/speed", ranges({-inf, 1.0, "green"}, {1.0, 2.0, "yellow"}, {2.0, inf, "red"}))
-
--- a flag, with a label
-colorRegions("/robot/estop", greaterThan(0, { color = "red", label = "E-STOP" }))
+when("/robot/speed", below(1.0)):backgroundColor("green")
+when("/robot/speed", between(1.0, 2.0)):backgroundColor("yellow")
+when("/robot/speed", above(2.0)):backgroundColor("red")
 
 -- anything else: your own function, the old ColorMap body
 local function modeColor(v)
@@ -202,11 +235,11 @@ local function modeColor(v)
   end
 end
 
-colorRegions("/robot/mode", modeColor)
+when("/robot/mode"):backgroundColor(modeColor)
 ```
 
-Pick **Global** or **Dataset** scope to shade every plot, as the 3.x color map did. `colorRegions`,
-`ranges`, `lessThan`, `greaterThan` and color names need PlotJuggler 4.2 or newer.
+Pick **Global** or **Dataset** scope to shade every plot, as the 3.x color map did. `when` and
+color names need PlotJuggler 4.2 or newer.
 
 ## Portable rule file
 

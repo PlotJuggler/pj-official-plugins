@@ -22,7 +22,9 @@ const std::vector<NamedFunction>& builtinFunctions() {
        "-- startMarker(t) / closeMarker(t, opts)   createBandMarker(low, high, opts)\n"
        "-- createMarker(x, y, opts): only x = Vline | only y = Hline | both = point\n"
        "--   or: createVerticalMarker(x) / createHorizontalMarker(y) / createPointMarker(x, y)\n"
-       "-- colorRegions(series, mapping): shade the background by value (see \"Color map\")\n"
+       "-- when(series, condition):backgroundColor(color) / :event() / :verticalLine()\n"
+       "--   conditions: above(x) below(x) between(a, b) outside(a, b) equals(x) isTrue() changes()\n"
+       "--   or function(v, t, prev, prev_t) return ... end   (see \"Out of range\", \"Color map\")\n"
        "-- opts (optional table) = {label=.., color=\"#rrggbb\" or a Qt name like \"orange\",\n"
        "--                          severity=\"info|warning|error|critical\"}\n"
        "local s = series(\"--SOURCE--\")\n"},
@@ -51,43 +53,29 @@ const std::vector<NamedFunction>& builtinFunctions() {
        "createHorizontalMarker(0.4, {label=\"warning\",  severity=\"warning\"})\n"
        "createHorizontalMarker(0.0, {label=\"info\",     severity=\"info\"})\n"},
       {"Threshold (line)",
-       "-- A vertical line at every point above a threshold.\n"
-       "local s = series(\"--SOURCE--\")\n"
+       "-- A vertical line where the value rises above a threshold.\n"
        "local TH = 0.5\n"
-       "for i = 0, s:size() - 1 do\n"
-       "  local p = s:at(i)\n"
-       "  if p.v > TH then createVerticalMarker(p.t) end\n"
-       "end\n"},
+       "when(\"--SOURCE--\", above(TH)):verticalLine({label=\"above \" .. TH})\n"},
       {"Color map (region)",
        "-- Shade the background by the series' value (PlotJuggler 3's ColorMap).\n"
-       "-- A mapping returns a color (\"#rrggbb\" or a Qt name), {color=, label=}, or nil for none:\n"
-       "--   ranges({min, max, color}, ...)   the first range with min <= v < max wins\n"
-       "--   lessThan(limit, color), greaterThan(limit, color)\n"
-       "--   a table { [0] = \"gray\", [1] = \"green\" }, or your own function(v)\n"
-       "colorRegions(\"--SOURCE--\", ranges({-inf, 0, \"steelblue\"}, {0, 1, \"green\"}, {1, inf, \"red\"}))\n"},
+       "-- A color is \"#rrggbb\" or a Qt name. For a discrete state, map values to colors:\n"
+       "--   when(\"--SOURCE--\"):backgroundColor({ [0] = \"gray\", [1] = \"green\" })\n"
+       "-- or pass your own function(v) returning a color, {color=, label=}, or nil for none.\n"
+       "when(\"--SOURCE--\", below(0)):backgroundColor(\"steelblue\")\n"
+       "when(\"--SOURCE--\", between(0, 1)):backgroundColor(\"green\")\n"
+       "when(\"--SOURCE--\", above(1)):backgroundColor(\"red\")\n"},
       {"Out of range (region)",
        "-- Shade a region while the value is outside [LO, HI].\n"
-       "local s = series(\"--SOURCE--\")\n"
        "local LO, HI = -0.5, 0.5\n"
-       "local open = false\n"
-       "for i = 0, s:size() - 1 do\n"
-       "  local p = s:at(i)\n"
-       "  local bad = p.v < LO or p.v > HI\n"
-       "  if bad and not open then startMarker(p.t); open = true\n"
-       "  elseif (not bad) and open then closeMarker(p.t); open = false end\n"
-       "end\n"
-       "if open and s:size() > 0 then closeMarker(s:at(s:size() - 1).t) end\n"},
+       "local opts = {label=\"out of range\", severity=\"warning\"}\n"
+       "when(\"--SOURCE--\", outside(LO, HI)):backgroundColor(nil, opts)\n"},
       {"Spike (point)",
        "-- A point event at a sudden jump between consecutive samples.\n"
-       "local s = series(\"--SOURCE--\")\n"
        "local JUMP = 0.8\n"
-       "for i = 1, s:size() - 1 do\n"
-       "  local a = s:at(i - 1)\n"
-       "  local b = s:at(i)\n"
-       "  if math.abs(b.v - a.v) > JUMP then\n"
-       "    createPointMarker(b.t, b.v, {label=\"spike\", severity=\"error\"})\n"
-       "  end\n"
-       "end\n"},
+       "local function jump(v, t, prev)\n"
+       "  return prev ~= nil and math.abs(v - prev) > JUMP\n"
+       "end\n"
+       "when(\"--SOURCE--\", jump):event({label=\"spike\", severity=\"error\", every=true})\n"},
       {"Incoherent point",
        "-- An isolated outlier: a point far from BOTH of its neighbours.\n"
        "local s = series(\"--SOURCE--\")\n"
@@ -101,28 +89,19 @@ const std::vector<NamedFunction>& builtinFunctions() {
        "  end\n"
        "end\n"},
       {"Flatline (region)",
-       "-- Shade a region where the value is stuck (barely changes).\n"
-       "local s = series(\"--SOURCE--\")\n"
-       "local EPS = 1e-4\n"
-       "local open = false\n"
-       "for i = 1, s:size() - 1 do\n"
-       "  local a = s:at(i - 1)\n"
-       "  local b = s:at(i)\n"
-       "  local flat = math.abs(b.v - a.v) < EPS\n"
-       "  if flat and not open then startMarker(a.t); open = true\n"
-       "  elseif (not flat) and open then closeMarker(a.t); open = false end\n"
+       "-- Shade a region where the value is stuck (barely changes) for at least MIN_S seconds.\n"
+       "local EPS, MIN_S = 1e-4, 0.5\n"
+       "local function flat(v, t, prev)\n"
+       "  return prev ~= nil and math.abs(v - prev) < EPS\n"
        "end\n"
-       "if open and s:size() > 0 then closeMarker(s:at(s:size() - 1).t) end\n"},
+       "when(\"--SOURCE--\", flat):backgroundColor(nil, {label=\"flat\", minDuration=MIN_S})\n"},
       {"Rate of change (line)",
-       "-- A line where the slope (dv/dt) exceeds a limit.\n"
-       "local s = series(\"--SOURCE--\")\n"
+       "-- A line where the slope (dv/dt, per second) starts to exceed a limit.\n"
        "local RATE = 5.0\n"
-       "for i = 1, s:size() - 1 do\n"
-       "  local a = s:at(i - 1)\n"
-       "  local b = s:at(i)\n"
-       "  local dt = (b.t - a.t) * 1e-9\n"
-       "  if dt > 0 and math.abs(b.v - a.v) / dt > RATE then createVerticalMarker(b.t) end\n"
-       "end\n"},
+       "local function steep(v, t, prev, prev_t)\n"
+       "  return prev ~= nil and t > prev_t and math.abs(v - prev) / ((t - prev_t) * 1e-9) > RATE\n"
+       "end\n"
+       "when(\"--SOURCE--\", steep):verticalLine({label=\"steep\"})\n"},
       {"Limit lines (horizontal)",
        "-- Two horizontal lines at the allowed limits LO and HI.\n"
        "local LO, HI = -0.5, 0.5\n"
@@ -148,19 +127,9 @@ const std::vector<NamedFunction>& builtinFunctions() {
       {"Boolean flag (edges)",
        "-- Monitor a boolean/discrete flag series: mark each rising edge (0 -> non-zero)\n"
        "-- with a point, and shade the region while the flag stays raised.\n"
-       "local s = series(\"--SOURCE--\")\n"
-       "local raised = false\n"
-       "for i = 0, s:size() - 1 do\n"
-       "  local p = s:at(i)\n"
-       "  local on = p.v ~= 0\n"
-       "  if on and not raised then\n"
-       "    createPointMarker(p.t, p.v, {label=\"flag\", severity=\"warning\", category=\"flag\"})\n"
-       "    startMarker(p.t); raised = true\n"
-       "  elseif (not on) and raised then\n"
-       "    closeMarker(p.t, {severity=\"warning\", category=\"flag\"}); raised = false\n"
-       "  end\n"
-       "end\n"
-       "if raised and s:size() > 0 then closeMarker(s:at(s:size() - 1).t, {severity=\"warning\"}) end\n"},
+       "local flag = when(\"--SOURCE--\", isTrue())\n"
+       "flag:event({label=\"flag\", severity=\"warning\", category=\"flag\"})\n"
+       "flag:backgroundColor(nil, {severity=\"warning\", category=\"flag\"})\n"},
   };
   return kFunctions;
 }
@@ -264,8 +233,8 @@ std::string blankLuaComments(const std::string& code) {
 std::vector<std::string> parseSeriesRefs(const std::string& code) {
   const std::string source = blankLuaComments(code);
   std::vector<std::string> refs;
-  // colorRegions("name", ...) resolves the series by name inside the host's prelude.
-  const std::string_view tokens[] = {"series(", "colorRegions("};
+  // when("name", ...) resolves the series by name inside the host's prelude.
+  const std::string_view tokens[] = {"series(", "when("};
   std::size_t pos = 0;
   while (true) {
     std::size_t next = std::string::npos;

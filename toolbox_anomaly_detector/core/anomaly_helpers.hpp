@@ -35,7 +35,7 @@ struct NamedFunction {
 [[nodiscard]] std::string substituteSource(std::string tmpl, const std::string& source);
 
 /// The series a rule reads: the literal first argument of every `series("...")` and
-/// `colorRegions("...", ...)` call in `code` (either quote), in order of first appearance,
+/// `when("...", ...)` call in `code` (either quote), in order of first appearance,
 /// deduplicated. Lua comments (`--` to end of line and
 /// `--[[ ]]` / `--[==[ ]==]` blocks) are skipped, and a `--` inside a string is not a
 /// comment, so a help comment or a commented-out line never declares an input.
