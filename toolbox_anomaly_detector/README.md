@@ -1,14 +1,15 @@
-# Anomaly Detector
+# Marker Editor
 
-Detect anomalies in your timeseries with small **Lua rules** that emit **plot markers**
-(events, regions, value bands). Author and test a rule interactively in the **PlotJuggler
+Draw **plot markers** (events, regions, value bands) from small **Lua rules** over your
+timeseries: flag anomalies, mark phases, or shade the background by a series' value (what
+PlotJuggler 3 called a color map). Author and test a rule interactively in the **PlotJuggler
 GUI**, then run that exact same rule **headless** on a server / in CI. Rules are saved as a
 portable JSON file that both sides consume.
 
 ```
             author + test                          run unattended
    ┌──────────────────────────┐   rule.json   ┌──────────────────────────┐
-   │  GUI: Anomaly Detector   │ ────────────▶ │  CLI: anomaly_runner     │
+   │  GUI: Marker Editor      │ ────────────▶ │  CLI: anomaly_runner     │
    │  (host runs the rule)    │               │  (runs the rule itself)  │
    └──────────────────────────┘               └──────────────────────────┘
               same Lua rule  ·  same PlotMarkers  ·  same result
@@ -27,7 +28,7 @@ GUI produces identical markers in CI — only *who invokes the engine* differs.
 
 ## Using the GUI
 
-1. Open **Toolbox → Anomaly Detector** (it reads the currently loaded timeseries). It opens
+1. Open **Toolbox → Marker Editor** (it reads the currently loaded timeseries). It opens
    with **no source selected**.
 2. Choose a **source series**, either way round: **drag & drop** one from the Datasets tree on
    the left, or pick it from the source list (with the **Filter** box to narrow a long
@@ -118,12 +119,13 @@ constant is the threshold you typically tune.
 | `-- No function --` | — | Empty template — write your own rule | — |
 | `Showcase (all markers)` | all | One of every marker kind, each colored + labelled (visual check) | — |
 | `Severity colors (lines)` | value band | Four horizontal lines in the info/warning/error/critical palette | — |
-| `Threshold (line)` | event (vline) | A vertical line at every sample above a threshold | `TH = 0.5` |
+| `Color map (region)` | region | Shades the background by value: one color per range (`when` + `backgroundColor`) | the ranges |
+| `Threshold (line)` | event (vline) | A vertical line where the value rises above a threshold | `TH = 0.5` |
 | `Out of range (region)` | region | Shades the span while the value is outside `[LO, HI]` | `LO,HI = -0.5,0.5` |
 | `Spike (point)` | event (point) | A point at a sudden jump between consecutive samples | `JUMP = 0.8` |
 | `Incoherent point` | event (point) | An isolated outlier far from **both** neighbours | `DEV = 1.0` |
-| `Flatline (region)` | region | Shades a span where the value is stuck (barely changes) | `EPS = 1e-4` |
-| `Rate of change (line)` | event (vline) | A line where the slope `dv/dt` exceeds a limit | `RATE = 5.0` |
+| `Flatline (region)` | region | Shades a span where the value is stuck (barely changes) | `EPS = 1e-4`, `MIN_S = 0.5` |
+| `Rate of change (line)` | event (vline) | A line where the slope `dv/dt` starts to exceed a limit | `RATE = 5.0` |
 | `Limit lines (horizontal)` | value band | Two horizontal lines at the allowed limits `LO`, `HI` | `LO,HI = -0.5,0.5` |
 | `Limit band` | value band | The allowed band `[LO, HI]` as a shaded horizontal band | `LO,HI = -0.5,0.5` |
 | `Spectral band power (vibration)` | region | Flags excessive FFT energy in a frequency band `[F_LO, F_HI]` Hz | `LIMIT = 0.02` |
@@ -151,6 +153,18 @@ createHorizontalMarker(y, opts?)  -- a horizontal line at y    (shortcut for cre
 createPointMarker(x, y, opts?)    -- a point at (x, y)         (shortcut for createMarker(x, y))
 createBandMarker(low, high, opts?) -- a shaded value band [low, high]
 
+-- Conditions and actions: one call instead of a loop
+when(s_or_name, condition?)       -- condition: above(x) below(x) between(a, b) outside(a, b) equals(x)
+                                  -- isTrue() changes(), or function(v, t, prev, prev_t) -> boolean
+  :backgroundColor(color?, opts?) -- shade while the condition holds (no color: the severity color);
+                                  -- opts.minDuration (s) drops shorter regions
+  :event(opts?)                   -- a point where the condition starts to hold
+  :verticalLine(opts?)            -- a line where the condition starts to hold
+                                  -- (opts.every = true: at every sample; opts.minGap (s) skips marks
+                                  -- closer than that; opts.label may be a function(v, prev))
+when(s_or_name):backgroundColor(map) -- no condition: color by value, map = { [value] = color } or a
+                                  -- function(v, t) returning a color, { color = .., label = .. }, or nil
+
 -- Spectral helper
 bandPower(s, fLo, fHi)            -- summed FFT power in [fLo,fHi] Hz, DC-removed (needs a real time axis)
 
@@ -164,10 +178,68 @@ GetSeriesNames()                  -- list of all available series names
 |---|---|---|
 | `label` | string | Pill text on the plot (and the report `label`). No pill if unset. |
 | `severity` | `"info"`/`"warning"`/`"error"`/`"critical"` | Default color + report severity (and the CLI `--fail-on` gate). |
-| `color` | `"#rrggbb"` | Explicit color override; defaults from `severity`. |
+| `color` | `"#rrggbb"`, `"#rgb"` or a Qt color name (`"orange"`, `"steelblue"`, ...) | Explicit color override; defaults from `severity`. An unknown color fails the rule. |
 | `status` | `"none"`/`"pass"`/`"fail"` | Verdict; a `fail` fails the CLI run regardless of severity. |
 | `category` | string | Free-form class, e.g. `"spectral"`, `"flag"`, `"overspeed"`. |
 | `description` | string | Optional longer text carried into the report. |
+
+## Writing rules with `when`
+
+Most rules are "when this series does X, draw Y": write them as one `when(...)` call instead of a
+loop. The engine does the scan, opens and closes regions, and fires a mark once per stretch
+rather than on every matching sample:
+
+```lua
+when("/robot/speed", above(2.0)):backgroundColor("red", { label = "too fast" })
+when("/robot/estop", isTrue()):backgroundColor("red", { label = "E-STOP", minDuration = 0.5 })
+when("/imu/acc_x", outside(-3, 3)):event({ label = "overload", minGap = 1.0 })
+when("/robot/mode", changes()):verticalLine({ label = function(v, prev) return prev .. " -> " .. v end })
+```
+
+Any function works as the condition. It gets the value, the time (ns) and the previous sample,
+and may read other series:
+
+```lua
+local speed = series("/robot/speed")
+
+local function movingInFault(v, t)
+  return v == 2 and speed:atTime(t) > 1.5
+end
+
+when("/robot/mode", movingInFault):backgroundColor("red", { label = "moving while in fault" })
+```
+
+Keep a loop for windows and multi-step state (a moving average, "A then B within 2 s"), with
+`startMarker` / `closeMarker` and the `create*Marker` functions.
+
+## Migrating from PlotJuggler 3's ColorMap
+
+A 3.x ColorMap was a function from a value to a color. Give the same function, or a table, to
+`backgroundColor` with no condition:
+
+```lua
+-- a discrete state, one color per value
+when("/robot/mode"):backgroundColor({ [0] = "gray", [1] = "green", [2] = "orange", [3] = "red" })
+
+-- a level, by range
+when("/robot/speed", below(1.0)):backgroundColor("green")
+when("/robot/speed", between(1.0, 2.0)):backgroundColor("yellow")
+when("/robot/speed", above(2.0)):backgroundColor("red")
+
+-- anything else: your own function, the old ColorMap body
+local function modeColor(v)
+  if v == 1 then
+    return "green"
+  elseif v >= 2 then
+    return { color = "red", label = "fault" }
+  end
+end
+
+when("/robot/mode"):backgroundColor(modeColor)
+```
+
+Pick **Global** or **Dataset** scope to shade every plot, as the 3.x color map did. `when` and
+color names need PlotJuggler 4.2 or newer.
 
 ## Portable rule file
 

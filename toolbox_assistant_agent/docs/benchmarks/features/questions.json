@@ -277,7 +277,7 @@
       ],
       "accepted_labels": {
         "toolbox-anomaly-detector": [
-          "Anomaly Detector"
+          "Marker Editor"
         ]
       },
       "accept_tool_calls": [

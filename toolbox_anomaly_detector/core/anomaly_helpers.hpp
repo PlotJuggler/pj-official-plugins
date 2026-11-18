@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// anomaly_helpers — the Luau-FREE part of the Anomaly Detector core: the predefined
+// anomaly_helpers — the Luau-FREE part of the Marker Editor core: the predefined
 // detection-function library, the JSON report, and the portable-rule
 // (de)serialization. It depends ONLY on pj_base (PlotMarker types) + nlohmann_json —
 // NOT on pj_scripting_core / Luau. The GUI toolbox plugin links THIS (so the plugin
@@ -34,8 +34,9 @@ struct NamedFunction {
 /// Replace every "--SOURCE--" in `tmpl` with `source` (no-op if source empty).
 [[nodiscard]] std::string substituteSource(std::string tmpl, const std::string& source);
 
-/// The series a rule reads: every literal `series("...")` / `series('...')` call in `code`,
-/// in order of first appearance, deduplicated. Lua comments (`--` to end of line and
+/// The series a rule reads: the literal first argument of every `series("...")` and
+/// `when("...", ...)` call in `code` (either quote), in order of first appearance,
+/// deduplicated. Lua comments (`--` to end of line and
 /// `--[[ ]]` / `--[==[ ]==]` blocks) are skipped, and a `--` inside a string is not a
 /// comment, so a help comment or a commented-out line never declares an input.
 ///

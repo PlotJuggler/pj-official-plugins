@@ -378,11 +378,11 @@
     },
     {
       "id": "toolbox-anomaly-detector",
-      "name": "Anomaly Detector",
+      "name": "Marker Editor",
       "version": "0.2.1",
       "category": "toolbox",
       "summary": "Write Lua rules that check your time series and mark the regions or moments where a rule fires directly on the plots.",
-      "entry_point": "Toolbox menu → Anomaly Detector"
+      "entry_point": "Toolbox menu → Marker Editor"
     },
     {
       "id": "toolbox-data-exporter",

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate anomaly_demo.csv: a synthetic signal with injected anomalies so every
-Anomaly Detector function has something to fire on.
+Marker Editor function has something to fire on.
 
 Columns: time (s), value, clean (the anomaly-free reference).
 

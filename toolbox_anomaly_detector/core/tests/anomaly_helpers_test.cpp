@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// Unit tests for the Luau-FREE half of the Anomaly Detector core. This layer is
+// Unit tests for the Luau-FREE half of the Marker Editor core. This layer is
 // shared verbatim by the GUI toolbox and the headless runner, so a regression here
 // shows up in both at once — and unlike the runner's notify_test (gated behind
 // PJ_BUILD_ANOMALY_RUNNER), this target builds with the plugin and therefore runs in CI.
@@ -142,6 +142,16 @@ TEST(SubstituteSource, DoesNotRescanInsertedTextAndTerminates) {
 TEST(ParseSeriesRefs, FindsLiteralCallsInOrderWithoutDuplicates) {
   const std::string code = "local a = series(\"x/1\")\nlocal b = series( 'y/2' )\nlocal c = series(\"x/1\")\n";
   EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"x/1", "y/2"}));
+}
+
+// colorRegions("name", ...) reads the series by name, so its literal first argument is an input too.
+TEST(ParseSeriesRefs, CountsWhenNameArguments) {
+  const std::string code =
+      "when(\"mode/state\"):backgroundColor({ [0] = \"gray\" })\n"
+      "local s = series(\"speed/v\")\n"
+      "when(s, below(1)):backgroundColor(\"green\")\n"
+      "when( 'mode/state', above(2)):event()\n";
+  EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"mode/state", "speed/v"}));
 }
 
 TEST(ParseSeriesRefs, IgnoresNonLiteralArguments) {

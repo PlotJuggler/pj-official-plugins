@@ -3,6 +3,26 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 
+## [0.3.0] - 2026-11-18
+
+### Changed
+- Renamed **Marker Editor** (was Anomaly Detector): its rules draw any plot
+  marker, anomalies being one use among others (phases, coloring the background
+  by a series' value). The plugin id `toolbox-anomaly-detector` and the
+  `anomaly_runner` CLI keep their names, so saved layouts, installs and CI
+  scripts are unaffected.
+- Requires PlotJuggler 4.2.0 or newer (earlier hosts keep 0.2.1).
+
+### Added
+- Rules can say "when this series does X, draw Y" in one call, without a loop:
+  `when(series, above(x)):backgroundColor("red")`, `:event()`, `:verticalLine()`, with
+  conditions `above`, `below`, `between`, `outside`, `equals`, `isTrue`, `changes` or a
+  function. The Threshold, Out of range, Spike, Flatline, Rate of change and Boolean flag
+  functions use it; Threshold now draws one line per crossing, not one per sample.
+- A **Color map (region)** function, PlotJuggler 3's ColorMap: `when(series)` with no
+  condition takes a value-to-color table or function.
+- `when("name", ...)` declares `name` as a rule input, like `series("name")`.
+
 ## [0.2.1] - 2026-09-17
 
 ### Fixed
