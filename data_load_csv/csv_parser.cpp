@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <functional>
 #include <iomanip>
 #include <limits>
+#include <optional>
 #include <queue>
 #include <set>
 #include <sstream>
@@ -324,19 +326,19 @@ CsvParseResult ParseCsvData(std::istream& input, const CsvParseConfig& config, s
     } else if (config.time_column_index >= 0 && config.time_column_index < static_cast<int>(num_columns)) {
       const std::string& t_str = Trim(parts[static_cast<size_t>(config.time_column_index)]);
 
+      std::optional<double> ts;
       if (!config.custom_time_format.empty()) {
-        if (auto ts = FormatParseTimestamp(t_str, config.custom_time_format)) {
-          timestamp_valid = true;
-          timestamp = *ts;
-        }
+        ts = FormatParseTimestamp(t_str, config.custom_time_format);
       } else {
         const auto& time_type = column_types[static_cast<size_t>(config.time_column_index)];
         if (time_type.type != ColumnType::STRING) {
-          if (auto ts = ParseWithType(t_str, time_type)) {
-            timestamp_valid = true;
-            timestamp = *ts;
-          }
+          ts = ParseWithType(t_str, time_type);
         }
+      }
+      // A "nan" / "inf" cell parses as a number but is no time: it would become a garbage nanosecond timestamp.
+      if (ts && std::isfinite(*ts)) {
+        timestamp_valid = true;
+        timestamp = *ts;
       }
 
       if (!timestamp_valid) {

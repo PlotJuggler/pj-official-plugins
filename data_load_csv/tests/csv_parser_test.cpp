@@ -199,6 +199,43 @@ TEST(CsvParse, TextColumnStaysString) {
   EXPECT_EQ(result.columns[1].string_points.size(), 3u);
 }
 
+TEST(CsvParse, LeadingNanTimestampRowIsRejected) {
+  std::string csv = "t,x\nnan,1\n1,2\n";
+  CsvParseConfig config;
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  EXPECT_EQ(result.lines_processed, 1);
+  EXPECT_EQ(result.lines_skipped, 1);
+  ASSERT_EQ(result.warnings.size(), 1u);
+  EXPECT_EQ(result.warnings[0].type, CsvParseWarning::INVALID_TIMESTAMP);
+  const auto& x = result.columns[1];
+  ASSERT_EQ(x.numeric_points.size(), 1u);
+  EXPECT_DOUBLE_EQ(x.numeric_points[0].first, 1.0);
+  EXPECT_DOUBLE_EQ(x.numeric_points[0].second, 2.0);
+}
+
+TEST(CsvParse, MidFileNonFiniteTimestampRowsAreRejected) {
+  std::string csv = "t,x\n0.5,1\ninf,2\n1.5,3\n-inf,4\nnan,5\n2.5,6\n";
+  CsvParseConfig config;
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  EXPECT_EQ(result.lines_processed, 3);
+  EXPECT_EQ(result.lines_skipped, 3);
+  ASSERT_EQ(result.warnings.size(), 3u);
+  for (const auto& warning : result.warnings) {
+    EXPECT_EQ(warning.type, CsvParseWarning::INVALID_TIMESTAMP);
+  }
+  const auto& x = result.columns[1];
+  ASSERT_EQ(x.numeric_points.size(), 3u);
+  EXPECT_DOUBLE_EQ(x.numeric_points[0].first, 0.5);
+  EXPECT_DOUBLE_EQ(x.numeric_points[1].first, 1.5);
+  EXPECT_DOUBLE_EQ(x.numeric_points[2].first, 2.5);
+}
+
 TEST(CsvParse, AutoRowNumberTimestamp) {
   std::string csv = "x,y\n1.0,2.0\n3.0,4.0\n";
   CsvParseConfig config;

@@ -9,6 +9,8 @@ below; for earlier releases see the git history of `data_load_csv/`.
 - A numeric column whose first value is `nan`, `inf`, `-inf` or `Infinity` is
   no longer imported as text, which dropped all of its numbers and its curves.
   The column stays numeric, with NaN and infinite samples where those cells are.
+- A row whose time column holds `nan` or `inf` is skipped as an invalid timestamp
+  instead of being recorded at a garbage time.
 
 ## [1.0.9] - 2026-11-16
 
