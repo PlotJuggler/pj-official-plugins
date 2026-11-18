@@ -23,6 +23,9 @@ namespace candump_detail {
 
 namespace {
 
+/// The data file the forced time mode was chosen for.
+constexpr char kTimeModeFileKey[] = "time_mode_file";
+
 /// Renders `value` with "," thousands separators (e.g. 16000 -> "16,000").
 /// No locale dependence, matching this file's existing no-double/no-locale
 /// number formatting.
@@ -228,6 +231,9 @@ std::string CandumpDialog::saveConfig() const {
   }
   cfg["raw_unassigned"] = raw_unassigned_;
   cfg["time_mode"] = time_mode_override_;
+  if (time_mode_override_ != 0) {
+    cfg[kTimeModeFileKey] = filepath_;
+  }
   return cfg.dump();
 }
 
@@ -258,6 +264,13 @@ bool CandumpDialog::applyConfigJson(std::string_view config_json, bool scan_now)
   raw_unassigned_ = cfg.value("raw_unassigned", true);
   time_mode_override_ = cfg.value("time_mode", 0);
   if (time_mode_override_ < 0 || time_mode_override_ > 3) {
+    time_mode_override_ = 0;
+  }
+  // A forced mode belongs to the capture it was chosen for. The host pre-fills the next file's dialog with this
+  // config, "filepath" rewritten, and that file needs its own auto-detection; a layout replay of the same capture
+  // (moved or not) keeps it. A config without the key keeps its mode.
+  if (const auto chosen_for = cfg.value(kTimeModeFileKey, std::string{});
+      !chosen_for.empty() && chosen_for != filepath_ && chosen_for != context.saved_data_file) {
     time_mode_override_ = 0;
   }
   iface_dicts_.clear();
