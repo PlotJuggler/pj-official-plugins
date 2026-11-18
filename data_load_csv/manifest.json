@@ -1,7 +1,7 @@
 {
   "id": "csv-loader",
   "name": "CSV Loader",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Data loader for CSV files.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <clocale>
+#include <cmath>
 #include <cstdlib>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -147,6 +149,91 @@ TEST(CsvParse, SimpleNumeric) {
   ASSERT_EQ(result.columns[1].numeric_points.size(), 3u);
   EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[0].second, 1.0);
   EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[2].second, 5.0);
+}
+
+TEST(CsvParse, NonFiniteCellsKeepTheColumnNumeric) {
+  std::string csv = "time,x\n0,1.5\n1,nan\n2,-inf\n3,inf\n4,2\n";
+  CsvParseConfig config;
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  const auto& x = result.columns[1];
+  EXPECT_TRUE(x.string_points.empty());
+  ASSERT_EQ(x.numeric_points.size(), 5u);
+  EXPECT_DOUBLE_EQ(x.numeric_points[0].second, 1.5);
+  EXPECT_TRUE(std::isnan(x.numeric_points[1].second));
+  EXPECT_EQ(x.numeric_points[2].second, -std::numeric_limits<double>::infinity());
+  EXPECT_EQ(x.numeric_points[3].second, std::numeric_limits<double>::infinity());
+  EXPECT_DOUBLE_EQ(x.numeric_points[4].second, 2.0);
+}
+
+TEST(CsvParse, ColumnStartingWithNonFiniteCellStaysNumeric) {
+  std::string csv = "time,x,y\n0,nan,-Infinity\n1,1.5,2\n2,Infinity,3\n";
+  CsvParseConfig config;
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  const auto& x = result.columns[1];
+  EXPECT_TRUE(x.string_points.empty());
+  ASSERT_EQ(x.numeric_points.size(), 3u);
+  EXPECT_TRUE(std::isnan(x.numeric_points[0].second));
+  EXPECT_DOUBLE_EQ(x.numeric_points[1].second, 1.5);
+  EXPECT_EQ(x.numeric_points[2].second, std::numeric_limits<double>::infinity());
+
+  const auto& y = result.columns[2];
+  EXPECT_TRUE(y.string_points.empty());
+  ASSERT_EQ(y.numeric_points.size(), 3u);
+  EXPECT_EQ(y.numeric_points[0].second, -std::numeric_limits<double>::infinity());
+}
+
+TEST(CsvParse, TextColumnStaysString) {
+  std::string csv = "time,x\n0,hello\n1,world\n2,info\n";
+  CsvParseConfig config;
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  EXPECT_TRUE(result.columns[1].numeric_points.empty());
+  EXPECT_EQ(result.columns[1].string_points.size(), 3u);
+}
+
+TEST(CsvParse, LeadingNanTimestampRowIsRejected) {
+  std::string csv = "t,x\nnan,1\n1,2\n";
+  CsvParseConfig config;
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  EXPECT_EQ(result.lines_processed, 1);
+  EXPECT_EQ(result.lines_skipped, 1);
+  ASSERT_EQ(result.warnings.size(), 1u);
+  EXPECT_EQ(result.warnings[0].type, CsvParseWarning::INVALID_TIMESTAMP);
+  const auto& x = result.columns[1];
+  ASSERT_EQ(x.numeric_points.size(), 1u);
+  EXPECT_DOUBLE_EQ(x.numeric_points[0].first, 1.0);
+  EXPECT_DOUBLE_EQ(x.numeric_points[0].second, 2.0);
+}
+
+TEST(CsvParse, MidFileNonFiniteTimestampRowsAreRejected) {
+  std::string csv = "t,x\n0.5,1\ninf,2\n1.5,3\n-inf,4\nnan,5\n2.5,6\n";
+  CsvParseConfig config;
+  config.time_column_index = 0;
+  auto result = ParseCsvData(csv, config);
+
+  ASSERT_TRUE(result.success);
+  EXPECT_EQ(result.lines_processed, 3);
+  EXPECT_EQ(result.lines_skipped, 3);
+  ASSERT_EQ(result.warnings.size(), 3u);
+  for (const auto& warning : result.warnings) {
+    EXPECT_EQ(warning.type, CsvParseWarning::INVALID_TIMESTAMP);
+  }
+  const auto& x = result.columns[1];
+  ASSERT_EQ(x.numeric_points.size(), 3u);
+  EXPECT_DOUBLE_EQ(x.numeric_points[0].first, 0.5);
+  EXPECT_DOUBLE_EQ(x.numeric_points[1].first, 1.5);
+  EXPECT_DOUBLE_EQ(x.numeric_points[2].first, 2.5);
 }
 
 TEST(CsvParse, AutoRowNumberTimestamp) {
@@ -307,6 +394,14 @@ TEST(CsvTimestamp, ToDouble) {
   EXPECT_FALSE(toDouble("abc").has_value());
 }
 
+TEST(CsvTimestamp, ToDoubleParsesNonFiniteTokens) {
+  EXPECT_TRUE(std::isnan(*toDouble("nan")));
+  EXPECT_TRUE(std::isnan(*toDouble("NaN")));
+  EXPECT_EQ(*toDouble("inf"), std::numeric_limits<double>::infinity());
+  EXPECT_EQ(*toDouble("Infinity"), std::numeric_limits<double>::infinity());
+  EXPECT_EQ(*toDouble("-inf"), -std::numeric_limits<double>::infinity());
+}
+
 TEST(CsvTimestamp, EuropeanDecimal) {
   // Single comma treated as decimal separator
   EXPECT_DOUBLE_EQ(*toDouble("3,14"), 3.14);
@@ -325,6 +420,18 @@ TEST(CsvTimestamp, DetectColumnTypeHex) {
 TEST(CsvTimestamp, DetectColumnTypeString) {
   auto info = DetectColumnType("hello");
   EXPECT_EQ(info.type, ColumnType::STRING);
+}
+
+TEST(CsvTimestamp, DetectColumnTypeNonFiniteTokensAreNumber) {
+  for (const char* token : {"nan", "NaN", "NAN", "-nan", "inf", "Inf", "-inf", "Infinity", "-Infinity", " nan "}) {
+    EXPECT_EQ(DetectColumnType(token).type, ColumnType::NUMBER) << token;
+  }
+}
+
+TEST(CsvTimestamp, DetectColumnTypeWordsStartingLikeNonFiniteTokensStayString) {
+  for (const char* word : {"nano", "info", "infinite", "nancy", "na", "n/a"}) {
+    EXPECT_EQ(DetectColumnType(word).type, ColumnType::STRING) << word;
+  }
 }
 
 TEST(CsvTimestamp, DetectColumnTypeDatetime) {
