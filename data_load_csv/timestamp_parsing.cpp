@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <pj_base/number_parse.hpp>
 #include <sstream>
@@ -338,6 +339,13 @@ ColumnTypeInfo DetectColumnType(const std::string& str) {
       return info;
     } catch (...) {}
 
+    info.type = ColumnType::NUMBER;
+    return info;
+  }
+
+  // CheckNumeric only knows digits, but toDouble (what ParseWithType calls for NUMBER) also reads "nan", "inf" and
+  // "Infinity". A column whose first cell is one of them must not be typed STRING, which would drop its numbers.
+  if (const auto value = toDouble(trimmed); value && !std::isfinite(*value)) {
     info.type = ColumnType::NUMBER;
     return info;
   }
