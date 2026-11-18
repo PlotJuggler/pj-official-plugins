@@ -78,10 +78,13 @@ struct RecordCell {
   const std::string* text = nullptr;
 };
 
-/// Visits the cells of `columns` grouped into records without copying them: a record gathers every cell whose
-/// timestamp, in integer nanoseconds, is equal, and records come in timestamp order. Inside a record the cells of
-/// `numeric_columns` (their `numeric_points`) come first, then those of `string_columns` (their `string_points`), each
-/// in the given column order, and a column's cells keep their row order. A column whose timestamps decrease is
+/// Visits the cells of `columns` grouped into records without copying them: a record gathers the cells whose
+/// timestamp, in integer nanoseconds, is equal, at most one per column, and records come in timestamp order. A column
+/// with several cells at one timestamp (repeated time values) spreads them over consecutive records in row order;
+/// the k-th cell of each column at that timestamp shares the k-th record, so the record matches the CSV row only when
+/// those rows have no empty or non-numeric cells (a column keeps no row index).
+/// Inside a record the cells of `numeric_columns` (their `numeric_points`) come first, then those of `string_columns`
+/// (their `string_points`), each in the given column order. A column whose timestamps decrease is
 /// stable-sorted in place first. Returns false, stopping, as soon as `emit` does; the cells it gets are valid until
 /// `columns` changes.
 bool ForEachRecord(

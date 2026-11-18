@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -614,8 +615,8 @@ std::string printNumber(double v) {
   return os.str();
 }
 
-// The merge every CSV import wrote records with: copy every cell, stable-sort by nanosecond timestamp, and group equal
-// timestamps into one record.
+// The merge every CSV import writes records with: copy every cell, stable-sort by nanosecond timestamp, and group equal
+// timestamps into records, the k-th record of a timestamp holding each column's k-th cell at that timestamp.
 std::vector<Record> referenceRecords(
     const std::vector<CsvColumnData>& columns, const std::vector<size_t>& numeric, const std::vector<size_t>& text) {
   struct Point {
@@ -635,11 +636,21 @@ std::vector<Record> referenceRecords(
   }
   std::stable_sort(all.begin(), all.end(), [](const Point& a, const Point& b) { return a.ts < b.ts; });
   std::vector<Record> records;
-  for (const auto& point : all) {
-    if (records.empty() || records.back().first != point.ts) {
-      records.push_back({point.ts, {}});
+  for (size_t begin = 0; begin < all.size();) {
+    size_t end = begin;
+    while (end < all.size() && all[end].ts == all[begin].ts) {
+      ++end;
     }
-    records.back().second.push_back(point.cell);
+    const size_t first = records.size();
+    std::map<size_t, size_t> seen;  // column -> cells of it at this timestamp so far
+    for (size_t i = begin; i < end; ++i) {
+      const size_t k = seen[all[i].cell.column]++;
+      if (first + k == records.size()) {
+        records.push_back({all[i].ts, {}});
+      }
+      records[first + k].second.push_back(all[i].cell);
+    }
+    begin = end;
   }
   return records;
 }
@@ -693,9 +704,24 @@ TEST(CsvForEachRecord, BackwardsAndDuplicateTimestampsMatchTheSortedMerge) {
   EXPECT_EQ(mergedRecords(columns, {2, 0}, {1}), referenceRecords(columns, {2, 0}, {1}));
 }
 
+// Rows sharing a timestamp become consecutive records in row order, each holding a column at most once: a record
+// naming a column twice is refused by the datastore.
+TEST(CsvForEachRecord, RowsWithTheSameTimestampAreSeparateRecords) {
+  std::vector<CsvColumnData> columns = {
+      numericColumn({{0.0, 1}, {0.0, 2}, {1.0, 3}}),
+      textColumn({{0.0, "x"}, {0.0, "y"}}),
+  };
+  const std::vector<Record> expected = {
+      {0, {{0, "1"}, {1, "x"}}},
+      {0, {{0, "2"}, {1, "y"}}},
+      {1'000'000'000, {{0, "3"}}},
+  };
+  EXPECT_EQ(mergedRecords(columns, {0}, {1}), expected);
+}
+
 TEST(CsvForEachRecord, TimestampsEqualInNanosecondsShareARecord) {
   std::vector<CsvColumnData> columns = {
-      numericColumn({{1.0 + 1e-12, 1}, {1.0, 2}}),
+      numericColumn({{1.0 + 1e-12, 1}}),
       numericColumn({{1.0, 3}}),
   };
   const auto records = mergedRecords(columns, {0, 1}, {});
