@@ -2,6 +2,12 @@
 
 One entry per released version (newest first).
 
+## [0.1.2] - 2026-11-19
+
+### Fixed
+
+- A timestamp mode forced for one capture no longer applies to the next capture opened with the loader, where it overrode auto-detection and could collapse or reorder the samples. The mode is saved with the file name of the capture it was chosen for: the next file goes back to auto-detection, while reopening a capture of that name, or replaying a layout of it from another folder or an upload, keeps the mode. This works with every PlotJuggler 4 version.
+
 ## [0.1.1] - 2026-10-19
 
 ### Fixed
