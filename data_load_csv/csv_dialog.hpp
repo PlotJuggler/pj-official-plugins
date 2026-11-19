@@ -52,7 +52,6 @@ class CsvDialog : public PJ::DialogPluginTyped {
 
   int timeColumnIndex() const;
   int combinedColumnIndex() const;
-  void setFilePath(const std::string& filepath);
 
   // --- Dialog protocol ---
 
@@ -66,14 +65,32 @@ class CsvDialog : public PJ::DialogPluginTyped {
   bool onItemDoubleClicked(std::string_view widget_name, int index) override;
   bool onClicked(std::string_view widget_name) override;
   bool onTextChanged(std::string_view widget_name, std::string_view text) override;
-  void onAccepted(std::string_view json) override;
+  void onAccepted(std::string_view /*json*/) override {}
   void onRejected() override {}
 
   std::string saveConfig() const override;
   bool loadConfig(std::string_view config_json) override;
 
  private:
-  void analyzeFile();
+  /// The picked columns by name, empty when none is picked. An empty name falls back to the index, for a config
+  /// saved without names (csv <= 1.0.10).
+  struct PickedColumns {
+    std::string time;  // "Selected Column"
+    int time_index = -1;
+    std::string date;  // "Multiple Columns": the date part
+    int date_index = -1;
+    std::string time_of_day;  // "Multiple Columns": the time part
+    int time_of_day_index = -1;
+  };
+  PickedColumns pickedColumns() const;
+  /// Name of column `index` of the current header; empty when out of range.
+  std::string columnName(int index) const;
+
+  void analyzeFile() {
+    analyzeFile(pickedColumns());
+  }
+  /// Re-reads the header and preview, then picks `keep` in the new header: a name the header lacks picks nothing.
+  void analyzeFile(const PickedColumns& keep);
   // True when the file has at least one date-only AND one time-only column, so a
   // combined ("Multiple Columns") timestamp can be built by multi-selecting them.
   bool combinableAvailable() const;
@@ -101,7 +118,6 @@ class CsvDialog : public PJ::DialogPluginTyped {
   std::string warning_message_;
 
   std::vector<std::string> column_names_;
-  std::vector<std::string> column_history_;
   // Per-column detected types (parallel to column_names_); drives which columns
   // can form a combined timestamp in "Multiple Columns" mode.
   std::vector<PJ::CSV::ColumnTypeInfo> column_types_;

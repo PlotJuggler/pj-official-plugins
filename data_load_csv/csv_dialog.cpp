@@ -53,9 +53,19 @@ void CsvDialog::setCombinedColumns(int date_index, int time_index) {
   }
 }
 
-void CsvDialog::setFilePath(const std::string& filepath) {
-  filepath_ = filepath;
-  analyzeFile();
+CsvDialog::PickedColumns CsvDialog::pickedColumns() const {
+  PickedColumns picked;
+  picked.time = columnName(selected_column_index_);
+  if (!combined_pairs_.empty()) {
+    picked.date = columnName(combined_pairs_.front().date_column_index);
+    picked.time_of_day = columnName(combined_pairs_.front().time_column_index);
+  }
+  return picked;
+}
+
+std::string CsvDialog::columnName(int index) const {
+  return index >= 0 && index < static_cast<int>(column_names_.size()) ? column_names_[static_cast<size_t>(index)]
+                                                                      : std::string{};
 }
 
 std::string CsvDialog::manifest() const {
@@ -284,30 +294,23 @@ bool CsvDialog::onTextChanged(std::string_view widget_name, std::string_view tex
   return false;
 }
 
-void CsvDialog::onAccepted(std::string_view /*json*/) {
-  if (time_mode_ == TimeMode::Column && selected_column_index_ >= 0 &&
-      selected_column_index_ < static_cast<int>(column_names_.size())) {
-    auto& name = column_names_[static_cast<size_t>(selected_column_index_)];
-    column_history_.erase(std::remove(column_history_.begin(), column_history_.end(), name), column_history_.end());
-    column_history_.insert(column_history_.begin(), name);
-    if (column_history_.size() > 10) {
-      column_history_.resize(10);
-    }
-  }
-}
-
 std::string CsvDialog::saveConfig() const {
   nlohmann::json cfg;
   cfg["filepath"] = filepath_;
   cfg["delimiter"] = std::string(1, delimiter_);
   cfg["time_mode"] = timeModeToString(time_mode_);
+  // The picks are restored by name: PlotJuggler pre-fills the next file's dialog with this config. The indices are
+  // for older plugin versions reading it.
+  const auto picked = pickedColumns();
+  cfg["time_column_name"] = picked.time;
+  cfg["combined_date_name"] = picked.date;
+  cfg["combined_time_name"] = picked.time_of_day;
   cfg["time_column_index"] = selected_column_index_;
   cfg["combined_date_index"] = combined_pairs_.empty() ? -1 : combined_pairs_.front().date_column_index;
   cfg["combined_time_index"] = combined_pairs_.empty() ? -1 : combined_pairs_.front().time_column_index;
   cfg["custom_time_format"] = custom_format_;
   cfg["use_custom_format"] = use_custom_format_;
   cfg["detect_delimiter"] = detect_delimiter_;
-  cfg["column_history"] = column_history_;
   return cfg.dump();
 }
 
@@ -320,44 +323,30 @@ bool CsvDialog::loadConfig(std::string_view config_json) {
   auto d = cfg.value("delimiter", std::string(","));
   delimiter_ = d.empty() ? ',' : d[0];
   time_mode_ = stringToTimeMode(cfg.value("time_mode", std::string("row_number")));
-  selected_column_index_ = cfg.value("time_column_index", -1);
-  const int restored_combined_date = cfg.value("combined_date_index", -1);
-  const int restored_combined_time = cfg.value("combined_time_index", -1);
   custom_format_ = cfg.value("custom_time_format", std::string{});
   use_custom_format_ = cfg.value("use_custom_format", false);
   detect_delimiter_ = cfg.value("detect_delimiter", true);
-  if (cfg.contains("column_history") && cfg["column_history"].is_array()) {
-    column_history_ = cfg["column_history"].get<std::vector<std::string>>();
-  }
-  // Validate: a mode that requires a selection is useless without one — fall back to row_number
-  if (time_mode_ == TimeMode::Column && selected_column_index_ < 0) {
+  // The header of this file may not be the one the config was saved for: the picks are found in it by name.
+  analyzeFile(
+      {.time = cfg.value("time_column_name", std::string{}),
+       .time_index = cfg.value("time_column_index", -1),
+       .date = cfg.value("combined_date_name", std::string{}),
+       .date_index = cfg.value("combined_date_index", -1),
+       .time_of_day = cfg.value("combined_time_name", std::string{}),
+       .time_of_day_index = cfg.value("combined_time_index", -1)});
+  // A mode whose column this file does not have opens on the default time axis.
+  if ((time_mode_ == TimeMode::Column && selected_column_index_ < 0) ||
+      (time_mode_ == TimeMode::Combined && combined_index_ < 0)) {
     time_mode_ = TimeMode::RowNumber;
-  }
-  if (time_mode_ == TimeMode::Combined && (restored_combined_date < 0 || restored_combined_time < 0)) {
-    time_mode_ = TimeMode::RowNumber;
-  }
-  if (!filepath_.empty()) {
-    analyzeFile();
-  }
-  // Re-apply the saved combined pair after the columns/types are rebuilt.
-  if (time_mode_ == TimeMode::Combined) {
-    setCombinedColumns(restored_combined_date, restored_combined_time);
   }
   return true;
 }
 
-void CsvDialog::analyzeFile() {
-  // Remember the selected time column by NAME so a delimiter change (which
-  // re-splits the header) can re-resolve it against the rebuilt columns below.
-  // Only meaningful on a RE-analyze: on the first analyze there are no columns
-  // yet, and selected_column_index_ may hold an index restored from saveConfig.
-  const bool had_columns = !column_names_.empty();
-  std::string previously_selected_column;
-  if (had_columns && selected_column_index_ >= 0 && selected_column_index_ < static_cast<int>(column_names_.size())) {
-    previously_selected_column = column_names_[static_cast<size_t>(selected_column_index_)];
-  }
-
+void CsvDialog::analyzeFile(const PickedColumns& keep) {
   column_names_.clear();
+  selected_column_index_ = -1;
+  combined_pairs_.clear();
+  combined_index_ = -1;
   column_types_.clear();
   preview_rows_.clear();
   raw_preview_.clear();
@@ -453,6 +442,16 @@ void CsvDialog::analyzeFile() {
     count++;
   }
 
+  const auto repick = [this](const std::string& name, int index) {
+    if (name.empty()) {
+      return index >= 0 && index < static_cast<int>(column_names_.size()) ? index : -1;
+    }
+    const auto it = std::find(column_names_.begin(), column_names_.end(), name);
+    return it == column_names_.end() ? -1 : static_cast<int>(it - column_names_.begin());
+  };
+  selected_column_index_ = repick(keep.time, keep.time_index);
+  setCombinedColumns(repick(keep.date, keep.date_index), repick(keep.time_of_day, keep.time_of_day_index));
+
   // Compute preview warning message
   warning_message_.clear();
   // Check for duplicate column names in header
@@ -491,39 +490,11 @@ void CsvDialog::analyzeFile() {
   }
 
   // Multiple-Columns mode needs a date column and a time column; drop to row
-  // number if this file has neither. The user's picked pair carries over across
-  // a re-analyze, but is dropped if its column indices no longer fit.
+  // number if this file has neither.
   if (time_mode_ == TimeMode::Combined && !combinableAvailable()) {
     time_mode_ = TimeMode::RowNumber;
     combined_pairs_.clear();
     combined_index_ = -1;
-  }
-  if (!combined_pairs_.empty()) {
-    const auto& p = combined_pairs_.front();
-    const int n = static_cast<int>(column_names_.size());
-    if (p.date_column_index >= n || p.time_column_index >= n) {
-      combined_pairs_.clear();
-      combined_index_ = -1;
-    }
-  }
-
-  // Re-validate the selected time column against the rebuilt columns so we never
-  // keep an index that points past the new column count (which would silently
-  // load the row number as the time axis). On a RE-analyze (delimiter change)
-  // re-resolve the previous column by name; otherwise just clamp the restored
-  // index. Dropping the selection to -1 disables OK until the user re-picks.
-  if (time_mode_ == TimeMode::Column) {
-    if (had_columns) {
-      selected_column_index_ = -1;
-      for (size_t i = 0; i < column_names_.size(); i++) {
-        if (column_names_[i] == previously_selected_column) {
-          selected_column_index_ = static_cast<int>(i);
-          break;
-        }
-      }
-    } else if (selected_column_index_ >= static_cast<int>(column_names_.size())) {
-      selected_column_index_ = -1;
-    }
   }
 }
 
