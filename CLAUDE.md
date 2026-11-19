@@ -113,10 +113,14 @@ application-version requirement.
 
 **Before opening or updating a PR:**
 
-- Every plugin carries a `CHANGELOG.md`. Any bump of a plugin's `version` in
-  `manifest.json` must add a matching entry there (`## [X.Y.Z] - YYYY-MM-DD`
-  plus Added/Changed/Fixed bullets) in the same PR. Entries describe user-visible
-  behavior, not refactors.
+- Every plugin carries a `CHANGELOG.md`. A PR that changes a plugin's user-visible
+  behavior adds its bullets (Added/Changed/Fixed) under an `## Upcoming` section at
+  the top of that plugin's `CHANGELOG.md`, creating the section if it is missing.
+  It does **not** touch the `version` in `manifest.json`. Entries describe
+  user-visible behavior, not refactors.
+- A plugin's version changes only when the maintainer asks for that plugin's
+  release: then set `manifest.json` `version` and rename `## Upcoming` to
+  `## [X.Y.Z] - YYYY-MM-DD` in the same commit (see Release Process).
 - Preserve each existing `min_sdk_required` unless the change introduces a real
   requirement for newer host functionality. A global SDK bump, rebuild, refactor,
   or newer SDK helper that adds no host requirement does **not** justify raising
@@ -214,9 +218,10 @@ version. Releases are **not** created manually on GitHub — pushing a tag creat
   It reads/updates `manifest.json`, commits the bump (`chore(<dir>): bump version to X.Y.Z`),
   creates an **annotated** tag `<source_dir>/vX.Y.Z` whose message is JSON metadata
   (`{"extension_id", "version", "auto_submit_to_registry"}`), and pushes the tag. **It does not push
-  the branch commit.** Prepare the manifest version and matching changelog entry, commit and push
-  them to the target branch first, then invoke the script without `--bump` / `--version` to tag
-  that published commit. Otherwise the in-tree manifest can silently drift behind the already
+  the branch commit.** Prepare the manifest version and turn the `## Upcoming` changelog section into
+  `## [X.Y.Z] - YYYY-MM-DD`, commit and push them to the target branch first (a PR), then invoke
+  the script without `--bump` / `--version` to tag that published commit. Release only a plugin
+  the maintainer asked to release. Otherwise the in-tree manifest can silently drift behind the already
   released version. Always confirm the bump commit is on the target branch, not just the tag.
 - **What pushing the tag does:** any tag matching `*/v*` triggers `.github/workflows/build-release.yml`,
   which resolves the specific plugin from the tag name (`scripts/release_tools.py resolve-build-scope`),
