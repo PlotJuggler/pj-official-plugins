@@ -116,14 +116,16 @@ straight to `main` right away, with no PR, once `pre-commit` passes on them.
 
 **Before opening or updating a PR:**
 
-- Every plugin carries a `CHANGELOG.md`. A PR that changes a plugin's user-visible
-  behavior adds its bullets (Added/Changed/Fixed) under an `## Upcoming` section at
-  the top of that plugin's `CHANGELOG.md`, creating the section if it is missing.
-  It does **not** touch the `version` in `manifest.json`. Entries describe
-  user-visible behavior, not refactors.
-- A plugin's version changes only when the maintainer asks for that plugin's
-  release: then set `manifest.json` `version` and rename `## Upcoming` to
-  `## [X.Y.Z] - YYYY-MM-DD` in the same commit (see Release Process).
+- Every plugin carries a `CHANGELOG.md`. Entries describe user-visible behavior (Added/Changed/Fixed), not refactors.
+  Which of three cases applies depends only on what the maintainer asked for:
+  - **Case A: a change, no release requested.** Append the bullets under `## Upcoming` at the top of that plugin's
+    `CHANGELOG.md` (create the section if missing). Do **not** change `manifest.json` `version`.
+  - **Case B: a release requested, no new change.** Set `manifest.json` `version` to the next version, rename
+    `## Upcoming` to `## [X.Y.Z] - YYYY-MM-DD` with that same version, and commit both together (see Release Process).
+  - **Case C: a change and a release requested.** Add the bullets as in Case A, then do what Case B says: bump
+    `manifest.json` `version`, and make the changelog heading `## [X.Y.Z] - YYYY-MM-DD` with that same version.
+    If the section is already `## Upcoming`, rename it; do not leave a separate `## Upcoming` above it.
+  The changelog heading and `manifest.json` `version` must always match. The `version` changes only in Case B or C.
 - Preserve each existing `min_sdk_required` unless the change introduces a real
   requirement for newer host functionality. A global SDK bump, rebuild, refactor,
   or newer SDK helper that adds no host requirement does **not** justify raising
