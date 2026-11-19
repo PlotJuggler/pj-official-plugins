@@ -3,4 +3,9 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_quaternion/`.
 
+## [1.0.2] - 2026-11-19
+
+### Added
+- Browser build: the toolbox is included in PlotJuggler's WebAssembly app.
+
 ## [1.0.1] - 2026-08-04

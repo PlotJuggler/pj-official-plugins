@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_data_tamer/`.
 
+## [0.10.1] - 2026-11-19
+
+### Added
+- Browser build: the parser is included in PlotJuggler's WebAssembly app.
+
 ## [0.10.0] - 2026-10-18
 
 ### Added

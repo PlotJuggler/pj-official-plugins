@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_json/`.
 
+## [1.3.1] - 2026-11-19
+
+### Added
+- Browser build: the parser is included in PlotJuggler's WebAssembly app.
+
 ## [1.3.0] - 2026-09-25
 
 ### Changed
