@@ -40,11 +40,6 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     return custom_date_format_;
   }
 
-  void setFilePath(const std::string& filepath) {
-    filepath_ = filepath;
-    analyzeFile();
-  }
-
   // --- Dialog protocol ---
 
   std::string manifest() const override {
@@ -136,19 +131,19 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  void onAccepted(std::string_view /*json*/) override {
-    // Persist the selected column name for cross-file history within the session
-    if (time_mode_ == "column" && selected_column_index_ >= 0 &&
-        selected_column_index_ < static_cast<int>(column_names_.size())) {
-      last_selected_column_name_ = column_names_[static_cast<size_t>(selected_column_index_)];
-    }
-  }
+  void onAccepted(std::string_view /*json*/) override {}
   void onRejected() override {}
 
   std::string saveConfig() const override {
     nlohmann::json cfg;
     cfg["filepath"] = filepath_;
     cfg["time_mode"] = time_mode_;
+    // The column is restored by name: PlotJuggler pre-fills the next file's dialog with this config. The index is for
+    // older plugin versions reading it.
+    cfg["time_column_name"] =
+        selected_column_index_ >= 0 && selected_column_index_ < static_cast<int>(column_names_.size())
+            ? column_names_[static_cast<size_t>(selected_column_index_)]
+            : std::string{};
     cfg["time_column_index"] = selected_column_index_;
     cfg["use_custom_date_format"] = use_custom_date_format_;
     cfg["custom_date_format"] = custom_date_format_;
@@ -162,18 +157,19 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     }
     filepath_ = cfg.value("filepath", std::string{});
     time_mode_ = cfg.value("time_mode", std::string("column"));
-    selected_column_index_ = cfg.value("time_column_index", -1);
     use_custom_date_format_ = cfg.value("use_custom_date_format", false);
     custom_date_format_ = cfg.value("custom_date_format", std::string{});
-    if (!filepath_.empty()) {
-      analyzeFile();
-    }
+    analyzeFile(cfg.value("time_column_name", std::string{}), cfg.value("time_column_index", -1));
     return true;
   }
 
  private:
-  void analyzeFile() {
+  /// Reads the schema and picks the time column named `time_column` in it. The schema may not be the one the name
+  /// was saved for: a name it lacks picks the detected timestamp column. An empty name (a config saved by
+  /// parquet <= 1.0.4) falls back to `time_column_index`.
+  void analyzeFile(const std::string& time_column, int time_column_index) {
     column_names_.clear();
+    selected_column_index_ = -1;
     if (filepath_.empty()) {
       return;
     }
@@ -200,24 +196,16 @@ class ParquetDialog : public PJ::DialogPluginTyped {
       column_names_.push_back(schema->field(i)->name());
     }
 
-    // Auto-select timestamp column if none selected yet:
-    // 1. Try Arrow TIMESTAMP type or well-known name
-    // 2. Fall back to previously selected column name (cross-file history within session)
+    if (!time_column.empty()) {
+      const auto it = std::find(column_names_.begin(), column_names_.end(), time_column);
+      selected_column_index_ = it == column_names_.end() ? -1 : static_cast<int>(it - column_names_.begin());
+    } else if (time_column_index < schema->num_fields()) {
+      selected_column_index_ = time_column_index;
+    }
     if (selected_column_index_ < 0) {
       selected_column_index_ = PJ::ParquetHelpers::findTimestampColumn(schema);
     }
-    if (selected_column_index_ < 0 && !last_selected_column_name_.empty()) {
-      for (int i = 0; i < static_cast<int>(column_names_.size()); ++i) {
-        if (column_names_[static_cast<size_t>(i)] == last_selected_column_name_) {
-          selected_column_index_ = i;
-          break;
-        }
-      }
-    }
   }
-
-  // Cross-file column history: remembers the last accepted column name within the session
-  inline static std::string last_selected_column_name_;
 
   std::string filepath_;
   std::string time_mode_ = "column";

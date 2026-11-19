@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <nlohmann/json.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/host/data_source_library.hpp>
@@ -151,6 +152,87 @@ TEST(ParquetSourceTest, UnsupportedCodecErrorNamesArrowsReason) {
   RecordingHost host;
   const auto error = runImport(std::filesystem::path(PARQUET_TEST_DATA_DIR) / "brotli_values.parquet", host);
   EXPECT_NE(error.find("Support for codec 'brotli' not built"), std::string::npos) << error;
+}
+
+/// A one-row table with a double column per name; `timestamp_column`, if any, is an Arrow TIMESTAMP column instead.
+std::shared_ptr<arrow::Table> tableWithColumns(
+    const std::vector<std::string>& names, const std::string& timestamp_column = {}) {
+  arrow::FieldVector fields;
+  arrow::ArrayVector arrays;
+  for (const auto& name : names) {
+    if (name == timestamp_column) {
+      arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::NANO), arrow::default_memory_pool());
+      EXPECT_TRUE(builder.Append(0).ok());
+      arrays.push_back(builder.Finish().ValueOrDie());
+    } else {
+      arrow::DoubleBuilder builder;
+      EXPECT_TRUE(builder.Append(1.0).ok());
+      arrays.push_back(builder.Finish().ValueOrDie());
+    }
+    fields.push_back(arrow::field(name, arrays.back()->type()));
+  }
+  return arrow::Table::Make(arrow::schema(fields), arrays);
+}
+
+/// Loads `config` with "filepath" set to a file holding `table`, and returns the config the plugin then saves: what
+/// PlotJuggler keeps as the pre-fill for the next file, or in a layout.
+nlohmann::json loadAndSave(const arrow::Table& table, nlohmann::json config) {
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("parquet_source_test_" +
+                     std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + "_cfg.parquet");
+  const auto error = writeParquet(table, path);
+  EXPECT_TRUE(error.empty()) << error;
+  config["filepath"] = path.generic_string();
+  auto library = PJ::DataSourceLibrary::load(std::string(PARQUET_SOURCE_PLUGIN_PATH));
+  EXPECT_TRUE(library) << library.error();
+  if (!library) {
+    return {};
+  }
+  auto handle = library->createHandle();
+  std::string saved = "{}";
+  EXPECT_TRUE(handle.loadConfig(config.dump()));
+  EXPECT_TRUE(handle.saveConfig(saved));
+  std::filesystem::remove(path);
+  return nlohmann::json::parse(saved);
+}
+
+/// The config saved after the user picked column "stamp" (the second one) of a file.
+nlohmann::json pickedTimeColumnStamp() {
+  return loadAndSave(*tableWithColumns({"a", "stamp", "b"}), {{"time_mode", "column"}, {"time_column_index", 1}});
+}
+
+// The pre-fill for the next file carries the time column; a file with the same columns gets it back.
+TEST(ParquetTimeColumnRestore, SameColumnsKeepTheColumn) {
+  const auto next = loadAndSave(*tableWithColumns({"a", "stamp", "b"}), pickedTimeColumnStamp());
+  EXPECT_EQ(next.value("time_mode", ""), "column");
+  EXPECT_EQ(next.value("time_column_index", -1), 1);
+}
+
+// The column was restored by position, so a file with the columns in another order got "b" as time axis.
+TEST(ParquetTimeColumnRestore, ReorderedColumnsFindTheColumnByName) {
+  const auto next = loadAndSave(*tableWithColumns({"stamp", "b", "a"}), pickedTimeColumnStamp());
+  EXPECT_EQ(next.value("time_mode", ""), "column");
+  EXPECT_EQ(next.value("time_column_index", -1), 0);
+}
+
+// A file without the column gets the default: its timestamp column, detected.
+TEST(ParquetTimeColumnRestore, FileWithoutTheColumnDetectsItsTimestamp) {
+  const auto next = loadAndSave(*tableWithColumns({"ts", "x", "y"}, "ts"), pickedTimeColumnStamp());
+  EXPECT_EQ(next.value("time_mode", ""), "column");
+  EXPECT_EQ(next.value("time_column_index", -1), 0);
+}
+
+// A file without the column and with no timestamp to detect picks none.
+TEST(ParquetTimeColumnRestore, FileWithoutTheColumnPicksNone) {
+  const auto next = loadAndSave(*tableWithColumns({"x", "y", "z"}), pickedTimeColumnStamp());
+  EXPECT_EQ(next.value("time_column_index", -1), -1);
+}
+
+// A config saved before the column name was (an older plugin, an older layout) still restores by index.
+TEST(ParquetTimeColumnRestore, ConfigWithOnlyAnIndexKeepsTheIndex) {
+  const auto saved = pickedTimeColumnStamp();
+  EXPECT_EQ(saved.value("time_mode", ""), "column");
+  EXPECT_EQ(saved.value("time_column_index", -1), 1);
 }
 
 }  // namespace
