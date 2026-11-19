@@ -3,6 +3,24 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_csv/`.
 
+## [1.0.11] - 2026-11-19
+
+### Fixed
+- Opening another CSV file no longer pre-selects the wrong time column.
+  PlotJuggler pre-fills the dialog with the choices made for the previous file,
+  and the time column (and the date and time columns of "Multiple Columns")
+  were remembered by their position in that file's header: on a file with other
+  columns, another column became the time axis, or none was selected. They are
+  now remembered by name, so a file that has the column gets it back wherever it
+  sits, and a file without it opens on "Number of Rows". This works with every
+  PlotJuggler 4 version.
+- A time column that repeats a value (common in logs with one-second
+  resolution) loads; the whole load used to fail with "duplicate field id".
+- A custom time format whose fraction follows a separator other than `:`
+  (`dd/MM/yyyy hh-mm-ss.zzz`) reads the fraction instead of dropping it, and a
+  fraction of one or two digits (`.z`, `.zz`) is read too: a format ending in
+  `.z` used to skip every row.
+
 ## [1.0.10] - 2026-11-18
 
 ### Fixed

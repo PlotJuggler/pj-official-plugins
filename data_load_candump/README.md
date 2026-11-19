@@ -117,7 +117,11 @@ included), as candump prints them.
 ```
 
 `time_mode`: `0` auto-detect, `1` force absolute, `2` force relative
-monotonic (`-t z`), `3` force relative delta (`-t d`).
+monotonic (`-t z`), `3` force relative delta (`-t d`). A forced mode is saved
+with `time_mode_file`, the file name of the capture it was chosen for, and
+applies to captures of that name only, whichever folder they lie in (so a
+layout reopens it from a moved folder or an upload): the next file opened with
+the loader goes back to auto-detection.
 
 Dictionary paths are portable. A dictionary that lies inside the data file's
 folder is saved relative to it (`"powertrain.dbc"`, `"dbc/powertrain.dbc"`), so

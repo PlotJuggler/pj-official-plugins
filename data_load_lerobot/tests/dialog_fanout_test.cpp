@@ -15,6 +15,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 #include "lerobot_dialog.hpp"
 
@@ -22,12 +23,11 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// Minimal valid v2.1 dataset tree under a fresh temp dir whose folder name is
-// the dataset name we expect to surface (deliberately not "info").
-fs::path makeDatasetFixture() {
-  const fs::path root =
-      fs::temp_directory_path() /
-      fs::path("pusht_v21_dialogfix_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+// Minimal valid v2.1 dataset tree with `episodes` episodes (indices 0..N-1) under a fresh temp dir whose folder
+// name is the dataset name we expect to surface (deliberately not "info").
+fs::path makeDatasetFixture(const std::string& prefix = "pusht_v21_dialogfix", int episodes = 1) {
+  const fs::path root = fs::temp_directory_path() /
+                        fs::path(prefix + "_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
   fs::remove_all(root);
   fs::create_directories(root / "meta");
   std::ofstream(root / "meta" / "info.json") << R"({
@@ -43,7 +43,10 @@ fs::path makeDatasetFixture() {
     }
   })";
   std::ofstream(root / "meta" / "tasks.jsonl") << R"({"task_index": 0, "task": "t"})" << "\n";
-  std::ofstream(root / "meta" / "episodes.jsonl") << R"({"episode_index": 0, "tasks": [0], "length": 42})" << "\n";
+  std::ofstream episodes_file(root / "meta" / "episodes.jsonl");
+  for (int i = 0; i < episodes; ++i) {
+    episodes_file << R"({"episode_index": )" << i << R"(, "tasks": [0], "length": 42})" << "\n";
+  }
   return root;
 }
 
@@ -103,6 +106,41 @@ TEST(LeRobotDialogFanout, SaveConfigEmitsDisplayNameFromDatasetRoot) {
   EXPECT_NE(j["display_name"].get<std::string>(), std::string("info"));
 
   fs::remove_all(root);
+}
+
+std::vector<int64_t> selectedEpisodes(const LeRobotDialog& d) {
+  return nlohmann::json::parse(d.saveConfig())["selected_episodes"].get<std::vector<int64_t>>();
+}
+
+// PlotJuggler pre-fills the next dataset's dialog with the last config, "filepath" rewritten to the new dataset:
+// an episode selection belongs to the dataset it was chosen for, whose indices mean nothing in another.
+TEST(LeRobotDialogSelection, KeptForItsDatasetAndNotCarriedToAnother) {
+  const fs::path pusht = makeDatasetFixture("pusht_v21_sel", 4);
+  const fs::path other = makeDatasetFixture("aloha_v21_sel", 4);
+  const auto pusht_info = (pusht / "meta" / "info.json").string();
+  const auto other_info = (other / "meta" / "info.json").string();
+
+  // A config saved without the dataset name (an older plugin, an older layout) keeps its selection.
+  LeRobotDialog first;
+  ASSERT_TRUE(first.loadConfig(nlohmann::json{{"filepath", pusht_info}, {"selected_episodes", {1, 3}}}.dump()));
+  ASSERT_EQ(selectedEpisodes(first), (std::vector<int64_t>{1, 3}));
+
+  auto config = nlohmann::json::parse(first.saveConfig());
+
+  // A layout replay of the same dataset keeps the selection.
+  LeRobotDialog replayed;
+  ASSERT_TRUE(replayed.loadConfig(config.dump()));
+  EXPECT_EQ(selectedEpisodes(replayed), (std::vector<int64_t>{1, 3}));
+
+  // Another dataset whose indices overlap gets the default: every episode.
+  config["filepath"] = other_info;
+  LeRobotDialog next;
+  ASSERT_TRUE(next.loadConfig(config.dump()));
+  ASSERT_NE(next.model(), nullptr) << next.datasetError();
+  EXPECT_EQ(selectedEpisodes(next), (std::vector<int64_t>{0, 1, 2, 3}));
+
+  fs::remove_all(pusht);
+  fs::remove_all(other);
 }
 
 }  // namespace

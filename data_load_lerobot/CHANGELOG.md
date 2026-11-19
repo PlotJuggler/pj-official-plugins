@@ -3,6 +3,20 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_lerobot/`.
 
+## [1.0.4] - 2026-11-19
+
+### Fixed
+- Opening another dataset no longer pre-selects the episodes picked for the
+  previous one. PlotJuggler pre-fills the dialog with the choices made for the
+  last dataset, and the episode indices were kept wherever the new dataset had
+  them. The selection is now saved with the dataset's folder name and applies to
+  that dataset only: another dataset opens with every episode selected, while
+  reopening the dataset, or replaying a layout of it, keeps the selection. This
+  works with every PlotJuggler 4 version.
+- Datasets whose Parquet files are written with zstd or lz4 compression (for
+  example polars' default) load; they failed with "failed to create batch
+  reader". Errors reading a Parquet file now carry Arrow's reason.
+
 ## [1.0.3] - 2026-11-09
 
 ### Changed

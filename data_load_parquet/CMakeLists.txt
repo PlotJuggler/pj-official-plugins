@@ -56,7 +56,7 @@ target_compile_definitions(parquet_source_test PRIVATE
   PARQUET_SOURCE_PLUGIN_PATH="$<TARGET_FILE:parquet_source_plugin>"
   PARQUET_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data")
 target_link_libraries(parquet_source_test PRIVATE
-  plotjuggler_sdk::plugin_host Arrow::arrow_static Parquet::parquet_static GTest::gtest_main)
+  plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json Arrow::arrow_static Parquet::parquet_static GTest::gtest_main)
 add_dependencies(parquet_source_test parquet_source_plugin)
 add_test(NAME parquet_source_test COMMAND parquet_source_test)
 

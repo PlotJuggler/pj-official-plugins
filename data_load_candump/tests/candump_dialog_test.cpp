@@ -76,6 +76,48 @@ TEST(CandumpDialogConfig, RawUnassignedAndTimeModeRoundTrip) {
   EXPECT_EQ(saved.value("time_mode", 0), 3);
 }
 
+// The host pre-fills the next file's dialog with the last config, "filepath" rewritten to the new file: a
+// time mode forced for one capture must not override the next capture's auto-detection.
+TEST(CandumpDialogConfig, TimeModeChosenForAnotherFileFallsBackToAuto) {
+  CandumpDialog first;
+  first.setFilePath(testDataPath("relative_tz.log"));
+  ASSERT_TRUE(first.onIndexChanged("comboTimeMode", 1));  // Absolute
+  auto config = nlohmann::json::parse(first.saveConfig());
+  config["filepath"] = testDataPath("relative_td_mixed.log");
+
+  CandumpDialog next;
+  ASSERT_TRUE(next.loadConfig(config.dump()));
+  EXPECT_FALSE(next.timeModeOverride().has_value());
+  EXPECT_EQ(nlohmann::json::parse(next.widget_data())["comboTimeMode"].value("current_index", -1), 0);
+
+  // A different name in another folder is another capture too.
+  config["filepath"] = "/elsewhere/relative_td_mixed.log";
+  CandumpDialog elsewhere;
+  ASSERT_TRUE(elsewhere.loadConfigDeferringScan(config.dump()));
+  EXPECT_FALSE(elsewhere.timeModeOverride().has_value());
+}
+
+// A layout replay keeps the forced mode wherever the capture lies now: the file is recognised by its name, because
+// the browser build backs every upload with a fresh path and the host records no __pj_saved_filepath for it.
+TEST(CandumpDialogConfig, TimeModeSurvivesLayoutReplayOfItsFile) {
+  CandumpDialog first;
+  first.setFilePath(testDataPath("relative_tz.log"));
+  ASSERT_TRUE(first.onIndexChanged("comboTimeMode", 3));
+  const auto config = nlohmann::json::parse(first.saveConfig());
+
+  CandumpDialog same;
+  ASSERT_TRUE(same.loadConfig(config.dump()));
+  EXPECT_EQ(same.timeModeOverride(), TimeMode::kRelativeDelta);
+
+  for (const char* moved_to : {"/elsewhere/relative_tz.log", "C:\\captures\\relative_tz.log"}) {
+    auto moved = config;
+    moved["filepath"] = moved_to;
+    CandumpDialog replayed;
+    ASSERT_TRUE(replayed.loadConfigDeferringScan(moved.dump()));
+    EXPECT_EQ(replayed.timeModeOverride(), TimeMode::kRelativeDelta) << moved_to;
+  }
+}
+
 TEST(CandumpDialogConfig, OutOfRangeTimeModeFallsBackToAuto) {
   CandumpDialog dialog;
   const std::string config = nlohmann::json{{"filepath", ""}, {"time_mode", 99}}.dump();

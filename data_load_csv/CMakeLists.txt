@@ -59,7 +59,7 @@ add_executable(csv_source_test tests/csv_source_test.cpp)
 target_compile_features(csv_source_test PRIVATE cxx_std_20)
 target_compile_options(csv_source_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(csv_source_test PRIVATE CSV_SOURCE_PLUGIN_PATH="$<TARGET_FILE:csv_source_plugin>")
-target_link_libraries(csv_source_test PRIVATE plotjuggler_sdk::plugin_host GTest::gtest_main)
+target_link_libraries(csv_source_test PRIVATE plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json GTest::gtest_main)
 add_dependencies(csv_source_test csv_source_plugin)
 add_test(NAME csv_source_test COMMAND csv_source_test)
 

@@ -3,9 +3,11 @@
 
 #include <filesystem>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/host/data_source_library.hpp>
+#include <pj_plugins/host/dialog_handle.hpp>
 #include <pj_plugins/host/service_registry_builder.hpp>
 #include <set>
 #include <string>
@@ -141,6 +143,106 @@ TEST(CsvSourceTest, RepeatedTimestampsLoadEveryRow) {
       importCsv("t,a,b\n0,1,10\n0,2,20\n1,3,30\n2,4,40\n", R"({"time_mode":"column","time_column_index":0})", host);
   ASSERT_TRUE(outcome.ok) << outcome.error;
   EXPECT_EQ(host.records, 4);
+}
+
+/// A dialog event sent between loading a config and saving it: what the user does in the open dialog.
+struct DialogEvent {
+  std::string widget;
+  std::string json;
+};
+
+/// Loads `config` with "filepath" set to a file holding `csv`, optionally sends `event` to the dialog, and returns
+/// the config the plugin then saves: what PlotJuggler keeps as the pre-fill for the next file, or in a layout.
+nlohmann::json loadAndSave(const std::string& csv, nlohmann::json config, const DialogEvent& event = {}) {
+  const auto path =
+      std::filesystem::temp_directory_path() /
+      ("csv_source_test_" + std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + "_cfg.csv");
+  std::ofstream(path) << csv;
+  config["filepath"] = path.generic_string();
+  auto library = PJ::DataSourceLibrary::load(std::string(CSV_SOURCE_PLUGIN_PATH));
+  EXPECT_TRUE(library) << library.error();
+  if (!library) {
+    return {};
+  }
+  auto handle = library->createHandle();
+  std::string saved = "{}";
+  EXPECT_TRUE(handle.loadConfig(config.dump()));
+  if (!event.widget.empty()) {
+    auto dialog = PJ::DialogHandle::fromBorrowed(handle.getDialog());
+    EXPECT_TRUE(dialog.sendEvent(event.widget, event.json));
+  }
+  EXPECT_TRUE(handle.saveConfig(saved));
+  std::filesystem::remove(path);
+  return nlohmann::json::parse(saved);
+}
+
+/// The config saved after the user picked column "t" (the second one) of a file.
+nlohmann::json pickedTimeColumnT() {
+  return loadAndSave("a,t,b\n1,0.0,10\n2,0.1,20\n", {{"time_mode", "column"}, {"time_column_index", 1}});
+}
+
+// The pre-fill for the next file carries the time column; a file with the same header gets it back.
+TEST(CsvTimeColumnRestore, SameHeaderKeepsTheColumn) {
+  const auto next = loadAndSave("a,t,b\n3,0.0,30\n", pickedTimeColumnT());
+  EXPECT_EQ(next.value("time_mode", ""), "column");
+  EXPECT_EQ(next.value("time_column_index", -1), 1);
+}
+
+// QA repro: the column was restored by position, so a file with the columns in another order got "b" as time axis.
+TEST(CsvTimeColumnRestore, ReorderedHeaderFindsTheColumnByName) {
+  const auto next = loadAndSave("t,b,a\n0.0,30,3\n", pickedTimeColumnT());
+  EXPECT_EQ(next.value("time_mode", ""), "column");
+  EXPECT_EQ(next.value("time_column_index", -1), 0);
+}
+
+// A file without the column picks none and opens with the default time axis (row number).
+TEST(CsvTimeColumnRestore, HeaderWithoutTheColumnFallsBackToRowNumber) {
+  const auto next = loadAndSave("x,y,z\n1,2,3\n", pickedTimeColumnT());
+  EXPECT_EQ(next.value("time_mode", ""), "row_number");
+  EXPECT_EQ(next.value("time_column_index", -1), -1);
+}
+
+// A config saved before the column name was (an older plugin, an older layout) still restores by index.
+TEST(CsvTimeColumnRestore, ConfigWithOnlyAnIndexKeepsTheIndex) {
+  const auto saved = pickedTimeColumnT();
+  EXPECT_EQ(saved.value("time_mode", ""), "column");
+  EXPECT_EQ(saved.value("time_column_index", -1), 1);
+}
+
+// The date + time pair of "Multiple Columns" is found by name too.
+TEST(CsvTimeColumnRestore, ReorderedHeaderFindsTheDateTimePairByName) {
+  const auto first = loadAndSave(
+      "date,time,v\n2024-01-15,14:30:25,1\n",
+      {{"time_mode", "combined"}, {"combined_date_index", 0}, {"combined_time_index", 1}});
+  const auto next = loadAndSave("v,time,date\n1,14:30:25,2024-01-15\n", first);
+  EXPECT_EQ(next.value("time_mode", ""), "combined");
+  EXPECT_EQ(next.value("combined_date_index", -1), 2);
+  EXPECT_EQ(next.value("combined_time_index", -1), 1);
+}
+
+// A pair only partly found in the new header is no pair: the mode falls back to "Number of Rows" instead of
+// pairing the date with whatever other time column the file has ("clock" is a time-only column here).
+TEST(CsvTimeColumnRestore, DateTimePairPartlyFoundFallsBackToRowNumber) {
+  const auto first = loadAndSave(
+      "date,time,v\n2024-01-15,14:30:25,1\n",
+      {{"time_mode", "combined"}, {"combined_date_index", 0}, {"combined_time_index", 1}});
+  const auto next = loadAndSave("v,date,clock\n1,2024-01-15,14:30:25\n", first);
+  EXPECT_EQ(next.value("time_mode", ""), "row_number");
+  EXPECT_EQ(next.value("combined_date_index", -1), -1);
+  EXPECT_EQ(next.value("combined_time_index", -1), -1);
+}
+
+// Changing the delimiter re-splits the header: the picked column is found again by name ("t" is the first column
+// split at the comma and the second one split at the semicolon).
+TEST(CsvTimeColumnRestore, DelimiterChangeFindsTheColumnByName) {
+  const auto saved = loadAndSave(
+      "t,a;t\n0,1;2\n",
+      {{"delimiter", ","}, {"detect_delimiter", false}, {"time_mode", "column"}, {"time_column_index", 0}},
+      {"comboBox", R"({"current_index": 1})"});  // ";" (semicolon)
+  EXPECT_EQ(saved.value("delimiter", ""), ";");
+  EXPECT_EQ(saved.value("time_mode", ""), "column");
+  EXPECT_EQ(saved.value("time_column_name", ""), "t");
+  EXPECT_EQ(saved.value("time_column_index", -1), 1);
 }
 
 }  // namespace

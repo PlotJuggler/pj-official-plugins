@@ -3,6 +3,21 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_parquet/`.
 
+## [1.0.5] - 2026-11-19
+
+### Fixed
+- Opening another Parquet file no longer pre-selects the wrong time column.
+  PlotJuggler pre-fills the dialog with the choices made for the previous file,
+  and the time column was remembered by its position in that file's schema: on a
+  file with other columns, another column became the time axis. It is now
+  remembered by name, so a file that has the column gets it back wherever it
+  sits, and a file without it gets its timestamp column detected, as on a first
+  open. This works with every PlotJuggler 4 version.
+- Files written with zstd or lz4 compression (for example polars' default)
+  load; they failed with "failed to create batch reader".
+  Load errors now carry Arrow's reason, and a read error partway through a file
+  is reported instead of ending the import early.
+
 ## [1.0.4] - 2026-11-16
 
 ### Fixed
