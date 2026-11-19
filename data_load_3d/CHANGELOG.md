@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_3d/`.
 
-## Upcoming
+## [1.1.0] - 2026-11-19
 
 ### Added
 - Browser build: the loader is included in PlotJuggler's WebAssembly app.

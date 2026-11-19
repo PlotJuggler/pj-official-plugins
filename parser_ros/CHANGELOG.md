@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_ros/`.
 
-## Upcoming
+## [1.4.3] - 2026-11-19
 
 ### Fixed
 - A message that does not deserialize is a parse error ("CDR read error: <reason>") instead of an empty record that vanished without a message. Loaders report it as a warning.

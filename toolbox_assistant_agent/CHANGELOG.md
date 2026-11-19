@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## [0.5.2] - 2026-11-19
+
+### Changed
+- Version bump with no user-visible change.
+
 ## [0.5.1] - 2026-11-13
 
 ### Fixed

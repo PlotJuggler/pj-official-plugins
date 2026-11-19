@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_mcap/`.
 
-## Upcoming
+## [1.3.2] - 2026-11-19
 
 ### Fixed
 - A topic whose messages fail to decode no longer aborts the whole import. Failures are counted per topic; a topic with 100 failures in a row is skipped while the others keep loading. Each topic with failures is reported once, with its count and first error.
