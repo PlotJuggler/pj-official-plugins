@@ -111,6 +111,9 @@ is semver's: `X.Y.Z-dev.N` < `X.Y.Z`, so a host built from `0.38.0-dev.1` reject
 plugin requiring `0.38.0`. `min_plotjuggler_version` is a separate
 application-version requirement.
 
+**Documentation-only changes** (`CLAUDE.md`, `*.md` docs, READMEs, CHANGELOG wording) are committed and pushed
+straight to `main` right away, with no PR, once `pre-commit` passes on them.
+
 **Before opening or updating a PR:**
 
 - Every plugin carries a `CHANGELOG.md`. A PR that changes a plugin's user-visible
