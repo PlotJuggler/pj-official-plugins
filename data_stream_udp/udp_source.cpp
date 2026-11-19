@@ -70,6 +70,9 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
   // the same endpoint reuse it.
   static PJ::Expected<std::shared_ptr<SharedUdpEndpoint>> acquire(const std::string& address, uint16_t port) {
     const std::string key = PJ::sdk::composeHostPort(address, port);
+    // Declared before the lock on purpose: a failed open (or a throw below) destroys the endpoint, and
+    // ~SharedUdpEndpoint takes registryMutex(), which is not recursive. The lock must be gone by then.
+    std::shared_ptr<SharedUdpEndpoint> ep;
     std::lock_guard<std::mutex> lock(registryMutex());
     auto& reg = registry();
     if (auto it = reg.find(key); it != reg.end()) {
@@ -77,7 +80,7 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
         return existing;
       }
     }
-    std::shared_ptr<SharedUdpEndpoint> ep(new SharedUdpEndpoint());
+    ep.reset(new SharedUdpEndpoint());
     if (auto status = ep->open(address, port); !status) {
       return PJ::unexpected(status.error());
     }
