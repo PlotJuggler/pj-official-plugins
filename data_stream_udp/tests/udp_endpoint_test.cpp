@@ -42,7 +42,7 @@ uint16_t freeUdpPort() {
   return probe.local_endpoint().port();
 }
 
-/// A later acquire must work, and must share the endpoint with a concurrent acquire of the same key.
+/// A later acquire must work, and must share the endpoint with a second acquire of the same key.
 void expectAcquireStillWorks(uint16_t port) {
   auto first = acquireWithTimeout("127.0.0.1", port);
   ASSERT_TRUE(first.has_value());
