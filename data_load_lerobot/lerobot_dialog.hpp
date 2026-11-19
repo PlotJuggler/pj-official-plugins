@@ -14,6 +14,9 @@
 
 namespace {
 
+/// Folder name of the dataset the saved `selected_episodes` were chosen for.
+constexpr char kSelectionDatasetKey[] = "selected_episodes_dataset";
+
 // Generated at configure time by pj_embed_ui / pj_embed_manifest.
 #include "dialog_lerobot_ui.hpp"
 #include "lerobot_manifest.hpp"
@@ -133,6 +136,7 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       const std::string name = model_->root.filename().string();
       if (!name.empty()) {
         cfg["display_name"] = name;
+        cfg[kSelectionDatasetKey] = name;
       }
     }
 
@@ -191,6 +195,13 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
         return false;
       }
     } else if (model_) {
+      // The selection belongs to the dataset it was chosen for: the host pre-fills the next dataset's dialog with
+      // this config, "filepath" rewritten, and episode indices of one dataset mean nothing in another. A config
+      // without the name (an older plugin version) keeps its selection.
+      const auto chosen_for = cfg.value(kSelectionDatasetKey, std::string{});
+      if (!chosen_for.empty() && chosen_for != model_->root.filename().string()) {
+        restored.clear();
+      }
       // Keep only restored indices still present (the dataset may have
       // changed since the layout was saved); empty selection ⇒ default all.
       for (int64_t ep : restored) {

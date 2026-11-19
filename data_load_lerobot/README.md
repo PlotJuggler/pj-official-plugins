@@ -65,6 +65,11 @@ config per episode:
 }
 ```
 
+`selected_episodes` is saved with `selected_episodes_dataset`, the dataset's
+folder name, and applies to that dataset only: PlotJuggler pre-fills the dialog
+of the next dataset with the last config, and a dataset with another name opens
+with every episode selected instead.
+
 `pj_app::FileLoader` peels `__pj_fanout` and runs the import N times — one
 fresh `DataSourceHandle` + `DatasetId` per entry. Each spawned
 `LeRobotSource` reads `episode: <int>` from its per-instance config and
