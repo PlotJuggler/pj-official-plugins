@@ -29,6 +29,19 @@ pj_emit_plugin_manifest(udp_source_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
+# --- SharedUdpEndpoint::acquire failure paths (loopback sockets only) ---
+add_executable(udp_endpoint_test tests/udp_endpoint_test.cpp)
+target_compile_features(udp_endpoint_test PRIVATE cxx_std_20)
+target_compile_options(udp_endpoint_test PRIVATE ${PJ_WARNING_FLAGS})
+target_include_directories(udp_endpoint_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_link_libraries(udp_endpoint_test PRIVATE
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json asio::asio GTest::gtest_main
+)
+add_test(NAME udp_endpoint_test COMMAND udp_endpoint_test)
+
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(udp_source_plugin
   REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)

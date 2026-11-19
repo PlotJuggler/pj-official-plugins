@@ -58,11 +58,6 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
     if (io_thread_.joinable()) {
       io_thread_.join();
     }
-    std::lock_guard<std::mutex> lock(registryMutex());
-    auto& reg = registry();
-    if (auto it = reg.find(key_); it != reg.end() && it->second.expired()) {
-      reg.erase(it);
-    }
   }
 
   // Create-or-get the shared endpoint for address:port. The first caller opens
@@ -70,6 +65,8 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
   // the same endpoint reuse it.
   static PJ::Expected<std::shared_ptr<SharedUdpEndpoint>> acquire(const std::string& address, uint16_t port) {
     const std::string key = PJ::sdk::composeHostPort(address, port);
+    // A failed open destroys the endpoint under this lock, so ~SharedUdpEndpoint must never take registryMutex()
+    // (not recursive). An expired entry stays until the next acquire of the same key overwrites it.
     std::lock_guard<std::mutex> lock(registryMutex());
     auto& reg = registry();
     if (auto it = reg.find(key); it != reg.end()) {
@@ -81,7 +78,6 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
     if (auto status = ep->open(address, port); !status) {
       return PJ::unexpected(status.error());
     }
-    ep->key_ = key;
     reg[key] = ep;
     return ep;
   }
@@ -185,8 +181,6 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
 
   std::mutex subscribers_mutex_;
   std::vector<std::shared_ptr<UdpSubscriber>> subscribers_;
-
-  std::string key_;
 };
 
 class UdpSource : public PJ::StreamSourceBase {
