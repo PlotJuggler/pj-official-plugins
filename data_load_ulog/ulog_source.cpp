@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -13,13 +14,14 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <ulog_cpp/reader.hpp>
+#include <variant>
 #include <vector>
 
 #include "ulog_container.hpp"
 #include "ulog_flatten.hpp"
 #include "ulog_manifest.hpp"
-#include "ulog_params_dialog.hpp"
 
 namespace {
 
@@ -52,6 +54,45 @@ PJ::PrimitiveType ulogTypeToPrimitive(ulog_cpp::Field::BasicType type) {
       return PJ::PrimitiveType::kUint8;
     default:
       return PJ::PrimitiveType::kFloat64;
+  }
+}
+
+/// The shortest decimal that reads back as the same float, so 0.1F becomes 0.1 rather than its double widening
+/// 0.10000000149011612. snprintf and strtod share the C locale's decimal separator, so the round trip holds under any.
+double shortestFloat(float value) {
+  char text[32];
+  for (int digits = 6; digits <= 9; ++digits) {
+    std::snprintf(text, sizeof(text), "%.*g", digits, static_cast<double>(value));
+    if (std::strtof(text, nullptr) == value) {
+      break;
+    }
+  }
+  return std::strtod(text, nullptr);
+}
+
+/// An INFO or PARAMETER value as JSON: strings (char arrays) as text, numbers as numbers, other arrays element-wise.
+nlohmann::json ulogValueToJson(const ulog_cpp::Value& value) {
+  try {
+    return std::visit(
+        [](const auto& v) -> nlohmann::json {
+          using T = std::decay_t<decltype(v)>;
+          if constexpr (std::is_same_v<T, float>) {
+            return shortestFloat(v);
+          } else if constexpr (std::is_same_v<T, std::vector<float>>) {
+            nlohmann::json array = nlohmann::json::array();
+            for (const float element : v) {
+              array.push_back(shortestFloat(element));
+            }
+            return array;
+          } else if constexpr (std::is_same_v<T, char>) {
+            return std::string(1, v);
+          } else {
+            return v;
+          }
+        },
+        value.asNativeTypeVariant());
+  } catch (const std::exception&) {
+    return nullptr;  // a nested type: ulog_cpp has no native variant for it
   }
 }
 
@@ -358,11 +399,7 @@ class StreamingContainer : public ulog_container::ULogContainer {
 class ULogSource : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
-    return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
-  }
-
-  PJ_borrowed_dialog_t getDialog() override {
-    return PJ::borrowDialog(dialog_);
+    return PJ::kCapabilityDirectIngest;
   }
 
   std::string saveConfig() const override {
@@ -375,9 +412,6 @@ class ULogSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
     filepath_ = cfg.value("filepath", std::string{});
-    if (!filepath_.empty()) {
-      dialog_.setFilePath(filepath_);
-    }
     return PJ::okStatus();
   }
 
@@ -585,6 +619,8 @@ class ULogSource : public PJ::FileSourceBase {
       }
     }
 
+    publishDatasetMetadata(*data_container);
+
     runtimeHost().reportMessage(
         PJ::DataSourceMessageLevel::kInfo, "Imported " + std::to_string(result.series_count) + " time series");
 
@@ -592,6 +628,23 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
  private:
+  // The INFO messages and the last value of each parameter, for the host's dataset info view. The log messages are
+  // already in `_log`. A host without set_dataset_metadata (SDK < 0.32), or one refusing the document, only loses
+  // this view: the import is unaffected.
+  void publishDatasetMetadata(const ulog_container::ULogContainer& container) {
+    nlohmann::json info = nlohmann::json::object();
+    for (const auto& [key, message] : container.messageInfo()) {
+      info[key] = ulogValueToJson(message.value());
+    }
+    nlohmann::json parameters = nlohmann::json::object();
+    for (const auto& [name, parameter] : container.finalParameters()) {
+      parameters[name] = ulogValueToJson(parameter.value());
+    }
+    const nlohmann::json document = {{"info", std::move(info)}, {"parameters", std::move(parameters)}};
+    // A ULog string is raw bytes: replace invalid UTF-8 instead of throwing.
+    (void)runtimeHost().setDatasetMetadata(document.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+  }
+
   // The same log messages as kLog objects for the log viewer, on an object topic
   // also named `_log` (the object store and the scalar store are separate, like
   // a parser's /rosout). Skipped with a warning when the host has no object store.
@@ -628,12 +681,8 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
   std::string filepath_;
-  ulog_detail::ULogParamsDialog dialog_;
 };
 
 }  // namespace
 
-// The dialog class is namespaced, so the static (WASM) build needs an
-// unqualified name for its getter symbol.
-PJ_DIALOG_PLUGIN_NAMED(ulog_detail::ULogParamsDialog, ULogParamsDialog, kUlogManifest)
 PJ_DATA_SOURCE_PLUGIN(ULogSource, kUlogManifest)

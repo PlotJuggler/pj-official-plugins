@@ -9,6 +9,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/host/data_source_library.hpp>
@@ -71,6 +72,15 @@ class ULogBuilder {
     payload.insert(payload.end(), type_and_name.begin(), type_and_name.end());
     appendLe(payload, value);
     writeMessage('P', payload);
+  }
+
+  // Information message ('I'): a "type name" key, then the value's bytes.
+  void writeInfo(const std::string& type_and_name, const std::vector<uint8_t>& value) {
+    std::vector<uint8_t> payload;
+    payload.push_back(static_cast<uint8_t>(type_and_name.size()));
+    payload.insert(payload.end(), type_and_name.begin(), type_and_name.end());
+    payload.insert(payload.end(), value.begin(), value.end());
+    writeMessage('I', payload);
   }
 
   void writeSubscription(uint16_t msg_id, uint8_t multi_id, const std::string& format_name) {
@@ -987,7 +997,7 @@ TEST(ULogContainerTest, FutureOutlierDoesNotPoisonLaterChanges) {
 }
 
 TEST(ULogContainerTest, FinalParametersOverlayChangesInFileOrder) {
-  // The Properties dialog must show the LAST value of each parameter, as the
+  // The dataset metadata lists the LAST value of each parameter, as the
   // original plugin did (it overwrote on every data-section PARAMETER).
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -1095,6 +1105,11 @@ struct RecordingHost {
   uint64_t bound_records = 0;
   uint64_t stop_after_records = UINT64_MAX;  // is_stop_requested turns true from here on
   bool fail_appends = false;
+  // The runtime vtable ends before complete_ingest, like a host at the plugin's min_sdk_required: no
+  // set_dataset_metadata slot.
+  bool floor_level_host = false;
+  bool metadata_slot_called = false;
+  std::string metadata;
 
   static Cell toCell(bool is_null, const PJ_scalar_value_t& v) {
     Cell cell;
@@ -1242,6 +1257,17 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
       return self.bound_records >= self.stop_after_records;
     };
     vtable.notify_state = [](void*, PJ_data_source_state_t) noexcept {};
+    vtable.set_dataset_metadata = [](void* ctx, PJ_string_view_t json, PJ_error_t*) noexcept {
+      auto& self = *static_cast<RecordingHost*>(ctx);
+      self.metadata_slot_called = true;
+      self.metadata.assign(json.data, json.size);
+      return true;
+    };
+    return vtable;
+  }();
+  static const PJ_data_source_runtime_host_vtable_t kFloorRuntime = [] {
+    PJ_data_source_runtime_host_vtable_t vtable = kRuntime;
+    vtable.struct_size = offsetof(PJ_data_source_runtime_host_vtable_t, complete_ingest);
     return vtable;
   }();
 
@@ -1255,7 +1281,7 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
   PJ::ServiceRegistryBuilder registry;
   registry.registerService<PJ::sdk::SourceWriteHostService>(PJ_source_write_host_t{.ctx = &host, .vtable = &kWrite});
   registry.registerService<PJ::sdk::DataSourceRuntimeHostService>(
-      PJ_data_source_runtime_host_t{.ctx = &host, .vtable = &kRuntime});
+      PJ_data_source_runtime_host_t{.ctx = &host, .vtable = host.floor_level_host ? &kFloorRuntime : &kRuntime});
   if (auto status = handle.bind(registry.view()); !status) {
     outcome.error = "bind: " + status.error();
   } else if (status = handle.loadConfig(R"({"filepath":")" + path.generic_string() + R"("})"); !status) {
@@ -1465,6 +1491,53 @@ TEST(ULogImportTest, LoggedMessagesKeepTheScalarLogTopic) {
   EXPECT_TRUE(std::any_of(host.warnings.begin(), host.warnings.end(), [](const std::string& w) {
     return w.find("log messages imported as scalars only") != std::string::npos;
   }));
+}
+
+TEST(ULogImportTest, InfoAndFinalParametersBecomeDatasetMetadata) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeInfo("char[3] sys_name", {'P', 'X', '4'});
+  FieldDataBuilder release;
+  release.append<uint32_t>(0x010E00FF);
+  builder.writeInfo("uint32_t ver_sw_release", release.build());
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("MAV_TYPE", 2);
+  builder.writeParameterFloat("MPC_XY_VEL_MAX", 0.1F);
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeParameterInt("MAV_TYPE", 13);
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const auto document = nlohmann::json::parse(host.metadata, nullptr, false);
+  ASSERT_TRUE(document.is_object()) << host.metadata;
+  EXPECT_EQ(document["info"]["sys_name"], "PX4");
+  EXPECT_EQ(document["info"]["ver_sw_release"], 0x010E00FF);
+  EXPECT_EQ(document["parameters"]["MAV_TYPE"], 13);  // the in-flight change, not the initial value
+  // The float's shortest decimal, not its double widening 0.10000000149011612.
+  EXPECT_EQ(document["parameters"]["MPC_XY_VEL_MAX"].dump(), "0.1");
+}
+
+// floor_test (manifest.json): the plugin's min_sdk_required predates set_dataset_metadata.
+TEST(ULogImportTest, ImportSucceedsOnHostWithoutDatasetMetadata) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("MAV_TYPE", 2);
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+
+  RecordingHost host;
+  host.floor_level_host = true;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+  EXPECT_FALSE(host.metadata_slot_called) << "a slot past the floor-level struct_size was invoked";
+  EXPECT_EQ(host.rows["dummy"].size(), 1u);
+  EXPECT_EQ(host.rows["_parameters/MAV_TYPE"].size(), 1u);
 }
 
 TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {

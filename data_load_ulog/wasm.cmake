@@ -2,8 +2,7 @@
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/PjWasmPlugin.cmake")
 
 pj_wasm_official_plugin(pj_wasm_ulog_source
-  SOURCES ulog_source.cpp ulog_params_dialog.cpp ulog_container.cpp
+  SOURCES ulog_source.cpp ulog_container.cpp
   MANIFEST ulog_manifest.hpp=kUlogManifest
-  UI ulog_params.ui=kULogParamsUi
-  DATA_SOURCE ULogSource DIALOG ULogParamsDialog
+  DATA_SOURCE ULogSource
   LINKS ulog_cpp::ulog_cpp nlohmann_json::nlohmann_json)
