@@ -19,13 +19,16 @@ flight log files.
   trailing padding is normal, not truncated. Padding anywhere else in the
   format (including one nested inside another message, where it is needed to
   keep sibling field offsets correct) still counts toward the required size.
-- Parameters written as `_parameters/<name>` series: the initial snapshot at
-  file start, plus every **in-flight parameter change** as a further point
-- File info (`_info/<key>`, a numeric or text `value`) and embedded log messages (`_log`) written as topics
+- Parameters written to one `_parameters` topic, one field per parameter: the
+  initial snapshot at file start, plus every **in-flight parameter change** as a
+  further point of that parameter
+- File info written to one `_info` topic, one field per key (numeric or text,
+  such as `sys_name` and `ver_hw`), at file start; embedded log messages
+  written to the `_log` topic
 - Embedded log messages also published as `kLog` objects on an object topic
   named `_log` (for the log viewer): severity `0`..`7` mapped to fatal (0-2),
-  error, warning, info (5-6), debug; the tag of a tagged message becomes the
-  category
+  error, warning, info (5-6), debug; a PX4 module prefix (`[commander] ...`)
+  becomes the source, and the tag of a tagged message the category
 - No load dialog. The INFO messages and the last value of each parameter are
   published as dataset metadata (`info`, `parameters`), which the host shows in
   its dataset info view; hosts before SDK 0.32 do not show it

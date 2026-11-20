@@ -15,12 +15,14 @@
 #include <pj_plugins/host/data_source_library.hpp>
 #include <pj_plugins/host/service_registry_builder.hpp>
 #include <string>
+#include <type_traits>
 #include <ulog_cpp/data_container.hpp>
 #include <ulog_cpp/reader.hpp>
 #include <vector>
 
 #include "../ulog_container.hpp"
 #include "../ulog_flatten.hpp"
+#include "../ulog_log_source.hpp"
 
 namespace {
 
@@ -896,7 +898,7 @@ TEST(ULogContainerTest, ClockNeverRunsBackwardsAcrossSubscriptions) {
   // Data messages are in LOG order, but timestamps are only monotonic per
   // subscription: a low-rate topic can be flushed after a high-rate one with an
   // OLDER timestamp. Parameter stamps must still never go backwards, or the
-  // change history on `_parameters/<name>` is inverted.
+  // change history of a `_parameters` field is inverted.
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
@@ -1078,6 +1080,19 @@ TEST(ULogContainerTest, SampleFreeContainerDropsRecordsButKeepsTheClock) {
   EXPECT_FALSE(container->parsingErrors().empty());
 }
 
+TEST(ULogLogSourceTest, PX4ModulePrefixBecomesTheSource) {
+  using ulog_detail::splitModulePrefix;
+  using Split = std::pair<std::string_view, std::string_view>;
+  EXPECT_EQ(splitModulePrefix("[commander] Takeoff detected"), Split("commander", "Takeoff detected"));
+  EXPECT_EQ(splitModulePrefix("[ekf2] [warn] fusion reset"), Split("ekf2", "[warn] fusion reset"));
+  // Not a module prefix: the whole text stays the message.
+  for (std::string_view text :
+       {"Takeoff detected", "[two words] text", "[commander]", "[commander] ", "[] text", "[commander]text",
+        "[open text"}) {
+    EXPECT_EQ(splitModulePrefix(text), Split("", text)) << text;
+  }
+}
+
 // --- Whole import, through the BUILT plugin ---
 //
 // The loader decodes and writes each record as the reader hands it over. These
@@ -1086,6 +1101,7 @@ TEST(ULogContainerTest, SampleFreeContainerDropsRecordsButKeepsTheClock) {
 // host, and the stop and error paths.
 
 struct Cell {
+  std::string name;  // set for named records
   bool is_null = false;
   PJ_primitive_type_t type = PJ_PRIMITIVE_TYPE_UNSPECIFIED;
   double number = 0.0;
@@ -1096,6 +1112,19 @@ struct Row {
   int64_t timestamp_ns = 0;
   std::vector<Cell> cells;
 };
+
+// The rows of `topic` that name `field`, as (timestamp, cell).
+std::vector<std::pair<int64_t, Cell>> fieldSamples(const std::vector<Row>& topic, const std::string& field) {
+  std::vector<std::pair<int64_t, Cell>> samples;
+  for (const Row& row : topic) {
+    for (const Cell& cell : row.cells) {
+      if (cell.name == field) {
+        samples.emplace_back(row.timestamp_ns, cell);
+      }
+    }
+  }
+  return samples;
+}
 
 struct RecordingHost {
   std::vector<std::string> topic_names;                    // index = handle id - 1
@@ -1167,6 +1196,9 @@ struct RecordingHost {
     row.timestamp_ns = timestamp;
     for (uint64_t i = 0; i < count; ++i) {
       row.cells.push_back(toCell(cells[i].is_null, cells[i].value));
+      if constexpr (std::is_same_v<FieldValue, PJ_named_field_value_t>) {
+        row.cells.back().name.assign(cells[i].name.data, cells[i].name.size);
+      }
     }
     rows[topic_names.at(topic.id - 1)].push_back(std::move(row));
   }
@@ -1517,11 +1549,17 @@ TEST(ULogImportTest, InfoAndFinalParametersBecomeDatasetMetadata) {
   EXPECT_EQ(document["info"]["sys_name"], "PX4");
   EXPECT_EQ(document["info"]["ver_sw_release"], 0x010E00FF);
   EXPECT_EQ(document["parameters"]["MAV_TYPE"], 13);  // the in-flight change, not the initial value
+  // In `_parameters`, the snapshot record plus the change, which names only MAV_TYPE.
+  const auto mav_type = fieldSamples(host.rows["_parameters"], "MAV_TYPE");
+  ASSERT_EQ(mav_type.size(), 2u);
+  EXPECT_EQ(mav_type[0].second.number, 2.0);
+  EXPECT_EQ(mav_type[1].second.number, 13.0);
+  EXPECT_EQ(fieldSamples(host.rows["_parameters"], "MPC_XY_VEL_MAX").size(), 1u);
   // The float's shortest decimal, not its double widening 0.10000000149011612.
   EXPECT_EQ(document["parameters"]["MPC_XY_VEL_MAX"].dump(), "0.1");
 }
 
-TEST(ULogImportTest, InfoValuesBecomeInfoTopicsNumericOrText) {
+TEST(ULogImportTest, InfoValuesAreFieldsOfOneInfoTopicNumericOrText) {
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
@@ -1537,12 +1575,14 @@ TEST(ULogImportTest, InfoValuesBecomeInfoTopicsNumericOrText) {
   const auto outcome = importBytes(builder.data(), host);
   ASSERT_TRUE(outcome.ok) << outcome.error;
 
-  ASSERT_EQ(host.rows["_info/sys_name"].size(), 1u);
-  const Cell& name = host.rows["_info/sys_name"][0].cells.at(0);
-  EXPECT_EQ(name.type, PJ_PRIMITIVE_TYPE_STRING);
-  EXPECT_EQ(name.text, "PX4");
-  ASSERT_EQ(host.rows["_info/ver_sw_release"].size(), 1u);
-  EXPECT_EQ(host.rows["_info/ver_sw_release"][0].cells.at(0).number, static_cast<double>(0x010E00FF));
+  ASSERT_EQ(host.rows["_info"].size(), 1u);  // every key in one record
+  const auto name = fieldSamples(host.rows["_info"], "sys_name");
+  ASSERT_EQ(name.size(), 1u);
+  EXPECT_EQ(name[0].second.type, PJ_PRIMITIVE_TYPE_STRING);
+  EXPECT_EQ(name[0].second.text, "PX4");
+  const auto version = fieldSamples(host.rows["_info"], "ver_sw_release");
+  ASSERT_EQ(version.size(), 1u);
+  EXPECT_EQ(version[0].second.number, static_cast<double>(0x010E00FF));
 }
 
 // floor_test (manifest.json): the plugin's min_sdk_required predates set_dataset_metadata.
@@ -1564,7 +1604,7 @@ TEST(ULogImportTest, ImportSucceedsOnHostWithoutDatasetMetadata) {
     return w.find("not in the dataset info") != std::string::npos;
   }));
   EXPECT_EQ(host.rows["dummy"].size(), 1u);
-  EXPECT_EQ(host.rows["_parameters/MAV_TYPE"].size(), 1u);
+  EXPECT_EQ(fieldSamples(host.rows["_parameters"], "MAV_TYPE").size(), 1u);
 }
 
 TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {
@@ -1577,7 +1617,7 @@ TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {
   ASSERT_GT(written, 0u);
   EXPECT_LT(written, 20000u);
   EXPECT_EQ(host.rows["dummy"].back().cells.at(0).number, static_cast<double>(written));  // a clean prefix
-  EXPECT_EQ(host.rows["_parameters/P"].size(), 1u);  // the cheap tail is still written
+  EXPECT_EQ(fieldSamples(host.rows["_parameters"], "P").size(), 1u);  // the cheap tail is still written
 }
 
 // The scan for topic names comes first and writes nothing. A stop that lands

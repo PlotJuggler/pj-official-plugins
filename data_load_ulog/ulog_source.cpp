@@ -16,11 +16,13 @@
 #include <string_view>
 #include <type_traits>
 #include <ulog_cpp/reader.hpp>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
 #include "ulog_container.hpp"
 #include "ulog_flatten.hpp"
+#include "ulog_log_source.hpp"
 #include "ulog_manifest.hpp"
 
 namespace {
@@ -516,90 +518,101 @@ class ULogSource : public PJ::FileSourceBase {
                                                     result.first_short_record_topic + "')");
     }
 
-    // Write parameters as `_parameters/<name>` timeseries: the initial snapshot
-    // at file start, then every in-flight change at the data-message clock it
-    // appeared under (PlotJuggler#1245). PX4 parameters are int32/float only;
-    // anything else is collected and reported once instead of silently skipped.
-    std::vector<std::string> non_numeric_params;
-    auto write_parameter = [&](const std::string& param_name, const ulog_cpp::Parameter& param,
-                               uint64_t ts_us) -> PJ::Status {
-      double param_value = 0.0;
-      try {
-        param_value = param.value().as<double>();
-      } catch (const std::exception&) {
-        std::string str_val;
-        try {
-          str_val = param.value().as<std::string>();
-        } catch (...) {}
-        non_numeric_params.push_back(param_name + "=" + str_val);
-        return PJ::okStatus();  // convert BEFORE ensureTopic: no empty topics
-      }
-
-      auto topic = writeHost().ensureTopic("_parameters/" + param_name);
-      if (!topic) {
-        return PJ::unexpected(topic.error());
-      }
-      auto ts_ns = static_cast<int64_t>(ts_us) * 1000;
-      return writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = param_value}});
-    };
-
-    for (const auto& [param_name, param] : data_container->initialParameters()) {
-      auto status = write_parameter(param_name, param, file_start_time_us);
-      if (!status) {
-        return status;
-      }
-    }
-    for (const auto& change : data_container->timedChangedParameters()) {
-      auto status = write_parameter(change.parameter.field().name(), change.parameter, change.timestamp_us);
-      if (!status) {
-        return status;
-      }
-    }
-    if (!non_numeric_params.empty()) {
-      runtimeHost().reportMessage(
-          PJ::DataSourceMessageLevel::kInfo,
-          "ULog: " + std::to_string(non_numeric_params.size()) +
-              " non-numeric parameter message(s) not plotted: " + sampleList(non_numeric_params, 5));
-    }
-
-    // Write file info as `_info/<key>` topics, one record at the file start: a numeric `value`, or a text one
-    // (sys_name, ver_hw, ...). Both ordinary INFO entries and the first instance of each INFO_MULTIPLE key.
+    // `_parameters`: one field per parameter, so each is a series right under the topic. The initial snapshot is one
+    // record at the file start; each in-flight change is a record at the data-message clock it appeared under
+    // (PlotJuggler#1245) naming only its parameter: the host stores the others as null, which a numeric series skips.
+    // PX4 parameters are int32/float only; anything else is collected and reported once instead of silently skipped.
     {
-      auto write_info = [&](const std::string& key, const ulog_cpp::MessageInfo& info) {
-        const auto ts = PJ::Timestamp{static_cast<int64_t>(file_start_time_us) * 1000};
-        double number = 0.0;
-        std::string text;
-        bool numeric = true;
+      std::vector<std::string> non_numeric_params;
+      auto numeric = [&](const std::string& name, const ulog_cpp::Parameter& param) -> std::optional<double> {
         try {
-          number = info.value().as<double>();
-        } catch (...) {
-          numeric = false;
+          return param.value().as<double>();
+        } catch (const std::exception&) {
+          std::string text;
           try {
-            text = info.value().as<std::string>();
-          } catch (...) {
-            return;
+            text = param.value().as<std::string>();
+          } catch (...) {}
+          non_numeric_params.push_back(name + "=" + text);
+          return std::nullopt;
+        }
+      };
+      std::vector<PJ::sdk::NamedFieldValue> snapshot;
+      for (const auto& [name, param] : data_container->initialParameters()) {
+        if (auto value = numeric(name, param)) {
+          snapshot.push_back({.name = name, .value = *value});
+        }
+      }
+      std::vector<std::pair<uint64_t, PJ::sdk::NamedFieldValue>> changes;
+      for (const auto& change : data_container->timedChangedParameters()) {
+        const std::string& name = change.parameter.field().name();
+        if (auto value = numeric(name, change.parameter)) {
+          changes.push_back({change.timestamp_us, {.name = name, .value = *value}});
+        }
+      }
+      if (!snapshot.empty() || !changes.empty()) {
+        auto topic = writeHost().ensureTopic("_parameters");
+        if (!topic) {
+          return PJ::unexpected(topic.error());
+        }
+        const auto at = [](uint64_t ts_us) { return PJ::Timestamp{static_cast<int64_t>(ts_us) * 1000}; };
+        if (!snapshot.empty()) {
+          auto status = writeHost().appendRecord(
+              *topic, at(file_start_time_us),
+              PJ::Span<const PJ::sdk::NamedFieldValue>(snapshot.data(), snapshot.size()));
+          if (!status) {
+            return status;
           }
         }
-        auto topic = writeHost().ensureTopic("_info/" + key);
-        if (!topic) {
-          return;
+        for (const auto& [ts_us, field] : changes) {
+          auto status =
+              writeHost().appendRecord(*topic, at(ts_us), PJ::Span<const PJ::sdk::NamedFieldValue>(&field, 1));
+          if (!status) {
+            return status;
+          }
         }
-        if (numeric) {
-          (void)writeHost().appendRecord(*topic, ts, {{.name = "value", .value = number}});
-          return;
-        }
-        (void)writeHost().ensureField(*topic, "value", PJ::PrimitiveType::kString);
-        (void)writeHost().appendRecord(*topic, ts, {{.name = "value", .value = std::string_view(text)}});
-      };
+      }
+      if (!non_numeric_params.empty()) {
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kInfo,
+            "ULog: " + std::to_string(non_numeric_params.size()) +
+                " non-numeric parameter message(s) not plotted: " + sampleList(non_numeric_params, 5));
+      }
+    }
 
+    // `_info`: one field per info key, numeric or text (sys_name, ver_hw, ...), in one record at the file start. Both
+    // ordinary INFO entries and the first instance of each INFO_MULTIPLE key.
+    {
+      std::vector<std::string> texts;  // owns the text the record's string views point at
+      texts.reserve(data_container->messageInfo().size() + data_container->messageInfoMulti().size());
+      std::vector<PJ::sdk::NamedFieldValue> fields;
+      std::unordered_set<std::string> seen;
+      auto add_info = [&](const std::string& key, const ulog_cpp::MessageInfo& info) {
+        if (!seen.insert(key).second) {
+          return;
+        }
+        try {
+          fields.push_back({.name = key, .value = info.value().as<double>()});
+          return;
+        } catch (...) {}
+        try {
+          texts.push_back(info.value().as<std::string>());
+          fields.push_back({.name = key, .value = std::string_view(texts.back())});
+        } catch (...) {}
+      };
       for (const auto& [key, info] : data_container->messageInfo()) {
-        write_info(key, info);
+        add_info(key, info);
       }
       for (const auto& [key, values_vec] : data_container->messageInfoMulti()) {
-        if (values_vec.empty() || values_vec[0].empty()) {
-          continue;
+        if (!values_vec.empty() && !values_vec[0].empty()) {
+          add_info(key, values_vec[0][0]);  // first instance
         }
-        write_info(key, values_vec[0][0]);  // first instance
+      }
+      if (!fields.empty()) {
+        if (auto topic = writeHost().ensureTopic("_info")) {
+          (void)writeHost().appendRecord(
+              *topic, PJ::Timestamp{static_cast<int64_t>(file_start_time_us) * 1000},
+              PJ::Span<const PJ::sdk::NamedFieldValue>(fields.data(), fields.size()));
+        }
       }
     }
 
@@ -677,7 +690,9 @@ class ULogSource : public PJ::FileSourceBase {
       PJ::sdk::Log entry;
       entry.timestamp_ns = static_cast<int64_t>(log.timestamp()) * 1000;
       entry.level = toLogLevel(log.logLevel());
-      entry.message = log.message();
+      const auto [module, text] = ulog_detail::splitModulePrefix(log.message());
+      entry.source = std::string(module);
+      entry.message = std::string(text);
       if (log.hasTag()) {
         entry.category = std::to_string(log.tag());
       }

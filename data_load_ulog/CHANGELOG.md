@@ -12,6 +12,17 @@ below; for earlier releases see the git history of `data_load_ulog/`.
   messages are in the Log panel (PlotJuggler 4.2 or later) and, on every
   version, in the `_log` topic. Loading no longer parses the file an extra time
   for the dialog (0.35 s saved on a 1 GB log).
+- Parameters are one `_parameters` topic with a field per parameter, and the
+  file info one `_info` topic with a field per key, so the curve tree has no
+  `value` level under each. Layouts that plot a parameter from 1.3.0 or
+  earlier name `_parameters/<name>/value` and must be pointed at
+  `_parameters/<name>`.
+- In the Log panel, a PX4 module prefix such as `[commander]` is the message's
+  source, so messages can be filtered by module.
+
+### Added
+- Text info values (`sys_name`, `ver_hw`, `sys_mcu`, ...) are in `_info`; they
+  were only written to the application log.
 
 ## [1.3.0] - 2026-11-14
 
