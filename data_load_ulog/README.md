@@ -20,7 +20,8 @@ flight log files. Requires PlotJuggler 4.2 or later.
   format (including one nested inside another message, where it is needed to
   keep sibling field offsets correct) still counts toward the required size.
 - Parameters written to one `_parameters` topic, one field per parameter: the
-  initial values at the start of the log (its earliest record), plus every
+  initial values at the start of the log (the earliest of the header timestamp,
+  the first record and the first logged message), plus every
   **in-flight parameter change** as a further point of that parameter
 - File info written to one `_info` topic, one field per key (numeric or text,
   such as `sys_name` and `ver_hw`), at the start of the log
@@ -34,6 +35,14 @@ flight log files. Requires PlotJuggler 4.2 or later.
 - Progress reporting with "Stop and keep" support
 - Truncated or partially corrupt files import everything decodable; recoverable
   parse problems are surfaced as a warning
+
+## Upgrade note: parameter and info series names
+
+Up to 1.3.0 each parameter and info key was a topic with one `value` field:
+`_parameters/<name>/value`, `_info/<key>/value`. They are now fields of one
+topic each: `_parameters/<name>`, `_info/<key>`. The scalar `_log` topic
+(`level`, `message`) is gone; logged messages are in the Log panel. Saved
+layouts that plot the old names must be pointed at the new ones.
 
 ## Upgrade note: `char[N]` series names
 

@@ -18,6 +18,11 @@ below; for earlier releases see the git history of `data_load_ulog/`.
   `_parameters/<name>/value` must be pointed at `_parameters/<name>`.
 - The initial parameter values and the file info hold from the start of the
   log, so the curve list shows them at the start of the timeline.
+- A float parameter's series holds its shortest decimal (0.1), not its double
+  widening (0.10000000149011612).
+- A file whose parameter or info names the host refuses (two names that
+  normalize to the same one) still imports, with a warning, instead of failing.
+- A log with no file info and no parameters adds nothing to the dataset info.
 - Logged messages are only `kLog` objects for the Log panel: the scalar `_log`
   topic with `level` and `message` text fields is gone. A PX4 module prefix
   such as `[commander]` is the message's source, so the Log panel can filter

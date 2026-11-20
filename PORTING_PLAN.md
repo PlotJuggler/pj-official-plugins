@@ -56,7 +56,7 @@ Severity levels:
 | # | Gap | Severity | Original Location | Notes |
 |---|-----|----------|-------------------|-------|
 | 1 | Parameters dialog UI missing | HIGH | `ulog_parameters_dialog.h/cpp/ui` (entire file set) | Original shows an interactive 3-tab dialog (Info, Properties, Message Logs) after loading. **RESOLVED:** no load dialog; info and parameters are the `_info` and `_parameters` topics and dataset metadata shown in the host's dataset info view; log messages are log objects for the Log panel. |
-| 2 | Info metadata fields not displayed | HIGH | `ulog_parser.cpp:670-760`, `ulog_parameters_dialog.cpp:16-23` | Original parses and displays file info fields (hardware, software version, etc.) in a table. **RESOLVED:** `messageInfo()` is in the dataset metadata (`info`); every info value is also a field of the `_info` topic (numeric or text). |
+| 2 | Info metadata fields not displayed | HIGH | `ulog_parser.cpp:670-760`, `ulog_parameters_dialog.cpp:16-23` | Original parses and displays file info fields (hardware, software version, etc.) in a table. **RESOLVED:** `messageInfo()` is in the dataset metadata (`info`); every numeric or text info value is also a field of the `_info` topic. |
 | 3 | Embedded log messages not extracted | HIGH | `ulog_parser.cpp:84-93`, `ulog_parameters_dialog.cpp:39-77` | Original extracts LOGGING messages with level translation (EMERGENCY→DEBUG) and displays them. **RESOLVED:** they are written as log objects on the `_log` object topic for the Log panel. |
 | 4 | Timestamp field handling changed | MEDIUM | `ulog_parser.cpp:165-171, 645-648` | Original detects timestamp field from format definition. Ported assumed timestamp at fixed message offset (first 8 bytes). **FIXED:** `ulog_flatten::findTimestampOffset` locates the `uint64_t timestamp` field by name (spec requires the field, not its position); formats without one fall back to the sample index like the original. |
 
@@ -240,6 +240,3 @@ CDR/ros2msg-only. This is a deliberate extension of scope, documented in the plu
 - MQTT #7: Reconnection detection via connection_lost_handler callback
 - Foxglove #6: Reconnection strategy (~5s retry loop in onPoll when disconnected)
 - PJ Bridge #2: Pause/resume protocol commands to server (kCapabilitySupportsPause declared)
-
-### Remaining SDK work (cosmetic, not blocking):
-- **Plugin status panel UI** — proto_app could add a dock/tab to display `_info`, `_log`, `_parameters` topics (data is already written by ULog)

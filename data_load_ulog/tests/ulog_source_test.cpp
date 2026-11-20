@@ -1135,6 +1135,8 @@ struct RecordingHost {
   uint64_t bound_records = 0;
   uint64_t stop_after_records = UINT64_MAX;  // is_stop_requested turns true from here on
   bool fail_appends = false;
+  bool fail_named_appends = false;  // the host refuses every named record (`_parameters`, `_info`)
+  bool no_object_store = false;
   std::vector<std::string> object_topics;
   std::vector<PJ::sdk::Log> logs;
   std::string metadata;
@@ -1226,8 +1228,13 @@ struct RecordingHost {
 
   static bool appendRecord(
       void* ctx, PJ_topic_handle_t topic, int64_t timestamp, const PJ_named_field_value_t* cells, uint64_t count,
-      PJ_error_t*) noexcept {
-    static_cast<RecordingHost*>(ctx)->record(topic, timestamp, cells, count);
+      PJ_error_t* error) noexcept {
+    auto& self = *static_cast<RecordingHost*>(ctx);
+    if (self.fail_named_appends) {
+      PJ::sdk::fillError(error, 1, "test", "duplicate field name");
+      return false;
+    }
+    self.record(topic, timestamp, cells, count);
     return true;
   }
 
@@ -1333,8 +1340,10 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
   registry.registerService<PJ::sdk::SourceWriteHostService>(PJ_source_write_host_t{.ctx = &host, .vtable = &kWrite});
   registry.registerService<PJ::sdk::DataSourceRuntimeHostService>(
       PJ_data_source_runtime_host_t{.ctx = &host, .vtable = &kRuntime});
-  registry.registerService<PJ::sdk::SourceObjectWriteHostService>(
-      PJ_object_write_host_t{.ctx = &host, .vtable = &kObjects});
+  if (!host.no_object_store) {
+    registry.registerService<PJ::sdk::SourceObjectWriteHostService>(
+        PJ_object_write_host_t{.ctx = &host, .vtable = &kObjects});
+  }
   if (auto status = handle.bind(registry.view()); !status) {
     outcome.error = "bind: " + status.error();
   } else if (status = handle.loadConfig(R"({"filepath":")" + path.generic_string() + R"("})"); !status) {
@@ -1514,7 +1523,6 @@ std::vector<uint8_t> manyDummyRecords(uint64_t count) {
   return builder.data();
 }
 
-// 20000 records span several 64 KiB read chunks; the stop is polled per chunk.
 // Logged messages are kLog objects on the `_log` object topic only: a PX4 module prefix becomes the source, a
 // tagged message's tag the category.
 TEST(ULogImportTest, LoggedMessagesBecomeLogObjects) {
@@ -1544,6 +1552,68 @@ TEST(ULogImportTest, LoggedMessagesBecomeLogObjects) {
   EXPECT_EQ(host.logs[1].source, "");
   EXPECT_EQ(host.logs[1].message, "Takeoff");
   EXPECT_EQ(host.logs[1].category, "7");
+}
+
+// A host refusing the `_parameters` or `_info` record (a name it normalizes onto another) costs those series only:
+// the import succeeds and the log messages and the dataset info are still written.
+TEST(ULogImportTest, RefusedParameterAndInfoRecordsAreWarningsNotAFailedImport) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeInfo("char[3] sys_name", {'P', 'X', '4'});
+  builder.writeParameterInt("MAV_TYPE", 2);
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeLogging('6', 1500000, "Takeoff");
+
+  RecordingHost host;
+  host.fail_named_appends = true;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  EXPECT_EQ(host.logs.size(), 1u);
+  EXPECT_FALSE(host.metadata.empty());
+  const auto warned = [&](std::string_view what) {
+    return std::any_of(host.warnings.begin(), host.warnings.end(), [&](const std::string& w) {
+      return w.find(what) != std::string::npos && w.find("duplicate field name") != std::string::npos;
+    });
+  };
+  EXPECT_TRUE(warned("_parameters"));
+  EXPECT_TRUE(warned("_info"));
+}
+
+// No INFO and no parameters: nothing for the dataset info view, so no empty document.
+TEST(ULogImportTest, NoInfoAndNoParametersPublishNoDatasetMetadata) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+  EXPECT_TRUE(host.metadata.empty()) << host.metadata;
+}
+
+TEST(ULogImportTest, LoggedMessagesWithoutAnObjectStoreAreAWarning) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeLogging('6', 1500000, "Takeoff");
+
+  RecordingHost host;
+  host.no_object_store = true;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+  EXPECT_TRUE(std::any_of(host.warnings.begin(), host.warnings.end(), [](const std::string& w) {
+    return w.find("1 logged message(s) not imported") != std::string::npos;
+  }));
 }
 
 TEST(ULogImportTest, InfoAndParametersBecomeTopicsAndDatasetMetadata) {

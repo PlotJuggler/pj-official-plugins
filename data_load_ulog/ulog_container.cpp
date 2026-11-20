@@ -19,7 +19,8 @@ ULogContainer::ULogContainer(bool keep_samples)
 void ULogContainer::fileHeader(const ulog_cpp::FileHeader& header) {
   ulog_cpp::DataContainer::fileHeader(header);
   // Until the first data message arrives, the file start is the clock, and it
-  // stays the floor: the initial parameter snapshot is written there.
+  // stays the floor: a parameter change is never stamped before the header
+  // timestamp, even when data records are.
   file_start_us_ = header.header().timestamp;
   clock_us_ = file_start_us_;
 }

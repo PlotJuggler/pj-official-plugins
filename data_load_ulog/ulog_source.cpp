@@ -559,9 +559,10 @@ class ULogSource : public PJ::FileSourceBase {
         }
       }
       if (!fields.empty()) {
-        if (auto topic = writeHost().ensureTopic("_info")) {
-          (void)writeHost().appendRecord(*topic, fromMicros(snapshot_time_us), fields);
-        }
+        auto topic = writeHost().ensureTopic("_info");
+        auto status = topic ? writeHost().appendRecord(*topic, fromMicros(snapshot_time_us), fields)
+                            : PJ::Status(PJ::unexpected(topic.error()));
+        warnIfRefused("_info", status);
       }
     }
 
@@ -593,7 +594,7 @@ class ULogSource : public PJ::FileSourceBase {
           changes.push_back({change.timestamp_us, {.name = name, .value = *value}});
         }
       }
-      if (!snapshot.empty() || !changes.empty()) {
+      const auto write_parameters = [&]() -> PJ::Status {
         auto topic = writeHost().ensureTopic("_parameters");
         if (!topic) {
           return PJ::unexpected(topic.error());
@@ -608,6 +609,10 @@ class ULogSource : public PJ::FileSourceBase {
             return status;
           }
         }
+        return PJ::okStatus();
+      };
+      if (!snapshot.empty() || !changes.empty()) {
+        warnIfRefused("_parameters", write_parameters());
       }
       if (!non_numeric_params.empty()) {
         runtimeHost().reportMessage(
@@ -630,6 +635,15 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
  private:
+  // A refused `_parameters` or `_info` write (such as two names the host normalizes onto one) costs those series
+  // only: the data, the log messages and the dataset info are still imported.
+  void warnIfRefused(const std::string& topic, const PJ::Status& status) {
+    if (!status) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning, "ULog: `" + topic + "` incomplete: " + status.error());
+    }
+  }
+
   // The file info and the last value of each parameter, for the host's dataset info view. A host refusing the
   // document (its size bounds are host policy) only loses this view: the import is unaffected, and a warning says why
   // it is empty.
@@ -637,6 +651,9 @@ class ULogSource : public PJ::FileSourceBase {
     nlohmann::json parameters = nlohmann::json::object();
     for (const auto& [name, parameter] : container.finalParameters()) {
       parameters[name] = ulogValueToJson(parameter.value());
+    }
+    if (info.empty() && parameters.empty()) {
+      return;
     }
     const nlohmann::json document = {{"info", std::move(info)}, {"parameters", std::move(parameters)}};
     // A ULog string is raw bytes: replace invalid UTF-8 instead of throwing.
