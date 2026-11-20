@@ -77,7 +77,8 @@ ulog_import_bench [--values] [--plugin <path.so>] [file.ulg] [iterations]
   the host, so use it to check two builds produce the same data and leave it
   off when timing.
 
-Per run it prints the time of `loadConfig`, of the first pass (`parse_s`, which only collects the subscriptions) and
-of the second pass (`decode_s`, which reads, decodes and writes the records).
+Per run it prints the time of `loadConfig`, of the first pass (`parse_s`, which
+only collects the subscriptions) and of the second pass (`decode_s`, which
+reads, decodes and writes the records).
 Then come throughput for the best run, the peak RSS, and the topic, field,
 record and value counts with a checksum that does not depend on record order.

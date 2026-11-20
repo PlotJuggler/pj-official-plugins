@@ -8,10 +8,10 @@ below; for earlier releases see the git history of `data_load_ulog/`.
 ### Changed
 - ULog files load without a dialog, so several files open with no prompt. The
   file info and the last value of each parameter it showed are in the dataset's
-  Info view (right-click the dataset in the curve list, then Info) on hosts
-  with SDK 0.32 or later; the log messages stay in the Log panel and the `_log`
-  topic. Loading no longer parses the file an extra time for the dialog
-  (0.35 s saved on a 1 GB log).
+  Info view (right-click the dataset in the curve list, then Info). The log
+  messages are in the Log panel (PlotJuggler 4.2 or later) and, on every
+  version, in the `_log` topic. Loading no longer parses the file an extra time
+  for the dialog (0.35 s saved on a 1 GB log).
 
 ## [1.3.0] - 2026-11-14
 
