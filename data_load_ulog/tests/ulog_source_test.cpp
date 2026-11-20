@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <pj_base/builtin/log_codec.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/host/data_source_library.hpp>
@@ -1136,8 +1137,8 @@ struct RecordingHost {
   bool fail_appends = false;
   // The runtime vtable ends before complete_ingest, like a host at the plugin's min_sdk_required: no
   // set_dataset_metadata slot.
-  bool floor_level_host = false;
-  bool metadata_slot_called = false;
+  std::vector<std::pair<std::string, std::string>> object_topics;  // name, metadata JSON
+  std::vector<PJ::sdk::Log> logs;
   std::string metadata;
 
   static Cell toCell(bool is_null, const PJ_scalar_value_t& v) {
@@ -1291,15 +1292,35 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
     vtable.notify_state = [](void*, PJ_data_source_state_t) noexcept {};
     vtable.set_dataset_metadata = [](void* ctx, PJ_string_view_t json, PJ_error_t*) noexcept {
       auto& self = *static_cast<RecordingHost*>(ctx);
-      self.metadata_slot_called = true;
       self.metadata.assign(json.data, json.size);
       return true;
     };
     return vtable;
   }();
-  static const PJ_data_source_runtime_host_vtable_t kFloorRuntime = [] {
-    PJ_data_source_runtime_host_vtable_t vtable = kRuntime;
-    vtable.struct_size = offsetof(PJ_data_source_runtime_host_vtable_t, complete_ingest);
+  static const PJ_object_write_host_vtable_t kObjects = [] {
+    PJ_object_write_host_vtable_t vtable{};
+    vtable.abi_version = PJ_PLUGIN_DATA_API_VERSION;
+    vtable.struct_size = sizeof(vtable);
+    vtable.register_topic = [](void* ctx, PJ_string_view_t name, PJ_string_view_t metadata,
+                               PJ_object_topic_handle_t* out, PJ_error_t*) noexcept {
+      auto& self = *static_cast<RecordingHost*>(ctx);
+      self.object_topics.push_back({std::string(name.data, name.size), std::string(metadata.data, metadata.size)});
+      *out = PJ_object_topic_handle_t{static_cast<uint32_t>(self.object_topics.size())};
+      return true;
+    };
+    vtable.push_owned = [](void* ctx, PJ_object_topic_handle_t, int64_t timestamp_ns, const uint8_t* data,
+                           uint64_t size, PJ_error_t*) noexcept {
+      auto& self = *static_cast<RecordingHost*>(ctx);
+      auto log = PJ::deserializeLog(data, size);
+      if (log) {
+        log->timestamp_ns = timestamp_ns;
+        self.logs.push_back(*log);
+      }
+      return true;
+    };
+    vtable.push_lazy = [](void*, PJ_object_topic_handle_t, int64_t, PJ_lazy_fetch_fn_t, void*, void (*)(void*),
+                          PJ_error_t*) noexcept { return false; };
+    vtable.set_retention_budget = [](void*, PJ_object_topic_handle_t, int64_t, uint64_t) noexcept {};
     return vtable;
   }();
 
@@ -1313,7 +1334,9 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
   PJ::ServiceRegistryBuilder registry;
   registry.registerService<PJ::sdk::SourceWriteHostService>(PJ_source_write_host_t{.ctx = &host, .vtable = &kWrite});
   registry.registerService<PJ::sdk::DataSourceRuntimeHostService>(
-      PJ_data_source_runtime_host_t{.ctx = &host, .vtable = host.floor_level_host ? &kFloorRuntime : &kRuntime});
+      PJ_data_source_runtime_host_t{.ctx = &host, .vtable = &kRuntime});
+  registry.registerService<PJ::sdk::SourceObjectWriteHostService>(
+      PJ_object_write_host_t{.ctx = &host, .vtable = &kObjects});
   if (auto status = handle.bind(registry.view()); !status) {
     outcome.error = "bind: " + status.error();
   } else if (status = handle.loadConfig(R"({"filepath":")" + path.generic_string() + R"("})"); !status) {
@@ -1494,35 +1517,35 @@ std::vector<uint8_t> manyDummyRecords(uint64_t count) {
 }
 
 // 20000 records span several 64 KiB read chunks; the stop is polled per chunk.
-// Logged messages keep their scalar `_log` topic. This harness has no object
-// store, so the kLog objects are skipped with a warning (the fallback path).
-TEST(ULogImportTest, LoggedMessagesKeepTheScalarLogTopic) {
+// Logged messages are kLog objects on the `_log` object topic only: a PX4 module prefix becomes the source, a
+// tagged message's tag the category.
+TEST(ULogImportTest, LoggedMessagesBecomeLogObjects) {
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
   builder.writeFormat("dummy:uint64_t timestamp;float val");
   builder.writeSubscription(1, 0, "dummy");
   builder.writeData(1, dummyRecord(1000000, 1.0F));
-  builder.writeLogging('3', 1500000, "Arming denied");
+  builder.writeLogging('3', 1500000, "[commander] Arming denied");
   builder.writeTaggedLogging('6', 7, 2500000, "Takeoff");
 
   RecordingHost host;
   const auto outcome = importBytes(builder.data(), host);
   ASSERT_TRUE(outcome.ok) << outcome.error;
 
-  const std::vector<std::string> expected_fields = {"level", "message"};
-  EXPECT_EQ(host.fields["_log"], expected_fields);
-  const auto& rows = host.rows["_log"];
-  ASSERT_EQ(rows.size(), 2u);
-  EXPECT_EQ(rows[0].timestamp_ns, 1500000LL * 1000);
-  EXPECT_EQ(rows[0].cells.at(0).text, "Error");
-  EXPECT_EQ(rows[0].cells.at(1).text, "Arming denied");
-  EXPECT_EQ(rows[1].timestamp_ns, 2500000LL * 1000);
-  EXPECT_EQ(rows[1].cells.at(0).text, "Info");
-  EXPECT_EQ(rows[1].cells.at(1).text, "Takeoff");
-  EXPECT_TRUE(std::any_of(host.warnings.begin(), host.warnings.end(), [](const std::string& w) {
-    return w.find("log messages imported as scalars only") != std::string::npos;
-  }));
+  EXPECT_EQ(host.rows.count("_log"), 0u) << "no scalar `_log` topic";
+  ASSERT_EQ(host.object_topics.size(), 1u);
+  EXPECT_EQ(host.object_topics[0].first, "_log");
+  ASSERT_EQ(host.logs.size(), 2u);
+  EXPECT_EQ(host.logs[0].timestamp_ns, 1500000LL * 1000);
+  EXPECT_EQ(host.logs[0].level, PJ::sdk::Log::Level::kError);
+  EXPECT_EQ(host.logs[0].source, "commander");
+  EXPECT_EQ(host.logs[0].message, "Arming denied");
+  EXPECT_EQ(host.logs[0].category, "");
+  EXPECT_EQ(host.logs[1].level, PJ::sdk::Log::Level::kInfo);
+  EXPECT_EQ(host.logs[1].source, "");
+  EXPECT_EQ(host.logs[1].message, "Takeoff");
+  EXPECT_EQ(host.logs[1].category, "7");
 }
 
 TEST(ULogImportTest, InfoAndFinalParametersBecomeDatasetMetadata) {
@@ -1608,28 +1631,6 @@ TEST(ULogImportTest, InitialParametersAndInfoHoldFromTheEarliestRecord) {
   const auto name = fieldSamples(host.rows["_info"], "sys_name");
   ASSERT_EQ(name.size(), 1u);
   EXPECT_EQ(name[0].first, 1000000000);
-}
-
-// floor_test (manifest.json): the plugin's min_sdk_required predates set_dataset_metadata.
-TEST(ULogImportTest, ImportSucceedsOnHostWithoutDatasetMetadata) {
-  ULogBuilder builder;
-  builder.writeHeader(0);
-  builder.writeFlagBits();
-  builder.writeFormat("dummy:uint64_t timestamp;float val");
-  builder.writeParameterInt("MAV_TYPE", 2);
-  builder.writeSubscription(1, 0, "dummy");
-  builder.writeData(1, dummyRecord(1000000, 1.0F));
-
-  RecordingHost host;
-  host.floor_level_host = true;
-  const auto outcome = importBytes(builder.data(), host);
-  ASSERT_TRUE(outcome.ok) << outcome.error;
-  EXPECT_FALSE(host.metadata_slot_called) << "a slot past the floor-level struct_size was invoked";
-  EXPECT_TRUE(std::any_of(host.warnings.begin(), host.warnings.end(), [](const std::string& w) {
-    return w.find("not in the dataset info") != std::string::npos;
-  }));
-  EXPECT_EQ(host.rows["dummy"].size(), 1u);
-  EXPECT_EQ(fieldSamples(host.rows["_parameters"], "MAV_TYPE").size(), 1u);
 }
 
 TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {

@@ -622,26 +622,8 @@ class ULogSource : public PJ::FileSourceBase {
       }
     }
 
-    // Write embedded log messages as _log/ topic.
-    {
-      const auto& logs = data_container->logging();
-      if (!logs.empty()) {
-        auto topic = writeHost().ensureTopic("_log");
-        if (topic) {
-          (void)writeHost().ensureField(*topic, "level", PJ::PrimitiveType::kString);
-          (void)writeHost().ensureField(*topic, "message", PJ::PrimitiveType::kString);
-          for (const auto& log : logs) {
-            auto ts_ns = static_cast<int64_t>(log.timestamp()) * 1000;
-            std::string level_str = log.logLevelStr();
-            std::string msg = log.message();
-            (void)writeHost().appendRecord(
-                *topic, PJ::Timestamp{ts_ns},
-                {{.name = "level", .value = std::string_view(level_str)},
-                 {.name = "message", .value = std::string_view(msg)}});
-          }
-        }
-        writeLogObjects(logs);
-      }
+    if (!data_container->logging().empty()) {
+      writeLogObjects(data_container->logging());
     }
 
     publishDatasetMetadata(*data_container);
@@ -653,9 +635,9 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
  private:
-  // The INFO messages and the last value of each parameter, for the host's dataset info view. The log messages are
-  // already in `_log`. A host without set_dataset_metadata (SDK < 0.32), or one refusing the document (its size
-  // bounds are host policy), only loses this view: the import is unaffected, and a warning says why it is empty.
+  // The INFO messages and the last value of each parameter, for the host's dataset info view. A host refusing the
+  // document (its size bounds are host policy) only loses this view: the import is unaffected, and a warning says why
+  // it is empty.
   void publishDatasetMetadata(const ulog_container::ULogContainer& container) {
     nlohmann::json info = nlohmann::json::object();
     for (const auto& [key, message] : container.messageInfo()) {
@@ -676,15 +658,14 @@ class ULogSource : public PJ::FileSourceBase {
     }
   }
 
-  // The same log messages as kLog objects for the log viewer, on an object topic
-  // also named `_log` (the object store and the scalar store are separate, like
-  // a parser's /rosout). Skipped with a warning when the host has no object store.
+  // The logged messages as kLog objects on the `_log` object topic, for the Log panel. A PX4 module prefix becomes
+  // the source, a tagged message's tag the category.
   void writeLogObjects(const std::vector<ulog_cpp::Logging>& logs) {
     const auto* owh = objectWriteHost();
     if (owh == nullptr) {
       runtimeHost().reportMessage(
           PJ::DataSourceMessageLevel::kWarning,
-          "ULog: ObjectStore write host unavailable; log messages imported as scalars only");
+          "ULog: the host has no object store; " + std::to_string(logs.size()) + " logged message(s) not imported");
       return;
     }
     auto topic = owh->registerTopic("_log", PJ::sdk::BuiltinObjectType::kLog);

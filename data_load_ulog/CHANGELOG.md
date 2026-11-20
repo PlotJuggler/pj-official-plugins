@@ -6,19 +6,22 @@ below; for earlier releases see the git history of `data_load_ulog/`.
 ## Upcoming
 
 ### Changed
-- ULog files load without a dialog, so several files open with no prompt. The
-  file info and the last value of each parameter it showed are in the dataset's
-  Info view (right-click the dataset in the curve list, then Info). The log
-  messages are in the Log panel (PlotJuggler 4.2 or later) and, on every
-  version, in the `_log` topic. Loading no longer parses the file an extra time
-  for the dialog (0.35 s saved on a 1 GB log).
+- Requires PlotJuggler 4.2 or later (SDK 1.1.0); earlier versions keep 1.3.0.
+- ULog files load without a dialog, so several files open with no prompt.
+  Everything it showed stays available: the file info in `_info`, the
+  parameters in `_parameters`, both also in the dataset's Info view, and the
+  logged messages in the Log panel. Loading no longer parses the file an extra
+  time for the dialog (0.35 s saved on a 1 GB log).
 - Parameters are one `_parameters` topic with a field per parameter, and the
   file info one `_info` topic with a field per key, so the curve tree has no
-  `value` level under each. Layouts that plot a parameter from 1.3.0 or
-  earlier name `_parameters/<name>/value` and must be pointed at
-  `_parameters/<name>`.
-- In the Log panel, a PX4 module prefix such as `[commander]` is the message's
-  source, so messages can be filtered by module.
+  `value` level under each. A layout from 1.3.0 or earlier that plots
+  `_parameters/<name>/value` must be pointed at `_parameters/<name>`.
+- The initial parameter values and the file info hold from the start of the
+  log, so the curve list shows them at the start of the timeline.
+- Logged messages are only `kLog` objects for the Log panel: the scalar `_log`
+  topic with `level` and `message` text fields is gone. A PX4 module prefix
+  such as `[commander]` is the message's source, so the Log panel can filter
+  by module.
 
 ### Added
 - Text info values (`sys_name`, `ver_hw`, `sys_mcu`, ...) are in `_info`; they

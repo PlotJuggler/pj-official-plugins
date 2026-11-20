@@ -21,8 +21,6 @@
   "file_extensions": [
     ".ulg"
   ],
-  "min_sdk_required": "0.28.0",
-  "suggested_sdk_version": "0.32.0",
-  "floor_test": "ULogImportTest.ImportSucceedsOnHostWithoutDatasetMetadata",
-  "min_plotjuggler_version": "4.0.0"
+  "min_sdk_required": "1.1.0",
+  "min_plotjuggler_version": "4.2.0"
 }

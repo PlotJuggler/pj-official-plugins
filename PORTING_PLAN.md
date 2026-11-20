@@ -55,9 +55,9 @@ Severity levels:
 
 | # | Gap | Severity | Original Location | Notes |
 |---|-----|----------|-------------------|-------|
-| 1 | Parameters dialog UI missing | HIGH | `ulog_parameters_dialog.h/cpp/ui` (entire file set) | Original shows an interactive 3-tab dialog (Info, Properties, Message Logs) after loading. **RESOLVED:** no load dialog; info and parameters are dataset metadata shown in the host's dataset info view, log messages are the `_log` topic and log objects. |
+| 1 | Parameters dialog UI missing | HIGH | `ulog_parameters_dialog.h/cpp/ui` (entire file set) | Original shows an interactive 3-tab dialog (Info, Properties, Message Logs) after loading. **RESOLVED:** no load dialog; info and parameters are the `_info` and `_parameters` topics and dataset metadata shown in the host's dataset info view; log messages are log objects for the Log panel. |
 | 2 | Info metadata fields not displayed | HIGH | `ulog_parser.cpp:670-760`, `ulog_parameters_dialog.cpp:16-23` | Original parses and displays file info fields (hardware, software version, etc.) in a table. **RESOLVED:** `messageInfo()` is in the dataset metadata (`info`); every info value is also a field of the `_info` topic (numeric or text). |
-| 3 | Embedded log messages not extracted | HIGH | `ulog_parser.cpp:84-93`, `ulog_parameters_dialog.cpp:39-77` | Original extracts LOGGING messages with level translation (EMERGENCY→DEBUG) and displays them. **RESOLVED:** they are written to the `_log` topic (`level`, `message` string fields) and as log objects for the Log panel. |
+| 3 | Embedded log messages not extracted | HIGH | `ulog_parser.cpp:84-93`, `ulog_parameters_dialog.cpp:39-77` | Original extracts LOGGING messages with level translation (EMERGENCY→DEBUG) and displays them. **RESOLVED:** they are written as log objects on the `_log` object topic for the Log panel. |
 | 4 | Timestamp field handling changed | MEDIUM | `ulog_parser.cpp:165-171, 645-648` | Original detects timestamp field from format definition. Ported assumed timestamp at fixed message offset (first 8 bytes). **FIXED:** `ulog_flatten::findTimestampOffset` locates the `uint64_t timestamp` field by name (spec requires the field, not its position); formats without one fall back to the sample index like the original. |
 
 ---
@@ -226,7 +226,7 @@ CDR/ros2msg-only. This is a deliberate extension of scope, documented in the plu
 - **Warning deduplication** — RuntimeHostState deduplicates by message text, prints only on first occurrence
 - **Sub-dialog support** — WidgetData.requestSubDialog(ui_xml) + nested modal in DialogEngine
 - **CSV DateTimeHelp** — ported using sub-dialog SDK (format reference tables)
-- **ULog info/logs** — writes `_info` and `_log` topics from ulog_cpp metadata
+- **ULog info/logs** — writes the `_info` topic and `_log` log objects from ulog_cpp metadata
 
 ### Gaps resolved by design (no fix needed):
 - ROS #1: Truncation check — native int64/uint64 types preserved, no double conversion
