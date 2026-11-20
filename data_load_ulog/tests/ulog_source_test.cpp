@@ -1536,6 +1536,9 @@ TEST(ULogImportTest, ImportSucceedsOnHostWithoutDatasetMetadata) {
   const auto outcome = importBytes(builder.data(), host);
   ASSERT_TRUE(outcome.ok) << outcome.error;
   EXPECT_FALSE(host.metadata_slot_called) << "a slot past the floor-level struct_size was invoked";
+  EXPECT_TRUE(std::any_of(host.warnings.begin(), host.warnings.end(), [](const std::string& w) {
+    return w.find("not in the dataset info") != std::string::npos;
+  }));
   EXPECT_EQ(host.rows["dummy"].size(), 1u);
   EXPECT_EQ(host.rows["_parameters/MAV_TYPE"].size(), 1u);
 }

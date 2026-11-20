@@ -629,8 +629,8 @@ class ULogSource : public PJ::FileSourceBase {
 
  private:
   // The INFO messages and the last value of each parameter, for the host's dataset info view. The log messages are
-  // already in `_log`. A host without set_dataset_metadata (SDK < 0.32), or one refusing the document, only loses
-  // this view: the import is unaffected.
+  // already in `_log`. A host without set_dataset_metadata (SDK < 0.32), or one refusing the document (its size
+  // bounds are host policy), only loses this view: the import is unaffected, and a warning says why it is empty.
   void publishDatasetMetadata(const ulog_container::ULogContainer& container) {
     nlohmann::json info = nlohmann::json::object();
     for (const auto& [key, message] : container.messageInfo()) {
@@ -642,7 +642,13 @@ class ULogSource : public PJ::FileSourceBase {
     }
     const nlohmann::json document = {{"info", std::move(info)}, {"parameters", std::move(parameters)}};
     // A ULog string is raw bytes: replace invalid UTF-8 instead of throwing.
-    (void)runtimeHost().setDatasetMetadata(document.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+    if (auto status =
+            runtimeHost().setDatasetMetadata(document.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+        !status) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning,
+          "ULog: file info and parameters are not in the dataset info: " + status.error());
+    }
   }
 
   // The same log messages as kLog objects for the log viewer, on an object topic
