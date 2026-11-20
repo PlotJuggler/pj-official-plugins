@@ -22,6 +22,7 @@
 #include "ulog_container.hpp"
 #include "ulog_flatten.hpp"
 #include "ulog_manifest.hpp"
+#include "ulog_params_dialog.hpp"
 
 namespace {
 
@@ -399,7 +400,11 @@ class StreamingContainer : public ulog_container::ULogContainer {
 class ULogSource : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
-    return PJ::kCapabilityDirectIngest;
+    return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
+  }
+
+  PJ_borrowed_dialog_t getDialog() override {
+    return PJ::borrowDialog(dialog_);
   }
 
   std::string saveConfig() const override {
@@ -412,6 +417,9 @@ class ULogSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
     filepath_ = cfg.value("filepath", std::string{});
+    if (!filepath_.empty()) {
+      dialog_.setFilePath(filepath_);
+    }
     return PJ::okStatus();
   }
 
@@ -628,9 +636,10 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
  private:
-  // The INFO messages and the last value of each parameter, for the host's dataset info view. The log messages are
-  // already in `_log`. A host without set_dataset_metadata (SDK < 0.32), or one refusing the document (its size
-  // bounds are host policy), only loses this view: the import is unaffected, and a warning says why it is empty.
+  // The INFO messages and the last value of each parameter, as the dialog shows them, for the host's dataset info
+  // view once the dialog is closed. The log messages are already in `_log`. A host without set_dataset_metadata
+  // (SDK < 0.32), or one refusing the document (its size bounds are host policy), only loses this view: the import
+  // is unaffected, and a warning says why it is empty.
   void publishDatasetMetadata(const ulog_container::ULogContainer& container) {
     nlohmann::json info = nlohmann::json::object();
     for (const auto& [key, message] : container.messageInfo()) {
@@ -687,8 +696,12 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
   std::string filepath_;
+  ulog_detail::ULogParamsDialog dialog_;
 };
 
 }  // namespace
 
+// The dialog class is namespaced, so the static (WASM) build needs an
+// unqualified name for its getter symbol.
+PJ_DIALOG_PLUGIN_NAMED(ulog_detail::ULogParamsDialog, ULogParamsDialog, kUlogManifest)
 PJ_DATA_SOURCE_PLUGIN(ULogSource, kUlogManifest)
