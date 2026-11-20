@@ -1,10 +1,11 @@
 #include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
-#include <map>
+#include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -13,13 +14,15 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <ulog_cpp/reader.hpp>
+#include <variant>
 #include <vector>
 
 #include "ulog_container.hpp"
 #include "ulog_flatten.hpp"
+#include "ulog_log_source.hpp"
 #include "ulog_manifest.hpp"
-#include "ulog_params_dialog.hpp"
 
 namespace {
 
@@ -53,6 +56,58 @@ PJ::PrimitiveType ulogTypeToPrimitive(ulog_cpp::Field::BasicType type) {
     default:
       return PJ::PrimitiveType::kFloat64;
   }
+}
+
+/// The shortest decimal that reads back as the same float, so 0.1F becomes 0.1 rather than its double widening
+/// 0.10000000149011612. nlohmann parses it back independently of the C locale.
+double shortestFloat(float value) {
+  if (!std::isfinite(value)) {
+    return value;
+  }
+  char text[32];
+  const auto end = std::to_chars(text, text + sizeof(text), value).ptr;
+  return nlohmann::json::parse(text, end).get<double>();
+}
+
+/// An INFO or PARAMETER value as JSON: strings (char arrays) as text, numbers as numbers, other arrays element-wise.
+nlohmann::json ulogValueToJson(const ulog_cpp::Value& value) {
+  try {
+    return std::visit(
+        [](const auto& v) -> nlohmann::json {
+          using T = std::decay_t<decltype(v)>;
+          if constexpr (std::is_same_v<T, float>) {
+            return shortestFloat(v);
+          } else if constexpr (std::is_same_v<T, std::vector<float>>) {
+            nlohmann::json array = nlohmann::json::array();
+            for (const float element : v) {
+              array.push_back(shortestFloat(element));
+            }
+            return array;
+          } else if constexpr (std::is_same_v<T, char>) {
+            return std::string(1, v);
+          } else {
+            return v;
+          }
+        },
+        value.asNativeTypeVariant());
+  } catch (const std::exception&) {
+    return nullptr;  // a nested type: ulog_cpp has no native variant for it
+  }
+}
+
+PJ::Timestamp fromMicros(uint64_t us) {
+  return PJ::Timestamp{static_cast<int64_t>(us) * 1000};
+}
+
+/// A plottable `ulogValueToJson` result: numbers and booleans as double; nullopt for text, arrays and nested types.
+std::optional<double> plottable(const nlohmann::json& value) {
+  if (value.is_boolean()) {
+    return value.get<bool>() ? 1.0 : 0.0;
+  }
+  if (value.is_number()) {
+    return value.get<double>();
+  }
+  return std::nullopt;
 }
 
 /// ULog logged-message level ('0'..'7', syslog-style) -> canonical log level.
@@ -235,6 +290,7 @@ class StreamingContainer : public ulog_container::ULogContainer {
       std::memcpy(&timestamp_us, raw.data() + *topic.ts_offset, sizeof(timestamp_us));
     }
     const auto ts_ns = static_cast<int64_t>(timestamp_us) * 1000;
+    result.earliest_record_us = std::min(result.earliest_record_us, timestamp_us);
 
     topic.plan.decode(raw.data(), raw.size());
     // Straight to the host's C entry point: the SDK's appendBoundRecord takes
@@ -250,6 +306,8 @@ class StreamingContainer : public ulog_container::ULogContainer {
   /// What the import has to report once the file is read.
   struct Result {
     std::string write_error;  // first host error; once set, no further record is written
+    // Smallest record timestamp written, sample-index fallbacks included: the dataset's time range starts there.
+    uint64_t earliest_record_us = std::numeric_limits<uint64_t>::max();
     size_t series_count = 0;
     // Diagnostics are aggregated and reported once: a malformed log can define
     // thousands of subscriptions, and one message per problem would flood the
@@ -358,11 +416,7 @@ class StreamingContainer : public ulog_container::ULogContainer {
 class ULogSource : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
-    return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
-  }
-
-  PJ_borrowed_dialog_t getDialog() override {
-    return PJ::borrowDialog(dialog_);
+    return PJ::kCapabilityDirectIngest;
   }
 
   std::string saveConfig() const override {
@@ -375,9 +429,6 @@ class ULogSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
     filepath_ = cfg.value("filepath", std::string{});
-    if (!filepath_.empty()) {
-      dialog_.setFilePath(filepath_);
-    }
     return PJ::okStatus();
   }
 
@@ -465,8 +516,13 @@ class ULogSource : public PJ::FileSourceBase {
               " parsing problem(s), data may be incomplete. First: " + errors.front());
     }
 
-    // Get file start timestamp (microseconds).
-    uint64_t file_start_time_us = data_container->fileHeader().header().timestamp;
+    // The initial parameter values and the file info hold from the start of the dataset's time range: the earliest
+    // of the header timestamp, the records (sample-index fallbacks included) and the logged messages. In-flight
+    // parameter changes never precede the header timestamp (ULogContainer clamps them).
+    uint64_t snapshot_time_us = std::min(data_container->fileHeader().header().timestamp, result.earliest_record_us);
+    for (const auto& log : data_container->logging()) {
+      snapshot_time_us = std::min(snapshot_time_us, log.timestamp());
+    }
 
     if (!result.topics_without_timestamp.empty()) {
       runtimeHost().reportMessage(
@@ -482,108 +538,95 @@ class ULogSource : public PJ::FileSourceBase {
                                                     result.first_short_record_topic + "')");
     }
 
-    // Write parameters as `_parameters/<name>` timeseries: the initial snapshot
-    // at file start, then every in-flight change at the data-message clock it
-    // appeared under (PlotJuggler#1245). PX4 parameters are int32/float only;
-    // anything else is collected and reported once instead of silently skipped.
-    std::vector<std::string> non_numeric_params;
-    auto write_parameter = [&](const std::string& param_name, const ulog_cpp::Parameter& param,
-                               uint64_t ts_us) -> PJ::Status {
-      double param_value = 0.0;
-      try {
-        param_value = param.value().as<double>();
-      } catch (const std::exception&) {
-        std::string str_val;
-        try {
-          str_val = param.value().as<std::string>();
-        } catch (...) {}
-        non_numeric_params.push_back(param_name + "=" + str_val);
-        return PJ::okStatus();  // convert BEFORE ensureTopic: no empty topics
-      }
-
-      auto topic = writeHost().ensureTopic("_parameters/" + param_name);
-      if (!topic) {
-        return PJ::unexpected(topic.error());
-      }
-      auto ts_ns = static_cast<int64_t>(ts_us) * 1000;
-      return writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = param_value}});
-    };
-
-    for (const auto& [param_name, param] : data_container->initialParameters()) {
-      auto status = write_parameter(param_name, param, file_start_time_us);
-      if (!status) {
-        return status;
+    // `_info`: one field per info key, numeric or text (sys_name, ver_hw, ...), in one record at the snapshot time.
+    // Ordinary INFO entries, then the first instance of each INFO_MULTIPLE key not already among them.
+    nlohmann::json info = nlohmann::json::object();
+    for (const auto& [key, message] : data_container->messageInfo()) {
+      info[key] = ulogValueToJson(message.value());
+    }
+    for (const auto& [key, instances] : data_container->messageInfoMulti()) {
+      if (!instances.empty() && !instances[0].empty()) {
+        info.emplace(key, ulogValueToJson(instances[0][0].value()));
       }
     }
-    for (const auto& change : data_container->timedChangedParameters()) {
-      auto status = write_parameter(change.parameter.field().name(), change.parameter, change.timestamp_us);
-      if (!status) {
-        return status;
-      }
-    }
-    if (!non_numeric_params.empty()) {
-      runtimeHost().reportMessage(
-          PJ::DataSourceMessageLevel::kInfo,
-          "ULog: " + std::to_string(non_numeric_params.size()) +
-              " non-numeric parameter message(s) not plotted: " + sampleList(non_numeric_params, 5));
-    }
-
-    // Write file info metadata as `_info/<key>` topics (numeric values) and
-    // report string values as info messages. Both ordinary INFO entries
-    // (sys_name, ver_hw, ...) and the first instance of each INFO_MULTIPLE key.
     {
-      auto write_info = [&](const std::string& key, const ulog_cpp::MessageInfo& info) {
-        double val = 0.0;
-        try {
-          val = info.value().as<double>();
-        } catch (...) {
-          // Non-numeric info: try as string via reportMessage
-          try {
-            std::string str_val = info.value().as<std::string>();
-            runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, key + ": " + str_val);
-          } catch (...) {}
-          return;
+      std::vector<PJ::sdk::NamedFieldValue> fields;
+      for (const auto& [key, value] : info.items()) {
+        if (auto number = plottable(value)) {
+          fields.push_back({.name = key, .value = *number});
+        } else if (value.is_string()) {
+          fields.push_back({.name = key, .value = std::string_view(value.get_ref<const std::string&>())});
         }
-        auto topic = writeHost().ensureTopic("_info/" + key);
-        if (!topic) {
-          return;
+      }
+      if (!fields.empty()) {
+        auto topic = writeHost().ensureTopic("_info");
+        auto status = topic ? writeHost().appendRecord(*topic, fromMicros(snapshot_time_us), fields)
+                            : PJ::Status(PJ::unexpected(topic.error()));
+        warnIfRefused("_info", status);
+      }
+    }
+
+    // `_parameters`: one field per parameter, so each is a series right under the topic. The initial snapshot is one
+    // record at the snapshot time; each in-flight change is a record at the data-message clock it appeared under
+    // (PlotJuggler#1245) naming only its parameter: the host stores the others as null, which a numeric series skips.
+    // PX4 parameters are int32/float only; anything else is collected and reported once instead of silently skipped.
+    {
+      std::vector<std::string> non_numeric_params;
+      auto numeric = [&](const std::string& name, const ulog_cpp::Parameter& param) {
+        const nlohmann::json value = ulogValueToJson(param.value());
+        auto number = plottable(value);
+        if (!number) {
+          non_numeric_params.push_back(
+              name + "=" + value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
         }
-        auto ts_ns = static_cast<int64_t>(file_start_time_us) * 1000;
-        (void)writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = val}});
+        return number;
       };
-
-      for (const auto& [key, info] : data_container->messageInfo()) {
-        write_info(key, info);
-      }
-      for (const auto& [key, values_vec] : data_container->messageInfoMulti()) {
-        if (values_vec.empty() || values_vec[0].empty()) {
-          continue;
+      std::vector<PJ::sdk::NamedFieldValue> snapshot;
+      for (const auto& [name, param] : data_container->initialParameters()) {
+        if (auto value = numeric(name, param)) {
+          snapshot.push_back({.name = name, .value = *value});
         }
-        write_info(key, values_vec[0][0]);  // first instance
       }
-    }
-
-    // Write embedded log messages as _log/ topic.
-    {
-      const auto& logs = data_container->logging();
-      if (!logs.empty()) {
-        auto topic = writeHost().ensureTopic("_log");
-        if (topic) {
-          (void)writeHost().ensureField(*topic, "level", PJ::PrimitiveType::kString);
-          (void)writeHost().ensureField(*topic, "message", PJ::PrimitiveType::kString);
-          for (const auto& log : logs) {
-            auto ts_ns = static_cast<int64_t>(log.timestamp()) * 1000;
-            std::string level_str = log.logLevelStr();
-            std::string msg = log.message();
-            (void)writeHost().appendRecord(
-                *topic, PJ::Timestamp{ts_ns},
-                {{.name = "level", .value = std::string_view(level_str)},
-                 {.name = "message", .value = std::string_view(msg)}});
+      std::vector<std::pair<uint64_t, PJ::sdk::NamedFieldValue>> changes;
+      for (const auto& change : data_container->timedChangedParameters()) {
+        const std::string& name = change.parameter.field().name();
+        if (auto value = numeric(name, change.parameter)) {
+          changes.push_back({change.timestamp_us, {.name = name, .value = *value}});
+        }
+      }
+      const auto write_parameters = [&]() -> PJ::Status {
+        auto topic = writeHost().ensureTopic("_parameters");
+        if (!topic) {
+          return PJ::unexpected(topic.error());
+        }
+        if (!snapshot.empty()) {
+          if (auto status = writeHost().appendRecord(*topic, fromMicros(snapshot_time_us), snapshot); !status) {
+            return status;
           }
         }
-        writeLogObjects(logs);
+        for (const auto& [ts_us, field] : changes) {
+          if (auto status = writeHost().appendRecord(*topic, fromMicros(ts_us), {field}); !status) {
+            return status;
+          }
+        }
+        return PJ::okStatus();
+      };
+      if (!snapshot.empty() || !changes.empty()) {
+        warnIfRefused("_parameters", write_parameters());
+      }
+      if (!non_numeric_params.empty()) {
+        runtimeHost().reportMessage(
+            PJ::DataSourceMessageLevel::kInfo,
+            "ULog: " + std::to_string(non_numeric_params.size()) +
+                " non-numeric parameter message(s) not plotted: " + sampleList(non_numeric_params, 5));
       }
     }
+
+    if (!data_container->logging().empty()) {
+      writeLogObjects(data_container->logging());
+    }
+
+    publishDatasetMetadata(std::move(info), *data_container);
 
     runtimeHost().reportMessage(
         PJ::DataSourceMessageLevel::kInfo, "Imported " + std::to_string(result.series_count) + " time series");
@@ -592,15 +635,45 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
  private:
-  // The same log messages as kLog objects for the log viewer, on an object topic
-  // also named `_log` (the object store and the scalar store are separate, like
-  // a parser's /rosout). Skipped with a warning when the host has no object store.
+  // A refused `_parameters` or `_info` write (such as two names the host normalizes onto one) costs those series
+  // only: the data, the log messages and the dataset info are still imported.
+  void warnIfRefused(const std::string& topic, const PJ::Status& status) {
+    if (!status) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning, "ULog: `" + topic + "` incomplete: " + status.error());
+    }
+  }
+
+  // The file info and the last value of each parameter, for the host's dataset info view. A host refusing the
+  // document (its size bounds are host policy) only loses this view: the import is unaffected, and a warning says why
+  // it is empty.
+  void publishDatasetMetadata(nlohmann::json info, const ulog_container::ULogContainer& container) {
+    nlohmann::json parameters = nlohmann::json::object();
+    for (const auto& [name, parameter] : container.finalParameters()) {
+      parameters[name] = ulogValueToJson(parameter.value());
+    }
+    if (info.empty() && parameters.empty()) {
+      return;
+    }
+    const nlohmann::json document = {{"info", std::move(info)}, {"parameters", std::move(parameters)}};
+    // A ULog string is raw bytes: replace invalid UTF-8 instead of throwing.
+    if (auto status =
+            runtimeHost().setDatasetMetadata(document.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+        !status) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning,
+          "ULog: file info and parameters are not in the dataset info: " + status.error());
+    }
+  }
+
+  // The logged messages as kLog objects on the `_log` object topic, for the Log panel. A PX4 module prefix becomes
+  // the source, a tagged message's tag the category.
   void writeLogObjects(const std::vector<ulog_cpp::Logging>& logs) {
     const auto* owh = objectWriteHost();
     if (owh == nullptr) {
       runtimeHost().reportMessage(
           PJ::DataSourceMessageLevel::kWarning,
-          "ULog: ObjectStore write host unavailable; log messages imported as scalars only");
+          "ULog: the host has no object store; " + std::to_string(logs.size()) + " logged message(s) not imported");
       return;
     }
     auto topic = owh->registerTopic("_log", PJ::sdk::BuiltinObjectType::kLog);
@@ -610,9 +683,11 @@ class ULogSource : public PJ::FileSourceBase {
     }
     for (const auto& log : logs) {
       PJ::sdk::Log entry;
-      entry.timestamp_ns = static_cast<int64_t>(log.timestamp()) * 1000;
+      entry.timestamp_ns = fromMicros(log.timestamp());
       entry.level = toLogLevel(log.logLevel());
-      entry.message = log.message();
+      const auto [module, text] = ulog_detail::splitModulePrefix(log.message());
+      entry.source = std::string(module);
+      entry.message = std::string(text);
       if (log.hasTag()) {
         entry.category = std::to_string(log.tag());
       }
@@ -628,12 +703,8 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
   std::string filepath_;
-  ulog_detail::ULogParamsDialog dialog_;
 };
 
 }  // namespace
 
-// The dialog class is namespaced, so the static (WASM) build needs an
-// unqualified name for its getter symbol.
-PJ_DIALOG_PLUGIN_NAMED(ulog_detail::ULogParamsDialog, ULogParamsDialog, kUlogManifest)
 PJ_DATA_SOURCE_PLUGIN(ULogSource, kUlogManifest)

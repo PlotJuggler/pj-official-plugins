@@ -9,17 +9,21 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <nlohmann/json.hpp>
+#include <pj_base/builtin/log_codec.hpp>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/host/data_source_library.hpp>
 #include <pj_plugins/host/service_registry_builder.hpp>
 #include <string>
+#include <type_traits>
 #include <ulog_cpp/data_container.hpp>
 #include <ulog_cpp/reader.hpp>
 #include <vector>
 
 #include "../ulog_container.hpp"
 #include "../ulog_flatten.hpp"
+#include "../ulog_log_source.hpp"
 
 namespace {
 
@@ -71,6 +75,15 @@ class ULogBuilder {
     payload.insert(payload.end(), type_and_name.begin(), type_and_name.end());
     appendLe(payload, value);
     writeMessage('P', payload);
+  }
+
+  // Information message ('I'): a "type name" key, then the value's bytes.
+  void writeInfo(const std::string& type_and_name, const std::vector<uint8_t>& value) {
+    std::vector<uint8_t> payload;
+    payload.push_back(static_cast<uint8_t>(type_and_name.size()));
+    payload.insert(payload.end(), type_and_name.begin(), type_and_name.end());
+    payload.insert(payload.end(), value.begin(), value.end());
+    writeMessage('I', payload);
   }
 
   void writeSubscription(uint16_t msg_id, uint8_t multi_id, const std::string& format_name) {
@@ -886,7 +899,7 @@ TEST(ULogContainerTest, ClockNeverRunsBackwardsAcrossSubscriptions) {
   // Data messages are in LOG order, but timestamps are only monotonic per
   // subscription: a low-rate topic can be flushed after a high-rate one with an
   // OLDER timestamp. Parameter stamps must still never go backwards, or the
-  // change history on `_parameters/<name>` is inverted.
+  // change history of a `_parameters` field is inverted.
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
@@ -987,7 +1000,7 @@ TEST(ULogContainerTest, FutureOutlierDoesNotPoisonLaterChanges) {
 }
 
 TEST(ULogContainerTest, FinalParametersOverlayChangesInFileOrder) {
-  // The Properties dialog must show the LAST value of each parameter, as the
+  // The dataset metadata lists the LAST value of each parameter, as the
   // original plugin did (it overwrote on every data-section PARAMETER).
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -1068,6 +1081,19 @@ TEST(ULogContainerTest, SampleFreeContainerDropsRecordsButKeepsTheClock) {
   EXPECT_FALSE(container->parsingErrors().empty());
 }
 
+TEST(ULogLogSourceTest, PX4ModulePrefixBecomesTheSource) {
+  using ulog_detail::splitModulePrefix;
+  using Split = std::pair<std::string_view, std::string_view>;
+  EXPECT_EQ(splitModulePrefix("[commander] Takeoff detected"), Split("commander", "Takeoff detected"));
+  EXPECT_EQ(splitModulePrefix("[ekf2] [warn] fusion reset"), Split("ekf2", "[warn] fusion reset"));
+  // Not a module prefix: the whole text stays the message.
+  for (std::string_view text :
+       {"Takeoff detected", "[two words] text", "[commander]", "[commander] ", "[] text", "[commander]text",
+        "[open text"}) {
+    EXPECT_EQ(splitModulePrefix(text), Split("", text)) << text;
+  }
+}
+
 // --- Whole import, through the BUILT plugin ---
 //
 // The loader decodes and writes each record as the reader hands it over. These
@@ -1076,6 +1102,7 @@ TEST(ULogContainerTest, SampleFreeContainerDropsRecordsButKeepsTheClock) {
 // host, and the stop and error paths.
 
 struct Cell {
+  std::string name;  // set for named records
   bool is_null = false;
   PJ_primitive_type_t type = PJ_PRIMITIVE_TYPE_UNSPECIFIED;
   double number = 0.0;
@@ -1087,6 +1114,19 @@ struct Row {
   std::vector<Cell> cells;
 };
 
+// The rows of `topic` that name `field`, as (timestamp, cell).
+std::vector<std::pair<int64_t, Cell>> fieldSamples(const std::vector<Row>& topic, const std::string& field) {
+  std::vector<std::pair<int64_t, Cell>> samples;
+  for (const Row& row : topic) {
+    for (const Cell& cell : row.cells) {
+      if (cell.name == field) {
+        samples.emplace_back(row.timestamp_ns, cell);
+      }
+    }
+  }
+  return samples;
+}
+
 struct RecordingHost {
   std::vector<std::string> topic_names;                    // index = handle id - 1
   std::map<std::string, std::vector<std::string>> fields;  // topic -> field names, in order
@@ -1095,6 +1135,11 @@ struct RecordingHost {
   uint64_t bound_records = 0;
   uint64_t stop_after_records = UINT64_MAX;  // is_stop_requested turns true from here on
   bool fail_appends = false;
+  bool fail_named_appends = false;  // the host refuses every named record (`_parameters`, `_info`)
+  bool no_object_store = false;
+  std::vector<std::string> object_topics;
+  std::vector<PJ::sdk::Log> logs;
+  std::string metadata;
 
   static Cell toCell(bool is_null, const PJ_scalar_value_t& v) {
     Cell cell;
@@ -1152,6 +1197,9 @@ struct RecordingHost {
     row.timestamp_ns = timestamp;
     for (uint64_t i = 0; i < count; ++i) {
       row.cells.push_back(toCell(cells[i].is_null, cells[i].value));
+      if constexpr (std::is_same_v<FieldValue, PJ_named_field_value_t>) {
+        row.cells.back().name.assign(cells[i].name.data, cells[i].name.size);
+      }
     }
     rows[topic_names.at(topic.id - 1)].push_back(std::move(row));
   }
@@ -1180,8 +1228,13 @@ struct RecordingHost {
 
   static bool appendRecord(
       void* ctx, PJ_topic_handle_t topic, int64_t timestamp, const PJ_named_field_value_t* cells, uint64_t count,
-      PJ_error_t*) noexcept {
-    static_cast<RecordingHost*>(ctx)->record(topic, timestamp, cells, count);
+      PJ_error_t* error) noexcept {
+    auto& self = *static_cast<RecordingHost*>(ctx);
+    if (self.fail_named_appends) {
+      PJ::sdk::fillError(error, 1, "test", "duplicate field name");
+      return false;
+    }
+    self.record(topic, timestamp, cells, count);
     return true;
   }
 
@@ -1242,6 +1295,37 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
       return self.bound_records >= self.stop_after_records;
     };
     vtable.notify_state = [](void*, PJ_data_source_state_t) noexcept {};
+    vtable.set_dataset_metadata = [](void* ctx, PJ_string_view_t json, PJ_error_t*) noexcept {
+      auto& self = *static_cast<RecordingHost*>(ctx);
+      self.metadata.assign(json.data, json.size);
+      return true;
+    };
+    return vtable;
+  }();
+  static const PJ_object_write_host_vtable_t kObjects = [] {
+    PJ_object_write_host_vtable_t vtable{};
+    vtable.abi_version = PJ_PLUGIN_DATA_API_VERSION;
+    vtable.struct_size = sizeof(vtable);
+    vtable.register_topic = [](void* ctx, PJ_string_view_t name, PJ_string_view_t, PJ_object_topic_handle_t* out,
+                               PJ_error_t*) noexcept {
+      auto& self = *static_cast<RecordingHost*>(ctx);
+      self.object_topics.emplace_back(name.data, name.size);
+      *out = PJ_object_topic_handle_t{static_cast<uint32_t>(self.object_topics.size())};
+      return true;
+    };
+    vtable.push_owned = [](void* ctx, PJ_object_topic_handle_t, int64_t timestamp_ns, const uint8_t* data,
+                           uint64_t size, PJ_error_t*) noexcept {
+      auto& self = *static_cast<RecordingHost*>(ctx);
+      auto log = PJ::deserializeLog(data, size);
+      if (log) {
+        log->timestamp_ns = timestamp_ns;
+        self.logs.push_back(*log);
+      }
+      return true;
+    };
+    vtable.push_lazy = [](void*, PJ_object_topic_handle_t, int64_t, PJ_lazy_fetch_fn_t, void*, void (*)(void*),
+                          PJ_error_t*) noexcept { return false; };
+    vtable.set_retention_budget = [](void*, PJ_object_topic_handle_t, int64_t, uint64_t) noexcept {};
     return vtable;
   }();
 
@@ -1256,6 +1340,10 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
   registry.registerService<PJ::sdk::SourceWriteHostService>(PJ_source_write_host_t{.ctx = &host, .vtable = &kWrite});
   registry.registerService<PJ::sdk::DataSourceRuntimeHostService>(
       PJ_data_source_runtime_host_t{.ctx = &host, .vtable = &kRuntime});
+  if (!host.no_object_store) {
+    registry.registerService<PJ::sdk::SourceObjectWriteHostService>(
+        PJ_object_write_host_t{.ctx = &host, .vtable = &kObjects});
+  }
   if (auto status = handle.bind(registry.view()); !status) {
     outcome.error = "bind: " + status.error();
   } else if (status = handle.loadConfig(R"({"filepath":")" + path.generic_string() + R"("})"); !status) {
@@ -1435,36 +1523,184 @@ std::vector<uint8_t> manyDummyRecords(uint64_t count) {
   return builder.data();
 }
 
-// 20000 records span several 64 KiB read chunks; the stop is polled per chunk.
-// Logged messages keep their scalar `_log` topic. This harness has no object
-// store, so the kLog objects are skipped with a warning (the fallback path).
-TEST(ULogImportTest, LoggedMessagesKeepTheScalarLogTopic) {
+// Logged messages are kLog objects on the `_log` object topic only: a PX4 module prefix becomes the source, a
+// tagged message's tag the category.
+TEST(ULogImportTest, LoggedMessagesBecomeLogObjects) {
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
   builder.writeFormat("dummy:uint64_t timestamp;float val");
   builder.writeSubscription(1, 0, "dummy");
   builder.writeData(1, dummyRecord(1000000, 1.0F));
-  builder.writeLogging('3', 1500000, "Arming denied");
+  builder.writeLogging('3', 1500000, "[commander] Arming denied");
   builder.writeTaggedLogging('6', 7, 2500000, "Takeoff");
 
   RecordingHost host;
   const auto outcome = importBytes(builder.data(), host);
   ASSERT_TRUE(outcome.ok) << outcome.error;
 
-  const std::vector<std::string> expected_fields = {"level", "message"};
-  EXPECT_EQ(host.fields["_log"], expected_fields);
-  const auto& rows = host.rows["_log"];
-  ASSERT_EQ(rows.size(), 2u);
-  EXPECT_EQ(rows[0].timestamp_ns, 1500000LL * 1000);
-  EXPECT_EQ(rows[0].cells.at(0).text, "Error");
-  EXPECT_EQ(rows[0].cells.at(1).text, "Arming denied");
-  EXPECT_EQ(rows[1].timestamp_ns, 2500000LL * 1000);
-  EXPECT_EQ(rows[1].cells.at(0).text, "Info");
-  EXPECT_EQ(rows[1].cells.at(1).text, "Takeoff");
+  EXPECT_EQ(host.rows.count("_log"), 0u) << "no scalar `_log` topic";
+  ASSERT_EQ(host.object_topics.size(), 1u);
+  EXPECT_EQ(host.object_topics[0], "_log");
+  ASSERT_EQ(host.logs.size(), 2u);
+  EXPECT_EQ(host.logs[0].timestamp_ns, 1500000LL * 1000);
+  EXPECT_EQ(host.logs[0].level, PJ::sdk::Log::Level::kError);
+  EXPECT_EQ(host.logs[0].source, "commander");
+  EXPECT_EQ(host.logs[0].message, "Arming denied");
+  EXPECT_EQ(host.logs[0].category, "");
+  EXPECT_EQ(host.logs[1].level, PJ::sdk::Log::Level::kInfo);
+  EXPECT_EQ(host.logs[1].source, "");
+  EXPECT_EQ(host.logs[1].message, "Takeoff");
+  EXPECT_EQ(host.logs[1].category, "7");
+}
+
+// A host refusing the `_parameters` or `_info` record (a name it normalizes onto another) costs those series only:
+// the import succeeds and the log messages and the dataset info are still written.
+TEST(ULogImportTest, RefusedParameterAndInfoRecordsAreWarningsNotAFailedImport) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeInfo("char[3] sys_name", {'P', 'X', '4'});
+  builder.writeParameterInt("MAV_TYPE", 2);
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeLogging('6', 1500000, "Takeoff");
+
+  RecordingHost host;
+  host.fail_named_appends = true;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  EXPECT_EQ(host.logs.size(), 1u);
+  EXPECT_FALSE(host.metadata.empty());
+  const auto warned = [&](std::string_view what) {
+    return std::any_of(host.warnings.begin(), host.warnings.end(), [&](const std::string& w) {
+      return w.find(what) != std::string::npos && w.find("duplicate field name") != std::string::npos;
+    });
+  };
+  EXPECT_TRUE(warned("_parameters"));
+  EXPECT_TRUE(warned("_info"));
+}
+
+// No INFO and no parameters: nothing for the dataset info view, so no empty document.
+TEST(ULogImportTest, NoInfoAndNoParametersPublishNoDatasetMetadata) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+  EXPECT_TRUE(host.metadata.empty()) << host.metadata;
+}
+
+TEST(ULogImportTest, LoggedMessagesWithoutAnObjectStoreAreAWarning) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeLogging('6', 1500000, "Takeoff");
+
+  RecordingHost host;
+  host.no_object_store = true;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
   EXPECT_TRUE(std::any_of(host.warnings.begin(), host.warnings.end(), [](const std::string& w) {
-    return w.find("log messages imported as scalars only") != std::string::npos;
+    return w.find("1 logged message(s) not imported") != std::string::npos;
   }));
+}
+
+TEST(ULogImportTest, InfoAndParametersBecomeTopicsAndDatasetMetadata) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeInfo("char[3] sys_name", {'P', 'X', '4'});
+  FieldDataBuilder release;
+  release.append<uint32_t>(0x010E00FF);
+  builder.writeInfo("uint32_t ver_sw_release", release.build());
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("MAV_TYPE", 2);
+  builder.writeParameterFloat("MPC_XY_VEL_MAX", 0.1F);
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeParameterInt("MAV_TYPE", 13);
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const auto document = nlohmann::json::parse(host.metadata, nullptr, false);
+  ASSERT_TRUE(document.is_object()) << host.metadata;
+  EXPECT_EQ(document["info"]["sys_name"], "PX4");
+  EXPECT_EQ(document["info"]["ver_sw_release"], 0x010E00FF);
+  EXPECT_EQ(document["parameters"]["MAV_TYPE"], 13);  // the in-flight change, not the initial value
+  // In `_parameters`, the snapshot record plus the change, which names only MAV_TYPE.
+  const auto mav_type = fieldSamples(host.rows["_parameters"], "MAV_TYPE");
+  ASSERT_EQ(mav_type.size(), 2u);
+  EXPECT_EQ(mav_type[0].second.number, 2.0);
+  EXPECT_EQ(mav_type[1].second.number, 13.0);
+  EXPECT_EQ(fieldSamples(host.rows["_parameters"], "MPC_XY_VEL_MAX").size(), 1u);
+  // The float's shortest decimal, not its double widening 0.10000000149011612.
+  EXPECT_EQ(document["parameters"]["MPC_XY_VEL_MAX"].dump(), "0.1");
+
+  // The same info as fields of one `_info` record, numeric or text.
+  ASSERT_EQ(host.rows["_info"].size(), 1u);
+  const auto name = fieldSamples(host.rows["_info"], "sys_name");
+  ASSERT_EQ(name.size(), 1u);
+  EXPECT_EQ(name[0].second.type, PJ_PRIMITIVE_TYPE_STRING);
+  EXPECT_EQ(name[0].second.text, "PX4");
+  const auto version = fieldSamples(host.rows["_info"], "ver_sw_release");
+  ASSERT_EQ(version.size(), 1u);
+  EXPECT_EQ(version[0].second.number, static_cast<double>(0x010E00FF));
+}
+
+TEST(ULogImportTest, InitialParametersAndInfoHoldFromTheEarliestRecord) {
+  ULogBuilder builder;
+  builder.writeHeader(2000000);
+  builder.writeFlagBits();
+  builder.writeInfo("char[3] sys_name", {'P', 'X', '4'});
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("MAV_TYPE", 2);
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeData(1, dummyRecord(3000000, 2.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const auto mav_type = fieldSamples(host.rows["_parameters"], "MAV_TYPE");
+  ASSERT_EQ(mav_type.size(), 1u);
+  EXPECT_EQ(mav_type[0].first, 1000000000);
+  const auto name = fieldSamples(host.rows["_info"], "sys_name");
+  ASSERT_EQ(name.size(), 1u);
+  EXPECT_EQ(name[0].first, 1000000000);
+}
+
+// A logged message is on the timeline too (the Log panel's `_log` topic): one before every record starts the range.
+TEST(ULogImportTest, InitialParametersHoldFromAnEarlierLoggedMessage) {
+  ULogBuilder builder;
+  builder.writeHeader(2000000);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("MAV_TYPE", 2);
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeLogging('6', 500000, "[logger] boot");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const auto mav_type = fieldSamples(host.rows["_parameters"], "MAV_TYPE");
+  ASSERT_EQ(mav_type.size(), 1u);
+  EXPECT_EQ(mav_type[0].first, 500000000);
 }
 
 TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {
@@ -1477,7 +1713,7 @@ TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {
   ASSERT_GT(written, 0u);
   EXPECT_LT(written, 20000u);
   EXPECT_EQ(host.rows["dummy"].back().cells.at(0).number, static_cast<double>(written));  // a clean prefix
-  EXPECT_EQ(host.rows["_parameters/P"].size(), 1u);  // the cheap tail is still written
+  EXPECT_EQ(fieldSamples(host.rows["_parameters"], "P").size(), 1u);  // the cheap tail is still written
 }
 
 // The scan for topic names comes first and writes nothing. A stop that lands

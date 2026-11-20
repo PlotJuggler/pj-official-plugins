@@ -152,7 +152,7 @@ const PJ_data_source_runtime_host_vtable_t kRuntimeVtable = [] {
 }();
 
 struct Run {
-  double configure_s = 0;  // loadConfig: the dialog's own parse of the file
+  double configure_s = 0;  // loadConfig
   double parse_s = 0;      // start() until the first write: the subscription scan
   double decode_s = 0;     // first write until start() returns: read + decode + ABI calls
   Sink sink;

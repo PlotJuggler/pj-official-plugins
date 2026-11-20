@@ -3,6 +3,35 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_ulog/`.
 
+## [1.4.0] - 2026-11-20
+
+### Changed
+- Requires PlotJuggler 4.2 or later (SDK 1.1.0); earlier versions keep 1.3.0.
+- ULog files load without a dialog, so several files open with no prompt.
+  Everything it showed stays available: the file info in `_info`, the
+  parameters in `_parameters`, both also in the dataset's Info view, and the
+  logged messages in the Log panel. Loading no longer parses the file an extra
+  time for the dialog (0.35 s saved on a 1 GB log).
+- Parameters are one `_parameters` topic with a field per parameter, and the
+  file info one `_info` topic with a field per key, so the curve tree has no
+  `value` level under each. A layout from 1.3.0 or earlier that plots
+  `_parameters/<name>/value` must be pointed at `_parameters/<name>`.
+- The initial parameter values and the file info hold from the start of the
+  log, so the curve list shows them at the start of the timeline.
+- A float parameter's series holds its shortest decimal (0.1), not its double
+  widening (0.10000000149011612).
+- A file whose parameter or info names the host refuses (two names that
+  normalize to the same one) still imports, with a warning, instead of failing.
+- A log with no file info and no parameters adds nothing to the dataset info.
+- Logged messages are only `kLog` objects for the Log panel: the scalar `_log`
+  topic with `level` and `message` text fields is gone. A PX4 module prefix
+  such as `[commander]` is the message's source, so the Log panel can filter
+  by module.
+
+### Added
+- Text info values (`sys_name`, `ver_hw`, `sys_mcu`, ...) are in `_info`; they
+  were only written to the application log.
+
 ## [1.3.0] - 2026-11-14
 
 ### Added

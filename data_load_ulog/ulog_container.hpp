@@ -55,8 +55,7 @@ class ULogContainer : public ulog_cpp::DataContainer {
   }
 
   /// The initial snapshot with every in-flight change applied in file order:
-  /// the LAST known value of each parameter, which is what the original
-  /// plugin's Properties dialog showed.
+  /// the LAST known value of each parameter (the dataset metadata's `parameters`).
   std::map<std::string, ulog_cpp::Parameter> finalParameters() const;
 
  private:

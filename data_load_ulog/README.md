@@ -1,7 +1,7 @@
 # ULog Data Loader
 
 Imports [PX4 ULog](https://docs.px4.io/main/en/dev_log/ulog_file_format.html)
-flight log files.
+flight log files. Requires PlotJuggler 4.2 or later.
 
 ## Features
 
@@ -19,17 +19,30 @@ flight log files.
   trailing padding is normal, not truncated. Padding anywhere else in the
   format (including one nested inside another message, where it is needed to
   keep sibling field offsets correct) still counts toward the required size.
-- Parameters written as `_parameters/<name>` series: the initial snapshot at
-  file start, plus every **in-flight parameter change** as a further point
-- File info (`_info/`) and embedded log messages (`_log`) written as topics
-- Embedded log messages also published as `kLog` objects on an object topic
-  named `_log` (for the log viewer): severity `0`..`7` mapped to fatal (0-2),
-  error, warning, info (5-6), debug; the tag of a tagged message becomes the
-  category
-- Parameters / info / log messages dialog (Info, Properties, Message Logs)
+- Parameters written to one `_parameters` topic, one field per parameter: the
+  initial values at the start of the log (the earliest of the header timestamp,
+  the first record and the first logged message), plus every
+  **in-flight parameter change** as a further point of that parameter
+- File info written to one `_info` topic, one field per key (numeric or text,
+  such as `sys_name` and `ver_hw`), at the start of the log
+- Embedded log messages published as `kLog` objects on an object topic named
+  `_log`, for the Log panel: severity `0`..`7` mapped to fatal (0-2), error,
+  warning, info (5-6), debug; a PX4 module prefix (`[commander] ...`) becomes
+  the source, and the tag of a tagged message the category
+- No load dialog. The INFO messages and the last value of each parameter are
+  also published as dataset metadata (`info`, `parameters`), which the host
+  shows in its dataset info view
 - Progress reporting with "Stop and keep" support
 - Truncated or partially corrupt files import everything decodable; recoverable
   parse problems are surfaced as a warning
+
+## Upgrade note: parameter and info series names
+
+Up to 1.3.0 each parameter and info key was a topic with one `value` field:
+`_parameters/<name>/value`, `_info/<key>/value`. They are now fields of one
+topic each: `_parameters/<name>`, `_info/<key>`. The scalar `_log` topic
+(`level`, `message`) is gone; logged messages are in the Log panel. Saved
+layouts that plot the old names must be pointed at the new ones.
 
 ## Upgrade note: `char[N]` series names
 
@@ -75,8 +88,8 @@ ulog_import_bench [--values] [--plugin <path.so>] [file.ulg] [iterations]
   the host, so use it to check two builds produce the same data and leave it
   off when timing.
 
-Per run it prints the time of `loadConfig` (the parameter dialog parses the file
-too), of the first pass (`parse_s`, which only collects the subscriptions) and
-of the second pass (`decode_s`, which reads, decodes and writes the records).
+Per run it prints the time of `loadConfig`, of the first pass (`parse_s`, which
+only collects the subscriptions) and of the second pass (`decode_s`, which
+reads, decodes and writes the records).
 Then come throughput for the best run, the peak RSS, and the topic, field,
 record and value counts with a checksum that does not depend on record order.

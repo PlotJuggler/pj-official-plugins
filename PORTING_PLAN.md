@@ -55,9 +55,9 @@ Severity levels:
 
 | # | Gap | Severity | Original Location | Notes |
 |---|-----|----------|-------------------|-------|
-| 1 | Parameters dialog UI missing | HIGH | `ulog_parameters_dialog.h/cpp/ui` (entire file set) | Original shows an interactive 3-tab dialog (Info, Properties, Message Logs) after loading. **RESOLVED:** `ulog_params_dialog.{hpp,cpp}` + `ulog_params.ui` implement the same three tabs as a `DialogPluginTyped` (exported via `PJ_DIALOG_PLUGIN`). |
-| 2 | Info metadata fields not displayed | HIGH | `ulog_parser.cpp:670-760`, `ulog_parameters_dialog.cpp:16-23` | Original parses and displays file info fields (hardware, software version, etc.) in a table. **RESOLVED:** Info tab lists `messageInfo()`; numeric info values are also written as `_info/<key>` topics (non-numeric ones are reported as info messages). |
-| 3 | Embedded log messages not extracted | HIGH | `ulog_parser.cpp:84-93`, `ulog_parameters_dialog.cpp:39-77` | Original extracts LOGGING messages with level translation (EMERGENCY→DEBUG) and displays them. **RESOLVED:** Message Logs tab shows them (relative time, level, text) and they are written to the `_log` topic (`level`, `message` string fields). |
+| 1 | Parameters dialog UI missing | HIGH | `ulog_parameters_dialog.h/cpp/ui` (entire file set) | Original shows an interactive 3-tab dialog (Info, Properties, Message Logs) after loading. **RESOLVED:** no load dialog; info and parameters are the `_info` and `_parameters` topics and dataset metadata shown in the host's dataset info view; log messages are log objects for the Log panel. |
+| 2 | Info metadata fields not displayed | HIGH | `ulog_parser.cpp:670-760`, `ulog_parameters_dialog.cpp:16-23` | Original parses and displays file info fields (hardware, software version, etc.) in a table. **RESOLVED:** `messageInfo()` is in the dataset metadata (`info`); every numeric or text info value is also a field of the `_info` topic. |
+| 3 | Embedded log messages not extracted | HIGH | `ulog_parser.cpp:84-93`, `ulog_parameters_dialog.cpp:39-77` | Original extracts LOGGING messages with level translation (EMERGENCY→DEBUG) and displays them. **RESOLVED:** they are written as log objects on the `_log` object topic for the Log panel. |
 | 4 | Timestamp field handling changed | MEDIUM | `ulog_parser.cpp:165-171, 645-648` | Original detects timestamp field from format definition. Ported assumed timestamp at fixed message offset (first 8 bytes). **FIXED:** `ulog_flatten::findTimestampOffset` locates the `uint64_t timestamp` field by name (spec requires the field, not its position); formats without one fall back to the sample index like the original. |
 
 ---
@@ -172,7 +172,7 @@ CDR/ros2msg-only. This is a deliberate extension of scope, documented in the plu
 | 4 | Pause/resume functionality removed | Foxglove, PJ Bridge | Original has pause action in toolbar. Resolved by cross-cutting #11 (streamer lifecycle controls). |
 | 5 | Column history / selection memory removed | CSV, Parquet | Original tracks frequently-selected columns. Ported always shows columns in schema order. |
 | 6 | Warning/error deduplication API needed | MCAP, Foxglove, others | Multiple plugins independently need to deduplicate repeated warnings (e.g. same encoding error for many topics). Design a holistic `reportMessage()` deduplication mechanism rather than ad-hoc per-plugin sets. **SDK/host change required.** |
-| 7 | Plugin status panel for post-load info | ULog (parameters, info, logs), potentially others | ULog originally shows a 3-tab dialog with file metadata, parameters, and embedded logs. A general-purpose "plugin status/info panel" in the host would serve ULog and any future plugin that needs to present non-dialog information. **SDK/host design discussion required.** |
+| 7 | Plugin status panel for post-load info | ULog (parameters, info, logs), potentially others | ULog originally shows a 3-tab dialog with file metadata, parameters, and embedded logs. **RESOLVED:** `set_dataset_metadata` (SDK 0.32) carries a loader's descriptive document to the host's dataset info view; ULog and MCAP use it. |
 | 8 | Streaming topic list periodic refresh | Foxglove, MQTT, PJ Bridge, ZMQ | All streaming plugins with topic selection should refresh the topic list periodically (~1s). Apply consistently to all plugins, even if the original did not implement this. |
 | 9 | Add README.md per plugin | All 12 plugins | Each plugin subfolder should contain a README.md with a short introduction and any user-facing information (supported formats, configuration, known limitations). |
 | 10 | Sub-dialog support in dialog SDK | CSV (DateTimeHelp), potentially others | The dialog SDK currently cannot launch a secondary dialog from a button click. Required for porting CSV DateTimeHelp and potentially other features. **SDK protocol extension required.** |
@@ -226,7 +226,7 @@ CDR/ros2msg-only. This is a deliberate extension of scope, documented in the plu
 - **Warning deduplication** — RuntimeHostState deduplicates by message text, prints only on first occurrence
 - **Sub-dialog support** — WidgetData.requestSubDialog(ui_xml) + nested modal in DialogEngine
 - **CSV DateTimeHelp** — ported using sub-dialog SDK (format reference tables)
-- **ULog info/logs** — writes `_info/` and `_log/` topics from ulog_cpp metadata
+- **ULog info/logs** — writes the `_info` topic and `_log` log objects from ulog_cpp metadata
 
 ### Gaps resolved by design (no fix needed):
 - ROS #1: Truncation check — native int64/uint64 types preserved, no double conversion
@@ -240,6 +240,3 @@ CDR/ros2msg-only. This is a deliberate extension of scope, documented in the plu
 - MQTT #7: Reconnection detection via connection_lost_handler callback
 - Foxglove #6: Reconnection strategy (~5s retry loop in onPoll when disconnected)
 - PJ Bridge #2: Pause/resume protocol commands to server (kCapabilitySupportsPause declared)
-
-### Remaining SDK work (cosmetic, not blocking):
-- **Plugin status panel UI** — proto_app could add a dock/tab to display `_info/`, `_log/`, `_parameters/` topics (data is already written by ULog)
