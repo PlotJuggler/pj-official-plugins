@@ -1135,9 +1135,7 @@ struct RecordingHost {
   uint64_t bound_records = 0;
   uint64_t stop_after_records = UINT64_MAX;  // is_stop_requested turns true from here on
   bool fail_appends = false;
-  // The runtime vtable ends before complete_ingest, like a host at the plugin's min_sdk_required: no
-  // set_dataset_metadata slot.
-  std::vector<std::pair<std::string, std::string>> object_topics;  // name, metadata JSON
+  std::vector<std::string> object_topics;
   std::vector<PJ::sdk::Log> logs;
   std::string metadata;
 
@@ -1301,10 +1299,10 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
     PJ_object_write_host_vtable_t vtable{};
     vtable.abi_version = PJ_PLUGIN_DATA_API_VERSION;
     vtable.struct_size = sizeof(vtable);
-    vtable.register_topic = [](void* ctx, PJ_string_view_t name, PJ_string_view_t metadata,
-                               PJ_object_topic_handle_t* out, PJ_error_t*) noexcept {
+    vtable.register_topic = [](void* ctx, PJ_string_view_t name, PJ_string_view_t, PJ_object_topic_handle_t* out,
+                               PJ_error_t*) noexcept {
       auto& self = *static_cast<RecordingHost*>(ctx);
-      self.object_topics.push_back({std::string(name.data, name.size), std::string(metadata.data, metadata.size)});
+      self.object_topics.emplace_back(name.data, name.size);
       *out = PJ_object_topic_handle_t{static_cast<uint32_t>(self.object_topics.size())};
       return true;
     };
@@ -1535,7 +1533,7 @@ TEST(ULogImportTest, LoggedMessagesBecomeLogObjects) {
 
   EXPECT_EQ(host.rows.count("_log"), 0u) << "no scalar `_log` topic";
   ASSERT_EQ(host.object_topics.size(), 1u);
-  EXPECT_EQ(host.object_topics[0].first, "_log");
+  EXPECT_EQ(host.object_topics[0], "_log");
   ASSERT_EQ(host.logs.size(), 2u);
   EXPECT_EQ(host.logs[0].timestamp_ns, 1500000LL * 1000);
   EXPECT_EQ(host.logs[0].level, PJ::sdk::Log::Level::kError);
@@ -1548,7 +1546,7 @@ TEST(ULogImportTest, LoggedMessagesBecomeLogObjects) {
   EXPECT_EQ(host.logs[1].category, "7");
 }
 
-TEST(ULogImportTest, InfoAndFinalParametersBecomeDatasetMetadata) {
+TEST(ULogImportTest, InfoAndParametersBecomeTopicsAndDatasetMetadata) {
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
@@ -1580,25 +1578,9 @@ TEST(ULogImportTest, InfoAndFinalParametersBecomeDatasetMetadata) {
   EXPECT_EQ(fieldSamples(host.rows["_parameters"], "MPC_XY_VEL_MAX").size(), 1u);
   // The float's shortest decimal, not its double widening 0.10000000149011612.
   EXPECT_EQ(document["parameters"]["MPC_XY_VEL_MAX"].dump(), "0.1");
-}
 
-TEST(ULogImportTest, InfoValuesAreFieldsOfOneInfoTopicNumericOrText) {
-  ULogBuilder builder;
-  builder.writeHeader(0);
-  builder.writeFlagBits();
-  builder.writeInfo("char[3] sys_name", {'P', 'X', '4'});
-  FieldDataBuilder release;
-  release.append<uint32_t>(0x010E00FF);
-  builder.writeInfo("uint32_t ver_sw_release", release.build());
-  builder.writeFormat("dummy:uint64_t timestamp;float val");
-  builder.writeSubscription(1, 0, "dummy");
-  builder.writeData(1, dummyRecord(1000000, 1.0F));
-
-  RecordingHost host;
-  const auto outcome = importBytes(builder.data(), host);
-  ASSERT_TRUE(outcome.ok) << outcome.error;
-
-  ASSERT_EQ(host.rows["_info"].size(), 1u);  // every key in one record
+  // The same info as fields of one `_info` record, numeric or text.
+  ASSERT_EQ(host.rows["_info"].size(), 1u);
   const auto name = fieldSamples(host.rows["_info"], "sys_name");
   ASSERT_EQ(name.size(), 1u);
   EXPECT_EQ(name[0].second.type, PJ_PRIMITIVE_TYPE_STRING);
@@ -1608,8 +1590,6 @@ TEST(ULogImportTest, InfoValuesAreFieldsOfOneInfoTopicNumericOrText) {
   EXPECT_EQ(version[0].second.number, static_cast<double>(0x010E00FF));
 }
 
-// A record stamped before the header timestamp starts the dataset's time range; the initial parameter values and
-// the info must already hold there, or the curve list shows no value at the start of the timeline.
 TEST(ULogImportTest, InitialParametersAndInfoHoldFromTheEarliestRecord) {
   ULogBuilder builder;
   builder.writeHeader(2000000);
@@ -1631,6 +1611,26 @@ TEST(ULogImportTest, InitialParametersAndInfoHoldFromTheEarliestRecord) {
   const auto name = fieldSamples(host.rows["_info"], "sys_name");
   ASSERT_EQ(name.size(), 1u);
   EXPECT_EQ(name[0].first, 1000000000);
+}
+
+// A logged message is on the timeline too (the Log panel's `_log` topic): one before every record starts the range.
+TEST(ULogImportTest, InitialParametersHoldFromAnEarlierLoggedMessage) {
+  ULogBuilder builder;
+  builder.writeHeader(2000000);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("MAV_TYPE", 2);
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeLogging('6', 500000, "[logger] boot");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const auto mav_type = fieldSamples(host.rows["_parameters"], "MAV_TYPE");
+  ASSERT_EQ(mav_type.size(), 1u);
+  EXPECT_EQ(mav_type[0].first, 500000000);
 }
 
 TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {

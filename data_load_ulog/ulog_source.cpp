@@ -4,9 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <limits>
-#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -17,7 +15,6 @@
 #include <string_view>
 #include <type_traits>
 #include <ulog_cpp/reader.hpp>
-#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -97,6 +94,21 @@ nlohmann::json ulogValueToJson(const ulog_cpp::Value& value) {
   } catch (const std::exception&) {
     return nullptr;  // a nested type: ulog_cpp has no native variant for it
   }
+}
+
+PJ::Timestamp fromMicros(uint64_t us) {
+  return PJ::Timestamp{static_cast<int64_t>(us) * 1000};
+}
+
+/// A plottable `ulogValueToJson` result: numbers and booleans as double; nullopt for text, arrays and nested types.
+std::optional<double> plottable(const nlohmann::json& value) {
+  if (value.is_boolean()) {
+    return value.get<bool>() ? 1.0 : 0.0;
+  }
+  if (value.is_number()) {
+    return value.get<double>();
+  }
+  return std::nullopt;
 }
 
 /// ULog logged-message level ('0'..'7', syslog-style) -> canonical log level.
@@ -505,11 +517,13 @@ class ULogSource : public PJ::FileSourceBase {
               " parsing problem(s), data may be incomplete. First: " + errors.front());
     }
 
-    // Get file start timestamp (microseconds).
-    uint64_t file_start_time_us = data_container->fileHeader().header().timestamp;
-    // The initial parameter values and the file info hold from the start of the dataset's time range, which records
-    // stamped before the header timestamp (or by sample index) can put earlier than the file start.
-    const uint64_t snapshot_time_us = std::min(file_start_time_us, result.earliest_record_us);
+    // The initial parameter values and the file info hold from the start of the dataset's time range: the earliest
+    // of the header timestamp, the records (sample-index fallbacks included) and the logged messages. In-flight
+    // parameter changes never precede the header timestamp (ULogContainer clamps them).
+    uint64_t snapshot_time_us = std::min(data_container->fileHeader().header().timestamp, result.earliest_record_us);
+    for (const auto& log : data_container->logging()) {
+      snapshot_time_us = std::min(snapshot_time_us, log.timestamp());
+    }
 
     if (!result.topics_without_timestamp.empty()) {
       runtimeHost().reportMessage(
@@ -525,23 +539,47 @@ class ULogSource : public PJ::FileSourceBase {
                                                     result.first_short_record_topic + "')");
     }
 
+    // `_info`: one field per info key, numeric or text (sys_name, ver_hw, ...), in one record at the snapshot time.
+    // Ordinary INFO entries, then the first instance of each INFO_MULTIPLE key not already among them.
+    nlohmann::json info = nlohmann::json::object();
+    for (const auto& [key, message] : data_container->messageInfo()) {
+      info[key] = ulogValueToJson(message.value());
+    }
+    for (const auto& [key, instances] : data_container->messageInfoMulti()) {
+      if (!instances.empty() && !instances[0].empty()) {
+        info.emplace(key, ulogValueToJson(instances[0][0].value()));
+      }
+    }
+    {
+      std::vector<PJ::sdk::NamedFieldValue> fields;
+      for (const auto& [key, value] : info.items()) {
+        if (auto number = plottable(value)) {
+          fields.push_back({.name = key, .value = *number});
+        } else if (value.is_string()) {
+          fields.push_back({.name = key, .value = std::string_view(value.get_ref<const std::string&>())});
+        }
+      }
+      if (!fields.empty()) {
+        if (auto topic = writeHost().ensureTopic("_info")) {
+          (void)writeHost().appendRecord(*topic, fromMicros(snapshot_time_us), fields);
+        }
+      }
+    }
+
     // `_parameters`: one field per parameter, so each is a series right under the topic. The initial snapshot is one
     // record at the snapshot time; each in-flight change is a record at the data-message clock it appeared under
     // (PlotJuggler#1245) naming only its parameter: the host stores the others as null, which a numeric series skips.
     // PX4 parameters are int32/float only; anything else is collected and reported once instead of silently skipped.
     {
       std::vector<std::string> non_numeric_params;
-      auto numeric = [&](const std::string& name, const ulog_cpp::Parameter& param) -> std::optional<double> {
-        try {
-          return param.value().as<double>();
-        } catch (const std::exception&) {
-          std::string text;
-          try {
-            text = param.value().as<std::string>();
-          } catch (...) {}
-          non_numeric_params.push_back(name + "=" + text);
-          return std::nullopt;
+      auto numeric = [&](const std::string& name, const ulog_cpp::Parameter& param) {
+        const nlohmann::json value = ulogValueToJson(param.value());
+        auto number = plottable(value);
+        if (!number) {
+          non_numeric_params.push_back(
+              name + "=" + value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
         }
+        return number;
       };
       std::vector<PJ::sdk::NamedFieldValue> snapshot;
       for (const auto& [name, param] : data_container->initialParameters()) {
@@ -561,18 +599,13 @@ class ULogSource : public PJ::FileSourceBase {
         if (!topic) {
           return PJ::unexpected(topic.error());
         }
-        const auto at = [](uint64_t ts_us) { return PJ::Timestamp{static_cast<int64_t>(ts_us) * 1000}; };
         if (!snapshot.empty()) {
-          auto status = writeHost().appendRecord(
-              *topic, at(snapshot_time_us), PJ::Span<const PJ::sdk::NamedFieldValue>(snapshot.data(), snapshot.size()));
-          if (!status) {
+          if (auto status = writeHost().appendRecord(*topic, fromMicros(snapshot_time_us), snapshot); !status) {
             return status;
           }
         }
         for (const auto& [ts_us, field] : changes) {
-          auto status =
-              writeHost().appendRecord(*topic, at(ts_us), PJ::Span<const PJ::sdk::NamedFieldValue>(&field, 1));
-          if (!status) {
+          if (auto status = writeHost().appendRecord(*topic, fromMicros(ts_us), {field}); !status) {
             return status;
           }
         }
@@ -585,48 +618,11 @@ class ULogSource : public PJ::FileSourceBase {
       }
     }
 
-    // `_info`: one field per info key, numeric or text (sys_name, ver_hw, ...), in one record at the snapshot time.
-    // Both ordinary INFO entries and the first instance of each INFO_MULTIPLE key.
-    {
-      std::vector<std::string> texts;  // owns the text the record's string views point at
-      texts.reserve(data_container->messageInfo().size() + data_container->messageInfoMulti().size());
-      std::vector<PJ::sdk::NamedFieldValue> fields;
-      std::unordered_set<std::string> seen;
-      auto add_info = [&](const std::string& key, const ulog_cpp::MessageInfo& info) {
-        if (!seen.insert(key).second) {
-          return;
-        }
-        try {
-          fields.push_back({.name = key, .value = info.value().as<double>()});
-          return;
-        } catch (...) {}
-        try {
-          texts.push_back(info.value().as<std::string>());
-          fields.push_back({.name = key, .value = std::string_view(texts.back())});
-        } catch (...) {}
-      };
-      for (const auto& [key, info] : data_container->messageInfo()) {
-        add_info(key, info);
-      }
-      for (const auto& [key, values_vec] : data_container->messageInfoMulti()) {
-        if (!values_vec.empty() && !values_vec[0].empty()) {
-          add_info(key, values_vec[0][0]);  // first instance
-        }
-      }
-      if (!fields.empty()) {
-        if (auto topic = writeHost().ensureTopic("_info")) {
-          (void)writeHost().appendRecord(
-              *topic, PJ::Timestamp{static_cast<int64_t>(snapshot_time_us) * 1000},
-              PJ::Span<const PJ::sdk::NamedFieldValue>(fields.data(), fields.size()));
-        }
-      }
-    }
-
     if (!data_container->logging().empty()) {
       writeLogObjects(data_container->logging());
     }
 
-    publishDatasetMetadata(*data_container);
+    publishDatasetMetadata(std::move(info), *data_container);
 
     runtimeHost().reportMessage(
         PJ::DataSourceMessageLevel::kInfo, "Imported " + std::to_string(result.series_count) + " time series");
@@ -635,14 +631,10 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
  private:
-  // The INFO messages and the last value of each parameter, for the host's dataset info view. A host refusing the
+  // The file info and the last value of each parameter, for the host's dataset info view. A host refusing the
   // document (its size bounds are host policy) only loses this view: the import is unaffected, and a warning says why
   // it is empty.
-  void publishDatasetMetadata(const ulog_container::ULogContainer& container) {
-    nlohmann::json info = nlohmann::json::object();
-    for (const auto& [key, message] : container.messageInfo()) {
-      info[key] = ulogValueToJson(message.value());
-    }
+  void publishDatasetMetadata(nlohmann::json info, const ulog_container::ULogContainer& container) {
     nlohmann::json parameters = nlohmann::json::object();
     for (const auto& [name, parameter] : container.finalParameters()) {
       parameters[name] = ulogValueToJson(parameter.value());
@@ -675,7 +667,7 @@ class ULogSource : public PJ::FileSourceBase {
     }
     for (const auto& log : logs) {
       PJ::sdk::Log entry;
-      entry.timestamp_ns = static_cast<int64_t>(log.timestamp()) * 1000;
+      entry.timestamp_ns = fromMicros(log.timestamp());
       entry.level = toLogLevel(log.logLevel());
       const auto [module, text] = ulog_detail::splitModulePrefix(log.message());
       entry.source = std::string(module);
