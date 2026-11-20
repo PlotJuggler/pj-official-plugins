@@ -1,7 +1,8 @@
 #include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -58,16 +59,14 @@ PJ::PrimitiveType ulogTypeToPrimitive(ulog_cpp::Field::BasicType type) {
 }
 
 /// The shortest decimal that reads back as the same float, so 0.1F becomes 0.1 rather than its double widening
-/// 0.10000000149011612. snprintf and strtod share the C locale's decimal separator, so the round trip holds under any.
+/// 0.10000000149011612. nlohmann parses it back independently of the C locale.
 double shortestFloat(float value) {
-  char text[32];
-  for (int digits = 6; digits <= 9; ++digits) {
-    std::snprintf(text, sizeof(text), "%.*g", digits, static_cast<double>(value));
-    if (std::strtof(text, nullptr) == value) {
-      break;
-    }
+  if (!std::isfinite(value)) {
+    return value;
   }
-  return std::strtod(text, nullptr);
+  char text[32];
+  const auto end = std::to_chars(text, text + sizeof(text), value).ptr;
+  return nlohmann::json::parse(text, end).get<double>();
 }
 
 /// An INFO or PARAMETER value as JSON: strings (char arrays) as text, numbers as numbers, other arrays element-wise.
