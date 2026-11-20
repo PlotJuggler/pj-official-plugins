@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_ulog/`.
 
-## Upcoming
+## [1.4.0] - 2026-11-20
 
 ### Changed
 - Requires PlotJuggler 4.2 or later (SDK 1.1.0); earlier versions keep 1.3.0.
