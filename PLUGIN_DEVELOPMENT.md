@@ -25,7 +25,7 @@ shape for a new plugin will fight the runtime the entire way.
 You can see the flag at the top of each DataSource class:
 
 ```cpp
-// data_load_ulog/ulog_source.cpp:
+// data_load_csv/csv_source.cpp:
 uint64_t extraCapabilities() const override {
   return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
 }

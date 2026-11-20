@@ -1521,6 +1521,30 @@ TEST(ULogImportTest, InfoAndFinalParametersBecomeDatasetMetadata) {
   EXPECT_EQ(document["parameters"]["MPC_XY_VEL_MAX"].dump(), "0.1");
 }
 
+TEST(ULogImportTest, InfoValuesBecomeInfoTopicsNumericOrText) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeInfo("char[3] sys_name", {'P', 'X', '4'});
+  FieldDataBuilder release;
+  release.append<uint32_t>(0x010E00FF);
+  builder.writeInfo("uint32_t ver_sw_release", release.build());
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  ASSERT_EQ(host.rows["_info/sys_name"].size(), 1u);
+  const Cell& name = host.rows["_info/sys_name"][0].cells.at(0);
+  EXPECT_EQ(name.type, PJ_PRIMITIVE_TYPE_STRING);
+  EXPECT_EQ(name.text, "PX4");
+  ASSERT_EQ(host.rows["_info/ver_sw_release"].size(), 1u);
+  EXPECT_EQ(host.rows["_info/ver_sw_release"][0].cells.at(0).number, static_cast<double>(0x010E00FF));
+}
+
 // floor_test (manifest.json): the plugin's min_sdk_required predates set_dataset_metadata.
 TEST(ULogImportTest, ImportSucceedsOnHostWithoutDatasetMetadata) {
   ULogBuilder builder;

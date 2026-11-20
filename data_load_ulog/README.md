@@ -21,15 +21,14 @@ flight log files.
   keep sibling field offsets correct) still counts toward the required size.
 - Parameters written as `_parameters/<name>` series: the initial snapshot at
   file start, plus every **in-flight parameter change** as a further point
-- File info (`_info/`) and embedded log messages (`_log`) written as topics
+- File info (`_info/<key>`, a numeric or text `value`) and embedded log messages (`_log`) written as topics
 - Embedded log messages also published as `kLog` objects on an object topic
   named `_log` (for the log viewer): severity `0`..`7` mapped to fatal (0-2),
   error, warning, info (5-6), debug; the tag of a tagged message becomes the
   category
-- Parameters / info / log messages dialog (Info, Properties, Message Logs)
-- The INFO messages and the last value of each parameter are also published as
-  dataset metadata (`info`, `parameters`), which the host shows in its dataset
-  info view after the dialog is closed; hosts before SDK 0.32 do not show it
+- No load dialog. The INFO messages and the last value of each parameter are
+  published as dataset metadata (`info`, `parameters`), which the host shows in
+  its dataset info view; hosts before SDK 0.32 do not show it
 - Progress reporting with "Stop and keep" support
 - Truncated or partially corrupt files import everything decodable; recoverable
   parse problems are surfaced as a warning
@@ -78,8 +77,8 @@ ulog_import_bench [--values] [--plugin <path.so>] [file.ulg] [iterations]
   the host, so use it to check two builds produce the same data and leave it
   off when timing.
 
-Per run it prints the time of `loadConfig` (the parameter dialog parses the file
-too), of the first pass (`parse_s`, which only collects the subscriptions) and
-of the second pass (`decode_s`, which reads, decodes and writes the records).
+Per run it prints the time of `loadConfig`, of the first pass (`parse_s`, which
+only collects the subscriptions) and of the second pass (`decode_s`, which
+reads, decodes and writes the records).
 Then come throughput for the best run, the peak RSS, and the topic, field,
 record and value counts with a checksum that does not depend on record order.

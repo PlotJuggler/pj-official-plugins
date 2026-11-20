@@ -22,7 +22,6 @@
 #include "ulog_container.hpp"
 #include "ulog_flatten.hpp"
 #include "ulog_manifest.hpp"
-#include "ulog_params_dialog.hpp"
 
 namespace {
 
@@ -400,11 +399,7 @@ class StreamingContainer : public ulog_container::ULogContainer {
 class ULogSource : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
-    return PJ::kCapabilityDirectIngest | PJ::kCapabilityHasDialog;
-  }
-
-  PJ_borrowed_dialog_t getDialog() override {
-    return PJ::borrowDialog(dialog_);
+    return PJ::kCapabilityDirectIngest;
   }
 
   std::string saveConfig() const override {
@@ -417,9 +412,6 @@ class ULogSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
     filepath_ = cfg.value("filepath", std::string{});
-    if (!filepath_.empty()) {
-      dialog_.setFilePath(filepath_);
-    }
     return PJ::okStatus();
   }
 
@@ -570,28 +562,34 @@ class ULogSource : public PJ::FileSourceBase {
               " non-numeric parameter message(s) not plotted: " + sampleList(non_numeric_params, 5));
     }
 
-    // Write file info metadata as `_info/<key>` topics (numeric values) and
-    // report string values as info messages. Both ordinary INFO entries
-    // (sys_name, ver_hw, ...) and the first instance of each INFO_MULTIPLE key.
+    // Write file info as `_info/<key>` topics, one record at the file start: a numeric `value`, or a text one
+    // (sys_name, ver_hw, ...). Both ordinary INFO entries and the first instance of each INFO_MULTIPLE key.
     {
       auto write_info = [&](const std::string& key, const ulog_cpp::MessageInfo& info) {
-        double val = 0.0;
+        const auto ts = PJ::Timestamp{static_cast<int64_t>(file_start_time_us) * 1000};
+        double number = 0.0;
+        std::string text;
+        bool numeric = true;
         try {
-          val = info.value().as<double>();
+          number = info.value().as<double>();
         } catch (...) {
-          // Non-numeric info: try as string via reportMessage
+          numeric = false;
           try {
-            std::string str_val = info.value().as<std::string>();
-            runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kInfo, key + ": " + str_val);
-          } catch (...) {}
-          return;
+            text = info.value().as<std::string>();
+          } catch (...) {
+            return;
+          }
         }
         auto topic = writeHost().ensureTopic("_info/" + key);
         if (!topic) {
           return;
         }
-        auto ts_ns = static_cast<int64_t>(file_start_time_us) * 1000;
-        (void)writeHost().appendRecord(*topic, PJ::Timestamp{ts_ns}, {{.name = "value", .value = val}});
+        if (numeric) {
+          (void)writeHost().appendRecord(*topic, ts, {{.name = "value", .value = number}});
+          return;
+        }
+        (void)writeHost().ensureField(*topic, "value", PJ::PrimitiveType::kString);
+        (void)writeHost().appendRecord(*topic, ts, {{.name = "value", .value = std::string_view(text)}});
       };
 
       for (const auto& [key, info] : data_container->messageInfo()) {
@@ -636,10 +634,9 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
  private:
-  // The INFO messages and the last value of each parameter, as the dialog shows them, for the host's dataset info
-  // view once the dialog is closed. The log messages are already in `_log`. A host without set_dataset_metadata
-  // (SDK < 0.32), or one refusing the document (its size bounds are host policy), only loses this view: the import
-  // is unaffected, and a warning says why it is empty.
+  // The INFO messages and the last value of each parameter, for the host's dataset info view. The log messages are
+  // already in `_log`. A host without set_dataset_metadata (SDK < 0.32), or one refusing the document (its size
+  // bounds are host policy), only loses this view: the import is unaffected, and a warning says why it is empty.
   void publishDatasetMetadata(const ulog_container::ULogContainer& container) {
     nlohmann::json info = nlohmann::json::object();
     for (const auto& [key, message] : container.messageInfo()) {
@@ -696,12 +693,8 @@ class ULogSource : public PJ::FileSourceBase {
   }
 
   std::string filepath_;
-  ulog_detail::ULogParamsDialog dialog_;
 };
 
 }  // namespace
 
-// The dialog class is namespaced, so the static (WASM) build needs an
-// unqualified name for its getter symbol.
-PJ_DIALOG_PLUGIN_NAMED(ulog_detail::ULogParamsDialog, ULogParamsDialog, kUlogManifest)
 PJ_DATA_SOURCE_PLUGIN(ULogSource, kUlogManifest)
