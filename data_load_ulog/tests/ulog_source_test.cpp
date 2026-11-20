@@ -1585,6 +1585,31 @@ TEST(ULogImportTest, InfoValuesAreFieldsOfOneInfoTopicNumericOrText) {
   EXPECT_EQ(version[0].second.number, static_cast<double>(0x010E00FF));
 }
 
+// A record stamped before the header timestamp starts the dataset's time range; the initial parameter values and
+// the info must already hold there, or the curve list shows no value at the start of the timeline.
+TEST(ULogImportTest, InitialParametersAndInfoHoldFromTheEarliestRecord) {
+  ULogBuilder builder;
+  builder.writeHeader(2000000);
+  builder.writeFlagBits();
+  builder.writeInfo("char[3] sys_name", {'P', 'X', '4'});
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeParameterInt("MAV_TYPE", 2);
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeData(1, dummyRecord(3000000, 2.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const auto mav_type = fieldSamples(host.rows["_parameters"], "MAV_TYPE");
+  ASSERT_EQ(mav_type.size(), 1u);
+  EXPECT_EQ(mav_type[0].first, 1000000000);
+  const auto name = fieldSamples(host.rows["_info"], "sys_name");
+  ASSERT_EQ(name.size(), 1u);
+  EXPECT_EQ(name[0].first, 1000000000);
+}
+
 // floor_test (manifest.json): the plugin's min_sdk_required predates set_dataset_metadata.
 TEST(ULogImportTest, ImportSucceedsOnHostWithoutDatasetMetadata) {
   ULogBuilder builder;

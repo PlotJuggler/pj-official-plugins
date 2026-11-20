@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -278,6 +279,7 @@ class StreamingContainer : public ulog_container::ULogContainer {
       std::memcpy(&timestamp_us, raw.data() + *topic.ts_offset, sizeof(timestamp_us));
     }
     const auto ts_ns = static_cast<int64_t>(timestamp_us) * 1000;
+    result.earliest_record_us = std::min(result.earliest_record_us, timestamp_us);
 
     topic.plan.decode(raw.data(), raw.size());
     // Straight to the host's C entry point: the SDK's appendBoundRecord takes
@@ -293,6 +295,8 @@ class StreamingContainer : public ulog_container::ULogContainer {
   /// What the import has to report once the file is read.
   struct Result {
     std::string write_error;  // first host error; once set, no further record is written
+    // Smallest record timestamp written, sample-index fallbacks included: the dataset's time range starts there.
+    uint64_t earliest_record_us = std::numeric_limits<uint64_t>::max();
     size_t series_count = 0;
     // Diagnostics are aggregated and reported once: a malformed log can define
     // thousands of subscriptions, and one message per problem would flood the
@@ -503,6 +507,9 @@ class ULogSource : public PJ::FileSourceBase {
 
     // Get file start timestamp (microseconds).
     uint64_t file_start_time_us = data_container->fileHeader().header().timestamp;
+    // The initial parameter values and the file info hold from the start of the dataset's time range, which records
+    // stamped before the header timestamp (or by sample index) can put earlier than the file start.
+    const uint64_t snapshot_time_us = std::min(file_start_time_us, result.earliest_record_us);
 
     if (!result.topics_without_timestamp.empty()) {
       runtimeHost().reportMessage(
@@ -519,7 +526,7 @@ class ULogSource : public PJ::FileSourceBase {
     }
 
     // `_parameters`: one field per parameter, so each is a series right under the topic. The initial snapshot is one
-    // record at the file start; each in-flight change is a record at the data-message clock it appeared under
+    // record at the snapshot time; each in-flight change is a record at the data-message clock it appeared under
     // (PlotJuggler#1245) naming only its parameter: the host stores the others as null, which a numeric series skips.
     // PX4 parameters are int32/float only; anything else is collected and reported once instead of silently skipped.
     {
@@ -557,8 +564,7 @@ class ULogSource : public PJ::FileSourceBase {
         const auto at = [](uint64_t ts_us) { return PJ::Timestamp{static_cast<int64_t>(ts_us) * 1000}; };
         if (!snapshot.empty()) {
           auto status = writeHost().appendRecord(
-              *topic, at(file_start_time_us),
-              PJ::Span<const PJ::sdk::NamedFieldValue>(snapshot.data(), snapshot.size()));
+              *topic, at(snapshot_time_us), PJ::Span<const PJ::sdk::NamedFieldValue>(snapshot.data(), snapshot.size()));
           if (!status) {
             return status;
           }
@@ -579,8 +585,8 @@ class ULogSource : public PJ::FileSourceBase {
       }
     }
 
-    // `_info`: one field per info key, numeric or text (sys_name, ver_hw, ...), in one record at the file start. Both
-    // ordinary INFO entries and the first instance of each INFO_MULTIPLE key.
+    // `_info`: one field per info key, numeric or text (sys_name, ver_hw, ...), in one record at the snapshot time.
+    // Both ordinary INFO entries and the first instance of each INFO_MULTIPLE key.
     {
       std::vector<std::string> texts;  // owns the text the record's string views point at
       texts.reserve(data_container->messageInfo().size() + data_container->messageInfoMulti().size());
@@ -610,7 +616,7 @@ class ULogSource : public PJ::FileSourceBase {
       if (!fields.empty()) {
         if (auto topic = writeHost().ensureTopic("_info")) {
           (void)writeHost().appendRecord(
-              *topic, PJ::Timestamp{static_cast<int64_t>(file_start_time_us) * 1000},
+              *topic, PJ::Timestamp{static_cast<int64_t>(snapshot_time_us) * 1000},
               PJ::Span<const PJ::sdk::NamedFieldValue>(fields.data(), fields.size()));
         }
       }
