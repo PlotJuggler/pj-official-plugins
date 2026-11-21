@@ -129,7 +129,8 @@
        <widget class="QLabel" name="labelApiStatus">
         <property name="text"><string> </string></property>
         <property name="wordWrap"><bool>true</bool></property>
-        <property name="styleSheet"><string notr="true">color: #CC00CC; font-weight: 600;</string></property>
+        <property name="styleSheet"><string notr="true">font-weight: 600;</string></property>
+        <property name="pjStatus" stdset="0"><string notr="true">error</string></property>
        </widget>
       </item>
       <item>

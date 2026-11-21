@@ -3,6 +3,12 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_webrtc/`.
 
+## Upcoming
+
+### Fixed
+- The connection status message reads in the dark theme: it was magenta (2.5:1 on the dark dialog). It now takes
+  the theme's error colour (PlotJuggler releases after 4.2.0; bold default text on earlier ones).
+
 ## [1.0.4] - 2026-11-19
 
 ### Changed
