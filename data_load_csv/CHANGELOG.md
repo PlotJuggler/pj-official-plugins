@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_csv/`.
 
+## Upcoming
+
+### Fixed
+- The warning above the preview (duplicate column names, rows skipped) reads in the dark theme: it was magenta on a
+  white box, and the table's top-left corner was a light square. The warning now takes the theme's warning colour
+  (PlotJuggler releases after 4.2.0; bold default text on earlier ones) and the corner follows the theme.
+
 ## [1.0.11] - 2026-11-19
 
 ### Fixed
