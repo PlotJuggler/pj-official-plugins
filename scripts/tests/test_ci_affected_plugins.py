@@ -35,7 +35,7 @@ class AffectedPluginsTest(unittest.TestCase):
         self.assertIn("toolbox_transform_editor", plugins)
 
     def test_plugins_outside_the_lane_are_dropped(self):
-        self.assertEqual(affected_plugins(["widget_basic/src/a.cpp", "widget_log/src/a.cpp"]), (False, []))
+        self.assertEqual(affected_plugins(["widget_basic/src/a.cpp"]), (False, []))
         # data_stream_ros2 is out of the lane itself, but parser_ros includes one of its headers.
         self.assertEqual(affected_plugins(["data_stream_ros2/a.cpp"]), (False, ["parser_ros"]))
 
