@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 
-## Upcoming
+## [0.3.2] - 2026-11-23
 
 ### Fixed
 - Severity colors, Limit lines and Limit band now work in the Timeseries and
