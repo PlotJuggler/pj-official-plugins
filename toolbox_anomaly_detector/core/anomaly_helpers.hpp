@@ -46,6 +46,11 @@ struct NamedFunction {
 /// seen; anomaly rules use literal keys.
 [[nodiscard]] std::vector<std::string> parseSeriesRefs(const std::string& code);
 
+/// The generator inputs the GUI declares for `code`: its series refs, or `source` when it reads none (a rule of fixed
+/// lines or bands). The host picks the dataset a Timeseries or Dataset rule belongs to from its inputs and refuses a
+/// rule that has none; pass an empty `source` for a Global rule, which needs no input.
+[[nodiscard]] std::vector<std::string> ruleInputs(const std::string& code, const std::string& source);
+
 // ---------------------------------------------------------------------------
 // JSON report (structured output for the headless runner / CI pipelines)
 // ---------------------------------------------------------------------------

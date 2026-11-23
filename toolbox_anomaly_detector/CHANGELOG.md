@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 
+## Upcoming
+
+### Fixed
+- Severity colors, Limit lines and Limit band now work in the Timeseries and
+  Dataset scopes instead of failing with "none of the generator's inputs matches
+  a loaded series".
+
 ## [0.3.1] - 2026-11-18
 
 ### Fixed

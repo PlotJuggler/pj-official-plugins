@@ -209,6 +209,14 @@ TEST(ParseSeriesRefs, NoBuiltinDeclaresAnythingButItsSource) {
   EXPECT_EQ(anomaly_core::parseSeriesRefs(blank), (std::vector<std::string>{"ds/src"}));
 }
 
+// A rule of fixed lines reads no series: it declares its source, so the host can tell which dataset it belongs to.
+TEST(RuleInputs, ARuleReadingNoSeriesDeclaresItsSource) {
+  const std::string lines = "createHorizontalMarker(0.5, {label=\"max\"})\n";
+  EXPECT_EQ(anomaly_core::ruleInputs(lines, "ds/src"), (std::vector<std::string>{"ds/src"}));
+  EXPECT_TRUE(anomaly_core::ruleInputs(lines, "").empty());
+  EXPECT_EQ(anomaly_core::ruleInputs("when(\"a/b\", above(1)):event()", "ds/src"), (std::vector<std::string>{"a/b"}));
+}
+
 TEST(MarkersToReport, CountsBySeverityAndStatus) {
   const std::vector<PlotMarker> markers{
       makeMarker(MarkerSeverity::kInfo, MarkerStatus::kNone),
