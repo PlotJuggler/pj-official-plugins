@@ -1014,52 +1014,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("radioButtonPrefix", !edit_mode_);
     wd.setEnabled("radioButtonSuffix", !edit_mode_);
 
-    if (view_only_) {
+    if (view_) {
       applyViewOnly(wd);
     }
     return wd;
   }
 
-  // A view of a recipe another owner made: everything is shown, nothing edits the form or reaches the host. The
-  // handlers refuse the edits too (viewBlocks): a disabled widget still receives drops (see onItemsDropped).
-  void applyViewOnly(PJ::WidgetData& wd) const {
-    wd.setDropTarget("tableSources", false);
-    wd.setListItemsDeletable("tableSources", false);
-    for (const char* name : {"globalVarsText", "functionText", "paramsLineEdit"}) {
-      wd.setReadOnly(name, true);
-    }
-    for (const char* name :
-         {"luaButton", "pythonButton", "pinCurrentTimeCheck", "buttonClearSources", "buttonLibraryBox",
-          "buttonLoadFunctions", "buttonSaveFunctions", "tab_2"}) {
-      wd.setEnabled(name, false);
-    }
-    wd.setEnabled("buttonSaveCurrent", view_template_);
-    wd.setEnabled("pushButtonCreate", false);
-    wd.setVisible("pushButtonCreate", false);
-    if (!view_template_) {
-      wd.setText("functionTitle", "Script");  // the whole chunk, not a function body
-    }
-    const std::string owner = view_owner_.empty() ? std::string{} : ": created by " + view_owner_;
-    wd.setLabel("statusLabel", "Read-only" + owner + ". It cannot be changed here.");
-    wd.clearChart("framePlotPreview");
-    wd.setVisible("framePlotPreview", true);
-    wd.setVisible("frameScenePreview", false);
-    wd.setChartPlaceholder("framePlotPreview", "Read-only view: no preview");
-  }
-
-  // Events a view still takes: help, the params disclosure, closing the library panel, and the save-to-library
-  // flow when the view shows a function body (view_template_). The prompts of that flow are the only ones a view
-  // opens (loadView clears a pending one), so OK there reaches nothing but SaveName / SaveOverwrite.
-  bool viewBlocks(std::string_view name) const {
-    if (!view_only_ || name == "pushButtonHelp" || name == "buttonAdvanced" || name == "subPanelClosed") {
-      return false;
-    }
-    return !(
-        view_template_ && (name == "buttonSaveCurrent" || name == "subDialogAccepted" || name == "saveFunctionName"));
-  }
-
   bool viewOnly() const {
-    return view_only_;
+    return view_.has_value();
   }
 
   bool onTextChanged(std::string_view name, std::string_view text) override {
@@ -1301,8 +1263,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
         on_refresh_preview_();
       }
     }
-    // Re-validate the batch function only when its fields changed (not every tick).
-    if (batch_dirty_) {
+    // Re-validate the batch function only when its fields changed (not every tick). A view has no batch function
+    // to check and reaches the host with nothing: the flag stays set for the editable form that replaces it.
+    if (batch_dirty_ && !view_) {
       batch_dirty_ = false;
       if (on_validate_batch_) {
         on_validate_batch_();
@@ -1513,8 +1476,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void onAccepted(std::string_view /*json*/) override {}
 
   std::string saveConfig() const override {
-    if (view_only_) {
-      return view_config_.dump();  // reopened, it is a view again
+    if (view_) {
+      return view_->config.dump();  // reopened, it is a view again
     }
     nlohmann::json cfg;
     cfg["output_name"] = output_name_;
@@ -1565,10 +1528,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (cfg.is_discarded() || !cfg.is_object()) {
       return false;
     }
-    view_only_ = false;
-    if (const auto view = cfg.find("view"); view != cfg.end() && view->is_object()) {
-      loadView(*view);
-      view_config_ = std::move(cfg);
+    view_.reset();
+    // An on-demand recipe's params are the user's own, and may hold a "view" key: only a config without the
+    // editor's "__editor" state is the host's view of another owner's recipe.
+    if (const auto view = cfg.find("view"); view != cfg.end() && view->is_object() && !cfg.contains(kEditorParamsKey)) {
+      loadView(cfg);
       return true;
     }
     // An on-demand recipe stores the user's params object plus "__editor", the editor's own
@@ -1650,23 +1614,24 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // outputs, params}}`, the host's contract). A Luau transform written by buildTransformScript shows its global
   // section and function body as the editor does, and can be saved to the library as a template; any other
   // script goes whole into the function pane, as it runs.
-  void loadView(const nlohmann::json& view) {
+  void loadView(const nlohmann::json& config) {
+    const nlohmann::json& view = config["view"];
     loadKindState(nlohmann::json::object(), std::string{});
     prompt_ = Prompt::None;
-    view_only_ = true;
-    view_owner_ = view.value("owner", std::string{});
-    view_kind_ = view.value("kind", std::string{}) == "on_demand" ? RecipeKind::kOnDemand : RecipeKind::kTransform;
+    ViewState state;
+    state.owner = view.value("owner", std::string{});
+    state.kind = view.value("kind", std::string{}) == "on_demand" ? RecipeKind::kOnDemand : RecipeKind::kTransform;
+    state.config = config;
     output_name_ = view.value("name", std::string{});
     global_code_.clear();
     function_body_ = view.value("script", std::string{});
     auto_body_.clear();
     language_ = view.value("language", std::string{}) == "python" ? "python" : "luau";
-    view_template_ = false;
-    if (language_ == "luau" && view_kind_ == RecipeKind::kTransform) {
+    if (language_ == "luau" && state.kind == RecipeKind::kTransform) {
       if (auto parts = derived_recipes::parseTransformScript(function_body_)) {
         global_code_ = std::move(parts->global_code);
         function_body_ = std::move(parts->body);
-        view_template_ = true;
+        state.is_template = true;
       }
     }
     const std::string params = view.value("params", std::string{});
@@ -1685,6 +1650,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     current_tab_ = 0;
     pending_tab_restore_ = true;
     edit_mode_ = true;
+    view_ = std::move(state);
     ++form_revision_;
   }
 
@@ -1990,6 +1956,10 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   /// Why Create is disabled, or empty when it is enabled.
   std::string canCreateReason() const {
+    if (view_) {
+      return "Read-only" + (view_->owner.empty() ? std::string{} : ": created by " + view_->owner) +
+             ". It cannot be changed here.";
+    }
     if (const auto& problems = formProblems(); !problems.empty()) {
       return problems.front();
     }
@@ -2248,6 +2218,42 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
  private:
+  // A view of a recipe another owner made: everything is shown, nothing edits the form or reaches the host. The
+  // handlers refuse the edits too (viewBlocks): a disabled widget still receives drops (see onItemsDropped).
+  void applyViewOnly(PJ::WidgetData& wd) const {
+    wd.setDropTarget("tableSources", false);
+    wd.setListItemsDeletable("tableSources", false);
+    for (const char* name : {"globalVarsText", "functionText", "paramsLineEdit"}) {
+      wd.setReadOnly(name, true);
+    }
+    for (const char* name :
+         {"luaButton", "pythonButton", "pinCurrentTimeCheck", "buttonClearSources", "buttonLibraryBox",
+          "buttonLoadFunctions", "buttonSaveFunctions", "tab_2"}) {
+      wd.setEnabled(name, false);
+    }
+    wd.setEnabled("buttonSaveCurrent", view_->is_template);
+    wd.setVisible("pushButtonCreate", false);  // disabled already: canCreateReason() is the read-only notice
+    if (!view_->is_template) {
+      wd.setText("functionTitle", "Script");  // the whole chunk, not a function body
+    }
+    wd.clearChart("framePlotPreview");
+    wd.setVisible("framePlotPreview", true);
+    wd.setVisible("frameScenePreview", false);
+    wd.setChartPlaceholder("framePlotPreview", "Read-only view: no preview");
+  }
+
+  // Events a view still takes: help, the params disclosure, closing the library panel, and the save-to-library
+  // flow when the view shows a function body (is_template). The prompts of that flow are the only ones a view
+  // opens (loadView clears a pending one), so OK there reaches nothing but SaveName / SaveOverwrite.
+  bool viewBlocks(std::string_view name) const {
+    if (!view_ || name == "pushButtonHelp" || name == "buttonAdvanced" || name == "subPanelClosed") {
+      return false;
+    }
+    return !(
+        view_->is_template &&
+        (name == "buttonSaveCurrent" || name == "subDialogAccepted" || name == "saveFunctionName"));
+  }
+
   // One edit of the form (inputs, body, globals, Var, params, language): the preview runs again, and
   // Create waits for it (the last trial no longer describes what is on screen).
   void formChanged() {
@@ -2306,7 +2312,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     for (const std::string& source : sources_) {
       input_types.push_back(inputTypeOf(source));
     }
-    d.kind = view_only_ ? view_kind_ : deduceEngine(input_types, kind_hint_on_demand_);
+    d.kind = view_ ? view_->kind : deduceEngine(input_types, kind_hint_on_demand_);
     if (d.kind == RecipeKind::kOnDemand) {
       d.vars = onDemandVariableNames(var_overrides_);
     } else {
@@ -2566,12 +2572,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::function<std::string(const std::string&)> input_type_of_;
   std::function<bool(const std::string&)> own_recipe_exists_;
   bool edit_mode_ = false;  // opened to modify an existing series (locks the name, button = Modify)
-  bool view_only_ = false;  // a view of another owner's recipe (see loadView)
-  std::string view_owner_;  // its owner's display name, from the host
-  RecipeKind view_kind_ = RecipeKind::kTransform;
-  // The view shows a function body (a recognised generated chunk), not a whole chunk: it can be saved to the library.
-  bool view_template_ = false;
-  nlohmann::json view_config_;                  // the config the view was loaded from, saved back as is
+  struct ViewState {
+    std::string owner;  // its owner's display name, from the host
+    RecipeKind kind = RecipeKind::kTransform;
+    // The view shows a function body (a recognised generated chunk), not a whole chunk: it can be saved to the library.
+    bool is_template = false;
+    nlohmann::json config;  // the config the view was loaded from, saved back as is
+  };
+  std::optional<ViewState> view_;               // a view of another owner's recipe (see loadView); empty in the form
   std::string validation_error_;                // host's rejection message for the current script (empty = OK)
   std::string preview_error_;                   // why the preview recipe cannot be shown (see setPreviewError)
   std::vector<std::string> scene_view_errors_;  // the host's refusals of the current scene request
@@ -2709,9 +2717,6 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   friend class TransformEditorPreviewTestPeer;
 
   void onSave() {
-    if (dialog_.viewOnly()) {
-      return;
-    }
     // The engine follows the input types, so read the catalog now: Create acts on what the user sees.
     refreshOnDemandSupport(/*force=*/true);
     if (const std::string reason = dialog_.canCreateReason(); !reason.empty()) {
@@ -3775,10 +3780,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   void refreshPreview() {
+    refreshOnDemandSupport();  // a view shows the input types the catalog gives
     if (dialog_.viewOnly()) {
       return;  // the view's script is a whole recipe, not a body the preview could wrap
     }
-    refreshOnDemandSupport();
     // The live preview belongs to the Single Function tab only. On the Batch tab
     // tear it down so its ephemeral node can never coexist with / leak into a
     // batch Create (and to avoid needless per-tick churn).
