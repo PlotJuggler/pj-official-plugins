@@ -41,7 +41,7 @@
 #include "features_digest.hpp"
 #include "harness_memory.hpp"
 #include "settings_store.hpp"
-#include "support/scoped_env.hpp"
+#include "test_support/scoped_env.hpp"
 
 #ifndef ASSISTANT_SESSIONS_FIXTURES_DIR
 #error "ASSISTANT_SESSIONS_FIXTURES_DIR must be defined by CMake"
@@ -113,9 +113,9 @@ using assistant_agent::resolveFeaturesBudgetChars;
 using assistant_agent::SettingsStore;
 using nlohmann::json;
 
-using assistant_agent::testing::makeTempDir;
-using assistant_agent::testing::refreshTimezone;
-using assistant_agent::testing::ScopedEnv;
+using toolbox_testing::makeTempDir;
+using toolbox_testing::refreshTimezone;
+using toolbox_testing::ScopedEnv;
 
 TEST(AssistantDialogUi, TranscriptOptsIntoMarkdownWithoutRequiringANewWidgetClass) {
   AssistantDialog dialog;

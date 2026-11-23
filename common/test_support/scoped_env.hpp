@@ -5,14 +5,17 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <optional>
 #include <pj_base/sdk/platform.hpp>
 #include <random>
 #include <string>
+#include <system_error>
 
-namespace assistant_agent::testing {
+namespace toolbox_testing {
 
 // Saves/restores one environment variable around a test, so code that reads
 // HOME / XDG_STATE_HOME / CLAUDE_CONFIG_DIR can be exercised against a
@@ -94,4 +97,4 @@ inline std::filesystem::path makeTempDir(const char* prefix) {
   return {};
 }
 
-}  // namespace assistant_agent::testing
+}  // namespace toolbox_testing

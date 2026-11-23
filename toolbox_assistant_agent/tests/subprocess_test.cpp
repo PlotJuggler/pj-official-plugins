@@ -19,8 +19,8 @@
 #include <vector>
 
 #include "platform_util.hpp"  // utf8ToPath
-#include "support/scoped_env.hpp"
 #include "system_prompt.hpp"  // kSystemPrompt, used as one large ArgvSurvivesExactly entry
+#include "test_support/scoped_env.hpp"
 
 #ifndef ASSISTANT_CHILD_HELPER
 #error "ASSISTANT_CHILD_HELPER must be defined by CMake"
@@ -34,7 +34,7 @@ namespace {
 
 using assistant_agent::runProcess;
 using assistant_agent::SubprocessResult;
-using assistant_agent::testing::ScopedEnv;
+using toolbox_testing::ScopedEnv;
 
 std::string trimTrailingNewline(std::string s) {
   while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) {

@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "support/conversation_helpers.hpp"  // findById
-#include "support/scoped_env.hpp"
+#include "test_support/scoped_env.hpp"
 
 #ifndef ASSISTANT_SESSIONS_FIXTURES_DIR
 #error "ASSISTANT_SESSIONS_FIXTURES_DIR must be defined by CMake"
@@ -42,8 +42,8 @@ using assistant_agent::parseIso8601Utc;
 using assistant_agent::stripCatalogPrefix;
 
 using assistant_agent::testing::findById;
-using assistant_agent::testing::makeTempDir;
-using assistant_agent::testing::ScopedEnv;
+using toolbox_testing::makeTempDir;
+using toolbox_testing::ScopedEnv;
 
 // Copies every fixture into a fresh temp directory per test, so
 // listConversations/loadTranscript/deleteConversation run against a

@@ -27,7 +27,7 @@
 
 #include "cli_probe.hpp"  // cannotFindCliMessage
 #include "subprocess.hpp"
-#include "support/scoped_env.hpp"
+#include "test_support/scoped_env.hpp"
 
 // --- Shared: platform-neutral pieces, exercised on every platform ---------
 
@@ -95,8 +95,8 @@ using assistant_agent::childEnvFor;
 using assistant_agent::CliLocation;
 using assistant_agent::locateCli;
 using assistant_agent::runProcess;
-using assistant_agent::testing::makeTempDir;
-using assistant_agent::testing::ScopedEnv;
+using toolbox_testing::makeTempDir;
+using toolbox_testing::ScopedEnv;
 
 namespace fs = std::filesystem;
 
@@ -282,8 +282,8 @@ namespace {
 using assistant_agent::childEnvFor;
 using assistant_agent::CliLocation;
 using assistant_agent::locateCli;
-using assistant_agent::testing::makeTempDir;
-using assistant_agent::testing::ScopedEnv;
+using toolbox_testing::makeTempDir;
+using toolbox_testing::ScopedEnv;
 
 namespace fs = std::filesystem;
 
