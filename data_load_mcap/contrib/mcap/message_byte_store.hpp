@@ -15,9 +15,10 @@
 //            returned anchor pins only the message — never the whole chunk, so a
 //            retained view can't keep a chunk (and its ~100 siblings) resident.
 //   * COLD — the fetcher is invoked after the chunk is gone. Re-decompresses the
-//            containing chunk on demand (byte-bounded, O(1) seek), under a
-//            byte-budgeted LRU, and returns a MESSAGE-SIZED COPY so a retained
-//            view never pins a whole decompressed chunk.
+//            containing chunk on demand (O(1) seek), under a byte-budgeted LRU,
+//            reads the message record at its within-chunk offset, and returns a
+//            MESSAGE-SIZED COPY so a retained view never pins a whole
+//            decompressed chunk.
 //
 // The fetcher distinguishes the two by a non-owning liveness handle obtained
 // from `Iterator::currentBuffer()`. This is what avoids decompressing every
@@ -35,20 +36,19 @@
 
 #pragma once
 
-#include "parallel_reader.hpp"  // ParallelMessageView::Iterator, McapReader, LinearMessageView, ChunkIndex, MessageView, Status
+#include "parallel_reader.hpp"  // ParallelMessageView, McapReader, RecordReader, ChunkIndex, MessageView, Status
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <list>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -66,12 +66,6 @@ struct ByteView {
 
 namespace detail {
 
-// Saturating add for MCAP timestamps. MaxTime is the type's upper bound; +1
-// would wrap to 0 and make a half-open range degenerate.
-inline Timestamp incrementEndTimeSaturating(Timestamp ts) {
-  return (ts == MaxTime) ? MaxTime : ts + 1;
-}
-
 // Cold-path machinery, shared (via shared_ptr) by every fetcher the store
 // produces so it outlives the store/import. Owns a lazily-opened,
 // FileReader-backed McapReader and a byte-bounded LRU of decompressed chunks.
@@ -83,65 +77,66 @@ inline Timestamp incrementEndTimeSaturating(Timestamp ts) {
 class ColdChunkStore {
 public:
   struct ChunkMeta {
-    uint64_t length = 0;
-    Timestamp ts_start = 0;
-    Timestamp ts_end = 0;
+    uint64_t length = 0;  // whole Chunk record, opcode and length prefix included
   };
 
   std::string filepath_;
   std::size_t capacity_bytes_ = 0;
-  std::unordered_map<uint64_t, ChunkMeta> meta_;  // chunkStartOffset -> bounds
+  std::unordered_map<uint64_t, ChunkMeta> meta_;  // chunkStartOffset -> chunk record bounds
 
   // Resolve one message to a message-sized owned copy. Empty on any failure;
   // failures are surfaced via stderr (NOT a callback) because this can run after
   // the owning data source is gone — a captured callback would dangle.
+  //
+  // `within_chunk` is the Message record's offset inside the decompressed chunk,
+  // taken from the file's message index, so it is untrusted: the record is
+  // bounds-checked against the chunk and must be a Message with the expected
+  // channel and log time.
   ByteView fetch(uint64_t chunk_start, ByteOffset within_chunk, ChannelId channel_id,
                  Timestamp log_time) {
     std::lock_guard<std::mutex> lock(mu_);
     if (!ensureOpenLocked()) {
       return {};
     }
-    auto entry = getChunkLocked(chunk_start);
-    if (!entry) {
+    auto chunk = getChunkLocked(chunk_start);
+    if (!chunk) {
       return {};
     }
-    auto it = entry->index.find(Key{channel_id, log_time, within_chunk});
-    if (it == entry->index.end()) {
+    BufferReader buffer;
+    buffer.reset(chunk->data(), chunk->size(), chunk->size());
+    RecordReader records(buffer, within_chunk, chunk->size());
+    const auto record = records.next();
+    Message message;
+    if (!record || record->opcode != OpCode::Message ||
+        !McapReader::ParseMessage(*record, &message).ok() || message.channelId != channel_id ||
+        message.logTime != log_time) {
       std::fprintf(stderr,
-                   "[data_load_mcap] cold-path lookup miss after chunk loaded — chunk@%llu ch=%u "
-                   "ts=%llu wc=%llu "
+                   "[data_load_mcap] cold-path record mismatch — chunk@%llu ch=%u ts=%llu wc=%llu "
                    "(possible corruption or offset mismatch)\n",
                    static_cast<unsigned long long>(chunk_start), static_cast<unsigned>(channel_id),
                    static_cast<unsigned long long>(log_time),
                    static_cast<unsigned long long>(within_chunk));
       return {};
     }
-    const auto [offset, size] = it->second;
     // Message-sized copy: a retained ByteView then pins only this message's
     // bytes, never the whole decompressed chunk (which the LRU still bounds).
-    auto copy = std::make_shared<std::vector<uint8_t>>(
-      entry->bytes->begin() + static_cast<std::ptrdiff_t>(offset),
-      entry->bytes->begin() + static_cast<std::ptrdiff_t>(offset + size));
+    const auto* src = reinterpret_cast<const uint8_t*>(message.data);
+    auto copy = std::make_shared<std::vector<uint8_t>>(src, src + message.dataSize);
     const auto* base = reinterpret_cast<const std::byte*>(copy->data());
-    return ByteView{base, size, std::move(copy)};
+    return ByteView{base, copy->size(), std::move(copy)};
   }
 
 private:
-  using Key = std::tuple<ChannelId, Timestamp, ByteOffset>;
+  using ChunkBytes = internal::RawByteArray;  // whole decompressed chunk
 
-  struct Entry {
-    std::shared_ptr<const std::vector<uint8_t>> bytes;  // whole decompressed chunk
-    std::map<Key, std::pair<size_t /*offset*/, size_t /*size*/>> index;
-  };
   struct MapValue {
-    std::shared_ptr<const Entry> entry;
+    std::shared_ptr<const ChunkBytes> bytes;
     std::list<uint64_t>::iterator lru_it;
   };
 
-  // Lazily open + summarize the cold reader on first miss. A hard failure is
-  // latched in open_error_ so we don't re-attempt a doomed open on every pull
-  // (retry storm). Channel/schema resolution for the byte-bounded view below
-  // requires the parsed summary, hence readSummary here.
+  // Lazily open the cold reader on first miss. A hard failure is latched in
+  // open_error_ so we don't re-attempt a doomed open on every pull (retry
+  // storm). No summary is parsed: chunks are located by their file offset.
   bool ensureOpenLocked() {
     if (open_error_) {
       return false;
@@ -157,20 +152,18 @@ private:
       reader_.reset();
       return false;
     }
-    if (Status st = reader_->readSummary(ReadSummaryMethod::AllowFallbackScan); !st.ok()) {
-      std::fprintf(stderr, "[data_load_mcap] cold-path summary failed for '%s' (code=%d): %s\n",
-                   filepath_.c_str(), static_cast<int>(st.code), st.message.c_str());
-      open_error_ = st;
-      reader_.reset();
-      return false;
-    }
     return true;
   }
 
-  std::shared_ptr<const Entry> getChunkLocked(uint64_t chunk_start) {
+  std::shared_ptr<const ChunkBytes> getChunkLocked(uint64_t chunk_start) {
     if (auto it = map_.find(chunk_start); it != map_.end()) {
       lru_.splice(lru_.begin(), lru_, it->second.lru_it);
-      return it->second.entry;
+      return it->second.bytes;
+    }
+    // Reported once by loadChunkLocked: reading and decompressing a chunk that cannot be loaded again on every
+    // fetch would hold mu_ for a whole chunk read per message.
+    if (failed_.count(chunk_start) != 0) {
+      return nullptr;
     }
     auto m = meta_.find(chunk_start);
     if (m == meta_.end()) {
@@ -178,58 +171,54 @@ private:
                    static_cast<unsigned long long>(chunk_start));
       return nullptr;
     }
-    auto entry = loadChunkLocked(chunk_start, m->second);
-    if (!entry) {
+    auto bytes = loadChunkLocked(chunk_start, m->second);
+    if (!bytes) {
+      failed_.insert(chunk_start);
       return nullptr;
     }
     lru_.push_front(chunk_start);
-    map_.emplace(chunk_start, MapValue{entry, lru_.begin()});
-    total_bytes_ += entry->bytes->size();
+    map_.emplace(chunk_start, MapValue{bytes, lru_.begin()});
+    total_bytes_ += bytes->size();
     // Keep at least one entry so a chunk larger than the budget still survives
     // until the next insert displaces it.
     while (map_.size() > 1 && total_bytes_ > capacity_bytes_) {
       uint64_t victim = lru_.back();
       auto victim_it = map_.find(victim);
-      total_bytes_ -= victim_it->second.entry->bytes->size();
+      total_bytes_ -= victim_it->second.bytes->size();
       lru_.pop_back();
       map_.erase(victim_it);
     }
-    return entry;
+    return bytes;
   }
 
-  // Byte-bounded decompression of a single chunk: hands LinearMessageView the
-  // exact [start, start+length) byte range so mcap decompresses that one chunk
-  // directly — no O(chunks_before_target) linear scan. Indexed by
-  // (channel_id, log_time, within_chunk_record_offset); the third element
-  // distinguishes messages sharing a (channel, logTime), which MCAP permits.
-  std::shared_ptr<const Entry> loadChunkLocked(uint64_t chunk_start, const ChunkMeta& meta) {
-    auto buffer = std::make_shared<std::vector<uint8_t>>();
-    auto entry = std::make_shared<Entry>();
-    auto on_problem = [chunk_start](const Status& s) {
-      std::fprintf(stderr, "[data_load_mcap] cold-path chunk@%llu mcap problem (code=%d): %s\n",
-                   static_cast<unsigned long long>(chunk_start), static_cast<int>(s.code),
-                   s.message.c_str());
-    };
-    LinearMessageView view(*reader_, chunk_start, chunk_start + meta.length, meta.ts_start,
-                           incrementEndTimeSaturating(meta.ts_end), on_problem);
-    for (const auto& v : view) {
-      if (v.channel == nullptr || v.message.data == nullptr) {
-        continue;
+  // Reads the one Chunk record at [start, start+length) — an O(1) seek, no scan
+  // of earlier chunks — and decompresses it once into an uninitialized buffer
+  // with the parallel reader's decompressor. The chunk's uncompressed CRC is not
+  // verified, as on every other read path of this reader.
+  std::shared_ptr<const ChunkBytes> loadChunkLocked(uint64_t chunk_start, const ChunkMeta& meta) {
+    auto bytes = std::make_shared<ChunkBytes>();
+    Status st;
+    try {
+      RecordReader records(*reader_->dataSource(), chunk_start, chunk_start + meta.length);
+      const auto record = records.next();
+      Chunk chunk;
+      if (!records.status().ok()) {
+        st = records.status();
+      } else if (!record || record->opcode != OpCode::Chunk) {
+        st = Status{StatusCode::InvalidChunkOffset, "no chunk record at chunk offset"};
+      } else if (st = McapReader::ParseChunk(*record, &chunk); st.ok()) {
+        st = ParallelMessageView::decompressInto(chunk, *bytes);
       }
-      const auto* data = reinterpret_cast<const uint8_t*>(v.message.data);
-      const size_t size = v.message.dataSize;
-      const size_t offset = buffer->size();
-      buffer->insert(buffer->end(), data, data + size);
-      // Within-chunk record offset: the SERIAL LinearMessageView reports it in
-      // messageOffset.chunkOffset (per reader.inl conventions) — note this is
-      // the parallel reader's messageOffset.offset, the value the fetcher keys
-      // its lookup with. value_or(0) covers the unlikely "not set" case.
-      const ByteOffset within_chunk = v.messageOffset.chunkOffset.value_or(0);
-      entry->index.emplace(Key{v.channel->id, v.message.logTime, within_chunk},
-                           std::pair<size_t, size_t>{offset, size});
+    } catch (const std::exception& e) {
+      st = Status{StatusCode::DecompressionFailed, std::string("exception decompressing chunk: ") + e.what()};
     }
-    entry->bytes = std::shared_ptr<const std::vector<uint8_t>>(std::move(buffer));
-    return entry;
+    if (!st.ok()) {
+      std::fprintf(stderr, "[data_load_mcap] cold-path chunk@%llu mcap problem (code=%d): %s\n",
+                   static_cast<unsigned long long>(chunk_start), static_cast<int>(st.code),
+                   st.message.c_str());
+      return nullptr;
+    }
+    return bytes;
   }
 
   std::mutex mu_;
@@ -238,6 +227,7 @@ private:
   std::list<uint64_t> lru_;             // front = MRU, keyed by chunkStartOffset
   std::unordered_map<uint64_t, MapValue> map_;
   size_t total_bytes_ = 0;
+  std::unordered_set<uint64_t> failed_;  // chunks that failed to load, by chunkStartOffset; at most meta_.size()
 };
 
 }  // namespace detail
@@ -278,7 +268,7 @@ private:
   const std::byte* hot_data_ = nullptr;   // valid iff hot_buffer_.lock() succeeds
   std::size_t size_ = 0;
   uint64_t chunk_start_ = 0;     // chunk's file offset (cold locator)
-  ByteOffset within_chunk_ = 0;  // within-chunk record offset (cold key)
+  ByteOffset within_chunk_ = 0;  // Message record offset in the decompressed chunk
   ChannelId channel_id_ = 0;
   Timestamp log_time_ = 0;
   std::shared_ptr<detail::ColdChunkStore> cold_;  // shared; outlives this store
@@ -318,7 +308,7 @@ public:
     for (const auto& ci : chunkIndexes) {
       cold_->meta_.emplace(
         ci.chunkStartOffset,
-        detail::ColdChunkStore::ChunkMeta{ci.chunkLength, ci.messageStartTime, ci.messageEndTime});
+        detail::ColdChunkStore::ChunkMeta{ci.chunkLength});
     }
     if (onProblem) {
       std::ifstream probe(cold_->filepath_, std::ios::binary);
@@ -341,8 +331,8 @@ public:
     f.hot_buffer_ = it.currentBuffer();
     f.hot_data_ = view.message.data;
     // Cold locator. RecordOffset in the parallel reader: .chunkOffset = chunk's
-    // FILE offset (== ChunkIndex::chunkStartOffset), .offset = within-chunk
-    // record offset (the value the cold index is keyed by).
+    // FILE offset (== ChunkIndex::chunkStartOffset), .offset = the Message
+    // record's offset inside the decompressed chunk.
     f.chunk_start_ = view.messageOffset.chunkOffset.value_or(view.messageOffset.offset);
     f.within_chunk_ = view.messageOffset.offset;
     f.channel_id_ = (view.channel != nullptr) ? view.channel->id : 0;

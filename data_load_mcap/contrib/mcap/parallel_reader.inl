@@ -369,13 +369,14 @@ Status ParallelMessageView::decompressInto(const Chunk& chunk, internal::RawByte
 #endif
 #ifndef MCAP_COMPRESSION_NO_LZ4
   if (*comp == Compression::Lz4) {
-    ByteArray tmp;
+    out.resize(chunk.uncompressedSize);
     LZ4Reader lz4;  // per-job instance: LZ4Reader is not thread-safe to share
     const Status s =
-      lz4.decompressAll(chunk.records, chunk.compressedSize, chunk.uncompressedSize, &tmp);
-    if (!s.ok()) return s;
-    out.assign(tmp.begin(), tmp.end());
-    return StatusCode::Success;
+      lz4.decompressAll(chunk.records, chunk.compressedSize, chunk.uncompressedSize, out.data());
+    if (!s.ok()) {
+      out.clear();
+    }
+    return s;
   }
 #endif
   return Status{StatusCode::UnsupportedCompression, "unsupported: " + chunk.compression};

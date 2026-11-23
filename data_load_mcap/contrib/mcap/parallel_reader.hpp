@@ -212,6 +212,10 @@ public:
   // Diagnostic counters (chunk counts, peak resident decompressed bytes).
   const internal::ParallelStats& stats() const;
 
+  // Decompresses one parsed chunk into `out` (resized to its uncompressedSize, never zero-filled). Stateless and
+  // thread-safe: MessageByteStore's cold path uses it too.
+  static Status decompressInto(const Chunk& chunk, internal::RawByteArray& out);
+
   // ---- iterator ---------------------------------------------------------
   struct Iterator {
     using iterator_category = std::input_iterator_tag;
@@ -271,7 +275,6 @@ private:
                    std::shared_ptr<std::promise<internal::ReadyChunkPtr>> prom);
   void orderEntries(std::vector<internal::PMsgEntry>& entries,
                     const std::vector<std::pair<size_t, size_t>>& runs) const;
-  Status decompressInto(const Chunk& chunk, internal::RawByteArray& out);
   bool scheduleChunk(size_t planIdx, bool force);
   void prefetch();
   void addCursor(size_t planIdx);
