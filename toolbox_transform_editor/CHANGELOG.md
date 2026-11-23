@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_transform_editor/`.
 
-## Upcoming
+## [1.3.0] - 2026-11-23
 
 ### Added
 - **Text output**: a series function can return labels such as `"walking"` or `"standing"` instead of numbers
