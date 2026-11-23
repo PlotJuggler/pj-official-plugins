@@ -2315,7 +2315,7 @@ class SeriesCatalogHost : public FakeCatalogHost {
   }
   SeriesCatalogHost& texts(
       const std::string& topic, const std::string& field, std::vector<std::int64_t> ts,
-      const std::vector<std::string>& values) {
+      const std::vector<std::string>& values, const std::vector<bool>& nulls = {}) {
     addTopic(topic).addField(topic, field, PJ_PRIMITIVE_TYPE_STRING);
     auto& c = *columns_.emplace_back(std::make_unique<Column>());
     c.ts = std::move(ts);
@@ -2324,6 +2324,14 @@ class SeriesCatalogHost : public FakeCatalogHost {
     for (const std::string& value : values) {
       c.chars += value;
       c.offsets.push_back(static_cast<std::int32_t>(c.chars.size()));
+    }
+    if (!nulls.empty()) {
+      c.validity.assign((values.size() + 7) / 8, 0);
+      for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i >= nulls.size() || !nulls[i]) {
+          c.validity[i / 8] |= static_cast<std::uint8_t>(1u << (i % 8));
+        }
+      }
     }
     return *this;
   }
@@ -2341,6 +2349,7 @@ class SeriesCatalogHost : public FakeCatalogHost {
     bool text = false;
     std::vector<std::int32_t> offsets;
     std::string chars;
+    std::vector<std::uint8_t> validity;  // empty: every row valid
     ArrowSchema ts_schema{};
     ArrowSchema value_schema{};
     std::array<ArrowSchema*, 2> schema_children{};
@@ -2386,7 +2395,9 @@ class SeriesCatalogHost : public FakeCatalogHost {
     c.ts_array.n_buffers = 2;
     c.ts_array.buffers = c.ts_buffers.data();
     c.ts_array.release = &noRelease;
-    c.value_buffers = {nullptr, c.text ? static_cast<const void*>(c.offsets.data()) : c.numbers.data(), c.chars.data()};
+    c.value_buffers = {
+        c.validity.empty() ? nullptr : c.validity.data(),
+        c.text ? static_cast<const void*>(c.offsets.data()) : c.numbers.data(), c.chars.data()};
     c.value_array = ArrowArray{};
     c.value_array.length = rows;
     c.value_array.n_buffers = c.text ? 3 : 2;
@@ -2428,6 +2439,7 @@ TEST(TransformEditorTextOutput, TheCheckboxDeclaresAStringOutputInThePreviewAndT
   EXPECT_TRUE(rig.dialog().onToggled("textOutputCheck", true));
   rig.refresh();
   EXPECT_NE(rig.dp.last_script.find("output = \"string\""), std::string::npos) << "the preview runs it as text";
+  EXPECT_NE(rig.dp.last_validate_script.find("output = \"string\""), std::string::npos) << "and checks it as text";
   EXPECT_TRUE(rig.widgets()["textOutputCheck"]["checked"].get<bool>());
 
   rig.dialog().onClicked("pushButtonCreate");
@@ -2492,6 +2504,29 @@ TEST(TransformEditorTextOutput, ThePreviewPlotsTheLabelsAsStatesAndNamesThemOnTh
   EXPECT_NE(status.find("1 = standing"), std::string::npos) << status;
 }
 
+TEST(TransformEditorTextOutput, ThePreviewSkipsANullLabel) {
+  Rig rig;
+  SeriesCatalogHost host;
+  host.numbers("a", "x", {0, 1000000000, 2000000000}, {1.0, 0.0, -1.0})
+      .texts(
+          "__te_preview___0", "value", {0, 1000000000, 2000000000}, {"walking", "", "standing"}, {false, true, false});
+  TransformEditorPreviewTestPeer::bindHost(rig.editor, host.makeHost());
+  labelRecipe(rig);
+  rig.dialog().onToggled("textOutputCheck", true);
+  rig.refresh();
+
+  const auto series = rig.widgets()["framePlotPreview"]["chart_series"];
+  ASSERT_EQ(series.size(), 2u) << series.dump();
+  std::vector<double> states;
+  for (const auto& point : series[1]["points"]) {
+    states.push_back(point[1].get<double>());
+  }
+  EXPECT_EQ(states, (std::vector<double>{0, 1})) << "a null row is no label and no point";
+  const std::string status = statusOf(rig);
+  EXPECT_NE(status.find("1 = standing"), std::string::npos) << status;
+  EXPECT_EQ(status.find("= ,"), std::string::npos) << "the null is not an empty label: " << status;
+}
+
 TEST(TransformEditorTextOutput, NoOutputFromATextFunctionSaysItMustReturnStrings) {
   Rig rig;
   SeriesCatalogHost host;
@@ -2507,6 +2542,67 @@ TEST(TransformEditorTextOutput, NoOutputFromATextFunctionSaysItMustReturnStrings
   rig.refresh();
   const std::string numbers = rig.widgets()["framePlotPreview"]["chart_placeholder"];
   EXPECT_NE(numbers.find("Text output"), std::string::npos) << "a label needs the text choice: " << numbers;
+}
+
+TEST(TransformEditorTextOutput, AHostWithoutTextOutputsIsNamedNotTheFunction) {
+  Rig rig;
+  SeriesCatalogHost host;
+  // A PlotJuggler without text outputs runs the class as numbers: the output is a number column with no rows.
+  host.numbers("a", "x", {0, 1000000000}, {1.0, -1.0}).numbers("__te_preview___0", "value", {}, {});
+  TransformEditorPreviewTestPeer::bindHost(rig.editor, host.makeHost());
+  labelRecipe(rig);
+  rig.dialog().onToggled("textOutputCheck", true);
+  rig.refresh();
+  const std::string placeholder = rig.widgets()["framePlotPreview"]["chart_placeholder"];
+  EXPECT_NE(placeholder.find("cannot run text outputs"), std::string::npos) << placeholder;
+}
+
+TEST(TransformEditorTextOutput, ModifyNeitherSwitchesTheKindNorSuggestsIt) {
+  Rig rig;
+  SeriesCatalogHost host;
+  host.numbers("a", "x", {0, 1000000000}, {1.0, -1.0});
+  TransformEditorPreviewTestPeer::bindHost(rig.editor, host.makeHost());
+  rig.load(R"({"output_name":"dbl","function_body":"return valu","sources":["a/x"]})");
+  rig.refresh();
+  const std::string placeholder = rig.widgets()["framePlotPreview"]["chart_placeholder"];
+  EXPECT_NE(placeholder.find("produced no output"), std::string::npos) << placeholder;
+  EXPECT_EQ(placeholder.find("Text output"), std::string::npos) << "the check is locked in Modify: " << placeholder;
+
+  Rig text;
+  text.load(R"({"output_name":"gait","function_body":"return \"walking\"","sources":["a/x"],"text_output":true})");
+  EXPECT_TRUE(text.dialog().onToggled("textOutputCheck", false));
+  EXPECT_TRUE(text.widgets()["textOutputCheck"]["checked"].get<bool>()) << "a toggle that reaches a locked check";
+  TransformEditorPreviewTestPeer::save(text.editor);
+  ASSERT_EQ(text.dp.created.size(), 1u);
+  EXPECT_NE(text.dp.created[0].script.find("output = \"string\""), std::string::npos);
+}
+
+TEST(TransformEditorTextOutput, ALibraryFunctionKeepsItsTextOutput) {
+  const auto dir = std::filesystem::temp_directory_path() / "te_snippets_text_test";
+  std::filesystem::create_directories(dir);
+  const auto path = dir / "snippets.json";
+  Snippet labels;
+  labels.name = "gait";
+  labels.function_body = "return \"walking\"";
+  labels.text_output = true;
+  Snippet numbers;
+  numbers.name = "twice";
+  numbers.function_body = "return value*2";
+  ASSERT_TRUE(saveSnippetsToPath({labels, numbers}, path));
+  const auto loaded = loadSnippetsFromPath(path);
+  ASSERT_TRUE(loaded);
+  ASSERT_EQ(loaded->size(), 2u);
+  EXPECT_TRUE((*loaded)[0].text_output);
+  EXPECT_FALSE((*loaded)[1].text_output);
+  std::filesystem::remove_all(dir);
+
+  Rig rig;
+  rig.dialog().setSnippets(*loaded);
+  rig.dialog().loadSnippetsIntoEditor({"gait"});
+  EXPECT_TRUE(rig.widgets()["textOutputCheck"]["checked"].get<bool>());
+  EXPECT_TRUE(rig.dialog().currentAsSnippet("again").text_output) << "saved back, it stays a text function";
+  rig.dialog().loadSnippetsIntoEditor({"twice"});
+  EXPECT_FALSE(rig.widgets()["textOutputCheck"]["checked"].get<bool>());
 }
 
 // ---------------------------------------------------------------------------

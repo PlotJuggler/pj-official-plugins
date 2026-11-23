@@ -7,9 +7,10 @@ below; for earlier releases see the git history of `toolbox_transform_editor/`.
 
 ### Added
 - **Text output**: a series function can return labels such as `"walking"` or `"standing"` instead of numbers
-  (PlotJuggler releases after 4.2.0). The State Transitions panel shows the new series; plots do not. The preview
-  plots each label at its index and names them on the status line. A series opened for Modify keeps its choice: the
-  host cannot switch a series between text and numbers, so the check is locked there.
+  (PlotJuggler 4.2.0 and later; an older one says it cannot run text outputs). The State Transitions panel shows the
+  new series; plots do not. The preview plots each label at its index and names them on the status line. A series
+  opened for Modify keeps its choice: the host cannot switch a series between text and numbers, so the check is locked
+  there. A function saved to the library keeps its choice.
 
 ## [1.2.2] - 2026-11-15
 
