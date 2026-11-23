@@ -203,10 +203,22 @@ Status LZ4Reader::decompressAll(const std::byte* data, uint64_t compressedSize,
   if (!decompressionContext_) {
     return status_;
   }
-  auto result = Status();
-  // Allocate space for the uncompressed data
   output->resize(uncompressedSize);
+  const Status result = decompressAll(data, compressedSize, uncompressedSize, output->data());
+  if (!result.ok()) {
+    output->clear();
+  }
+  return result;
+}
 
+// PJ4 local patch (not upstream; re-apply on any mcap re-vendor): decompresses into a caller-sized buffer, so a
+// caller can hand it uninitialized memory instead of a zero-filled ByteArray.
+Status LZ4Reader::decompressAll(const std::byte* data, uint64_t compressedSize,
+                                uint64_t uncompressedSize, std::byte* output) {
+  if (!decompressionContext_) {
+    return status_;
+  }
+  auto result = Status();
   size_t dstSize = uncompressedSize;
   size_t srcSize = compressedSize;
   LZ4F_resetDecompressionContext((LZ4F_dctx*)decompressionContext_);
@@ -217,7 +229,7 @@ Status LZ4Reader::decompressAll(const std::byte* data, uint64_t compressedSize,
   // catch gross corruption structurally. (Re-apply on any mcap re-vendor.)
   LZ4F_decompressOptions_t decompressOptions = {};
   decompressOptions.skipChecksums = 1;
-  const auto status = LZ4F_decompress((LZ4F_dctx*)decompressionContext_, output->data(), &dstSize,
+  const auto status = LZ4F_decompress((LZ4F_dctx*)decompressionContext_, output, &dstSize,
                                       data, &srcSize, &decompressOptions);
   if (status != 0) {
     if (LZ4F_isError(status)) {
@@ -232,19 +244,16 @@ Status LZ4Reader::decompressAll(const std::byte* data, uint64_t compressedSize,
                          " bytes so far, expect ", status, " more input bytes");
       result = Status{StatusCode::DecompressionSizeMismatch, msg};
     }
-    output->clear();
   } else if (srcSize != compressedSize) {
     const auto msg =
       internal::StrCat("lz4 decompression of ", compressedSize, " bytes into ", uncompressedSize,
                        " output bytes only consumed ", srcSize, " bytes");
     result = Status{StatusCode::DecompressionSizeMismatch, msg};
-    output->clear();
   } else if (dstSize != uncompressedSize) {
     const auto msg =
       internal::StrCat("lz4 decompression of ", compressedSize, " bytes into ", uncompressedSize,
                        " output bytes only produced ", dstSize, " bytes");
     result = Status{StatusCode::DecompressionSizeMismatch, msg};
-    output->clear();
   }
   return result;
 }

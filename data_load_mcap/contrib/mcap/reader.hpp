@@ -241,6 +241,9 @@ public:
    */
   Status decompressAll(const std::byte* data, uint64_t size, uint64_t uncompressedSize,
                        ByteArray* output);
+  // Same, into `output`, which must hold `uncompressedSize` bytes; on error its contents are unspecified.
+  Status decompressAll(const std::byte* data, uint64_t size, uint64_t uncompressedSize,
+                       std::byte* output);
   LZ4Reader();
   LZ4Reader(const LZ4Reader&) = delete;
   LZ4Reader& operator=(const LZ4Reader&) = delete;

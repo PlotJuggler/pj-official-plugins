@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_mcap/`.
 
+## Upcoming
+
+### Changed
+- Messages read back from the file after the import (images, point clouds) load about a fifth faster: their chunk is decompressed once and the message is read at its recorded offset, without copying and indexing the rest of the chunk.
+
 ## [1.3.2] - 2026-11-19
 
 ### Fixed

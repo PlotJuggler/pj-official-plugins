@@ -3,16 +3,19 @@
  * @brief Tests for mcap::MessageByteStore — the hot/cold lazy message-byte layer
  *        on top of the vendored ParallelReader.
  *
- * The cold path opens the file by path (FileReader), so these tests write a real
- * temporary MCAP file (chunked + zstd) rather than using an in-memory buffer.
+ * The cold path opens the file by path, so these tests write a real temporary
+ * MCAP file rather than using an in-memory buffer.
  *
  * Coverage:
  *   - hot hit  : fetcher invoked during iteration returns a message-sized copy
  *                with equal bytes (no re-decompress) whose anchor pins only the
  *                message, never the source chunk.
  *   - cold hit : fetcher invoked after the reader is destroyed re-decompresses
- *                and returns equal bytes (covers every message, including
- *                duplicate-(channel,logTime) collisions via the 3-tuple key).
+ *                and returns equal bytes (covers every message, uncompressed,
+ *                lz4 and zstd chunks, and duplicate-(channel,logTime) messages
+ *                in one chunk, told apart by their record offset).
+ *   - wrong offset: a within-chunk offset that is not the fetcher's own Message
+ *                record (mid-record, another message, past the chunk) is empty.
  *   - message-sized copy: two cold reads of the same message yield independent
  *                buffers (not a shared chunk buffer).
  *   - tiny LRU : cold reads stay correct under heavy eviction.
@@ -31,6 +34,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <mcap/message_byte_store.hpp>
 #include <mcap/parallel_reader.hpp>
 #include <mcap/unchunked_payload_store.hpp>
@@ -54,6 +58,8 @@ namespace {
 struct Item {
   mcap::ChannelId channel_id = 0;
   mcap::Timestamp log_time = 0;
+  uint64_t chunk_start = 0;
+  mcap::ByteOffset within_chunk = 0;
   std::vector<uint8_t> expected;
   mcap::MessageByteFetcher fetcher;
 };
@@ -111,14 +117,15 @@ class MessageByteStoreTest : public ::testing::Test {
     std::filesystem::remove(path_, ec);
   }
 
-  // Writes a chunked, zstd-compressed MCAP with two channels and a deliberate
-  // duplicate-(channel, logTime) collision. Small chunkSize forces several
-  // chunks. Records ground-truth payloads keyed by (channel_id, log_time).
-  void writeFixture() {
+  // Writes a chunked MCAP with two channels and a deliberate duplicate-(channel, logTime) collision. The default small
+  // chunkSize forces several chunks; the writer stores a chunk under 1 KiB uncompressed unless `force` is set.
+  void writeFixture(
+      mcap::Compression compression = mcap::Compression::Zstd, bool force = false, uint64_t chunk_size = 256) {
     mcap::McapWriter writer;
     mcap::McapWriterOptions options("");
-    options.compression = mcap::Compression::Zstd;
-    options.chunkSize = 256;  // force multiple chunks across ~24 messages
+    options.compression = compression;
+    options.forceCompression = force;
+    options.chunkSize = chunk_size;
     ASSERT_TRUE(writer.open(path_, options).ok());
 
     mcap::Schema schema("test/Raw", "raw", mcap::ByteArray{});
@@ -185,6 +192,8 @@ class MessageByteStoreTest : public ::testing::Test {
       Item item;
       item.channel_id = mv.channel->id;
       item.log_time = mv.message.logTime;
+      item.chunk_start = mv.messageOffset.chunkOffset.value_or(0);
+      item.within_chunk = mv.messageOffset.offset;
       const auto* p = reinterpret_cast<const uint8_t*>(mv.message.data);
       item.expected.assign(p, p + mv.message.dataSize);
       item.fetcher = store.makeFetcher(it, mv);
@@ -569,6 +578,94 @@ TEST_F(MessageByteStoreTest, ColdPathReproducesEveryMessage) {
   EXPECT_EQ(collisions, 2u) << "fixture must exercise duplicate (channel, logTime)";
 }
 
+// The cold path decompresses each chunk itself, so every compression a chunk can carry must round-trip.
+TEST_F(MessageByteStoreTest, ColdPathReproducesEveryMessageForEachCompression) {
+  for (const auto compression : {mcap::Compression::None, mcap::Compression::Lz4, mcap::Compression::Zstd}) {
+    SCOPED_TRACE(static_cast<int>(compression));
+    writeFixture(compression, /*force=*/true);
+    mcap::MessageByteStore store;
+    std::vector<Item> items = collect(store, /*invoke_hot=*/false);
+    ASSERT_GE(items.size(), 26u);
+    for (const auto& item : items) {
+      mcap::ByteView v = item.fetcher();
+      ASSERT_NE(v.data, nullptr) << "cold fetch returned empty";
+      ASSERT_EQ(v.size, item.expected.size());
+      EXPECT_EQ(0, std::memcmp(v.data, item.expected.data(), v.size));
+    }
+  }
+}
+
+// Messages sharing (channel, logTime) in ONE chunk differ only by their record offset.
+TEST_F(MessageByteStoreTest, ColdDuplicateChannelAndLogTimeInOneChunk) {
+  writeFixture(mcap::Compression::Zstd, /*force=*/true, /*chunk_size=*/1024 * 1024);  // one chunk
+  mcap::MessageByteStore store;
+  std::vector<Item> items = collect(store, /*invoke_hot=*/false);
+  std::vector<const Item*> dups;
+  for (const auto& item : items) {
+    if (item.log_time == kCollisionTs) {
+      dups.push_back(&item);
+    }
+  }
+  ASSERT_EQ(dups.size(), 2u);
+  ASSERT_EQ(dups[0]->channel_id, dups[1]->channel_id);
+  ASSERT_EQ(dups[0]->chunk_start, dups[1]->chunk_start) << "fixture must put both in one chunk";
+  ASSERT_NE(dups[0]->within_chunk, dups[1]->within_chunk);
+  ASSERT_NE(dups[0]->expected, dups[1]->expected);
+  for (const Item* item : dups) {
+    mcap::ByteView v = item->fetcher();
+    ASSERT_NE(v.data, nullptr);
+    ASSERT_EQ(v.size, item->expected.size());
+    EXPECT_EQ(0, std::memcmp(v.data, item->expected.data(), v.size));
+  }
+}
+
+// The within-chunk offset comes from the file's message index, so it is untrusted: an offset that does not land on
+// the fetcher's own Message record must fail closed, never read past the decompressed chunk.
+TEST_F(MessageByteStoreTest, ColdFetchAtWrongOffsetFailsClosed) {
+  writeFixture(mcap::Compression::Lz4, /*force=*/true, /*chunk_size=*/1024 * 1024);  // one chunk
+  mcap::MessageByteStore store;
+  std::vector<Item> items = collect(store, /*invoke_hot=*/false);
+  ASSERT_GE(items.size(), 2u);
+
+  mcap::detail::ColdChunkStore cold;
+  cold.filepath_ = path_;
+  cold.capacity_bytes_ = 64ULL * 1024 * 1024;
+  {
+    mcap::ParallelReader reader;
+    ASSERT_TRUE(reader.open(path_).ok());
+    ASSERT_EQ(reader.chunkIndexes().size(), 1u);
+    for (const auto& ci : reader.chunkIndexes()) {
+      cold.meta_[ci.chunkStartOffset] = mcap::detail::ColdChunkStore::ChunkMeta{.length = ci.chunkLength};
+    }
+  }
+  const Item& a = items[0];
+  const Item& b = items[1];
+  ASSERT_EQ(a.chunk_start, b.chunk_start);
+  ASSERT_TRUE(a.channel_id != b.channel_id || a.log_time != b.log_time);
+
+  // Sanity: the right offset resolves.
+  ASSERT_EQ(cold.fetch(a.chunk_start, a.within_chunk, a.channel_id, a.log_time).size, a.expected.size());
+
+  const mcap::ByteOffset bad_offsets[] = {
+      a.within_chunk + 1,
+      a.within_chunk + 3,
+      a.within_chunk + 9,  // inside the Message header
+      b.within_chunk,      // a valid Message record, but someone else's
+      uint64_t{1} << 40,   // far past the chunk end
+      std::numeric_limits<mcap::ByteOffset>::max() - 4,
+  };
+  for (const auto offset : bad_offsets) {
+    SCOPED_TRACE(offset);
+    mcap::ByteView v = cold.fetch(a.chunk_start, offset, a.channel_id, a.log_time);
+    EXPECT_EQ(v.data, nullptr);
+    EXPECT_EQ(v.size, 0u);
+  }
+  // The store is still usable after the failures.
+  mcap::ByteView ok = cold.fetch(b.chunk_start, b.within_chunk, b.channel_id, b.log_time);
+  ASSERT_EQ(ok.size, b.expected.size());
+  EXPECT_EQ(0, std::memcmp(ok.data, b.expected.data(), ok.size));
+}
+
 TEST_F(MessageByteStoreTest, ColdReturnsIndependentMessageSizedCopies) {
   mcap::MessageByteStore store;
   std::vector<Item> items = collect(store, /*invoke_hot=*/false);
@@ -634,6 +731,43 @@ TEST_F(MessageByteStoreTest, RemovedFileFailsClosedNoRetryStorm) {
   // Latched failure: a second call must also fail fast (and not crash).
   mcap::ByteView v2 = items.front().fetcher();
   EXPECT_EQ(v2.data, nullptr);
+}
+
+// A chunk that cannot be loaded is read once: later fetches fail without touching the file, even after the file is
+// good again. Re-reading it on every fetch would hold the cold lock for a whole chunk read per message.
+TEST_F(MessageByteStoreTest, UnreadableChunkIsNotReadAgain) {
+  writeFixture(mcap::Compression::Lz4, /*force=*/true, /*chunk_size=*/1024 * 1024);  // one chunk
+  mcap::MessageByteStore store;
+  std::vector<Item> items = collect(store, /*invoke_hot=*/false);
+  ASSERT_GE(items.size(), 2u);
+
+  uint64_t chunk_start = 0;
+  {
+    mcap::ParallelReader reader;
+    ASSERT_TRUE(reader.open(path_).ok());
+    ASSERT_EQ(reader.chunkIndexes().size(), 1u);
+    chunk_start = reader.chunkIndexes().front().chunkStartOffset;
+  }
+  const auto write_opcode = [&](char opcode) {
+    std::fstream file(path_, std::ios::in | std::ios::out | std::ios::binary);
+    ASSERT_TRUE(file.is_open());
+    file.seekp(static_cast<std::streamoff>(chunk_start));
+    file.write(&opcode, 1);
+    ASSERT_TRUE(file.good());
+  };
+  char original = 0;
+  {
+    std::ifstream file(path_, std::ios::binary);
+    file.seekg(static_cast<std::streamoff>(chunk_start));
+    file.read(&original, 1);
+    ASSERT_TRUE(file.good());
+  }
+
+  write_opcode(0x00);  // no longer a Chunk record
+  EXPECT_EQ(items.front().fetcher().data, nullptr);
+  write_opcode(original);
+  EXPECT_EQ(items.front().fetcher().data, nullptr) << "the failed chunk was read again";
+  EXPECT_EQ(items.back().fetcher().data, nullptr) << "another message of the failed chunk read it again";
 }
 
 TEST_F(MessageByteStoreTest, FetcherSurvivesStoreDestroyed) {
