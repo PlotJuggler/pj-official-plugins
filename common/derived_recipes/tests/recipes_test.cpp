@@ -92,6 +92,69 @@ TEST(DerivedRecipes, ParseTransformScriptRefusesWhatTheBuilderDidNotWrite) {
   EXPECT_FALSE(parseTransformScript(cut).has_value());
 }
 
+TEST(DerivedRecipes, ParseTransformScriptRefusesAClassTheBuilderDidNotEndTheSameWay) {
+  const std::string script = buildTransformScript("id", "name", "g = 1", "return value", 0, "luau").script;
+  ASSERT_TRUE(parseTransformScript(script).has_value());
+  auto replaced = [&](const std::string& from, const std::string& to) {
+    std::string copy = script;
+    const std::size_t at = copy.find(from);
+    EXPECT_NE(at, std::string::npos) << from;
+    copy.replace(at, from.size(), to);
+    return copy;
+  };
+  // A later merge adds text outputs; until the editor shows them, the script is shown whole.
+  EXPECT_FALSE(parseTransformScript(replaced("output = \"double\"", "output = \"string\"")).has_value());
+  EXPECT_FALSE(parseTransformScript(replaced("return self.fn(t, v, ...)", "return 0")).has_value());
+  EXPECT_FALSE(parseTransformScript(replaced("T.__index = T\n", "T.__index = T\nT.extra = 1\n")).has_value());
+  EXPECT_FALSE(parseTransformScript(script + "print(1)\n").has_value());
+  EXPECT_FALSE(parseTransformScript(script + "\n").has_value());
+  // The id and the name are single-line, quote-free literals.
+  EXPECT_FALSE(parseTransformScript(replaced("id = \"id\"", "id = \"i\"d\"")).has_value());
+  EXPECT_FALSE(parseTransformScript(replaced("name = \"name\"", "name = \"na\nme\"")).has_value());
+  EXPECT_FALSE(parseTransformScript(replaced(", name = \"name\"", "")).has_value());
+}
+
+TEST(DerivedRecipes, ParseTransformScriptRefusesASecondSignatureLine) {
+  // A helper in the globals that looks like the function's own opening line: which one is the signature?
+  const std::string globals = "local function mk()\n  return function(time, value)\n    return value\n  end\nend";
+  const std::string script = buildTransformScript("id", "name", globals, "return value + v1", 1, "luau").script;
+  EXPECT_FALSE(parseTransformScript(script).has_value());
+  // The same in the body.
+  const std::string in_body = "local f = function()\n  return function(time, value)\nend";
+  EXPECT_FALSE(parseTransformScript(buildTransformScript("id", "name", "", in_body, 0, "luau").script).has_value());
+  // A line that only resembles one is not a signature.
+  const std::string similar = "local k = 1\n  return function(time, value, v2)\n  return function(time, valuex)";
+  EXPECT_TRUE(
+      parseTransformScript(buildTransformScript("id", "name", similar, "return value", 0, "luau").script).has_value());
+}
+
+// What PlotJuggler's own builder (pj_runtime agent_tools buildTransformScript, text_output false) writes for
+// id and name "speed_x2", globals "local k = 2" and the body below, as a literal: the parser and this repo's
+// builder must keep matching the host's text.
+TEST(DerivedRecipes, ParseTransformScriptReadsWhatThePlotJugglerHostBuilds) {
+  const std::string host_script =
+      "-- pj-script: luau\n"
+      "local function _pj_make()\n"
+      "local k = 2\n"
+      "  return function(time, value)\n"
+      "    return value * k\n"
+      "  end\n"
+      "end\n"
+      "local T = { id = \"speed_x2\", name = \"speed_x2\", output = \"double\" }\n"
+      "T.__index = T\n"
+      "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n"
+      "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n"
+      "return T\n";
+  const auto parsed = parseTransformScript(host_script);
+  ASSERT_TRUE(parsed.has_value());
+  EXPECT_EQ(parsed->global_code, "local k = 2");
+  EXPECT_EQ(parsed->body, "    return value * k");
+  // The editor's builder writes the same text for the same input.
+  EXPECT_EQ(
+      buildTransformScript("speed_x2", "speed_x2", "local k = 2", "    return value * k", 0, "luau").script,
+      host_script);
+}
+
 TEST(DerivedRecipes, ToRawNsIsEmptyWithoutAPlaybackView) {
   PJ::sdk::PlaybackHostView unbound;
   EXPECT_FALSE(toRawNs(unbound, PJ::sdk::DataSourceHandle{}, 1.0).has_value());
