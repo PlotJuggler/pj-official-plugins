@@ -7,6 +7,8 @@
 #include <cmath>
 #include <iterator>
 #include <pj_base/builtin/builtin_object.hpp>
+#include <string_view>
+#include <utility>
 
 namespace transform_editor::text {
 
@@ -453,6 +455,16 @@ std::string remapScriptLines(const std::string& error, const ScriptLayout& layou
       i = after;
     } else {
       out.push_back(error[i++]);
+    }
+  }
+  // The host's hints name the class field; in the editor that field is the Text output switch.
+  constexpr std::pair<std::string_view, std::string_view> kOutputHints[] = {
+      {R"((declare output = "string" to return text))", "(check Text output to return labels)"},
+      {R"((the class declares output = "string"))", "(Text output is on: uncheck it to return numbers)"},
+  };
+  for (const auto& [host, editor] : kOutputHints) {
+    if (const std::size_t at = out.find(host); at != std::string::npos) {
+      out.replace(at, host.size(), editor);
     }
   }
   return out;

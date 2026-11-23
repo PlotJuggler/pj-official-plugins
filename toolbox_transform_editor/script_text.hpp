@@ -92,7 +92,8 @@ struct CodeToken {
 
 // `error` with the chunk's line numbers ("script:8:", "filter:3:", "rule:2:" in Luau,
 // "<string>(8)" or `File "<string>", line 8` in Python) rewritten as the user sees their code:
-// "line 1", "globals line 2", or "line ?" when the line is in neither part (the generated frame).
+// "line 1", "globals line 2", or "line ?" when the line is in neither part (the generated frame). The host's
+// text/number output hints (PlotJuggler's pj_scripting engines) are reworded to name the Text output switch.
 [[nodiscard]] std::string remapScriptLines(const std::string& error, const ScriptLayout& layout);
 
 // True when `error` is the kind a script raises when it reads a name that is not bound (a nil

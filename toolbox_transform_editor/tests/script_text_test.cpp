@@ -240,6 +240,19 @@ TEST(ScriptText, PythonOnDemandLayoutPointsAtTheBodyAndTheGlobals) {
   EXPECT_EQ(bare.layout.body_first_line, lineOf(bare.script, "    return 1"));
 }
 
+// The host names the class field `output = "string"`; the editor's control for it is the Text output switch.
+TEST(ScriptText, RemapScriptLinesNamesTheTextOutputSwitchForTheHostsOutputHints) {
+  const ScriptLayout layout{};
+  EXPECT_EQ(
+      remapScriptLines(
+          R"(calculate must return a number, (time, value), or nil (declare output = "string" to return text))",
+          layout),
+      "calculate must return a number, (time, value), or nil (check Text output to return labels)");
+  EXPECT_EQ(
+      remapScriptLines(R"(calculate must return a string per output (the class declares output = "string"))", layout),
+      "calculate must return a string per output (Text output is on: uncheck it to return numbers)");
+}
+
 TEST(ScriptText, RemapScriptLinesRewritesLuauAndPythonLines) {
   ScriptLayout layout;
   layout.body_first_line = 8;
