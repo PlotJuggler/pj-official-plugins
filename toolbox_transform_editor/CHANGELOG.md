@@ -15,7 +15,7 @@ below; for earlier releases see the git history of `toolbox_transform_editor/`.
   shows its script, inputs and params with "Read-only: created by <owner>", and nothing can be edited,
   previewed or created from it. A formula the editor can read shows its globals and function body as usual
   and can be saved to the function library as a template. The manifest declares `custom_topics_viewer`, so
-  PlotJuggler hands these views only to an editor that shows them read-only (PlotJuggler releases after 4.2.0).
+  PlotJuggler hands these views only to an editor that shows them read-only (PlotJuggler 4.2.0 and later; copy any script with Ctrl+C).
 
 ## [1.2.2] - 2026-11-15
 
