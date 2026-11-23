@@ -1627,10 +1627,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     function_body_ = view.value("script", std::string{});
     auto_body_.clear();
     language_ = view.value("language", std::string{}) == "python" ? "python" : "luau";
+    text_output_ = false;
     if (language_ == "luau" && state.kind == RecipeKind::kTransform) {
       if (auto parts = derived_recipes::parseTransformScript(function_body_)) {
         global_code_ = std::move(parts->global_code);
         function_body_ = std::move(parts->body);
+        text_output_ = parts->text_output;
         state.is_template = true;
       }
     }
@@ -2227,8 +2229,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.setReadOnly(name, true);
     }
     for (const char* name :
-         {"luaButton", "pythonButton", "pinCurrentTimeCheck", "buttonClearSources", "buttonLibraryBox",
-          "buttonLoadFunctions", "buttonSaveFunctions", "tab_2"}) {
+         {"luaButton", "pythonButton", "pinCurrentTimeCheck", "textOutputCheck", "buttonClearSources",
+          "buttonLibraryBox", "buttonLoadFunctions", "buttonSaveFunctions", "tab_2"}) {
       wd.setEnabled(name, false);
     }
     wd.setEnabled("buttonSaveCurrent", view_->is_template);

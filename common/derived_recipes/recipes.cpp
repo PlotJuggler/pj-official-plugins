@@ -551,9 +551,10 @@ namespace {
 constexpr std::string_view kLuauFactoryOpen = "local function _pj_make()\n";
 constexpr std::string_view kLuauFunctionOpen = "  return function(";  // + transformParams(n) + ")\n"
 constexpr std::string_view kLuauFactoryClose = "  end\nend\n";
-constexpr std::string_view kLuauClassOpen = "local T = { id = \"";  // + id
-constexpr std::string_view kLuauClassNameKey = "\", name = \"";     // + name
-constexpr std::string_view kLuauClassOutput = "\", output = \"double\" }\n";
+constexpr std::string_view kLuauClassOpen = "local T = { id = \"";   // + id
+constexpr std::string_view kLuauClassNameKey = "\", name = \"";      // + name
+constexpr std::string_view kLuauClassOutputKey = "\", output = \"";  // + "double" or "string"
+constexpr std::string_view kLuauClassClose = "\" }\n";
 constexpr std::string_view kLuauClassRest =
     "T.__index = T\n"
     "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n"
@@ -640,15 +641,9 @@ BuiltScript buildTransformScript(
   layout.body_first_line = line;
   layout.body_lines = physicalLines(body);
   src += body + "\n";
-  src += "  end\n";
-  src += "end\n";
-  src += "local T = { id = \"" + id + "\", name = \"" + name + "\", output = \"" + output + "\" }\n";
-  src += "T.__index = T\n";
-  src += "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n";
-  src += "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n";
-  src += "return T\n";
   src += kLuauFactoryClose;
-  src += std::string(kLuauClassOpen) + id + std::string(kLuauClassNameKey) + name + std::string(kLuauClassOutput);
+  src += std::string(kLuauClassOpen) + id + std::string(kLuauClassNameKey) + name + std::string(kLuauClassOutputKey) +
+         output + std::string(kLuauClassClose);
   src += kLuauClassRest;
   out.script = std::move(src);
   return out;
@@ -681,10 +676,18 @@ std::optional<ParsedTransformScript> parseTransformScript(std::string_view scrip
     return std::nullopt;
   }
   std::string_view rest = script.substr(0, script.size() - kLuauClassRest.size());
-  if (!rest.ends_with(kLuauClassOutput)) {
+  bool text_output = false;
+  if (const std::string text = std::string(kLuauClassOutputKey) + "string" + std::string(kLuauClassClose);
+      rest.ends_with(text)) {
+    text_output = true;
+    rest.remove_suffix(text.size());
+  } else if (
+      const std::string number = std::string(kLuauClassOutputKey) + "double" + std::string(kLuauClassClose);
+      rest.ends_with(number)) {
+    rest.remove_suffix(number.size());
+  } else {
     return std::nullopt;
   }
-  rest.remove_suffix(kLuauClassOutput.size());
   // What is left ends with the body, then the builder's closing lines and `local T = { id = "<id>", name = "<name>`.
   const std::string closing = "\n" + std::string(kLuauFactoryClose) + std::string(kLuauClassOpen);
   const std::size_t tail = rest.rfind(closing);
@@ -716,6 +719,7 @@ std::optional<ParsedTransformScript> parseTransformScript(std::string_view scrip
     return std::nullopt;
   }
   ParsedTransformScript parsed;
+  parsed.text_output = text_output;
   parsed.global_code = std::string(region.substr(0, sig_start - 1));
   parsed.body = std::string(region.substr(sig_end + 1));
   return parsed;

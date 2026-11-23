@@ -2305,7 +2305,6 @@ TEST(TransformEditorVars, AnAbandonedRenamePromptDoesNotHijackTheCreatePrompt) {
 
 // ---------------------------------------------------------------------------
 // Text outputs
-// A view of a recipe another owner made (the host's {"view": ...} config)
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -2433,28 +2432,6 @@ void labelRecipe(Rig& rig) {
   rig.refresh();
   rig.dialog().onItemsDropped("tableSources", {"a/x"});
   rig.dialog().onCodeChanged("functionText", "return value > 0 and \"walking\" or \"standing\"");
-std::string viewConfig(const std::string& kind, const std::string& language, const std::string& params) {
-// A script the generator did not write: the view shows it whole and does not offer to save it.
-constexpr const char* kUnrecognisedScript = "-- pj-script: luau\nreturn agent_class\n";
-
-std::string generatedScript() {
-  return derived_recipes::buildTransformScript("speed", "speed", "local k = 2", "return value * k + v1", 1).script;
-}
-
-std::string viewConfig(
-    const std::string& kind, const std::string& language, const std::string& params,
-    const std::string& script = kUnrecognisedScript,
-    const nlohmann::json& inputs = nlohmann::json::array({"/odom/x", "/odom/y"})) {
-  return nlohmann::json{{"view",
-                         {{"owner", "AI agent (agent-claude-code)"},
-                          {"name", "speed"},
-                          {"kind", kind},
-                          {"language", language},
-                          {"script", script},
-                          {"inputs", inputs},
-                          {"outputs", {"speed"}},
-                          {"params", params}}}}
-      .dump();
 }
 
 }  // namespace
@@ -2635,6 +2612,39 @@ TEST(TransformEditorTextOutput, ALibraryFunctionKeepsItsTextOutput) {
   EXPECT_TRUE(rig.dialog().currentAsSnippet("again").text_output) << "saved back, it stays a text function";
   rig.dialog().loadSnippetsIntoEditor({"twice"});
   EXPECT_FALSE(rig.widgets()["textOutputCheck"]["checked"].get<bool>());
+}
+
+// ---------------------------------------------------------------------------
+// A view of a recipe another owner made (the host's {"view": ...} config)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A script the generator did not write: the view shows it whole and does not offer to save it.
+constexpr const char* kUnrecognisedScript = "-- pj-script: luau\nreturn agent_class\n";
+
+std::string generatedScript() {
+  return derived_recipes::buildTransformScript("speed", "speed", "local k = 2", "return value * k + v1", 1).script;
+}
+
+std::string viewConfig(
+    const std::string& kind, const std::string& language, const std::string& params,
+    const std::string& script = kUnrecognisedScript,
+    const nlohmann::json& inputs = nlohmann::json::array({"/odom/x", "/odom/y"})) {
+  return nlohmann::json{{"view",
+                         {{"owner", "AI agent (agent-claude-code)"},
+                          {"name", "speed"},
+                          {"kind", kind},
+                          {"language", language},
+                          {"script", script},
+                          {"inputs", inputs},
+                          {"outputs", {"speed"}},
+                          {"params", params}}}}
+      .dump();
+}
+
+}  // namespace
+
 TEST(TransformEditorView, ShowsTheScriptAndInputsReadOnlyWithTheOwner) {
   Rig rig;
   rig.load(viewConfig("transform", "luau", "{}"));
@@ -2778,6 +2788,27 @@ TEST(TransformEditorView, ARecognisedFormulaShowsItsGlobalsAndBodySplitAndCanBeS
     EXPECT_EQ(widgets[name]["enabled"], false) << name;
   }
   EXPECT_EQ(widgets["pushButtonCreate"]["visible"], false);
+  EXPECT_EQ(rig.dp.validate_calls, 0);
+}
+
+TEST(TransformEditorView, ATextFormulaShowsTextOutputLockedOnAndSavesItToTheLibrary) {
+  const ScopedUserDataDir user_data;
+  Rig rig;
+  rig.dialog().setSnippets({});
+  rig.load(viewConfig(
+      "transform", "luau", "{}",
+      derived_recipes::buildTransformScript("gait", "gait", "", "return \"walking\"", 0, "luau", true).script));
+  rig.refresh();
+  auto widgets = rig.widgets();
+  EXPECT_TRUE(widgets["textOutputCheck"]["checked"].get<bool>());
+  EXPECT_FALSE(widgets["textOutputCheck"]["enabled"].get<bool>());
+  rig.dialog().onToggled("textOutputCheck", false);
+  EXPECT_TRUE(rig.widgets()["textOutputCheck"]["checked"].get<bool>()) << "a view takes no toggle";
+  EXPECT_EQ(rig.dialog().currentAsSnippet("gait_template").text_output, true);
+
+  rig.load(viewConfig("transform", "luau", "{}", generatedScript()));
+  rig.refresh();
+  EXPECT_FALSE(rig.widgets()["textOutputCheck"]["checked"].get<bool>()) << "a number formula after a text one";
   EXPECT_EQ(rig.dp.validate_calls, 0);
 }
 

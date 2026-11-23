@@ -92,6 +92,18 @@ TEST(DerivedRecipes, ParseTransformScriptRefusesWhatTheBuilderDidNotWrite) {
   EXPECT_FALSE(parseTransformScript(cut).has_value());
 }
 
+TEST(DerivedRecipes, ParseTransformScriptReadsATextClass) {
+  const auto number = parseTransformScript(buildTransformScript("id", "name", "g = 1", "return value", 0).script);
+  ASSERT_TRUE(number.has_value());
+  EXPECT_FALSE(number->text_output);
+  const auto text = parseTransformScript(
+      buildTransformScript("id", "name", "g = 1", "return \"on\"", 1, "luau", /*text_output=*/true).script);
+  ASSERT_TRUE(text.has_value());
+  EXPECT_TRUE(text->text_output);
+  EXPECT_EQ(text->global_code, "g = 1");
+  EXPECT_EQ(text->body, "return \"on\"");
+}
+
 TEST(DerivedRecipes, ParseTransformScriptRefusesAClassTheBuilderDidNotEndTheSameWay) {
   const std::string script = buildTransformScript("id", "name", "g = 1", "return value", 0, "luau").script;
   ASSERT_TRUE(parseTransformScript(script).has_value());
@@ -102,8 +114,7 @@ TEST(DerivedRecipes, ParseTransformScriptRefusesAClassTheBuilderDidNotEndTheSame
     copy.replace(at, from.size(), to);
     return copy;
   };
-  // A later merge adds text outputs; until the editor shows them, the script is shown whole.
-  EXPECT_FALSE(parseTransformScript(replaced("output = \"double\"", "output = \"string\"")).has_value());
+  EXPECT_FALSE(parseTransformScript(replaced("output = \"double\"", "output = \"same\"")).has_value());
   EXPECT_FALSE(parseTransformScript(replaced("return self.fn(t, v, ...)", "return 0")).has_value());
   EXPECT_FALSE(parseTransformScript(replaced("T.__index = T\n", "T.__index = T\nT.extra = 1\n")).has_value());
   EXPECT_FALSE(parseTransformScript(script + "print(1)\n").has_value());

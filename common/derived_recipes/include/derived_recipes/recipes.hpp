@@ -69,12 +69,13 @@ struct BuiltScript {
 struct ParsedTransformScript {
   std::string global_code;
   std::string body;
+  bool text_output = false;  // the class declares output = "string"
 };
 
 // Inverse of buildTransformScript for the Luau shape: the global section and the function body, as they
 // were passed in. nullopt for any other script: Python, a hand-written class, a chunk another generator
-// shaped differently, a class that does not end exactly as the builder writes it (another `output` type
-// included), or a chunk with more than one line that looks like the function's signature.
+// shaped differently, a class that does not end exactly as the builder writes it (an `output` other than
+// "double" or "string" included), or a chunk with more than one line that looks like the function's signature.
 [[nodiscard]] std::optional<ParsedTransformScript> parseTransformScript(std::string_view script);
 
 // --- catalog helpers -------------------------------------------------------
