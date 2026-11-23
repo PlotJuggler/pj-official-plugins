@@ -44,6 +44,16 @@ TEST(DerivedRecipes, LuauTransformKeepsTheValueAndExtraInputParameters) {
   EXPECT_NE(script.find("id = \"id\""), std::string::npos);
 }
 
+TEST(DerivedRecipes, ATextTransformDeclaresAStringOutputInBothLanguages) {
+  for (const char* language : {"luau", "python"}) {
+    const std::string numbers = buildTransformScript("id", "name", "", "return value", 0, language).script;
+    EXPECT_NE(numbers.find("output = \"double\""), std::string::npos) << numbers;
+    const std::string text = buildTransformScript("id", "name", "", "return \"up\"", 0, language, true).script;
+    EXPECT_NE(text.find("output = \"string\""), std::string::npos) << text;
+    EXPECT_EQ(text.find("\"double\""), std::string::npos) << text;
+  }
+}
+
 TEST(DerivedRecipes, ToRawNsIsEmptyWithoutAPlaybackView) {
   PJ::sdk::PlaybackHostView unbound;
   EXPECT_FALSE(toRawNs(unbound, PJ::sdk::DataSourceHandle{}, 1.0).has_value());

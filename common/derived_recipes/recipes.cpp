@@ -559,8 +559,9 @@ BuiltScript buildOnDemandChunkPython(const std::string& body, const ResolvedEval
 // (MULTRET), so a body that `return`s M values feeds M output topics.
 BuiltScript buildTransformScript(
     const std::string& raw_id, const std::string& raw_name, const std::string& global_code, const std::string& body,
-    std::size_t num_extra, std::string_view language) {
+    std::size_t num_extra, std::string_view language, bool text_output) {
   const std::string id = luaStringEscape(raw_id);
+  const std::string output = text_output ? "string" : "double";
   const std::string name = luaStringEscape(raw_name);
   std::string params = "time, value";
   for (std::size_t k = 0; k < num_extra; ++k) {
@@ -589,7 +590,7 @@ BuiltScript buildTransformScript(
     src += "class T:\n";
     src += "    id = \"" + id + "\"\n";
     src += "    name = \"" + name + "\"\n";
-    src += "    output = \"double\"\n";
+    src += "    output = \"" + output + "\"\n";
     src += "    @staticmethod\n";
     src += "    def create(params):\n        return T()\n";
     src += "    def calculate(self, time, value, *args):\n        return _pj_fn(time, value, *args)\n";
@@ -613,7 +614,7 @@ BuiltScript buildTransformScript(
   src += body + "\n";
   src += "  end\n";
   src += "end\n";
-  src += "local T = { id = \"" + id + "\", name = \"" + name + "\", output = \"double\" }\n";
+  src += "local T = { id = \"" + id + "\", name = \"" + name + "\", output = \"" + output + "\" }\n";
   src += "T.__index = T\n";
   src += "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n";
   src += "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n";
