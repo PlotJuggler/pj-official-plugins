@@ -1014,10 +1014,49 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("radioButtonPrefix", !edit_mode_);
     wd.setEnabled("radioButtonSuffix", !edit_mode_);
 
+    if (view_only_) {
+      applyViewOnly(wd);
+    }
     return wd;
   }
 
+  // A view of a recipe another owner made: everything is shown, nothing edits the form or reaches the host. The
+  // handlers refuse the edits too (viewBlocks): a disabled widget still receives drops (see onItemsDropped).
+  void applyViewOnly(PJ::WidgetData& wd) const {
+    wd.setDropTarget("tableSources", false);
+    wd.setListItemsDeletable("tableSources", false);
+    for (const char* name : {"globalVarsText", "functionText", "paramsLineEdit"}) {
+      wd.setReadOnly(name, true);
+    }
+    for (const char* name :
+         {"luaButton", "pythonButton", "pinCurrentTimeCheck", "buttonClearSources", "buttonLibraryBox",
+          "buttonSaveCurrent", "buttonLoadFunctions", "buttonSaveFunctions", "tab_2"}) {
+      wd.setEnabled(name, false);
+    }
+    wd.setEnabled("pushButtonCreate", false);
+    wd.setVisible("pushButtonCreate", false);
+    wd.setText("functionTitle", "Script");
+    const std::string owner = view_owner_.empty() ? std::string{} : ": created by " + view_owner_;
+    wd.setLabel("statusLabel", "Read-only" + owner + ". It cannot be changed here.");
+    wd.clearChart("framePlotPreview");
+    wd.setVisible("framePlotPreview", true);
+    wd.setVisible("frameScenePreview", false);
+    wd.setChartPlaceholder("framePlotPreview", "Read-only view: no preview");
+  }
+
+  // Events a view still takes: help, the params disclosure, closing the library panel.
+  bool viewBlocks(std::string_view name) const {
+    return view_only_ && name != "pushButtonHelp" && name != "buttonAdvanced" && name != "subPanelClosed";
+  }
+
+  bool viewOnly() const {
+    return view_only_;
+  }
+
   bool onTextChanged(std::string_view name, std::string_view text) override {
+    if (viewBlocks(name)) {
+      return true;
+    }
     // Live search filter in the function library box.
     if (name == "searchLineEdit") {
       library_search_ = std::string(text);
@@ -1051,6 +1090,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onCodeChanged(std::string_view name, std::string_view text) override {
+    if (viewBlocks(name)) {
+      return true;
+    }
     if (name == "globalVarsText") {
       global_code_ = std::string(text);
       formChanged();
@@ -1081,6 +1123,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onClicked(std::string_view name) override {
+    if (viewBlocks(name)) {
+      return true;
+    }
     if (name == "pushButtonCreate") {
       // Modify keeps the name (locked) and asks nothing; Create asks for the name first.
       if (edit_mode_) {
@@ -1182,6 +1227,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onItemDeleteRequested(std::string_view name, int index) override {
+    if (viewBlocks(name)) {
+      return true;
+    }
     if (name == "tableBatchSources") {
       // edit_mode_ locks the input set (see onItemsDropped). Belt-and-braces here:
       // list_deletable already hides the trash button, so this only fires if that
@@ -1280,6 +1328,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
 
   // Radio in the sources table: make `row` the series that provides `value`.
   bool onTableRadioSelected(std::string_view name, int row) override {
+    if (viewBlocks(name)) {
+      return true;
+    }
     if (name == "tableSources" && row >= 0 && row < static_cast<int>(sources_.size())) {
       primary_index_ = row;
       formChanged();
@@ -1289,6 +1340,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onToggled(std::string_view name, bool checked) override {
+    if (viewBlocks(name)) {
+      return true;
+    }
     if (name == "radioButtonPrefix") {
       batch_use_prefix_ = checked;
       return true;
@@ -1343,6 +1397,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onItemsDropped(std::string_view widget_name, const std::vector<std::string>& items) override {
+    if (viewBlocks(widget_name)) {
+      return true;
+    }
     if (widget_name == "tableSources") {
       for (const auto& item : items) {
         addSource(item);
@@ -1370,6 +1427,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onItemDoubleClicked(std::string_view name, int index) override {
+    if (viewBlocks(name)) {
+      return true;
+    }
     // Double-click in the library box: load the current selection (or the
     // double-clicked row if nothing is selected yet) and dismiss the box. The
     // index is into the FILTERED list shown in the table, not into snippets_.
@@ -1412,6 +1472,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // dialog for one and a "save as" for the other, per the widget's action). Each
   // sets io_status_, a one-shot line the next widget_data() shows then clears.
   bool onFileSelected(std::string_view widget_name, std::string_view path) override {
+    if (viewBlocks(widget_name)) {
+      return true;
+    }
     if (widget_name == "buttonLoadFunctions") {
       // Import: merge the chosen library into the current one (additive, so the
       // user's other snippets survive) and persist so it outlives a restart.
@@ -1441,6 +1504,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void onAccepted(std::string_view /*json*/) override {}
 
   std::string saveConfig() const override {
+    if (view_only_) {
+      return view_config_.dump();  // reopened, it is a view again
+    }
     nlohmann::json cfg;
     cfg["output_name"] = output_name_;
     cfg["global_code"] = global_code_;
@@ -1489,6 +1555,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     auto cfg = nlohmann::json::parse(json, nullptr, false);
     if (cfg.is_discarded() || !cfg.is_object()) {
       return false;
+    }
+    view_only_ = false;
+    if (const auto view = cfg.find("view"); view != cfg.end() && view->is_object()) {
+      loadView(*view);
+      view_config_ = std::move(cfg);
+      return true;
     }
     // An on-demand recipe stores the user's params object plus "__editor", the editor's own
     // state; a transform (and any older state) stores the editor state as the whole document.
@@ -1563,6 +1635,37 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     edit_mode_ = !output_name_.empty();
     ++form_revision_;  // the sources, Vars, body and params were all replaced
     return true;
+  }
+
+  // The host's view of a recipe another owner made (`{"view": {owner, name, kind, language, script, inputs,
+  // outputs, params}}`, the host's contract): the whole script goes into the function pane, as it runs.
+  void loadView(const nlohmann::json& view) {
+    loadKindState(nlohmann::json::object(), std::string{});
+    view_only_ = true;
+    view_owner_ = view.value("owner", std::string{});
+    view_kind_ = view.value("kind", std::string{}) == "on_demand" ? RecipeKind::kOnDemand : RecipeKind::kTransform;
+    output_name_ = view.value("name", std::string{});
+    global_code_.clear();
+    function_body_ = view.value("script", std::string{});
+    auto_body_.clear();
+    language_ = view.value("language", std::string{}) == "python" ? "python" : "luau";
+    const std::string params = view.value("params", std::string{});
+    params_text_ = params == "{}" ? std::string{} : params;
+    advanced_open_ = !params_text_.empty();
+    sources_.clear();
+    if (const auto inputs = view.find("inputs"); inputs != view.end() && inputs->is_array()) {
+      for (const nlohmann::json& input : *inputs) {
+        if (input.is_string()) {
+          sources_.push_back(input.get<std::string>());
+        }
+      }
+    }
+    primary_index_ = sources_.empty() ? -1 : 0;
+    var_overrides_.assign(sources_.size(), std::string{});
+    current_tab_ = 0;
+    pending_tab_restore_ = true;
+    edit_mode_ = true;
+    ++form_revision_;
   }
 
   void setOnSave(std::function<void()> cb) {
@@ -2183,7 +2286,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     for (const std::string& source : sources_) {
       input_types.push_back(inputTypeOf(source));
     }
-    d.kind = deduceEngine(input_types, kind_hint_on_demand_);
+    d.kind = view_only_ ? view_kind_ : deduceEngine(input_types, kind_hint_on_demand_);
     if (d.kind == RecipeKind::kOnDemand) {
       d.vars = onDemandVariableNames(var_overrides_);
     } else {
@@ -2442,7 +2545,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool preview_has_numbers_ = true;
   std::function<std::string(const std::string&)> input_type_of_;
   std::function<bool(const std::string&)> own_recipe_exists_;
-  bool edit_mode_ = false;                      // opened to modify an existing series (locks the name, button = Modify)
+  bool edit_mode_ = false;  // opened to modify an existing series (locks the name, button = Modify)
+  bool view_only_ = false;  // a view of another owner's recipe (see loadView)
+  std::string view_owner_;  // its owner's display name, from the host
+  RecipeKind view_kind_ = RecipeKind::kTransform;
+  nlohmann::json view_config_;                  // the config the view was loaded from, saved back as is
   std::string validation_error_;                // host's rejection message for the current script (empty = OK)
   std::string preview_error_;                   // why the preview recipe cannot be shown (see setPreviewError)
   std::vector<std::string> scene_view_errors_;  // the host's refusals of the current scene request
@@ -2580,6 +2687,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   friend class TransformEditorPreviewTestPeer;
 
   void onSave() {
+    if (dialog_.viewOnly()) {
+      return;
+    }
     // The engine follows the input types, so read the catalog now: Create acts on what the user sees.
     refreshOnDemandSupport(/*force=*/true);
     if (const std::string reason = dialog_.canCreateReason(); !reason.empty()) {
@@ -3643,6 +3753,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
   }
 
   void refreshPreview() {
+    if (dialog_.viewOnly()) {
+      return;  // the view's script is a whole recipe, not a body the preview could wrap
+    }
     refreshOnDemandSupport();
     // The live preview belongs to the Single Function tab only. On the Batch tab
     // tear it down so its ephemeral node can never coexist with / leak into a

@@ -2296,6 +2296,7 @@ TEST(TransformEditorVars, AnAbandonedRenamePromptDoesNotHijackTheCreatePrompt) {
 
 // ---------------------------------------------------------------------------
 // Text outputs
+// A view of a recipe another owner made (the host's {"view": ...} config)
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -2423,6 +2424,17 @@ void labelRecipe(Rig& rig) {
   rig.refresh();
   rig.dialog().onItemsDropped("tableSources", {"a/x"});
   rig.dialog().onCodeChanged("functionText", "return value > 0 and \"walking\" or \"standing\"");
+std::string viewConfig(const std::string& kind, const std::string& language, const std::string& params) {
+  return nlohmann::json{{"view",
+                         {{"owner", "AI agent (agent-claude-code)"},
+                          {"name", "speed"},
+                          {"kind", kind},
+                          {"language", language},
+                          {"script", "-- pj-script: luau\nreturn agent_class\n"},
+                          {"inputs", {"/odom/x", "/odom/y"}},
+                          {"outputs", {"speed"}},
+                          {"params", params}}}}
+      .dump();
 }
 
 }  // namespace
@@ -2603,6 +2615,70 @@ TEST(TransformEditorTextOutput, ALibraryFunctionKeepsItsTextOutput) {
   EXPECT_TRUE(rig.dialog().currentAsSnippet("again").text_output) << "saved back, it stays a text function";
   rig.dialog().loadSnippetsIntoEditor({"twice"});
   EXPECT_FALSE(rig.widgets()["textOutputCheck"]["checked"].get<bool>());
+TEST(TransformEditorView, ShowsTheScriptAndInputsReadOnlyWithTheOwner) {
+  Rig rig;
+  rig.load(viewConfig("transform", "luau", "{}"));
+  rig.refresh();
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["functionText"]["code_content"], "-- pj-script: luau\nreturn agent_class\n");
+  EXPECT_EQ(widgets["functionText"]["read_only"], true);
+  EXPECT_EQ(widgets["globalVarsText"]["read_only"], true);
+  EXPECT_EQ(widgets["paramsLineEdit"]["read_only"], true);
+  ASSERT_EQ(widgets["tableSources"]["rows"].size(), 2u);
+  EXPECT_EQ(widgets["tableSources"]["rows"][0][1], "/odom/x");
+  EXPECT_EQ(widgets["tableSources"]["rows"][1][1], "/odom/y");
+  EXPECT_EQ(widgets["tableSources"]["list_deletable"], false);
+  EXPECT_EQ(widgets["tableSources"]["drop_target"], false);
+  EXPECT_EQ(widgets["pushButtonCreate"]["visible"], false);
+  EXPECT_EQ(widgets["pushButtonCreate"]["enabled"], false);
+  for (const char* name :
+       {"luaButton", "pythonButton", "pinCurrentTimeCheck", "buttonClearSources", "buttonLibraryBox",
+        "buttonSaveCurrent", "buttonLoadFunctions", "buttonSaveFunctions", "tab_2"}) {
+    EXPECT_EQ(widgets[name]["enabled"], false) << name;
+  }
+  const std::string status = widgets["statusLabel"]["label"];
+  EXPECT_NE(status.find("Read-only"), std::string::npos) << status;
+  EXPECT_NE(status.find("AI agent (agent-claude-code)"), std::string::npos) << status;
+  EXPECT_EQ(rig.dp.create_calls, 0) << "a view runs no preview";
+  EXPECT_EQ(rig.dp.submit_calls, 0);
+}
+
+TEST(TransformEditorView, NoEditReachesTheFormOrTheHost) {
+  Rig rig;
+  rig.load(viewConfig("transform", "luau", "{}"));
+  rig.dialog().onCodeChanged("functionText", "return 0");
+  rig.dialog().onCodeChanged("globalVarsText", "local k = 1");
+  rig.dialog().onItemsDropped("tableSources", {"/cloud"});
+  rig.dialog().onItemDeleteRequested("tableSources", 0);
+  rig.dialog().onTableRadioSelected("tableSources", 1);
+  rig.dialog().onToggled("pythonButton", true);
+  rig.dialog().onClicked("buttonClearSources");
+  rig.dialog().onClicked("pushButtonCreate");
+  TransformEditorPreviewTestPeer::deliver(rig.editor);
+  rig.refresh();
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["functionText"]["code_content"], "-- pj-script: luau\nreturn agent_class\n");
+  EXPECT_EQ(widgets["globalVarsText"]["code_content"], "");
+  EXPECT_EQ(widgets["tableSources"]["rows"].size(), 2u);
+  EXPECT_EQ(widgets["luaButton"]["checked"], true);
+  EXPECT_FALSE(widgets.contains("__request_sub_dialog")) << "no name prompt";
+  EXPECT_EQ(rig.dp.create_calls, 0);
+  EXPECT_EQ(rig.dp.persistent_creates, 0);
+  // Saved, the view stays a view: a reopened layout does not turn it into an editable form.
+  EXPECT_TRUE(nlohmann::json::parse(rig.dialog().saveConfig()).contains("view"));
+}
+
+TEST(TransformEditorView, APythonObjectRecipeShowsItsLanguageAndParams) {
+  Rig rig;
+  rig.load(viewConfig("on_demand", "python", R"({"k":2})"));
+  rig.refresh();
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["pythonButton"]["checked"], true);
+  EXPECT_EQ(widgets["functionText"]["code_language"], "python");
+  EXPECT_EQ(widgets["paramsLineEdit"]["text"], R"({"k":2})");
+  EXPECT_EQ(widgets["buttonAdvanced"]["visible"], true) << "the params stay reachable";
+  EXPECT_EQ(rig.dp.create_calls, 0);
+  EXPECT_EQ(rig.dp.submit_calls, 0);
 }
 
 // ---------------------------------------------------------------------------
