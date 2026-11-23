@@ -439,4 +439,12 @@ std::optional<Rule> ruleFromJson(const std::string& json, std::string* error) {
   return rule;
 }
 
+std::vector<std::string> ruleInputs(const std::string& code, const std::string& source) {
+  std::vector<std::string> refs = parseSeriesRefs(code);
+  if (refs.empty() && !source.empty()) {
+    refs.push_back(source);
+  }
+  return refs;
+}
+
 }  // namespace anomaly_core

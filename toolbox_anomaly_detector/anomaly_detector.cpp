@@ -614,11 +614,11 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     if (!gens) {
       return std::string{};
     }
-    // Declare ONLY the series the rule reads (parsed from its series("...") calls), not the
+    // Declare ONLY the series the rule reads (anomaly_core::ruleInputs), not the
     // whole catalog: the host materializes every declared input whole-series on each run, so
     // declaring all N would re-materialize the entire dataset on the GUI thread (the freeze).
     // Built here (only on a re-submit), not every tick.
-    const std::vector<std::string> refs = anomaly_core::parseSeriesRefs(code);
+    const std::vector<std::string> refs = anomaly_core::ruleInputs(code, dialog_.selectedSource());
     const std::vector<std::string_view> inputs(refs.begin(), refs.end());
     const PJ::Expected<std::vector<std::string>> topics = gens->createMarkers(
         kPreviewId, inputs, /*output_marker_topic=*/"", code, "{}", PJ_DATA_PROCESSOR_FLAG_EPHEMERAL);
@@ -697,10 +697,10 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     }
     const std::string target = global ? std::string(PJ::sdk::kGlobalMarkerTopic) : source;
 
-    // Declare ONLY the series the rule reads (see anomaly_core::parseSeriesRefs), same as the
+    // Declare ONLY the series the rule reads (see anomaly_core::ruleInputs), same as the
     // preview, so Apply and preview stay identical AND the host doesn't materialize the whole
     // dataset whole-series on every run/commit-recompute.
-    const std::vector<std::string> refs = anomaly_core::parseSeriesRefs(code);
+    const std::vector<std::string> refs = anomaly_core::ruleInputs(code, global ? std::string() : source);
     std::vector<std::string_view> inputs(refs.begin(), refs.end());
 
     // {"scope":"all"} tells the host to publish a global marker across every dataset.
