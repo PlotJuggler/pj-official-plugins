@@ -54,6 +54,44 @@ TEST(DerivedRecipes, ATextTransformDeclaresAStringOutputInBothLanguages) {
   }
 }
 
+TEST(DerivedRecipes, ParseTransformScriptInvertsTheLuauBuilder) {
+  struct Case {
+    std::string globals;
+    std::string body;
+    std::size_t num_extra;
+  };
+  const std::vector<Case> cases = {
+      {"", "return value", 0},
+      {"local k = 2\nlocal m = {}", "local y = value * k\nreturn y", 0},
+      {"g = 1", "return value + v1 + v2", 2},
+      {"a\n", "if value > 0 then\n  return v1\nend\nreturn 0", 1},
+      {"", "", 0},
+  };
+  for (const Case& c : cases) {
+    const std::string script = buildTransformScript("id", "name", c.globals, c.body, c.num_extra, "luau").script;
+    const auto parsed = parseTransformScript(script);
+    ASSERT_TRUE(parsed.has_value()) << script;
+    EXPECT_EQ(parsed->global_code, c.globals) << script;
+    EXPECT_EQ(parsed->body, c.body) << script;
+  }
+}
+
+TEST(DerivedRecipes, ParseTransformScriptRefusesWhatTheBuilderDidNotWrite) {
+  const std::string hand_written =
+      "-- pj-script: luau\nlocal T = {}\nT.__index = T\n"
+      "function T.create(_) return setmetatable({}, T) end\n"
+      "function T:calculate(t, v) return v end\nreturn T\n";
+  EXPECT_FALSE(parseTransformScript(hand_written).has_value());
+  EXPECT_FALSE(parseTransformScript("-- pj-script: luau\nreturn agent_class\n").has_value());
+  EXPECT_FALSE(parseTransformScript("").has_value());
+  EXPECT_FALSE(parseTransformScript(buildTransformScript("id", "name", "g = 1", "return value", 0, "python").script)
+                   .has_value());
+  // The tail of the class is missing: not the shape.
+  std::string cut = buildTransformScript("id", "name", "", "return value", 0, "luau").script;
+  cut.resize(cut.find("\n  end\nend\nlocal T"));
+  EXPECT_FALSE(parseTransformScript(cut).has_value());
+}
+
 TEST(DerivedRecipes, ToRawNsIsEmptyWithoutAPlaybackView) {
   PJ::sdk::PlaybackHostView unbound;
   EXPECT_FALSE(toRawNs(unbound, PJ::sdk::DataSourceHandle{}, 1.0).has_value());

@@ -1030,12 +1030,15 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     for (const char* name :
          {"luaButton", "pythonButton", "pinCurrentTimeCheck", "buttonClearSources", "buttonLibraryBox",
-          "buttonSaveCurrent", "buttonLoadFunctions", "buttonSaveFunctions", "tab_2"}) {
+          "buttonLoadFunctions", "buttonSaveFunctions", "tab_2"}) {
       wd.setEnabled(name, false);
     }
+    wd.setEnabled("buttonSaveCurrent", view_template_);
     wd.setEnabled("pushButtonCreate", false);
     wd.setVisible("pushButtonCreate", false);
-    wd.setText("functionTitle", "Script");
+    if (!view_template_) {
+      wd.setText("functionTitle", "Script");  // the whole chunk, not a function body
+    }
     const std::string owner = view_owner_.empty() ? std::string{} : ": created by " + view_owner_;
     wd.setLabel("statusLabel", "Read-only" + owner + ". It cannot be changed here.");
     wd.clearChart("framePlotPreview");
@@ -1044,9 +1047,15 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     wd.setChartPlaceholder("framePlotPreview", "Read-only view: no preview");
   }
 
-  // Events a view still takes: help, the params disclosure, closing the library panel.
+  // Events a view still takes: help, the params disclosure, closing the library panel, and the save-to-library
+  // flow when the view shows a function body (view_template_). The prompts of that flow are the only ones a view
+  // opens (loadView clears a pending one), so OK there reaches nothing but SaveName / SaveOverwrite.
   bool viewBlocks(std::string_view name) const {
-    return view_only_ && name != "pushButtonHelp" && name != "buttonAdvanced" && name != "subPanelClosed";
+    if (!view_only_ || name == "pushButtonHelp" || name == "buttonAdvanced" || name == "subPanelClosed") {
+      return false;
+    }
+    return !(
+        view_template_ && (name == "buttonSaveCurrent" || name == "subDialogAccepted" || name == "saveFunctionName"));
   }
 
   bool viewOnly() const {
@@ -1638,9 +1647,12 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
 
   // The host's view of a recipe another owner made (`{"view": {owner, name, kind, language, script, inputs,
-  // outputs, params}}`, the host's contract): the whole script goes into the function pane, as it runs.
+  // outputs, params}}`, the host's contract). A Luau transform written by buildTransformScript shows its global
+  // section and function body as the editor does, and can be saved to the library as a template; any other
+  // script goes whole into the function pane, as it runs.
   void loadView(const nlohmann::json& view) {
     loadKindState(nlohmann::json::object(), std::string{});
+    prompt_ = Prompt::None;
     view_only_ = true;
     view_owner_ = view.value("owner", std::string{});
     view_kind_ = view.value("kind", std::string{}) == "on_demand" ? RecipeKind::kOnDemand : RecipeKind::kTransform;
@@ -1649,6 +1661,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     function_body_ = view.value("script", std::string{});
     auto_body_.clear();
     language_ = view.value("language", std::string{}) == "python" ? "python" : "luau";
+    view_template_ = false;
+    if (language_ == "luau" && view_kind_ == RecipeKind::kTransform) {
+      if (auto parts = derived_recipes::parseTransformScript(function_body_)) {
+        global_code_ = std::move(parts->global_code);
+        function_body_ = std::move(parts->body);
+        view_template_ = true;
+      }
+    }
     const std::string params = view.value("params", std::string{});
     params_text_ = params == "{}" ? std::string{} : params;
     advanced_open_ = !params_text_.empty();
@@ -2549,6 +2569,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool view_only_ = false;  // a view of another owner's recipe (see loadView)
   std::string view_owner_;  // its owner's display name, from the host
   RecipeKind view_kind_ = RecipeKind::kTransform;
+  // The view shows a function body (a recognised generated chunk), not a whole chunk: it can be saved to the library.
+  bool view_template_ = false;
   nlohmann::json view_config_;                  // the config the view was loaded from, saved back as is
   std::string validation_error_;                // host's rejection message for the current script (empty = OK)
   std::string preview_error_;                   // why the preview recipe cannot be shown (see setPreviewError)

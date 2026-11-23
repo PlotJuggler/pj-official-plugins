@@ -623,6 +623,61 @@ BuiltScript buildTransformScript(
   return out;
 }
 
+namespace {
+
+// "  return function(time, value" + ", vN" * k + ")": the line that opens the transform function.
+bool isTransformSignatureLine(std::string_view line) {
+  constexpr std::string_view kHead = "  return function(time, value";
+  if (!line.starts_with(kHead) || !line.ends_with(')')) {
+    return false;
+  }
+  std::string_view rest = line.substr(kHead.size(), line.size() - kHead.size() - 1);
+  while (!rest.empty()) {
+    if (!rest.starts_with(", v")) {
+      return false;
+    }
+    rest.remove_prefix(3);
+    const std::size_t digits = rest.find_first_not_of("0123456789");
+    if (digits == 0) {
+      return false;
+    }
+    rest.remove_prefix(digits == std::string_view::npos ? rest.size() : digits);
+  }
+  return true;
+}
+
+}  // namespace
+
+std::optional<ParsedTransformScript> parseTransformScript(std::string_view script) {
+  constexpr std::string_view kPrefix = "-- pj-script: luau\nlocal function _pj_make()\n";
+  constexpr std::string_view kTail = "\n  end\nend\nlocal T = {";
+  if (!script.starts_with(kPrefix)) {
+    return std::nullopt;
+  }
+  // The globals are every line up to the first signature line; the builder writes at least the (empty) line
+  // that ends them, so a signature right after the prefix is not its work.
+  std::size_t line_start = kPrefix.size();
+  while (line_start < script.size()) {
+    const std::size_t line_end = std::min(script.find('\n', line_start), script.size());
+    if (isTransformSignatureLine(script.substr(line_start, line_end - line_start))) {
+      break;
+    }
+    line_start = line_end + 1;
+  }
+  if (line_start >= script.size() || line_start == kPrefix.size()) {
+    return std::nullopt;
+  }
+  const std::size_t body_start = script.find('\n', line_start);
+  const std::size_t body_end = script.rfind(kTail);
+  if (body_start == std::string_view::npos || body_end == std::string_view::npos || body_end < body_start + 1) {
+    return std::nullopt;
+  }
+  ParsedTransformScript parsed;
+  parsed.global_code = std::string(script.substr(kPrefix.size(), line_start - 1 - kPrefix.size()));
+  parsed.body = std::string(script.substr(body_start + 1, body_end - (body_start + 1)));
+  return parsed;
+}
+
 // Inverse of toDisplaySeconds: DISPLAY seconds -> raw dataset ns. The SDK
 // exposes only the forward direction (toDisplayTimeForSource); this derives
 // the same per-source AFFINE offset applyDisplayWindow computes

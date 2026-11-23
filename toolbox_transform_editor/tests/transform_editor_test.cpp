@@ -2425,12 +2425,18 @@ void labelRecipe(Rig& rig) {
   rig.dialog().onItemsDropped("tableSources", {"a/x"});
   rig.dialog().onCodeChanged("functionText", "return value > 0 and \"walking\" or \"standing\"");
 std::string viewConfig(const std::string& kind, const std::string& language, const std::string& params) {
+// A script the generator did not write: the view shows it whole and does not offer to save it.
+constexpr const char* kUnrecognisedScript = "-- pj-script: luau\nreturn agent_class\n";
+
+std::string viewConfig(
+    const std::string& kind, const std::string& language, const std::string& params,
+    const std::string& script = kUnrecognisedScript) {
   return nlohmann::json{{"view",
                          {{"owner", "AI agent (agent-claude-code)"},
                           {"name", "speed"},
                           {"kind", kind},
                           {"language", language},
-                          {"script", "-- pj-script: luau\nreturn agent_class\n"},
+                          {"script", script},
                           {"inputs", {"/odom/x", "/odom/y"}},
                           {"outputs", {"speed"}},
                           {"params", params}}}}
@@ -2641,6 +2647,137 @@ TEST(TransformEditorView, ShowsTheScriptAndInputsReadOnlyWithTheOwner) {
   EXPECT_NE(status.find("AI agent (agent-claude-code)"), std::string::npos) << status;
   EXPECT_EQ(rig.dp.create_calls, 0) << "a view runs no preview";
   EXPECT_EQ(rig.dp.submit_calls, 0);
+}
+
+namespace {
+
+// Points PJ::sdk::userDataDir() (where the function library is written) into a fresh temp dir for the scope, so a
+// test that saves to the library never touches the developer's own.
+class ScopedUserDataDir {
+ public:
+  ScopedUserDataDir() {
+    dir_ = std::filesystem::temp_directory_path() /
+           ("te_user_data_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
+            ::testing::UnitTest::GetInstance()->current_test_info()->name());
+    std::filesystem::create_directories(dir_);
+    for (const char* name : {"XDG_DATA_HOME", "HOME", "LOCALAPPDATA"}) {
+      saved_.emplace_back(name, PJ::sdk::getEnv(name));
+      setEnv(name, dir_.string().c_str());
+    }
+  }
+  ~ScopedUserDataDir() {
+    for (const auto& [name, value] : saved_) {
+      setEnv(name, value ? value->c_str() : nullptr);
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+  ScopedUserDataDir(const ScopedUserDataDir&) = delete;
+  ScopedUserDataDir& operator=(const ScopedUserDataDir&) = delete;
+
+  const std::filesystem::path& dir() const {
+    return dir_;
+  }
+
+ private:
+  static void setEnv(const char* name, const char* value) {
+#if defined(_WIN32)
+    _putenv_s(name, value != nullptr ? value : "");
+#else
+    if (value != nullptr) {
+      setenv(name, value, 1);
+    } else {
+      unsetenv(name);
+    }
+#endif
+  }
+
+  std::filesystem::path dir_;
+  std::vector<std::pair<const char*, std::optional<std::string>>> saved_;
+};
+
+std::string generatedScript() {
+  return derived_recipes::buildTransformScript("speed", "speed", "local k = 2", "return value * k + v1", 1).script;
+}
+
+}  // namespace
+
+TEST(TransformEditorView, ARecognisedFormulaShowsItsGlobalsAndBodySplitAndCanBeSaved) {
+  Rig rig;
+  rig.load(viewConfig("transform", "luau", "{}", generatedScript()));
+  rig.refresh();
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["globalVarsText"]["code_content"], "local k = 2");
+  EXPECT_EQ(widgets["functionText"]["code_content"], "return value * k + v1");
+  EXPECT_EQ(widgets["functionText"]["read_only"], true);
+  EXPECT_EQ(widgets["globalVarsText"]["read_only"], true);
+  EXPECT_EQ(widgets["buttonSaveCurrent"]["enabled"], true);
+  for (const char* name : {"luaButton", "pythonButton", "buttonLibraryBox", "buttonLoadFunctions", "tab_2"}) {
+    EXPECT_EQ(widgets[name]["enabled"], false) << name;
+  }
+  EXPECT_EQ(widgets["pushButtonCreate"]["visible"], false);
+}
+
+TEST(TransformEditorView, AnUnrecognisedScriptCannotBeSaved) {
+  Rig rig;
+  rig.load(viewConfig("transform", "luau", "{}"));
+  rig.refresh();
+  EXPECT_EQ(rig.widgets()["buttonSaveCurrent"]["enabled"], false);
+  rig.dialog().onClicked("buttonSaveCurrent");
+  EXPECT_FALSE(rig.widgets().contains("__request_sub_dialog")) << "no name prompt";
+}
+
+TEST(TransformEditorView, SavingAViewToTheLibraryAddsTheTemplateAndCreatesNothing) {
+  const ScopedUserDataDir user_data;
+  ASSERT_EQ(snippetLibraryPath().string().rfind(user_data.dir().string(), 0), 0u)
+      << "the library path was not redirected";
+  Rig rig;
+  rig.dialog().setSnippets({});
+  rig.load(viewConfig("transform", "luau", "{}", generatedScript()));
+  rig.refresh();
+
+  rig.dialog().onClicked("buttonSaveCurrent");
+  auto widgets = rig.widgets();
+  ASSERT_TRUE(widgets.contains("__request_sub_dialog")) << "the name prompt";
+  EXPECT_EQ(widgets["saveFunctionName"]["text"], "speed") << "the prompt starts with the series name";
+  rig.dialog().onTextChanged("saveFunctionName", "speed_template");
+  rig.dialog().onClicked("subDialogAccepted");
+
+  ASSERT_TRUE(rig.dialog().snippetExists("speed_template"));
+  const Snippet saved = rig.dialog().currentAsSnippet("speed_template");
+  EXPECT_EQ(saved.kind, "series");
+  EXPECT_EQ(saved.global_code, "local k = 2");
+  EXPECT_EQ(saved.function_body, "return value * k + v1");
+  EXPECT_EQ(saved.language, "luau");
+  const auto on_disk = loadSnippetsFromPath(snippetLibraryPath());
+  ASSERT_TRUE(on_disk.has_value());
+  ASSERT_EQ(on_disk->size(), 1u);
+  EXPECT_EQ((*on_disk)[0].name, "speed_template");
+  EXPECT_EQ((*on_disk)[0].function_body, "return value * k + v1");
+
+  // The same name again asks before it overwrites, and the view is still a view.
+  rig.dialog().onClicked("buttonSaveCurrent");
+  (void)rig.widgets();
+  rig.dialog().onTextChanged("saveFunctionName", "speed_template");
+  rig.dialog().onClicked("subDialogAccepted");
+  EXPECT_TRUE(rig.widgets().contains("__request_sub_dialog")) << "the overwrite warning";
+  rig.dialog().onClicked("subDialogAccepted");
+  EXPECT_TRUE(nlohmann::json::parse(rig.dialog().saveConfig()).contains("view"));
+  EXPECT_EQ(rig.dp.create_calls, 0);
+  EXPECT_EQ(rig.dp.persistent_creates, 0);
+  EXPECT_EQ(rig.dp.submit_calls, 0);
+}
+
+TEST(TransformEditorView, APromptLeftOpenBeforeTheViewLoadedDoesNotActInIt) {
+  Rig rig;
+  rig.newObjectRecipe();
+  rig.dialog().onClicked("pushButtonCreate");
+  ASSERT_TRUE(rig.widgets().contains("__request_sub_dialog")) << "the Create prompt is on screen";
+  rig.load(viewConfig("transform", "luau", "{}", generatedScript()));
+  rig.dialog().onClicked("subDialogAccepted");
+  TransformEditorPreviewTestPeer::deliver(rig.editor);
+  EXPECT_EQ(rig.dialog().outputName(), "speed") << "the Create prompt's OK renamed the view";
+  EXPECT_EQ(rig.dp.persistent_creates, 0);
 }
 
 TEST(TransformEditorView, NoEditReachesTheFormOrTheHost) {
