@@ -11,6 +11,11 @@ below; for earlier releases see the git history of `toolbox_transform_editor/`.
   new series; plots do not. The preview plots each label at its index and names them on the status line. A series
   opened for Modify keeps its choice: the host cannot switch a series between text and numbers, so the check is locked
   there. A function saved to the library keeps its choice.
+- A custom topic made by someone else (an AI agent over MCP, another plugin) opens read-only: the pencil
+  shows its script, inputs and params with "Read-only: created by <owner>", and nothing can be edited,
+  previewed or created from it. A formula the editor can read shows its globals and function body as usual
+  and can be saved to the function library as a template. The manifest declares `custom_topics_viewer`, so
+  PlotJuggler hands these views only to an editor that shows them read-only (PlotJuggler 4.2.0 and later; copy any script with Ctrl+C).
 
 ## [1.2.2] - 2026-11-15
 

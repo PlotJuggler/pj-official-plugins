@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "support/scoped_env.hpp"
+#include "test_support/scoped_env.hpp"
 
 #ifndef ASSISTANT_CODEX_MODELS_FIXTURE
 #error "ASSISTANT_CODEX_MODELS_FIXTURE must be defined by CMake"
@@ -25,8 +25,8 @@ namespace {
 using assistant_agent::codexModelsCacheFile;
 using assistant_agent::listCodexModels;
 using assistant_agent::ModelChoice;
-using assistant_agent::testing::makeTempDir;
-using assistant_agent::testing::ScopedEnv;
+using toolbox_testing::makeTempDir;
+using toolbox_testing::ScopedEnv;
 
 TEST(ListCodexModels, KeepsOnlyListVisibilitySortedByPriorityWithComposedLabels) {
   const std::vector<ModelChoice> models = listCodexModels(ASSISTANT_CODEX_MODELS_FIXTURE);

@@ -544,6 +544,39 @@ BuiltScript buildOnDemandChunkPython(const std::string& body, const ResolvedEval
   return {std::move(src), onDemandLayout(table, body)};
 }
 
+namespace {
+
+// The fixed text of a Luau transform chunk. buildTransformScript writes it and parseTransformScript recognises
+// it from these same constants, so the two cannot drift.
+constexpr std::string_view kLuauFactoryOpen = "local function _pj_make()\n";
+constexpr std::string_view kLuauFunctionOpen = "  return function(";  // + transformParams(n) + ")\n"
+constexpr std::string_view kLuauFactoryClose = "  end\nend\n";
+constexpr std::string_view kLuauClassOpen = "local T = { id = \"";   // + id
+constexpr std::string_view kLuauClassNameKey = "\", name = \"";      // + name
+constexpr std::string_view kLuauClassOutputKey = "\", output = \"";  // + "double" or "string"
+constexpr std::string_view kLuauClassClose = "\" }\n";
+constexpr std::string_view kLuauClassRest =
+    "T.__index = T\n"
+    "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n"
+    "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n"
+    "return T\n";
+
+// The header the host's inferTransformBackend reads.
+std::string scriptHeader(std::string_view language) {
+  return "-- pj-script: " + std::string(language) + "\n";
+}
+
+// "time, value" and ", v1" .. ", vN" for the additional sources.
+std::string transformParams(std::size_t num_extra) {
+  std::string params = "time, value";
+  for (std::size_t k = 0; k < num_extra; ++k) {
+    params += ", v" + std::to_string(k + 1);
+  }
+  return params;
+}
+
+}  // namespace
+
 // Build a complete self-describing Luau FILTER CLASS the host can compile and run
 // live as a DerivedEngine node (via createTransform). The user's global code runs
 // once per instance inside a factory closure, so its locals persist across calls
@@ -563,10 +596,7 @@ BuiltScript buildTransformScript(
   const std::string id = luaStringEscape(raw_id);
   const std::string output = text_output ? "string" : "double";
   const std::string name = luaStringEscape(raw_name);
-  std::string params = "time, value";
-  for (std::size_t k = 0; k < num_extra; ++k) {
-    params += ", v" + std::to_string(k + 1);
-  }
+  const std::string params = transformParams(num_extra);
   BuiltScript out;
   ScriptLayout& layout = out.layout;
   if (language == "python") {
@@ -597,9 +627,8 @@ BuiltScript buildTransformScript(
     out.script = std::move(src);
     return out;
   }
-  // The header declares the backend; the host's inferTransformBackend reads it.
-  std::string src = "-- pj-script: " + std::string(language) + "\n";
-  src += "local function _pj_make()\n";
+  std::string src = scriptHeader(language);
+  src += kLuauFactoryOpen;
   int line = 3;
   src += global_code + "\n";
   if (!global_code.empty()) {
@@ -607,20 +636,93 @@ BuiltScript buildTransformScript(
     layout.globals_lines = physicalLines(global_code);
   }
   line += physicalLines(global_code);
-  src += "  return function(" + params + ")\n";
+  src += std::string(kLuauFunctionOpen) + params + ")\n";
   ++line;
   layout.body_first_line = line;
   layout.body_lines = physicalLines(body);
   src += body + "\n";
-  src += "  end\n";
-  src += "end\n";
-  src += "local T = { id = \"" + id + "\", name = \"" + name + "\", output = \"" + output + "\" }\n";
-  src += "T.__index = T\n";
-  src += "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n";
-  src += "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n";
-  src += "return T\n";
+  src += kLuauFactoryClose;
+  src += std::string(kLuauClassOpen) + id + std::string(kLuauClassNameKey) + name + std::string(kLuauClassOutputKey) +
+         output + std::string(kLuauClassClose);
+  src += kLuauClassRest;
   out.script = std::move(src);
   return out;
+}
+
+namespace {
+
+// "  return function(" + transformParams(n) + ")" for some n: the line that opens the transform function.
+bool isTransformSignatureLine(std::string_view line) {
+  if (!line.starts_with(kLuauFunctionOpen) || !line.ends_with(')')) {
+    return false;
+  }
+  const std::string_view params = line.substr(kLuauFunctionOpen.size(), line.size() - kLuauFunctionOpen.size() - 1);
+  for (std::size_t extra = 0;; ++extra) {
+    const std::string expected = transformParams(extra);
+    if (expected.size() > params.size()) {
+      return false;
+    }
+    if (expected == params) {
+      return true;
+    }
+  }
+}
+
+}  // namespace
+
+std::optional<ParsedTransformScript> parseTransformScript(std::string_view script) {
+  const std::string head = scriptHeader("luau") + std::string(kLuauFactoryOpen);
+  if (!script.starts_with(head) || !script.ends_with(kLuauClassRest)) {
+    return std::nullopt;
+  }
+  std::string_view rest = script.substr(0, script.size() - kLuauClassRest.size());
+  bool text_output = false;
+  if (const std::string text = std::string(kLuauClassOutputKey) + "string" + std::string(kLuauClassClose);
+      rest.ends_with(text)) {
+    text_output = true;
+    rest.remove_suffix(text.size());
+  } else if (
+      const std::string number = std::string(kLuauClassOutputKey) + "double" + std::string(kLuauClassClose);
+      rest.ends_with(number)) {
+    rest.remove_suffix(number.size());
+  } else {
+    return std::nullopt;
+  }
+  // What is left ends with the body, then the builder's closing lines and `local T = { id = "<id>", name = "<name>`.
+  const std::string closing = "\n" + std::string(kLuauFactoryClose) + std::string(kLuauClassOpen);
+  const std::size_t tail = rest.rfind(closing);
+  if (tail == std::string_view::npos || tail < head.size()) {
+    return std::nullopt;
+  }
+  const std::string_view names = rest.substr(tail + closing.size());
+  if (names.find('\n') != std::string_view::npos || std::count(names.begin(), names.end(), '"') != 2 ||
+      names.find(kLuauClassNameKey) == std::string_view::npos) {
+    return std::nullopt;  // the id and the name are quote-free, single-line literals
+  }
+  // Between the head and the tail: the globals, a newline, the signature line, the body. One signature line only;
+  // a second one (in the globals or the body) leaves the split ambiguous.
+  const std::string_view region = rest.substr(head.size(), tail - head.size());
+  std::size_t sig_start = 0;
+  std::size_t sig_end = std::string_view::npos;
+  int signatures = 0;
+  for (std::size_t start = 0; start < region.size();) {
+    const std::size_t newline = region.find('\n', start);
+    const std::size_t end = newline == std::string_view::npos ? region.size() : newline;
+    if (isTransformSignatureLine(region.substr(start, end - start)) && ++signatures == 1) {
+      sig_start = start;
+      sig_end = newline;
+    }
+    start = end + 1;
+  }
+  // The builder ends the globals with a newline and the signature line with another.
+  if (signatures != 1 || sig_start == 0 || sig_end == std::string_view::npos) {
+    return std::nullopt;
+  }
+  ParsedTransformScript parsed;
+  parsed.text_output = text_output;
+  parsed.global_code = std::string(region.substr(0, sig_start - 1));
+  parsed.body = std::string(region.substr(sig_end + 1));
+  return parsed;
 }
 
 // Inverse of toDisplaySeconds: DISPLAY seconds -> raw dataset ns. The SDK

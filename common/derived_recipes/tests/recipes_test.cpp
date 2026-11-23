@@ -54,6 +54,118 @@ TEST(DerivedRecipes, ATextTransformDeclaresAStringOutputInBothLanguages) {
   }
 }
 
+TEST(DerivedRecipes, ParseTransformScriptInvertsTheLuauBuilder) {
+  struct Case {
+    std::string globals;
+    std::string body;
+    std::size_t num_extra;
+  };
+  const std::vector<Case> cases = {
+      {"", "return value", 0},
+      {"local k = 2\nlocal m = {}", "local y = value * k\nreturn y", 0},
+      {"g = 1", "return value + v1 + v2", 2},
+      {"a\n", "if value > 0 then\n  return v1\nend\nreturn 0", 1},
+      {"", "", 0},
+  };
+  for (const Case& c : cases) {
+    const std::string script = buildTransformScript("id", "name", c.globals, c.body, c.num_extra, "luau").script;
+    const auto parsed = parseTransformScript(script);
+    ASSERT_TRUE(parsed.has_value()) << script;
+    EXPECT_EQ(parsed->global_code, c.globals) << script;
+    EXPECT_EQ(parsed->body, c.body) << script;
+  }
+}
+
+TEST(DerivedRecipes, ParseTransformScriptRefusesWhatTheBuilderDidNotWrite) {
+  const std::string hand_written =
+      "-- pj-script: luau\nlocal T = {}\nT.__index = T\n"
+      "function T.create(_) return setmetatable({}, T) end\n"
+      "function T:calculate(t, v) return v end\nreturn T\n";
+  EXPECT_FALSE(parseTransformScript(hand_written).has_value());
+  EXPECT_FALSE(parseTransformScript("-- pj-script: luau\nreturn agent_class\n").has_value());
+  EXPECT_FALSE(parseTransformScript("").has_value());
+  EXPECT_FALSE(parseTransformScript(buildTransformScript("id", "name", "g = 1", "return value", 0, "python").script)
+                   .has_value());
+  // The tail of the class is missing: not the shape.
+  std::string cut = buildTransformScript("id", "name", "", "return value", 0, "luau").script;
+  cut.resize(cut.find("\n  end\nend\nlocal T"));
+  EXPECT_FALSE(parseTransformScript(cut).has_value());
+}
+
+TEST(DerivedRecipes, ParseTransformScriptReadsATextClass) {
+  const auto number = parseTransformScript(buildTransformScript("id", "name", "g = 1", "return value", 0).script);
+  ASSERT_TRUE(number.has_value());
+  EXPECT_FALSE(number->text_output);
+  const auto text = parseTransformScript(
+      buildTransformScript("id", "name", "g = 1", "return \"on\"", 1, "luau", /*text_output=*/true).script);
+  ASSERT_TRUE(text.has_value());
+  EXPECT_TRUE(text->text_output);
+  EXPECT_EQ(text->global_code, "g = 1");
+  EXPECT_EQ(text->body, "return \"on\"");
+}
+
+TEST(DerivedRecipes, ParseTransformScriptRefusesAClassTheBuilderDidNotEndTheSameWay) {
+  const std::string script = buildTransformScript("id", "name", "g = 1", "return value", 0, "luau").script;
+  ASSERT_TRUE(parseTransformScript(script).has_value());
+  auto replaced = [&](const std::string& from, const std::string& to) {
+    std::string copy = script;
+    const std::size_t at = copy.find(from);
+    EXPECT_NE(at, std::string::npos) << from;
+    copy.replace(at, from.size(), to);
+    return copy;
+  };
+  EXPECT_FALSE(parseTransformScript(replaced("output = \"double\"", "output = \"same\"")).has_value());
+  EXPECT_FALSE(parseTransformScript(replaced("return self.fn(t, v, ...)", "return 0")).has_value());
+  EXPECT_FALSE(parseTransformScript(replaced("T.__index = T\n", "T.__index = T\nT.extra = 1\n")).has_value());
+  EXPECT_FALSE(parseTransformScript(script + "print(1)\n").has_value());
+  EXPECT_FALSE(parseTransformScript(script + "\n").has_value());
+  // The id and the name are single-line, quote-free literals.
+  EXPECT_FALSE(parseTransformScript(replaced("id = \"id\"", "id = \"i\"d\"")).has_value());
+  EXPECT_FALSE(parseTransformScript(replaced("name = \"name\"", "name = \"na\nme\"")).has_value());
+  EXPECT_FALSE(parseTransformScript(replaced(", name = \"name\"", "")).has_value());
+}
+
+TEST(DerivedRecipes, ParseTransformScriptRefusesASecondSignatureLine) {
+  // A helper in the globals that looks like the function's own opening line: which one is the signature?
+  const std::string globals = "local function mk()\n  return function(time, value)\n    return value\n  end\nend";
+  const std::string script = buildTransformScript("id", "name", globals, "return value + v1", 1, "luau").script;
+  EXPECT_FALSE(parseTransformScript(script).has_value());
+  // The same in the body.
+  const std::string in_body = "local f = function()\n  return function(time, value)\nend";
+  EXPECT_FALSE(parseTransformScript(buildTransformScript("id", "name", "", in_body, 0, "luau").script).has_value());
+  // A line that only resembles one is not a signature.
+  const std::string similar = "local k = 1\n  return function(time, value, v2)\n  return function(time, valuex)";
+  EXPECT_TRUE(
+      parseTransformScript(buildTransformScript("id", "name", similar, "return value", 0, "luau").script).has_value());
+}
+
+// What PlotJuggler's own builder (pj_runtime agent_tools buildTransformScript, text_output false) writes for
+// id and name "speed_x2", globals "local k = 2" and the body below, as a literal: the parser and this repo's
+// builder must keep matching the host's text.
+TEST(DerivedRecipes, ParseTransformScriptReadsWhatThePlotJugglerHostBuilds) {
+  const std::string host_script =
+      "-- pj-script: luau\n"
+      "local function _pj_make()\n"
+      "local k = 2\n"
+      "  return function(time, value)\n"
+      "    return value * k\n"
+      "  end\n"
+      "end\n"
+      "local T = { id = \"speed_x2\", name = \"speed_x2\", output = \"double\" }\n"
+      "T.__index = T\n"
+      "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n"
+      "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n"
+      "return T\n";
+  const auto parsed = parseTransformScript(host_script);
+  ASSERT_TRUE(parsed.has_value());
+  EXPECT_EQ(parsed->global_code, "local k = 2");
+  EXPECT_EQ(parsed->body, "    return value * k");
+  // The editor's builder writes the same text for the same input.
+  EXPECT_EQ(
+      buildTransformScript("speed_x2", "speed_x2", "local k = 2", "    return value * k", 0, "luau").script,
+      host_script);
+}
+
 TEST(DerivedRecipes, ToRawNsIsEmptyWithoutAPlaybackView) {
   PJ::sdk::PlaybackHostView unbound;
   EXPECT_FALSE(toRawNs(unbound, PJ::sdk::DataSourceHandle{}, 1.0).has_value());

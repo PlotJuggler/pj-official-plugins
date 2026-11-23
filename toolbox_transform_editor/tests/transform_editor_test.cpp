@@ -15,12 +15,15 @@
 #include "test_support/fake_catalog_host.hpp"
 #include "test_support/fake_playback_viewport_hosts.hpp"
 #include "test_support/recording_dp_host.hpp"
+#include "test_support/scoped_env.hpp"
 
 namespace {
 
 using toolbox_testing::FakeCatalogHost;
 using toolbox_testing::FakePlaybackHost;
+using toolbox_testing::makeTempDir;
 using toolbox_testing::RecordingDpHost;
+using toolbox_testing::ScopedEnv;
 
 class TransformEditorPreviewTestPeer {
  public:
@@ -118,6 +121,12 @@ class TransformEditorPreviewTestPeer {
   }
   static void validateBatch(TransformEditorToolbox& editor) {
     editor.validateBatch();
+  }
+  // The callbacks of the dialog's tick that getDialog wires in production and bind() leaves out: the preview
+  // refresh and the batch re-validation.
+  static void wireTickCallbacks(TransformEditorToolbox& editor) {
+    editor.dialog_.setOnRefreshPreview([&editor]() { editor.refreshPreview(); });
+    editor.dialog_.setOnValidateBatch([&editor]() { editor.validateBatch(); });
   }
   static bool pending(const TransformEditorToolbox& editor) {
     return editor.pending_preview_.has_value();
@@ -2603,6 +2612,324 @@ TEST(TransformEditorTextOutput, ALibraryFunctionKeepsItsTextOutput) {
   EXPECT_TRUE(rig.dialog().currentAsSnippet("again").text_output) << "saved back, it stays a text function";
   rig.dialog().loadSnippetsIntoEditor({"twice"});
   EXPECT_FALSE(rig.widgets()["textOutputCheck"]["checked"].get<bool>());
+}
+
+// ---------------------------------------------------------------------------
+// A view of a recipe another owner made (the host's {"view": ...} config)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A script the generator did not write: the view shows it whole and does not offer to save it.
+constexpr const char* kUnrecognisedScript = "-- pj-script: luau\nreturn agent_class\n";
+
+std::string generatedScript() {
+  return derived_recipes::buildTransformScript("speed", "speed", "local k = 2", "return value * k + v1", 1).script;
+}
+
+std::string viewConfig(
+    const std::string& kind, const std::string& language, const std::string& params,
+    const std::string& script = kUnrecognisedScript,
+    const nlohmann::json& inputs = nlohmann::json::array({"/odom/x", "/odom/y"})) {
+  return nlohmann::json{{"view",
+                         {{"owner", "AI agent (agent-claude-code)"},
+                          {"name", "speed"},
+                          {"kind", kind},
+                          {"language", language},
+                          {"script", script},
+                          {"inputs", inputs},
+                          {"outputs", {"speed"}},
+                          {"params", params}}}}
+      .dump();
+}
+
+}  // namespace
+
+TEST(TransformEditorView, ShowsTheScriptAndInputsReadOnlyWithTheOwner) {
+  Rig rig;
+  rig.load(viewConfig("transform", "luau", "{}"));
+  rig.refresh();
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["functionText"]["code_content"], "-- pj-script: luau\nreturn agent_class\n");
+  EXPECT_EQ(widgets["functionText"]["read_only"], true);
+  EXPECT_EQ(widgets["globalVarsText"]["read_only"], true);
+  EXPECT_EQ(widgets["paramsLineEdit"]["read_only"], true);
+  ASSERT_EQ(widgets["tableSources"]["rows"].size(), 2u);
+  EXPECT_EQ(widgets["tableSources"]["rows"][0][1], "/odom/x");
+  EXPECT_EQ(widgets["tableSources"]["rows"][1][1], "/odom/y");
+  EXPECT_EQ(widgets["tableSources"]["list_deletable"], false);
+  EXPECT_EQ(widgets["tableSources"]["drop_target"], false);
+  EXPECT_EQ(widgets["pushButtonCreate"]["visible"], false);
+  EXPECT_EQ(widgets["pushButtonCreate"]["enabled"], false);
+  for (const char* name :
+       {"luaButton", "pythonButton", "pinCurrentTimeCheck", "buttonClearSources", "buttonLibraryBox",
+        "buttonSaveCurrent", "buttonLoadFunctions", "buttonSaveFunctions", "tab_2"}) {
+    EXPECT_EQ(widgets[name]["enabled"], false) << name;
+  }
+  const std::string status = widgets["statusLabel"]["label"];
+  EXPECT_NE(status.find("Read-only"), std::string::npos) << status;
+  EXPECT_NE(status.find("AI agent (agent-claude-code)"), std::string::npos) << status;
+  EXPECT_EQ(rig.dp.create_calls, 0) << "a view runs no preview";
+  EXPECT_EQ(rig.dp.submit_calls, 0);
+  EXPECT_EQ(rig.dp.validate_calls, 0) << "and checks no script";
+}
+
+TEST(TransformEditorView, ATickReachesNeitherTheHostNorACreate) {
+  for (const char* kind : {"transform", "on_demand"}) {
+    Rig rig;
+    TransformEditorPreviewTestPeer::wireTickCallbacks(rig.editor);
+    rig.load(viewConfig(kind, "luau", "{}", generatedScript()));
+    TransformEditorPreviewTestPeer::deliver(rig.editor);
+    TransformEditorPreviewTestPeer::deliver(rig.editor);
+    EXPECT_EQ(rig.dp.validate_calls, 0) << kind << ": the batch function is not the view's, nothing to check";
+    EXPECT_EQ(rig.dp.create_calls, 0) << kind;
+    EXPECT_EQ(rig.dp.submit_calls, 0) << kind;
+    EXPECT_EQ(rig.dp.persistent_creates, 0) << kind;
+  }
+}
+
+TEST(TransformEditorView, TheBatchFunctionIsStillCheckedOnceAnEditableFormReplacesTheView) {
+  Rig rig;
+  TransformEditorPreviewTestPeer::wireTickCallbacks(rig.editor);
+  rig.load(viewConfig("transform", "luau", "{}", generatedScript()));
+  TransformEditorPreviewTestPeer::deliver(rig.editor);
+  ASSERT_EQ(rig.dp.validate_calls, 0);
+  rig.load(onDemandConfig("f"));
+  TransformEditorPreviewTestPeer::deliver(rig.editor);
+  EXPECT_GT(rig.dp.validate_calls, 0) << "the view left the batch tab unchecked, not checked";
+}
+
+TEST(TransformEditorView, AnOnDemandViewShowsTheTypesOfItsInputsFromTheCatalog) {
+  Rig rig;
+  rig.load(viewConfig("on_demand", "luau", "{}", kUnrecognisedScript, nlohmann::json::array({"/cloud", "/odom/x"})));
+  rig.refresh();
+  const auto rows = rig.widgets()["tableSources"]["rows"];
+  ASSERT_EQ(rows.size(), 2u);
+  EXPECT_EQ(rows[0][3], "point cloud");
+  EXPECT_EQ(rows[1][3], "number");
+  EXPECT_EQ(rig.dp.create_calls, 0);
+  EXPECT_EQ(rig.dp.submit_calls, 0);
+  EXPECT_EQ(rig.dp.validate_calls, 0);
+}
+
+TEST(TransformEditorView, TheCreateReasonIsTheReadOnlyNoticeAndCreateReachesNothing) {
+  Rig rig;
+  rig.load(viewConfig("transform", "luau", "{}"));
+  rig.refresh();
+  EXPECT_EQ(
+      rig.dialog().canCreateReason(), "Read-only: created by AI agent (agent-claude-code). It cannot be changed here.");
+  TransformEditorPreviewTestPeer::saveAsIs(rig.editor);
+  EXPECT_EQ(rig.dp.create_calls, 0);
+  EXPECT_EQ(rig.dp.persistent_creates, 0);
+  EXPECT_EQ(rig.dp.submit_calls, 0);
+  EXPECT_EQ(rig.dp.create_v2_calls, 0);
+
+  // A view without an owner names none.
+  auto view = nlohmann::json::parse(viewConfig("transform", "luau", "{}"));
+  view["view"].erase("owner");
+  rig.load(view.dump());
+  EXPECT_EQ(rig.dialog().canCreateReason(), "Read-only. It cannot be changed here.");
+  EXPECT_EQ(TransformEditorPreviewTestPeer::status(rig.editor), "Read-only. It cannot be changed here.");
+}
+
+TEST(TransformEditorView, AnOwnOnDemandRecipeWhoseParamsHaveAViewKeyIsNotAView) {
+  Rig rig;
+  rig.load(
+      R"({"view":{"zoom":2},"__editor":{"output_name":"r","kind":"on_demand","sources":["/cloud"],)"
+      R"("function_body":"return {}"}})");
+  EXPECT_FALSE(rig.dialog().viewOnly());
+  EXPECT_EQ(rig.dialog().outputName(), "r");
+  const auto widgets = rig.widgets();
+  EXPECT_NE(widgets["functionText"]["read_only"], true);
+  EXPECT_NE(widgets["pushButtonCreate"]["visible"], false);
+  EXPECT_EQ(widgets["tableSources"]["rows"].size(), 1u);
+  // The user's params stay the user's.
+  EXPECT_EQ(widgets["paramsLineEdit"]["text"], R"({"view":{"zoom":2}})");
+}
+
+namespace {
+
+// Points PJ::sdk::userDataDir() (where the function library is written) into a fresh temp dir for the scope, so a
+// test that saves to the library never touches the developer's own.
+class ScopedUserDataDir {
+ public:
+  ScopedUserDataDir() = default;
+  ~ScopedUserDataDir() {
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+  ScopedUserDataDir(const ScopedUserDataDir&) = delete;
+  ScopedUserDataDir& operator=(const ScopedUserDataDir&) = delete;
+
+  const std::filesystem::path& dir() const {
+    return dir_;
+  }
+
+ private:
+  std::filesystem::path dir_ = makeTempDir("te_user_data_");
+  ScopedEnv xdg_data_home_{"XDG_DATA_HOME", dir_};
+  ScopedEnv home_{"HOME", dir_};
+  ScopedEnv local_app_data_{"LOCALAPPDATA", dir_};
+};
+
+}  // namespace
+
+TEST(TransformEditorView, ARecognisedFormulaShowsItsGlobalsAndBodySplitAndCanBeSaved) {
+  Rig rig;
+  rig.load(viewConfig("transform", "luau", "{}", generatedScript()));
+  rig.refresh();
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["globalVarsText"]["code_content"], "local k = 2");
+  EXPECT_EQ(widgets["functionText"]["code_content"], "return value * k + v1");
+  EXPECT_EQ(widgets["functionText"]["read_only"], true);
+  EXPECT_EQ(widgets["globalVarsText"]["read_only"], true);
+  EXPECT_EQ(widgets["buttonSaveCurrent"]["enabled"], true);
+  for (const char* name : {"luaButton", "pythonButton", "buttonLibraryBox", "buttonLoadFunctions", "tab_2"}) {
+    EXPECT_EQ(widgets[name]["enabled"], false) << name;
+  }
+  EXPECT_EQ(widgets["pushButtonCreate"]["visible"], false);
+  EXPECT_EQ(rig.dp.validate_calls, 0);
+}
+
+TEST(TransformEditorView, ATextFormulaShowsTextOutputLockedOnAndSavesItToTheLibrary) {
+  const ScopedUserDataDir user_data;
+  Rig rig;
+  rig.dialog().setSnippets({});
+  rig.load(viewConfig(
+      "transform", "luau", "{}",
+      derived_recipes::buildTransformScript("gait", "gait", "", "return \"walking\"", 0, "luau", true).script));
+  rig.refresh();
+  auto widgets = rig.widgets();
+  EXPECT_TRUE(widgets["textOutputCheck"]["checked"].get<bool>());
+  EXPECT_FALSE(widgets["textOutputCheck"]["enabled"].get<bool>());
+  rig.dialog().onToggled("textOutputCheck", false);
+  EXPECT_TRUE(rig.widgets()["textOutputCheck"]["checked"].get<bool>()) << "a view takes no toggle";
+  EXPECT_EQ(rig.dialog().currentAsSnippet("gait_template").text_output, true);
+
+  rig.load(viewConfig("transform", "luau", "{}", generatedScript()));
+  rig.refresh();
+  EXPECT_FALSE(rig.widgets()["textOutputCheck"]["checked"].get<bool>()) << "a number formula after a text one";
+  EXPECT_EQ(rig.dp.validate_calls, 0);
+}
+
+TEST(TransformEditorView, AnUnrecognisedScriptCannotBeSaved) {
+  Rig rig;
+  rig.load(viewConfig("transform", "luau", "{}"));
+  rig.refresh();
+  EXPECT_EQ(rig.widgets()["buttonSaveCurrent"]["enabled"], false);
+  rig.dialog().onClicked("buttonSaveCurrent");
+  EXPECT_FALSE(rig.widgets().contains("__request_sub_dialog")) << "no name prompt";
+  EXPECT_EQ(rig.dp.validate_calls, 0);
+}
+
+TEST(TransformEditorView, SavingAViewToTheLibraryAddsTheTemplateAndCreatesNothing) {
+  const ScopedUserDataDir user_data;
+  ASSERT_EQ(snippetLibraryPath().string().rfind(user_data.dir().string(), 0), 0u)
+      << "the library path was not redirected";
+  Rig rig;
+  rig.dialog().setSnippets({});
+  rig.load(viewConfig("transform", "luau", "{}", generatedScript()));
+  rig.refresh();
+
+  rig.dialog().onClicked("buttonSaveCurrent");
+  auto widgets = rig.widgets();
+  ASSERT_TRUE(widgets.contains("__request_sub_dialog")) << "the name prompt";
+  EXPECT_EQ(widgets["saveFunctionName"]["text"], "speed") << "the prompt starts with the series name";
+  rig.dialog().onTextChanged("saveFunctionName", "speed_template");
+  rig.dialog().onClicked("subDialogAccepted");
+
+  ASSERT_TRUE(rig.dialog().snippetExists("speed_template"));
+  const Snippet saved = rig.dialog().currentAsSnippet("speed_template");
+  EXPECT_EQ(saved.kind, "series");
+  EXPECT_EQ(saved.global_code, "local k = 2");
+  EXPECT_EQ(saved.function_body, "return value * k + v1");
+  EXPECT_EQ(saved.language, "luau");
+  const auto on_disk = loadSnippetsFromPath(snippetLibraryPath());
+  ASSERT_TRUE(on_disk.has_value());
+  ASSERT_EQ(on_disk->size(), 1u);
+  EXPECT_EQ((*on_disk)[0].name, "speed_template");
+  EXPECT_EQ((*on_disk)[0].function_body, "return value * k + v1");
+
+  // The same name again asks before it overwrites, and the view is still a view. The library holds another body
+  // under that name by now: only a rewrite puts the view's back.
+  Snippet stale = saved;
+  stale.function_body = "return 0";
+  ASSERT_TRUE(saveSnippetsToPath({stale}, snippetLibraryPath()));
+  rig.dialog().setSnippets({stale});
+  rig.dialog().onClicked("buttonSaveCurrent");
+  (void)rig.widgets();
+  rig.dialog().onTextChanged("saveFunctionName", "speed_template");
+  rig.dialog().onClicked("subDialogAccepted");
+  EXPECT_TRUE(rig.widgets().contains("__request_sub_dialog")) << "the overwrite warning";
+  EXPECT_EQ(loadSnippetsFromPath(snippetLibraryPath()).value().at(0).function_body, "return 0")
+      << "nothing is written before the overwrite is confirmed";
+  rig.dialog().onClicked("subDialogAccepted");
+  const auto rewritten = loadSnippetsFromPath(snippetLibraryPath());
+  ASSERT_TRUE(rewritten.has_value());
+  ASSERT_EQ(rewritten->size(), 1u);
+  EXPECT_EQ((*rewritten)[0].name, "speed_template");
+  EXPECT_EQ((*rewritten)[0].function_body, "return value * k + v1") << "the entry on disk was rewritten";
+  EXPECT_EQ((*rewritten)[0].global_code, "local k = 2");
+  EXPECT_TRUE(nlohmann::json::parse(rig.dialog().saveConfig()).contains("view"));
+  EXPECT_EQ(rig.dp.create_calls, 0);
+  EXPECT_EQ(rig.dp.persistent_creates, 0);
+  EXPECT_EQ(rig.dp.submit_calls, 0);
+  EXPECT_EQ(rig.dp.validate_calls, 0);
+}
+
+TEST(TransformEditorView, APromptLeftOpenBeforeTheViewLoadedDoesNotActInIt) {
+  Rig rig;
+  rig.newObjectRecipe();
+  rig.dialog().onClicked("pushButtonCreate");
+  ASSERT_TRUE(rig.widgets().contains("__request_sub_dialog")) << "the Create prompt is on screen";
+  const int validations = rig.dp.validate_calls;
+  rig.load(viewConfig("transform", "luau", "{}", generatedScript()));
+  rig.dialog().onClicked("subDialogAccepted");
+  TransformEditorPreviewTestPeer::deliver(rig.editor);
+  EXPECT_EQ(rig.dialog().outputName(), "speed") << "the Create prompt's OK renamed the view";
+  EXPECT_EQ(rig.dp.persistent_creates, 0);
+  EXPECT_EQ(rig.dp.validate_calls, validations) << "the view checks no script";
+}
+
+TEST(TransformEditorView, NoEditReachesTheFormOrTheHost) {
+  Rig rig;
+  TransformEditorPreviewTestPeer::wireTickCallbacks(rig.editor);
+  rig.load(viewConfig("transform", "luau", "{}"));
+  rig.dialog().onCodeChanged("functionText", "return 0");
+  rig.dialog().onCodeChanged("globalVarsText", "local k = 1");
+  rig.dialog().onItemsDropped("tableSources", {"/cloud"});
+  rig.dialog().onItemDeleteRequested("tableSources", 0);
+  rig.dialog().onTableRadioSelected("tableSources", 1);
+  rig.dialog().onToggled("pythonButton", true);
+  rig.dialog().onClicked("buttonClearSources");
+  rig.dialog().onClicked("pushButtonCreate");
+  TransformEditorPreviewTestPeer::deliver(rig.editor);
+  rig.refresh();
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["functionText"]["code_content"], "-- pj-script: luau\nreturn agent_class\n");
+  EXPECT_EQ(widgets["globalVarsText"]["code_content"], "");
+  EXPECT_EQ(widgets["tableSources"]["rows"].size(), 2u);
+  EXPECT_EQ(widgets["luaButton"]["checked"], true);
+  EXPECT_FALSE(widgets.contains("__request_sub_dialog")) << "no name prompt";
+  EXPECT_EQ(rig.dp.create_calls, 0);
+  EXPECT_EQ(rig.dp.persistent_creates, 0);
+  EXPECT_EQ(rig.dp.validate_calls, 0);
+  // Saved, the view stays a view: a reopened layout does not turn it into an editable form.
+  EXPECT_TRUE(nlohmann::json::parse(rig.dialog().saveConfig()).contains("view"));
+}
+
+TEST(TransformEditorView, APythonObjectRecipeShowsItsLanguageAndParams) {
+  Rig rig;
+  rig.load(viewConfig("on_demand", "python", R"({"k":2})"));
+  rig.refresh();
+  const auto widgets = rig.widgets();
+  EXPECT_EQ(widgets["pythonButton"]["checked"], true);
+  EXPECT_EQ(widgets["functionText"]["code_language"], "python");
+  EXPECT_EQ(widgets["paramsLineEdit"]["text"], R"({"k":2})");
+  EXPECT_EQ(widgets["buttonAdvanced"]["visible"], true) << "the params stay reachable";
+  EXPECT_EQ(rig.dp.create_calls, 0);
+  EXPECT_EQ(rig.dp.submit_calls, 0);
+  EXPECT_EQ(rig.dp.validate_calls, 0);
 }
 
 // ---------------------------------------------------------------------------

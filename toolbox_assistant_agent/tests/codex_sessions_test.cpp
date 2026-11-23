@@ -21,7 +21,7 @@
 #include <vector>
 
 #include "support/conversation_helpers.hpp"  // findById
-#include "support/scoped_env.hpp"
+#include "test_support/scoped_env.hpp"
 
 #ifndef ASSISTANT_CODEX_SESSIONS_FIXTURES_DIR
 #error "ASSISTANT_CODEX_SESSIONS_FIXTURES_DIR must be defined by CMake"
@@ -37,8 +37,8 @@ using assistant_agent::listCodexConversations;
 using assistant_agent::loadCodexTranscript;
 
 using assistant_agent::testing::findById;
-using assistant_agent::testing::makeTempDir;
-using assistant_agent::testing::ScopedEnv;
+using toolbox_testing::makeTempDir;
+using toolbox_testing::ScopedEnv;
 
 // The cwd every "matching" fixture carries (rollout-*-codex-normal-01.jsonl,
 // -codex-noreply-01.jsonl, -codex-corrupt-01.jsonl); -codex-wrongcwd-01.jsonl

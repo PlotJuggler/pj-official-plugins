@@ -149,7 +149,7 @@ if(TARGET GTest::gtest_main)
     src/claude_sessions.cpp
   )
   target_link_libraries(toolbox_assistant_agent_claude_sessions_test PRIVATE
-    plotjuggler_sdk::base nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::base pj_test_support nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_claude_sessions_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -235,7 +235,7 @@ if(TARGET GTest::gtest_main)
     ${ASSISTANT_AGENT_COMMON_SOURCES}
   )
   target_link_libraries(toolbox_assistant_agent_assistant_dialog_test PRIVATE
-    pj_derived_recipes plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+    pj_derived_recipes pj_test_support plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_assistant_dialog_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -348,7 +348,7 @@ if(TARGET GTest::gtest_main)
     src/claude_sessions.cpp
   )
   target_link_libraries(toolbox_assistant_agent_codex_sessions_test PRIVATE
-    plotjuggler_sdk::base nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::base pj_test_support nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_codex_sessions_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -368,7 +368,7 @@ if(TARGET GTest::gtest_main)
     tests/cli_locator_test.cpp
   )
   target_link_libraries(toolbox_assistant_agent_cli_locator_test PRIVATE
-    plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::plugin_sdk pj_test_support nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_cli_locator_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -388,7 +388,7 @@ if(TARGET GTest::gtest_main)
     src/codex_sessions.cpp
   )
   target_link_libraries(toolbox_assistant_agent_codex_models_test PRIVATE
-    plotjuggler_sdk::base nlohmann_json::nlohmann_json GTest::gtest_main
+    plotjuggler_sdk::base pj_test_support nlohmann_json::nlohmann_json GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_codex_models_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -407,7 +407,7 @@ if(TARGET GTest::gtest_main)
     tests/private_file_test.cpp
   )
   target_link_libraries(toolbox_assistant_agent_platform_test PRIVATE
-    plotjuggler_sdk::base GTest::gtest_main
+    plotjuggler_sdk::base pj_test_support GTest::gtest_main
   )
   target_include_directories(toolbox_assistant_agent_platform_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
