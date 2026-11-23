@@ -100,6 +100,10 @@ local diff = value - prev
 prev = value
 return diff&lt;/pre&gt;
 &lt;p&gt;Differences with PlotJuggler 3: &lt;tt&gt;time&lt;/tt&gt; is seconds since the start of the session; &lt;tt&gt;return a, b&lt;/tt&gt; creates two series (&lt;tt&gt;name/a&lt;/tt&gt;, &lt;tt&gt;name/b&lt;/tt&gt;) and no longer changes the timestamp; returning &lt;tt&gt;nil&lt;/tt&gt; skips the sample; tables of points are not supported. &lt;span style=&quot;font-weight:600;&quot;&gt;Batch Functions&lt;/span&gt; applies one function to many series, with a prefix or suffix for the new names.&lt;/p&gt;
+&lt;p&gt;&lt;span style=&quot;font-weight:600;&quot;&gt;Text output&lt;/span&gt;, under the inputs, makes the function return labels instead of numbers, one string per sample (&lt;tt&gt;nil&lt;/tt&gt; still skips it):&lt;/p&gt;
+&lt;pre&gt;if value &amp;gt; 1.5 then return &quot;running&quot; end
+return &quot;walking&quot;&lt;/pre&gt;
+&lt;p&gt;The State Transitions panel shows a text series; plots do not. The preview plots each label at its index, and the status line names them. A series keeps its kind: to switch it between text and numbers, remove it and create it again.&lt;/p&gt;
 
 &lt;h2&gt;&lt;a name=&quot;api&quot;&gt;&lt;/a&gt;8. Objects: fields, methods and pj&lt;/h2&gt;
 &lt;p&gt;An object input (a point cloud, an image...) gives you three kinds of things. Full list: &lt;a href=&quot;https://plotjuggler.io/docs/reference/scripting-api/&quot;&gt;plotjuggler.io/docs/reference/scripting-api&lt;/a&gt;&lt;/p&gt;

@@ -59,10 +59,11 @@ struct BuiltScript {
 };
 
 // The per-sample transform chunk (Luau, or a Python module with a class T);
-// `id` and `name` are escaped for the string literals they land in.
+// `id` and `name` are escaped for the string literals they land in. `text_output` declares
+// output = "string": the body returns a label per sample instead of a number.
 [[nodiscard]] BuiltScript buildTransformScript(
     const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
-    std::size_t num_extra, std::string_view language = "luau");
+    std::size_t num_extra, std::string_view language = "luau", bool text_output = false);
 
 // --- catalog helpers -------------------------------------------------------
 

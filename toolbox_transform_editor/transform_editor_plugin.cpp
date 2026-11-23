@@ -71,6 +71,7 @@ struct Snippet {
   std::string kind = "series";    // "series" (time, value, v1..) | "object" (one variable per input)
   std::vector<SnippetInput> inputs = {};
   std::string description = {};
+  bool text_output = false;  // a series function that returns labels (persisted only when set)
 };
 
 std::filesystem::path snippetLibraryPath() {
@@ -89,9 +90,13 @@ nlohmann::json snippetToJson(const Snippet& s) {
   for (const auto& input : s.inputs) {
     inputs.push_back({{"var", input.var}, {"type", input.type}});
   }
-  return {
+  nlohmann::json j = {
       {"name", s.name}, {"global_code", s.global_code}, {"function_body", s.function_body}, {"language", s.language},
       {"kind", s.kind}, {"inputs", std::move(inputs)},  {"description", s.description}};
+  if (s.text_output) {
+    j["text_output"] = true;
+  }
+  return j;
 }
 
 // Tolerant of older libraries: the kind, inputs and description default when absent or malformed.
@@ -103,6 +108,9 @@ Snippet snippetFromJson(const nlohmann::json& item) {
   s.language = jsonString(item, "language", "luau");
   s.kind = jsonString(item, "kind", "series") == "object" ? "object" : "series";
   s.description = jsonString(item, "description");
+  if (const auto text = item.find("text_output"); text != item.end() && text->is_boolean()) {
+    s.text_output = text->get<bool>();
+  }
   const auto inputs = item.find("inputs");
   if (inputs != item.end() && inputs->is_array()) {
     for (const auto& input : *inputs) {
@@ -616,6 +624,79 @@ std::string snippetInputsText(const std::vector<SnippetInput>& inputs) {
 // (absolute ns, value) samples of one preview curve.
 using RawSamples = std::vector<std::pair<std::int64_t, double>>;
 
+// A preview curve keeps one row in every `previewStep(rows)`, so it has about 2000 points.
+std::size_t previewStep(std::size_t rows) {
+  return rows > 2000 ? rows / 2000 : 1;
+}
+
+// A text output as a preview curve: each sample at the index of its label in order of first appearance, with the
+// labels in that order. The curve keeps one point in every previewStep; the labels come from every row, so a rare
+// one is still named.
+struct LabelStates {
+  RawSamples curve;
+  std::vector<std::string> labels;
+  bool text_column = false;  // false: the output was not a text column (a host without text outputs)
+};
+
+// The rows of a series read through read_series_arrow (children[0] the int64 timestamps, children[1] the values)
+// whose value column is text: Arrow "u", int32 offsets into the bytes. Null rows are skipped; a value column of
+// another type gives no rows. One pass over the Arrow buffers: a label is copied only the first time it appears.
+LabelStates labelStates(const ArrowSchema& schema, const ArrowArray& array) {
+  LabelStates out;
+  if (schema.n_children < 2 || array.n_children < 2 || schema.children[1] == nullptr ||
+      schema.children[1]->format == nullptr || std::string_view(schema.children[1]->format) != "u") {
+    return out;
+  }
+  out.text_column = true;
+  const ArrowArray* ts = array.children[0];
+  const ArrowArray* col = array.children[1];
+  if (ts == nullptr || col == nullptr || ts->n_buffers < 2 || col->n_buffers < 3) {
+    return out;
+  }
+  const auto* times = static_cast<const std::int64_t*>(ts->buffers[1]);
+  const auto* validity = static_cast<const std::uint8_t*>(col->buffers[0]);
+  const auto* offsets = static_cast<const std::int32_t*>(col->buffers[1]);
+  const auto* chars = static_cast<const char*>(col->buffers[2]);
+  if (times == nullptr || offsets == nullptr || col->length <= 0) {
+    return out;
+  }
+  std::map<std::string, double, std::less<>> index;
+  const std::size_t step = previewStep(static_cast<std::size_t>(col->length));
+  out.curve.reserve(static_cast<std::size_t>(col->length) / step + 1);
+  for (std::int64_t i = 0; i < col->length; ++i) {
+    const std::int64_t at = col->offset + i;
+    if (validity != nullptr && ((validity[at / 8] >> (at % 8)) & 1) == 0) {
+      continue;
+    }
+    const auto begin = offsets[at];
+    const std::string_view label =
+        chars == nullptr ? std::string_view{}
+                         : std::string_view(chars + begin, static_cast<std::size_t>(offsets[at + 1] - begin));
+    auto it = index.find(label);
+    if (it == index.end()) {
+      it = index.emplace(std::string(label), static_cast<double>(out.labels.size())).first;
+      out.labels.emplace_back(label);
+    }
+    if (static_cast<std::size_t>(i) % step == 0) {
+      out.curve.emplace_back(times[ts->offset + i], it->second);
+    }
+  }
+  return out;
+}
+
+// "gait: 0 = walking, 1 = standing": what each level of a text output's preview curve means.
+std::string labelLegend(const std::string& output, const std::vector<std::string>& labels) {
+  constexpr std::size_t kMaxNamedLabels = 8;
+  std::string text = output + ":";
+  for (std::size_t k = 0; k < labels.size() && k < kMaxNamedLabels; ++k) {
+    text += (k == 0 ? " " : ", ") + std::to_string(k) + " = " + labels[k];
+  }
+  if (labels.size() > kMaxNamedLabels) {
+    text += ", ... (" + std::to_string(labels.size()) + " labels)";
+  }
+  return text;
+}
+
 // TODO(theme): These data-series colors are a deliberate color-as-data exception to the theme palette: a
 // curve's identity is carried by its color here. Use renderer-selected colors once the chart protocol
 // exposes them. #RRGGBB, cycled by series index so parallel outputs stay visually distinct.
@@ -749,6 +830,11 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     const std::string& params_error = derived().params_error;
     wd.setFieldValid("paramsLineEdit", params_error.empty(), params_error);
     wd.setChecked("pinCurrentTimeCheck", pin_current_);
+    // Text or numbers, for a series recipe (an object recipe's outputs are inferred). The host keeps an existing
+    // series' output kind, so Modify cannot switch it.
+    wd.setVisible("textOutputCheck", !on_demand);
+    wd.setChecked("textOutputCheck", text_output_);
+    wd.setEnabled("textOutputCheck", !edit_mode_);
 
     // Function Library sub-panel (cloned from PJ3's buttonLibraryBox dialog).
     // One-shot open/close commands, then live population while it is open.
@@ -1215,6 +1301,14 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       pin_current_ = checked;
       return true;
     }
+    if (name == "textOutputCheck") {
+      if (edit_mode_) {
+        return true;  // locked in Modify: the host refuses to switch a series between text and numbers
+      }
+      text_output_ = checked;
+      formChanged();
+      return true;
+    }
     // Single-tab script language (Lua / Python); the preview re-runs so the host's verdict on the
     // chosen language surfaces.
     if (name == "luaButton" && checked) {
@@ -1359,6 +1453,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // expose the primary as the source and the rest as extras in order.
     cfg["source_series"] = primarySource();
     cfg["extra_sources"] = orderedExtras();
+    if (textOutput()) {
+      cfg["text_output"] = true;  // absent = numbers
+    }
     // The on-demand form fields ride along only for that kind, so a transform's saved state
     // keeps exactly today's shape.
     if (isOnDemand()) {
@@ -1426,6 +1523,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     function_body_ = cfg.value("function_body", std::string{});
     auto_body_.clear();
     language_ = cfg.value("language", std::string{"luau"});
+    text_output_ = cfg.value("text_output", false);
     loadKindState(cfg, user_params_text);
     current_tab_ = 0;             // open on the Single tab
     pending_tab_restore_ = true;  // one-shot: push the tab to the UI
@@ -1500,6 +1598,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     sn.global_code = global_code_;
     sn.function_body = function_body_;
     sn.language = language_;
+    sn.text_output = textOutput();
     if (isOnDemand()) {
       sn.kind = "object";
       const std::vector<std::string> vars = variableNames();
@@ -1611,6 +1710,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       // (and flips the Lua/Python radio). A multi-select combine uses the first.
       if (!language_set) {
         language_ = it->language.empty() ? "luau" : it->language;
+        if (!edit_mode_) {  // Modify keeps the series' kind: the host refuses a switch
+          text_output_ = it->kind != "object" && it->text_output;
+        }
         language_set = true;
       }
       if (!it->global_code.empty()) {
@@ -1791,7 +1893,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string createSummary() const {
     if (!isOnDemand()) {
       const std::string name = create_name_.empty() ? std::string("result") : create_name_;
-      return "series `" + name + "`; computed per sample";
+      return std::string(textOutput() ? "text series `" : "series `") + name + "`; computed per sample";
     }
     std::string text;
     for (const auto& output : inferredOutputs()) {
@@ -2009,6 +2111,13 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   }
   const std::string& batchLanguage() const {
     return batch_language_;
+  }
+  // Whether the series recipe returns text (output = "string"); never for an object recipe.
+  bool textOutput() const {
+    return text_output_ && !isOnDemand();
+  }
+  bool editMode() const {
+    return edit_mode_;
   }
   // The v1, v2, ... inputs (non-primary rows, in row order).
   std::vector<std::string> extraSources() const {
@@ -2302,6 +2411,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   // v1, v2, ... in row order.
   std::string language_ = "luau";        // single-tab script language: "luau" | "python" (radios)
   std::string batch_language_ = "luau";  // batch-tab script language (radios)
+  bool text_output_ = false;             // the Text output check: the series recipe returns labels
   std::string output_name_;
   std::string global_code_;
   std::string function_body_ = "return value";
@@ -2519,7 +2629,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // survives the plugin/panel closing.
     const std::string id = output_names.front();  // host namespaces it under the plugin id
     const std::string script =
-        derived_recipes::buildTransformScript(id, output_names.front(), global, body, num_extra, dialog_.language())
+        derived_recipes::buildTransformScript(
+            id, output_names.front(), global, body, num_extra, dialog_.language(), dialog_.textOutput())
             .script;
 
     std::vector<std::string_view> inputs(input_topics.begin(), input_topics.end());
@@ -3235,7 +3346,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     const auto ts = read->timestamps();
     const double* vals = read->valuesAsFloat64();
     const size_t n = read->rowCount();
-    const size_t step = (n > 2000) ? (n / 2000) : 1;
+    const size_t step = previewStep(n);
     out.reserve(n / step + 1);
     for (size_t i = 0; i < n; i += step) {
       out.emplace_back(ts[i], vals[i]);
@@ -3243,36 +3354,50 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return out;
   }
 
-  // Resolve several "topic/field" names (or a bare topic) against ONE catalog snapshot in a single pass,
-  // returning decimated samples per name (empty if a name did not resolve). The MIMO preview reads the
-  // source ghost + M outputs every tick; a per-name read would re-acquire the snapshot and re-scan the
-  // whole catalog M+1 times.
-  std::vector<std::vector<std::pair<int64_t, double>>> readManyRawSamples(const std::vector<std::string>& names) {
-    std::vector<std::vector<std::pair<int64_t, double>>> out(names.size());
+  // One text field as label states (see labelStates); empty when it is not text or cannot be read. The holders
+  // keep the host's buffers alive while labelStates reads them.
+  LabelStates labelStatesFromHandle(PJ::sdk::FieldHandle handle) {
+    PJ::sdk::ArrowSchemaHolder schema;
+    PJ::sdk::ArrowArrayHolder array;
+    if (!catalogHost().readSeriesArrow(handle, schema.out(), array.out())) {
+      return {};
+    }
+    return labelStates(*schema.get(), *array.get());
+  }
+
+  // Resolve several "topic/field" names (or a bare topic) against ONE catalog snapshot in a single pass
+  // (empty where a name did not resolve). The MIMO preview reads the source ghost + M outputs every tick; a
+  // per-name read would re-acquire the snapshot and re-scan the whole catalog M+1 times.
+  std::vector<std::optional<PJ::sdk::FieldHandle>> resolveFieldHandles(const std::vector<std::string>& names) {
+    std::vector<std::optional<PJ::sdk::FieldHandle>> handles(names.size());
     auto catalog = catalogHost().catalogSnapshot();
     if (!catalog) {
-      return out;
+      return handles;
     }
-    std::vector<PJ::sdk::FieldHandle> handles(names.size());
-    std::vector<bool> found(names.size(), false);
     std::size_t remaining = names.size();
     forEachScalarPath(*catalog, [&](const std::string& tname, const std::string& full, const PJ_field_info_t* f) {
       if (f == nullptr) {
         return remaining != 0;
       }
       for (std::size_t i = 0; i < names.size(); ++i) {
-        if (found[i] || names[i].empty() || (tname != names[i] && full != names[i])) {
+        if (handles[i] || names[i].empty() || (tname != names[i] && full != names[i])) {
           continue;
         }
         handles[i] = PJ::sdk::FieldHandle{f->handle};
-        found[i] = true;
         --remaining;
       }
       return remaining != 0;
     });
+    return handles;
+  }
+
+  // Decimated samples per name (see resolveFieldHandles), empty where a name did not resolve.
+  std::vector<std::vector<std::pair<int64_t, double>>> readManyRawSamples(const std::vector<std::string>& names) {
+    std::vector<std::vector<std::pair<int64_t, double>>> out(names.size());
+    const auto handles = resolveFieldHandles(names);
     for (std::size_t i = 0; i < names.size(); ++i) {
-      if (found[i]) {
-        out[i] = samplesFromHandle(handles[i]);
+      if (handles[i]) {
+        out[i] = samplesFromHandle(*handles[i]);
       }
     }
     return out;
@@ -3603,8 +3728,9 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     for (std::size_t k = 0; k < num_outputs; ++k) {
       preview_outputs.push_back(preview_id + "_" + std::to_string(k));
     }
-    const derived_recipes::BuiltScript built =
-        derived_recipes::buildTransformScript(preview_id, preview_id, global, body, num_extra, dialog_.language());
+    const bool text = dialog_.textOutput();
+    const derived_recipes::BuiltScript built = derived_recipes::buildTransformScript(
+        preview_id, preview_id, global, body, num_extra, dialog_.language(), text);
     const std::string& script = built.script;
 
     // Evaluate the code FIRST via the SDK (cheap: compile + one test point, no node).
@@ -3615,7 +3741,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     // An unchecked script goes on: installing the preview compiles it, and its refusal is the verdict.
     const ScriptVerdict& verdict = scriptVerdict("transform", dialog_.language(), [&] {
       return derived_recipes::buildTransformScript(
-          "__validate__", "__validate__", global, body, num_extra, dialog_.language());
+          "__validate__", "__validate__", global, body, num_extra, dialog_.language(), text);
     });
     const auto& invalid = verdict.error;
     dialog_.setValidationError(invalid.value_or(""));
@@ -3642,14 +3768,44 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
 
     // Read the source (ghost) and each materialised output back from the datastore,
     // and hand the host explicit points to plot. Resolve all of them in ONE catalog
-    // pass (readManyRawSamples) — a per-series read would re-scan the whole catalog
+    // pass (resolveFieldHandles) — a per-series read would re-scan the whole catalog
     // M+1 times per tick. All share a common t0 (the earliest sample across ghost +
     // outputs) so they align on the time axis.
     std::vector<std::string> read_names;
     read_names.reserve(1 + preview_outputs.size());
     read_names.push_back(source);
     read_names.insert(read_names.end(), preview_outputs.begin(), preview_outputs.end());
-    auto samples = readManyRawSamples(read_names);
+    std::vector<std::string> labels;
+    for (std::size_t k = 0; k + 1 < read_names.size(); ++k) {
+      if (k < output_names.size() && !output_names[k].empty()) {
+        labels.push_back(output_names[k]);
+      } else {
+        labels.push_back(read_names.size() > 2 ? ("result" + std::to_string(k)) : std::string("result"));
+      }
+    }
+    // A text output plots each label at its index (labelStates); the status line names the levels.
+    std::vector<RawSamples> samples(read_names.size());
+    std::string legend;
+    bool numbers_from_text = false;  // a host without text outputs runs the class as numbers
+    const auto handles = resolveFieldHandles(read_names);
+    for (std::size_t i = 0; i < handles.size(); ++i) {
+      if (!handles[i]) {
+        continue;
+      }
+      if (i == 0 || !text) {
+        samples[i] = samplesFromHandle(*handles[i]);
+        continue;
+      }
+      LabelStates states = labelStatesFromHandle(*handles[i]);
+      numbers_from_text = numbers_from_text || !states.text_column;
+      samples[i] = std::move(states.curve);
+      if (!states.labels.empty()) {
+        legend += labelLegend(labels[i - 1], states.labels) + "\n";
+      }
+    }
+    if (text) {
+      dialog_.setStatus(std::move(legend));
+    }
 
     const std::int64_t t0 = earliestTimestamp(samples);  // before the ghost is moved out
     auto ghost_raw = std::move(samples[0]);
@@ -3673,18 +3829,13 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       // than a misleading "must return a number" (the user may have returned several).
       const std::string n = std::to_string(num_outputs);
       const std::string plural = num_outputs == 1 ? "" : "s";
-      const std::string msg = "function produced no output: it must return exactly " + n + " value" + plural +
-                              " per point (counted from its return statements)";
+      const std::string msg =
+          numbers_from_text
+              ? std::string("this PlotJuggler cannot run text outputs: update it to use Text output")
+              : "function produced no output: it must return exactly " + n + (text ? " string" : " value") + plural +
+                    " per point (counted from its return statements)" +
+                    (text || dialog_.editMode() ? "" : "; check Text output to return labels");
       dialog_.setValidationError(msg);
-    }
-
-    std::vector<std::string> labels;
-    for (std::size_t k = 0; k < results.size(); ++k) {
-      if (k < output_names.size() && !output_names[k].empty()) {
-        labels.push_back(output_names[k]);
-      } else {
-        labels.push_back(results.size() > 1 ? ("result" + std::to_string(k)) : std::string("result"));
-      }
     }
 
     // Ghost (original): faded blue + dashed, distinct from the solid result curves
