@@ -186,6 +186,16 @@
                  </widget>
                 </item>
                 <item>
+                 <widget class="QCheckBox" name="textOutputCheck">
+                  <property name="text">
+                   <string>Text output</string>
+                  </property>
+                  <property name="toolTip">
+                   <string>The function returns text, a label per sample such as &quot;walking&quot; or &quot;standing&quot; (nil skips the sample). The State Transitions panel shows it; plots do not. Fixed once the series exists: to change it, remove the series and create it again.</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
                  <widget class="QPushButton" name="buttonAdvanced">
                   <property name="flat">
                    <bool>true</bool>
