@@ -665,6 +665,11 @@ std::set<uint64_t> subscribedChannelIds(const FakeSocket& socket) {
   return ids;
 }
 
+TEST(FoxgloveConnectionTest, ColumnsAreTopicTypeAndEncoding) {
+  FoxgloveDialog dialog(testOptions());
+  EXPECT_EQ(table(dialog.widget_data(), "topicsList")["headers"], (nlohmann::json{"Topic", "Type", "Encoding"}));
+}
+
 TEST(FoxgloveConnectionTest, SelectAllAndDeselectAllFollowTheFilter) {
   FoxgloveDialog dialog(testOptions());
   connectDialog(dialog, {channel(1, "/imu"), channel(2, "/odom"), channel(3, "/odom_raw")});

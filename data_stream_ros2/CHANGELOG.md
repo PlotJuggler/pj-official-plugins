@@ -9,6 +9,7 @@ below; for earlier releases see the git history of `data_stream_ros2/`.
 - `tf2_msgs/msg/TFMessage` topics are always subscribed: their rows are selected, locked and tooltipped, Deselect All, a filter or a saved selection never drops them, and they are saved with the selection, so a PlotJuggler without demand subscriptions subscribes them too.
 - A Select All button (Ctrl+A, follows the filter) and a visible Deselect All button (Ctrl+Shift+A) sit next to the filter in a "Topics" header, like the other streamers.
 - The dialog's title is the plugin's name, "ROS 2 Topic Subscriber" (was "Select ROS messages"), as in the source picker.
+- The topic table's second column is titled "Type" (was "Datatype"), like the other streamers.
 
 ## [1.2.1] - 2026-11-11
 

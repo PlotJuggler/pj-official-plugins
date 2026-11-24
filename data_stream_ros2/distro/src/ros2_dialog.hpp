@@ -53,7 +53,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     // Restored by topic name: the host matches rows by first-column text, which survives a
     // user sort of the table.
     const auto visible = visibleRows();
-    wd.setTableHeaders("listRosTopics", {"Topic", "Datatype"});
+    wd.setTableHeaders("listRosTopics", {"Topic", "Type"});
     PJ::AlwaysIncluded::tableToWidgets(wd, "listRosTopics", visible, selected_topics_);
 
     if (visible.empty()) {

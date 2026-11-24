@@ -774,6 +774,11 @@ std::set<std::string> savedTopics(const PjBridgeDialog& dialog) {
   return names;
 }
 
+TEST(PjBridgeConnectionTest, ColumnsAreTopicAndType) {
+  PjBridgeDialog dialog(testOptions());
+  EXPECT_EQ(table(dialog.widget_data(), "topicsList")["headers"], (nlohmann::json{"Topic", "Type"}));
+}
+
 TEST(PjBridgeConnectionTest, SelectAllAndDeselectAllFollowTheFilter) {
   PjBridgeDialog dialog(testOptions());
   connectDialog(dialog, typedTopicsResponse({{"/imu", kFloat}, {"/odom", kFloat}, {"/odom_raw", kFloat}}));

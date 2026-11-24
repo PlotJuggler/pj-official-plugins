@@ -124,7 +124,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     // Topic list: case-insensitive filter on name AND type. Always-subscribed rows are shown
     // selected, disabled and tooltipped. The selection is always sent, so Deselect All also
     // clears what the table shows.
-    wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
+    wd.setTableHeaders("topicsList", {"Topic", "Type"});
     PJ::AlwaysIncluded::tableToWidgets(wd, "topicsList", visibleRows(), selected_topic_names_);
     wd.setListPlaceholder("topicsList", "Click to select, Click+Drag to multi-select");
     wd.setShortcut("btnSelectAll", "Ctrl+A");

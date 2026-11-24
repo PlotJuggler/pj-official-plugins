@@ -95,7 +95,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
     // Channel list. Always-subscribed rows are shown selected, disabled and tooltipped. The
     // selection is always sent, so Deselect All also clears what the table shows.
-    wd.setTableHeaders("topicsList", {"Topic Name", "DataType", "Encoding"});
+    wd.setTableHeaders("topicsList", {"Topic", "Type", "Encoding"});
     PJ::AlwaysIncluded::tableToWidgets(wd, "topicsList", visibleRows(), selected_topic_names_);
     wd.setShortcut("btnSelectAll", "Ctrl+A");
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
