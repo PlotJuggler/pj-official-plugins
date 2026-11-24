@@ -29,6 +29,7 @@ if(TARGET plotjuggler_sdk::plugin_sdk)
   add_subdirectory(common/base64)
   add_subdirectory(common/pj_video_demux)
   add_subdirectory(common/websocket)
+  add_subdirectory(common/always_included)
   add_subdirectory(common/laser_scan)
   add_subdirectory(common/grid_map)
   add_subdirectory(common/pointcloud_color)
@@ -207,6 +208,9 @@ set(PJ_WEBSOCKET_CONSUMERS data_stream_pj_bridge data_stream_foxglove_bridge)
 if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_WEBSOCKET_CONSUMERS)
   add_subdirectory(common/websocket)
 endif()
+# Header-only: the channels topic-selecting plugins always load (MCAP loader, streamers) and the
+# streamers' locked topic table.
+add_subdirectory(common/always_included)
 add_subdirectory(common/laser_scan)
 add_subdirectory(common/grid_map)
 add_subdirectory(common/pointcloud_color)
@@ -237,10 +241,7 @@ if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_DERIVED_RECIPES_CON
   add_subdirectory(common/derived_recipes)
 endif()
 # Header-only fake hosts for unit tests (no external dependencies).
-if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_DERIVED_RECIPES_CONSUMERS OR
-   PJ_BUILD_PLUGIN IN_LIST PJ_WEBSOCKET_CONSUMERS)
-  add_subdirectory(common/test_support)
-endif()
+add_subdirectory(common/test_support)
 
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),

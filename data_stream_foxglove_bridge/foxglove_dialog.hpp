@@ -3,25 +3,31 @@
 #include <algorithm>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_always_included/locked_table.hpp>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
-#include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <pj_websocket/connection_dialog.hpp>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "foxglove_client_ui.hpp"
 #include "foxglove_manifest.hpp"
 #include "foxglove_protocol.hpp"
+#include "foxglove_topic_subscription.hpp"
 
 namespace {
 
 /// Smart dialog plugin for the Foxglove Bridge streamer.
 /// Owns the WebSocket connection for channel discovery during the dialog session.
-/// The connection half (address or ws:// / wss:// URL, Connect / Cancel, retry with backoff,
-/// status line, handoff on OK) is the one the PlotJuggler Bridge dialog uses.
+/// The connection half (one ws:// / wss:// URL line, Connect / Cancel, retry with backoff, status
+/// line, the remembered last URL, handoff on OK) is the one the PlotJuggler Bridge dialog uses.
+/// Select All / Deselect All act on the rows the filter shows; transform channels are locked
+/// rows (PJ::AlwaysIncluded's locked table): shown selected and tooltipped, never saved with the
+/// selection.
 /// Foxglove sends "advertise" messages automatically upon connection — no explicit
 /// request needed. The dialog populates the channel table and lets the user select.
 class FoxgloveDialog : public PJ::DialogPluginTyped {
@@ -32,7 +38,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       : link_(
             options, {
                          // Foxglove sends "advertise" automatically on open — no request needed.
-                         .on_open = {},
+                         .on_open = [this](const std::string& url) { endpoint_.remember(url); },
                          .on_text = [this](const std::string& text) { onServerMessage(text); },
                          .on_lost = [this] { clearChannels(); },
                      }) {}
@@ -47,9 +53,12 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     return link_.take();
   }
 
-  /// The URL the source connects to: the configured `url` verbatim, else ws://address:port.
-  std::string endpoint() const {
-    return endpoint_.str();
+  /// The URL line: str() is what the source connects to.
+  PJ::WebSocket::Endpoint& endpoint() {
+    return endpoint_;
+  }
+  const PJ::WebSocket::Endpoint& endpoint() const {
+    return endpoint_;
   }
 
   /// Full catalog of channels discovered so far during this dialog's connection
@@ -76,9 +85,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Connection fields. A full URL in the address field replaces address + port.
-    endpoint_.toWidgets(wd, link_.idle());
-    link_.toWidgets(wd);
+    link_.toWidgets(wd, endpoint_);
 
     // Parser options
     wd.setValue("spinBoxArraySize", max_array_size_);
@@ -86,23 +93,10 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     wd.setChecked("radioSkip", !clamp_large_arrays_);
     wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
 
-    // Channel list
-    wd.setTableHeaders("topicsList", {"Topic Name", "DataType", "Encoding"});
-    std::vector<std::vector<std::string>> rows;
-    {
-      std::lock_guard<std::mutex> lock(channels_mutex_);
-      rows.reserve(channels_.size());
-      for (const auto& ch : channels_) {
-        if (matchesFilter(ch)) {
-          rows.push_back({ch.topic, ch.schema_name, ch.schema_encoding});
-        }
-      }
-    }
-    wd.setTableRows("topicsList", rows);
-
-    if (!selected_topic_names_.empty()) {
-      wd.setSelectedItems("topicsList", selected_topic_names_);
-    }
+    // Channel list; transform rows are locked. The selection is always sent, so Deselect All
+    // also clears what the table shows.
+    wd.setTableHeaders("topicsList", {"Topic", "Type", "Encoding"});
+    PJ::AlwaysIncluded::tableToWidgets(wd, "topicsList", visibleRows(), selected_topic_names_);
 
     // OK button: connected-only. The channel selection below is no longer a
     // subscribe requirement — see the "channels" config key's dual role in
@@ -152,11 +146,15 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view widget_name) override {
     if (widget_name == "buttonConnect") {
-      if (link_.idle()) {
-        link_.connect(endpoint(), PJ::FoxgloveProtocol::subprotocols());
-      } else {
+      if (!link_.idle()) {
         disconnect();
+      } else if (const auto url = endpoint_.url()) {
+        link_.connect(*url, PJ::FoxgloveProtocol::subprotocols());
       }
+      return true;
+    }
+    if (PJ::AlwaysIncluded::applySelectButton(widget_name, selected_topic_names_, visibleRows())) {
+      snapshotSelectedChannels();
       return true;
     }
     return false;
@@ -164,21 +162,9 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "topicsList") {
-      // The host emits topic names only for the rows currently visible under
-      // the active filter. Preserve selections of channels filtered out of
-      // view; otherwise changing the visible selection while a filter hides a
-      // previously selected topic would silently drop it.
-      {
-        std::lock_guard<std::mutex> lock(channels_mutex_);
-        selected_topic_names_ = PJ::sdk::mergeVisibleSelection(
-            selected_topic_names_, selected,
-            [this](const std::string& name) {
-              return std::any_of(channels_.begin(), channels_.end(), [&](const auto& channel) {
-                return channel.topic == name && matchesFilter(channel);
-              });
-            },
-            [](const std::string&) { return true; });
-      }
+      // The host emits topic names only for the rows the filter shows; a selection the filter
+      // hides is kept.
+      PJ::AlwaysIncluded::applyReported(selected_topic_names_, selected, visibleRows());
       snapshotSelectedChannels();
       return true;
     }
@@ -230,15 +216,15 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   }
 
  private:
-  static constexpr int kDefaultPort = 8765;  ///< foxglove_bridge's own default
+  static constexpr uint16_t kDefaultPort = 8765;  ///< foxglove_bridge's own default
 
   bool loadConfigOrThrow(std::string_view config_json) {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (cfg.is_discarded()) {
       return false;
     }
-    // `url`, when present, must be a ws:// or wss:// string; it wins over address/port.
-    if (!endpoint_.load(cfg, "localhost", kDefaultPort)) {
+    // `url` (else the legacy address/port); a config without them keeps the current URL.
+    if (!endpoint_.load(cfg)) {
       return false;
     }
     const auto array_limit = PJ::sdk::arrayLimitFromJson(cfg);
@@ -252,7 +238,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       selected_channels_snapshot_.clear();
       for (const auto& ch_json : cfg["channels"]) {
         if (ch_json.contains("topic") && ch_json["topic"].is_string()) {
-          selected_topic_names_.push_back(ch_json["topic"].get<std::string>());
+          selected_topic_names_.insert(ch_json["topic"].get<std::string>());
           PJ::FoxgloveProtocol::ChannelInfo ch;
           ch.id = ch_json.value("id", uint64_t{0});
           ch.topic = ch_json.value("topic", std::string{});
@@ -267,10 +253,23 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
+  /// The table rows the filter shows; a transform channel's row is locked.
+  PJ::AlwaysIncluded::TableRows visibleRows() const {
+    std::lock_guard<std::mutex> lock(channels_mutex_);
+    PJ::AlwaysIncluded::TableRows rows;
+    rows.reserve(channels_.size());
+    for (const auto& ch : channels_) {
+      if (matchesFilter(ch)) {
+        rows.push_back({{ch.topic, ch.schema_name, ch.schema_encoding}, PJ::FoxgloveProtocol::isTransform(ch)});
+      }
+    }
+    return rows;
+  }
+
   /// Case-insensitive substring match of the active filter against the topic
-  /// name and datatype. An empty filter matches everything.
+  /// name and datatype. An empty filter matches everything; locked rows always match.
   bool matchesFilter(const PJ::FoxgloveProtocol::ChannelInfo& ch) const {
-    if (filter_.empty()) {
+    if (filter_.empty() || PJ::FoxgloveProtocol::isTransform(ch)) {
       return true;
     }
     const std::string lowered_filter = PJ::sdk::lowerAscii(filter_);
@@ -321,21 +320,20 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     }
   }
 
+  /// The selected channels, one per topic, for saveConfig().
   void snapshotSelectedChannels() {
     std::lock_guard<std::mutex> lock(channels_mutex_);
     selected_channels_snapshot_.clear();
-    for (const auto& name : selected_topic_names_) {
-      for (const auto& ch : channels_) {
-        if (ch.topic == name) {
-          selected_channels_snapshot_.push_back(ch);
-          break;
-        }
+    std::set<std::string_view> saved;
+    for (const auto& ch : channels_) {
+      if (selected_topic_names_.contains(ch.topic) && saved.insert(ch.topic).second) {
+        selected_channels_snapshot_.push_back(ch);
       }
     }
   }
 
   // --- State ---
-  PJ::WebSocket::Endpoint endpoint_{"localhost", kDefaultPort, {}};
+  PJ::WebSocket::Endpoint endpoint_{"127.0.0.1", kDefaultPort};
   int max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
   bool use_timestamp_ = false;
@@ -346,7 +344,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   /// Read by the source's onStart() (allDiscoveredChannels) as well as the dialog thread.
   mutable std::mutex channels_mutex_;
   std::vector<PJ::FoxgloveProtocol::ChannelInfo> channels_;
-  std::vector<std::string> selected_topic_names_;
+  std::set<std::string> selected_topic_names_;  ///< the user's selection, what saveConfig() saves
   std::vector<PJ::FoxgloveProtocol::ChannelInfo> selected_channels_snapshot_;
 };
 

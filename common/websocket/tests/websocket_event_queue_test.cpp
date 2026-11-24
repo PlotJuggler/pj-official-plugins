@@ -1,7 +1,7 @@
 /**
  * @file websocket_event_queue_test.cpp
- * @brief The transport's backend-independent pieces: the bounded EventQueue, the URL check and
- *  the DropWarning throttle.
+ * @brief The transport's backend-independent pieces: the bounded EventQueue and the DropWarning
+ *  throttle.
  */
 
 #include <gtest/gtest.h>
@@ -15,15 +15,6 @@
 namespace {
 
 using EventType = PJ::WebSocket::Event::Type;
-
-TEST(WebSocketUrlTest, AcceptsOnlyWebSocketUrlsWithAHost) {
-  EXPECT_TRUE(PJ::WebSocket::isWebSocketUrl("ws://127.0.0.1:9871"));
-  EXPECT_TRUE(PJ::WebSocket::isWebSocketUrl("wss://robot.local:8443/bridge"));
-  EXPECT_FALSE(PJ::WebSocket::isWebSocketUrl("ws://"));
-  EXPECT_FALSE(PJ::WebSocket::isWebSocketUrl("wss:///bridge"));
-  EXPECT_FALSE(PJ::WebSocket::isWebSocketUrl("http://robot:9871"));
-  EXPECT_FALSE(PJ::WebSocket::isWebSocketUrl("robot:9871"));
-}
 
 TEST(EventQueueTest, PreservesArrivalOrderAcrossThreads) {
   PJ::WebSocket::EventQueue queue;

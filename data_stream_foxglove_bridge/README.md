@@ -5,11 +5,12 @@ server and streams real-time data via delegated ingest.
 
 ## Features
 
-- WebSocket connection to an address and port, or to a full `ws://` / `wss://` URL
+- WebSocket connection to a server URL typed in one line (see [Configuration](#configuration))
 - The dialog retries a refused or dropped connection with a capped backoff until cancelled; a stream whose connection is lost reconnects every 5 s
 - Connects to current servers (`foxglove.sdk.v1` subprotocol) and older ones (`foxglove.websocket.v1`); nothing to configure
 - Automatic channel discovery via Foxglove `advertise` protocol
-- Topic filtering by name in the dialog
+- Topic filtering by name and type in the dialog, Select All / Deselect All
+- Transform channels locked in the dialog and always advertised (see [Configuration](#configuration))
 - Per-channel parser delegation by encoding:
   - `ros2msg` / `omgidl` over CDR → `parser_ros`
   - `protobuf` (binary `FileDescriptorSet` schema, base64-encoded in the advertise) → `parser_protobuf`
@@ -31,6 +32,29 @@ server and streams real-time data via delegated ingest.
 The dialog connects to a Foxglove Bridge server, discovers available
 channels, and lets you select which topics to subscribe to. Parser options
 (array size, clamp/skip, embedded timestamp) are configurable.
+
+| Key | Meaning |
+|---|---|
+| `url` | The server URL (e.g. `wss://robot.local:8765`), saved normalized. Loading accepts the same forgiving input as the dialog; an invalid one is rejected. |
+| `address`, `port` | Legacy keys, read only when `url` is absent: `ws://<address>:<port>` (default `127.0.0.1:8765`). Never written. |
+
+The dialog takes the server as one URL line (`ws://127.0.0.1:8765` by default); a bare host or
+`host:port` gets `ws://` and port 8765. Which URLs are accepted or refused (credentials and
+fragments are), how the URL is saved, and how the last connected URL is remembered and cleaned
+of secrets: [The server URL](../common/websocket/README.md#the-server-url).
+
+**Select All** (Ctrl+A) selects the topics the filter shows; **Deselect All** (Ctrl+Shift+A)
+clears every selection, also those the filter hides.
+
+Transform channels are every advertised channel whose (type, message encoding) is
+`tf2_msgs/msg/TFMessage` over `cdr` or `foxglove.FrameTransform` over `protobuf`. Their rows
+are locked, and the selection never filters them out; the rule, shared with the MCAP loader and
+the other streamers, is in
+[`always_included.hpp`](../common/always_included/include/pj_always_included/always_included.hpp).
+
+To try it, replay the MCAP loader's transform fixture, which advertises `/tf`, `/tf_static`,
+a `foxglove.FrameTransform` channel, a JSON look-alike that is not locked and an ordinary
+channel: `python3 test_scripts/foxglove_mcap_player.py ../data_load_mcap/test_data/test_dialog_whitelist.mcap --loop`.
 
 ## Known Limitations
 

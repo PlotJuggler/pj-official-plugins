@@ -5,11 +5,11 @@ streaming using the PJ binary protocol.
 
 ## Features
 
-- WebSocket connection to an address and port, or to a full `ws://` / `wss://` URL
-  (see [Connection settings](#connection-settings))
+- WebSocket connection to a server URL typed in one line (see [Connection settings](#connection-settings))
 - Runs on the desktop (IXWebSocket) and in the browser build (`<emscripten/websocket.h>`)
 - Topic discovery with periodic refresh (~1s) while dialog is open
-- Case-insensitive topic filter in the dialog (matches name and type)
+- Case-insensitive topic filter in the dialog (matches name and type), Select All / Deselect All
+- Transform topics locked in the dialog and always advertised (see [Connection settings](#connection-settings))
 - Binary frame parsing: ZSTD-compressed multi-message payloads
 - Delegated ingest with per-topic parser binding
 - Parser options: array size, clamp/skip, embedded timestamp
@@ -20,15 +20,31 @@ streaming using the PJ binary protocol.
 
 | Key | Meaning |
 |---|---|
-| `url` | Full `ws://` or `wss://` URL, path included (e.g. `wss://robot.local:8443/bridge`). When present it replaces `address`/`port`; anything else is rejected when the configuration is loaded. |
-| `address`, `port` | Used only when `url` is absent: the source connects to `ws://<address>:<port>` (default `127.0.0.1:9090`, the bridge server's default port). |
+| `url` | The server URL (e.g. `wss://robot.local:8443/bridge`), saved normalized. Loading accepts the same forgiving input as the dialog; an invalid one is rejected. |
+| `address`, `port` | Legacy keys, read only when `url` is absent: `ws://<address>:<port>` (default `127.0.0.1:9090`, the bridge server's default port). Never written. |
 
-In the dialog, type either a host name (with the Port field) or a full URL into the
-address field; the transport indicator follows the URL's scheme. A configuration saved
-without `url` behaves exactly as before. After Connect, the dialog retries a refused,
-unanswered (5 s per attempt) or dropped connection with a backoff from 1 s up to 10 s
-until it connects or the user presses Cancel; the label under the address shows
-connecting, retrying in N s with the last error, or connected.
+The dialog takes the server as one URL line (`ws://127.0.0.1:9090` by default); a bare host
+or `host:port` gets `ws://` and port 9090. Which URLs are accepted or refused (credentials and
+fragments are), how the URL is saved, and how the last connected URL is remembered and cleaned
+of secrets: [The server URL](../common/websocket/README.md#the-server-url).
+
+After Connect, the dialog retries a refused, unanswered (5 s per attempt) or dropped
+connection with a backoff from 1 s up to 10 s until it connects, or the user presses the plug button during a wait or cancels the dialog;
+the status line under the URL shows connecting, retrying in N s with the last error, or
+connected.
+
+**Select All** (Ctrl+A) selects the topics the filter shows; **Deselect All** (Ctrl+Shift+A)
+clears every selection. The filter never hides a selected topic.
+
+Transform topics are every advertised topic of type `tf2_msgs/msg/TFMessage` (the bridge
+serves ROS 2 topics, all CDR, so the topic's `encoding` field is not consulted). Their rows are
+locked, and the selection never filters them out; the rule, shared with the MCAP loader and the
+other streamers, is in
+[`always_included.hpp`](../common/always_included/include/pj_always_included/always_included.hpp).
+
+To try it, replay the MCAP loader's transform fixture (`/tf`, `/tf_static`, a
+Foxglove `transforms` topic that is not locked, `/near_miss_encoding`, which is locked here
+because only the type counts, and an ordinary topic): `python3 test_scripts/pj_bridge_mcap_player.py ../data_load_mcap/test_data/test_dialog_whitelist.mcap --loop`.
 
 Starting the stream never waits for the network: `start()` only begins connecting, and
 each poll advances the connection from *connecting* (5 s deadline) to *discovery*

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <pj_always_included/always_included.hpp>
 #include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/streaming_source.hpp>
 #include <set>
@@ -66,13 +67,22 @@ struct SubscriptionDiff {
   return diff;
 }
 
-/// Whether `topic` should be advertised under an (optional) advertise filter —
+/// Whether a channel's (schemaName, encoding) is a transform type (see
+/// common/always_included): its dialog row is locked and the advertise filter
+/// never hides it.
+[[nodiscard]] inline bool isTransform(const ChannelInfo& ch) {
+  return PJ::AlwaysIncluded::matches(ch.schema_name, ch.encoding);
+}
+
+/// Whether `ch` should be advertised under an (optional) advertise filter —
 /// the dialog's saved channel selection, repurposed in demand mode as an
 /// allow-list rather than a subscribe list. An EMPTY selection means "no
-/// filter, advertise everything" (the default when nothing is selected).
-[[nodiscard]] inline bool passesAdvertiseFilter(const std::string& topic, const std::vector<ChannelInfo>& selection) {
-  return PJ::sdk::passesSelectionFilter(
-      topic, selection, [](const ChannelInfo& ch) -> const std::string& { return ch.topic; });
+/// filter, advertise everything" (the default when nothing is selected). A
+/// transform channel always passes.
+[[nodiscard]] inline bool passesAdvertiseFilter(const ChannelInfo& ch, const std::vector<ChannelInfo>& selection) {
+  return isTransform(ch) ||
+         PJ::sdk::passesSelectionFilter(
+             ch.topic, selection, [](const ChannelInfo& sel) -> const std::string& { return sel.topic; });
 }
 
 /// The channel_id -> topic map computeSubscriptionDiff() reconciles against:
@@ -85,7 +95,7 @@ struct SubscriptionDiff {
     const std::map<uint64_t, ChannelInfo>& advertised_channels, const std::vector<ChannelInfo>& selection) {
   std::map<uint64_t, std::string> out;
   for (const auto& [channel_id, ch] : advertised_channels) {
-    if (classifyChannel(ch).supported && passesAdvertiseFilter(ch.topic, selection)) {
+    if (classifyChannel(ch).supported && passesAdvertiseFilter(ch, selection)) {
       out[channel_id] = ch.topic;
     }
   }

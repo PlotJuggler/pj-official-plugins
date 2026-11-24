@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <pj_base/sdk/data_source_host_views.hpp>
+#include <pj_websocket/url.hpp>
 #include <pj_websocket/websocket_client.hpp>
 #include <string>
 #include <utility>
@@ -23,7 +24,8 @@
 namespace PJ::WebSocket {
 
 struct SourceConnectionOptions {
-  /// Names the server in messages: "failed to connect to <name> at <url>", "<name> stream at".
+  /// Names the server in messages: "failed to connect to <name> at <url>", "<name> stream at";
+  /// <url>, also where a transport error quotes it, is shown cleaned (cleanUrl).
   std::string name;
   /// How long one attempt may take before it fails with "timed out".
   std::chrono::milliseconds connect{5000};
@@ -77,7 +79,9 @@ class SourceConnection {
     begin(std::move(url), std::move(subprotocols));
     phase_ = Phase::kConnecting;
     if (auto status = dial(); !status) {
-      return PJ::unexpected("failed to connect to " + options_.name + " at " + url_ + ": " + status.error());
+      return PJ::unexpected(
+          "failed to connect to " + options_.name + " at " + cleanUrl(url_) + ": " +
+          withCleanUrl(status.error(), url_));
     }
     return PJ::okStatus();
   }
@@ -160,7 +164,7 @@ class SourceConnection {
     stop();
     url_ = std::move(url);
     subprotocols_ = std::move(subprotocols);
-    drop_label_ = options_.name + " stream at " + url_;
+    drop_label_ = options_.name + " stream at " + cleanUrl(url_);
   }
 
   /// One attempt on a fresh socket and queue, so a previous socket's late events are never seen.
@@ -234,8 +238,8 @@ class SourceConnection {
     const bool was_open = phase_ == Phase::kOpen;
     if (phase_ == Phase::kConnecting || !options_.reconnect) {
       fail(
-          (was_open ? "lost connection to " : "failed to connect to ") + options_.name + " at " + url_ +
-          (reason.empty() ? "" : ": " + reason));
+          (was_open ? "lost connection to " : "failed to connect to ") + options_.name + " at " + cleanUrl(url_) +
+          (reason.empty() ? "" : ": " + withCleanUrl(reason, url_)));
       return;
     }
     if (was_open) {

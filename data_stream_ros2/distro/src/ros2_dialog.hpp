@@ -21,11 +21,13 @@
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "../../ros2_topic_subscription.hpp"
 #include "datastream_ros2_ui.hpp"
 #include "ros2_manifest.hpp"
 
@@ -47,31 +49,16 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    auto visible = visibleTopics();
-    std::vector<std::vector<std::string>> rows;
-    rows.reserve(visible.size());
-    for (const auto& [name, type] : visible) {
-      rows.push_back({name, type});
-    }
-    wd.setTableHeaders("listRosTopics", {"Topic", "Datatype"});
-    wd.setTableRows("listRosTopics", rows);
-
-    // Restore selection by topic name (setSelectedItems): the host matches
-    // rows by first-column text, which is sort-agnostic — listRosTopics has
-    // sortingEnabled, so the selection survives a user sort of the table.
-    std::vector<std::string> selected_names;
-    selected_names.reserve(selected_topics_.size());
-    for (const auto& [sel_name, sel_type] : selected_topics_) {
-      (void)sel_type;
-      selected_names.push_back(sel_name);
-    }
-    wd.setSelectedItems("listRosTopics", selected_names);
-
-    if (rows.empty()) {
+    // Rows, selection, and the transform rows (selected, locked, tooltipped). Restored by topic
+    // name: the host matches rows by first-column text, which survives a user sort of the table.
+    auto visible = visibleRows();
+    if (visible.empty()) {
       wd.setText("labelStatus", "Scanning ROS 2 topics...");
     } else {
-      wd.setText("labelStatus", std::to_string(rows.size()) + " topic(s) found");
+      wd.setText("labelStatus", std::to_string(visible.size()) + " topic(s) found");
     }
+    wd.setTableHeaders("listRosTopics", {"Topic", "Type"});
+    PJ::AlwaysIncluded::tableToWidgets(wd, "listRosTopics", std::move(visible), selected_topics_);
 
     wd.setChecked("checkBoxTimestamp", use_embedded_timestamp_);
     wd.setValue("spinBoxArraySize", max_array_size_);
@@ -79,10 +66,6 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     wd.setChecked("radioMaxDiscard", discard_large_arrays_);
     wd.setChecked("checkBoxStringSuffix", remove_suffix_from_strings_);
     wd.setChecked("checkBoxStringBoolean", boolean_strings_to_number_);
-
-    // Ctrl+A select-all is provided natively by the QTableWidget; bind the
-    // companion deselect-all shortcut to the button (PJ3 parity).
-    wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
     // OK button: discovery-running-only. Topic selection is no longer a hard
     // requirement — see selected_topics_'s dual role in Ros2StreamSource
@@ -159,49 +142,18 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
       return false;
     }
     // The host emits column-0 strings (topic names) for QTableWidget — and
-    // only for the rows currently visible under the active filter. Preserve
-    // selections of topics filtered out of view; otherwise typing in the
-    // filter then changing visible-row selection would silently drop
+    // only for the selectable rows currently visible under the active filter.
+    // Preserve selections of topics filtered out of view; otherwise typing in
+    // the filter then changing visible-row selection would silently drop
     // previously-selected hidden topics.
-    auto visible = visibleTopics();
-    auto isVisible = [&](const std::string& name) {
-      for (const auto& [vname, vtype] : visible) {
-        if (vname == name) {
-          return true;
-        }
-      }
-      return false;
-    };
-
-    std::vector<std::pair<std::string, std::string>> next;
-    next.reserve(selected_topics_.size() + selected.size());
-    for (const auto& [name, type] : selected_topics_) {
-      if (!isVisible(name)) {
-        next.emplace_back(name, type);
-      }
-    }
-    for (const auto& name : selected) {
-      for (const auto& [vname, vtype] : visible) {
-        if (vname == name) {
-          next.emplace_back(vname, vtype);
-          break;
-        }
-      }
-    }
-    selected_topics_ = std::move(next);
+    PJ::AlwaysIncluded::applyReported(selected_topics_, selected, visibleRows());
     // Re-render so widget_data() refreshes the OK-enabled state.
     return true;
   }
 
   bool onClicked(std::string_view widget_name) override {
-    if (widget_name == "btnDeselectAll") {
-      // Clear every selection, including topics filtered out of view — the
-      // table only ever reports its visible rows, so dropping the whole set
-      // here keeps hidden selections from silently surviving a deselect-all.
-      selected_topics_.clear();
-      return true;  // re-render to update the table selection and OK state
-    }
-    return false;
+    // Select All / Deselect All; true re-renders the table selection and OK state.
+    return PJ::AlwaysIncluded::applySelectButton(widget_name, selected_topics_, visibleRows());
   }
 
   void onAccepted(std::string_view /*json*/) override {
@@ -230,11 +182,13 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
       // every selection.
       std::lock_guard<std::mutex> lock(topics_mutex_);
       const bool have_discovery = !discovered_topics_.empty();
-      for (const auto& [name, type] : selected_topics_) {
-        if (have_discovery && discovered_topics_.find(name) == discovered_topics_.end()) {
-          continue;
+      for (const auto& name : selected_topics_) {
+        if (const auto it = discovered_topics_.find(name); it != discovered_topics_.end()) {
+          arr.push_back({{"name", name}, {"type", it->second}});
+        } else if (!have_discovery) {
+          const auto saved = saved_types_.find(name);
+          arr.push_back({{"name", name}, {"type", saved == saved_types_.end() ? std::string{} : saved->second}});
         }
-        arr.push_back({{"name", name}, {"type", type}});
       }
     }
     nlohmann::json cfg;
@@ -255,10 +209,13 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
       selected_topics_.clear();
+      saved_types_.clear();
       if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
         for (const auto& entry : cfg["selected_topics"]) {
           if (entry.is_object()) {
-            selected_topics_.emplace_back(entry.value("name", std::string{}), entry.value("type", std::string{}));
+            const auto name = entry.value("name", std::string{});
+            selected_topics_.insert(name);
+            saved_types_[name] = entry.value("type", std::string{});
           }
         }
       }
@@ -281,25 +238,12 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   }
 
  private:
-  // Snapshot of topics passing the current filter, ordered as the table
+  // Snapshot of the rows passing the current filter, ordered as the table
   // displays them. Locks the topics mutex briefly; callers must not already
   // hold it.
-  std::vector<std::pair<std::string, std::string>> visibleTopics() {
-    const std::string needle = PJ::sdk::lowerAscii(filter_);
-
-    std::vector<std::pair<std::string, std::string>> out;
+  PJ::AlwaysIncluded::TableRows visibleRows() {
     std::lock_guard<std::mutex> lock(topics_mutex_);
-    out.reserve(discovered_topics_.size());
-    for (const auto& [name, type] : discovered_topics_) {
-      if (!needle.empty()) {
-        const std::string haystack = PJ::sdk::lowerAscii(name);
-        if (haystack.find(needle) == std::string::npos) {
-          continue;
-        }
-      }
-      out.emplace_back(name, type);
-    }
-    return out;
+    return ros2_streamer::topicRows(discovered_topics_, filter_);
   }
 
   void startDiscovery() {
@@ -370,7 +314,11 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
 
   mutable std::mutex topics_mutex_;
   std::map<std::string, std::string> discovered_topics_;
-  std::vector<std::pair<std::string, std::string>> selected_topics_;
+  // The user's selection by topic name, what saveConfig() saves; locked rows are shown selected
+  // without being in it.
+  std::set<std::string> selected_topics_;
+  // The types of the loaded selection, saved back for topics not discovered yet.
+  std::map<std::string, std::string> saved_types_;
 
   // Current filter substring (case-insensitive match on topic name); empty
   // means "show everything". In-session only — not persisted via saveConfig.

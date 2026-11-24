@@ -53,6 +53,26 @@ Source layout in this repository:
       manifest.json             ← marketplace manifest
       CMakeLists.txt            ← proxy always; inner only with PJ_BUILD_ROS2_DISTRO=ON
 
+## Topic selection
+
+The dialog lists the discovered topics under a filter (case-insensitive, on the name).
+**Select All** (Ctrl+A) selects the topics the filter shows; **Deselect All** (Ctrl+Shift+A)
+clears every selection, also those the filter hides.
+
+Above the list, **Use the timestamp in the message (if present)** reads `header.stamp`, and
+**When an array size exceeds** a limit, an array is clamped to it (**Clamp**) or skipped (**Skip**).
+The Advanced Options tab holds the string-parsing switches.
+
+Transform topics are every discovered topic of type `tf2_msgs/msg/TFMessage`. Their rows are
+locked, and the selection never filters them out; the rule, shared with the MCAP loader and the
+other streamers, is in
+[`always_included.hpp`](../common/always_included/include/pj_always_included/always_included.hpp).
+
+To try it with a sourced ROS 2:
+
+    ros2 run tf2_ros static_transform_publisher --x 1 --frame-id map --child-frame-id base_link   # /tf_static
+    ros2 topic pub -r 10 /tf tf2_msgs/msg/TFMessage "{transforms: [{header: {frame_id: odom}, child_frame_id: base_link, transform: {rotation: {w: 1.0}}}]}"
+
 ## Optional ROS runtime at startup
 
 Installing this extension does not require ROS. When no ROS distribution is

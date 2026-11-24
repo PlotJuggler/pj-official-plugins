@@ -65,6 +65,7 @@ target_compile_options(ros2_topic_subscription_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(ros2_topic_subscription_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ros2_topic_subscription_test PRIVATE
   plotjuggler_sdk::plugin_sdk
+  pj_always_included
   GTest::gtest_main
 )
 add_test(NAME ros2_topic_subscription_test COMMAND ros2_topic_subscription_test)
@@ -126,6 +127,7 @@ if(PJ_BUILD_ROS2_DISTRO)
       rclcpp::rclcpp
       rosidl_typesupport_cpp::rosidl_typesupport_cpp
       rosidl_typesupport_introspection_cpp::rosidl_typesupport_introspection_cpp
+      pj_always_included
   )
 
   pj_embed_manifest(ros2_stream_plugin_distro

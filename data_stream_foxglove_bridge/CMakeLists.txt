@@ -12,6 +12,7 @@ target_compile_features(foxglove_source_plugin PRIVATE cxx_std_20)
 target_compile_options(foxglove_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(foxglove_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json pj_base64 pj_websocket_native ixwebsocket::ixwebsocket
+  pj_always_included
 )
 
 pj_embed_ui(foxglove_source_plugin
@@ -47,6 +48,7 @@ target_compile_options(foxglove_topic_subscription_test PRIVATE ${PJ_WARNING_FLA
 target_include_directories(foxglove_topic_subscription_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(foxglove_topic_subscription_test PRIVATE
   plotjuggler_sdk::plugin_sdk
+  pj_always_included
   GTest::gtest_main
 )
 add_test(NAME foxglove_topic_subscription_test COMMAND foxglove_topic_subscription_test)
@@ -61,7 +63,7 @@ target_include_directories(foxglove_connection_test PRIVATE
 )
 target_link_libraries(foxglove_connection_test PRIVATE
   plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json pj_base64 pj_websocket_fake pj_test_support
-  GTest::gtest_main
+  pj_always_included GTest::gtest_main
 )
 add_test(NAME foxglove_connection_test COMMAND foxglove_connection_test)
 

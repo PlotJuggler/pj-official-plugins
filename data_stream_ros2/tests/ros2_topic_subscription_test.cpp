@@ -12,6 +12,8 @@
  *     as-advertise-filter predicate and its application to the subscribable set.
  *   - splitTopicTypes: the multi-type-topic exclusion applied to a raw
  *     get_topic_names_and_types() result.
+ *   - The transform topics: the advertise filter never hides them, and the
+ *     dialog's topic rows lock them (the table itself is common/always_included's).
  */
 
 #include "../ros2_topic_subscription.hpp"
@@ -200,13 +202,13 @@ TEST(ComputeRos2SubscriptionDiffTest, TypeChangeForcesResubscribe) {
 // --- passesAdvertiseFilter ---
 
 TEST(PassesAdvertiseFilterTest, EmptySelectionAdvertisesEverything) {
-  EXPECT_TRUE(passesAdvertiseFilter("/any/topic", {}));
+  EXPECT_TRUE(passesAdvertiseFilter("/any/topic", "std_msgs/msg/String", {}));
 }
 
 TEST(PassesAdvertiseFilterTest, NonEmptySelectionRestrictsToSelection) {
   std::vector<std::pair<std::string, std::string>> selection{{"/camera/image", "sensor_msgs/msg/Image"}};
-  EXPECT_TRUE(passesAdvertiseFilter("/camera/image", selection));
-  EXPECT_FALSE(passesAdvertiseFilter("/odom", selection));
+  EXPECT_TRUE(passesAdvertiseFilter("/camera/image", "sensor_msgs/msg/Image", selection));
+  EXPECT_FALSE(passesAdvertiseFilter("/odom", "nav_msgs/msg/Odometry", selection));
 }
 
 // --- filteredDiscoveredTopics: the filter bounds SUBSCRIPTIONS, not just advertising ---
@@ -270,6 +272,54 @@ TEST(SplitTopicTypesTest, EmptyTypesListIsSkipped) {
   const auto split = splitTopicTypes(raw);
   EXPECT_TRUE(split.multi_type.empty());
   EXPECT_TRUE(split.single_type.empty());
+}
+
+// --- Transforms: never filtered out, locked in the dialog's topic table ---
+
+const std::map<std::string, std::string> kGraph = {
+    {"/imu", "sensor_msgs/msg/Imu"},   {"/odom", "nav_msgs/msg/Odometry"},       {"/odom_raw", "nav_msgs/msg/Odometry"},
+    {"/tf", "tf2_msgs/msg/TFMessage"}, {"/tf_static", "tf2_msgs/msg/TFMessage"},
+};
+
+/// Each row's name and whether it is locked.
+std::map<std::string, bool> lockedFlags(const PJ::AlwaysIncluded::TableRows& rows) {
+  std::map<std::string, bool> out;
+  for (const auto& row : rows) {
+    out[row.cells.front()] = row.locked;
+  }
+  return out;
+}
+
+TEST(TransformTopicsTest, TheAdvertiseFilterNeverHidesATransform) {
+  const std::vector<std::pair<std::string, std::string>> selection = {{"/imu", "sensor_msgs/msg/Imu"}};
+  std::set<std::string> topics;
+  for (const auto& [topic, type] : ros2_streamer::filteredDiscoveredTopics(kGraph, selection)) {
+    topics.insert(topic);
+  }
+  EXPECT_EQ(topics, (std::set<std::string>{"/imu", "/tf", "/tf_static"}));
+  EXPECT_TRUE(ros2_streamer::passesAdvertiseFilter("/tf", "tf2_msgs/msg/TFMessage", selection));
+  // Keyed on the type: a /tf name of another type is filtered like any topic.
+  EXPECT_FALSE(ros2_streamer::passesAdvertiseFilter("/tf", "std_msgs/msg/String", selection));
+}
+
+TEST(TransformTopicsTest, ASavedTfIsAnOrdinarySelectedTopic) {
+  // A config saved by an earlier version may list /tf: it filters like any selected topic.
+  const std::vector<std::pair<std::string, std::string>> selection = {{"/tf", "tf2_msgs/msg/TFMessage"}};
+  EXPECT_FALSE(ros2_streamer::passesAdvertiseFilter("/imu", "sensor_msgs/msg/Imu", selection));
+  EXPECT_EQ(ros2_streamer::filteredDiscoveredTopics(kGraph, selection).size(), 2U);
+}
+
+TEST(TopicRowsTest, TransformRowsAreLockedAndNeverFilteredOut) {
+  EXPECT_EQ(
+      lockedFlags(ros2_streamer::topicRows(kGraph, "")),
+      (std::map<std::string, bool>{
+          {"/imu", false}, {"/odom", false}, {"/odom_raw", false}, {"/tf", true}, {"/tf_static", true}}));
+  EXPECT_EQ(
+      lockedFlags(ros2_streamer::topicRows(kGraph, "ODOM")),
+      (std::map<std::string, bool>{{"/odom", false}, {"/odom_raw", false}, {"/tf", true}, {"/tf_static", true}}));
+  EXPECT_EQ(
+      lockedFlags(ros2_streamer::topicRows({{"/tf", "std_msgs/msg/String"}}, "")),
+      (std::map<std::string, bool>{{"/tf", false}}));
 }
 
 }  // namespace

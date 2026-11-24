@@ -3,13 +3,16 @@
 #include <chrono>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_always_included/locked_table.hpp>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <pj_websocket/connection_dialog.hpp>
 #include <pj_websocket/websocket_client.hpp>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "pj_bridge_manifest.hpp"
@@ -37,11 +40,13 @@ struct DiscoveredTopic {
 /// Smart dialog plugin for the PlotJuggler Bridge streamer.
 /// Owns the WebSocket connection for topic discovery during the dialog session.
 /// The dialog flow matches the original PlotJuggler plugin:
-///   1. User enters address/port (or a full ws:// / wss:// URL), clicks Connect
+///   1. User enters the server URL (a bare host[:port] gets ws:// and port 9090), clicks Connect
 ///   2. Dialog connects via WebSocket, sends get_topics. A refused, timed-out or dropped
 ///      connection is retried with a capped backoff until the user cancels; the status label
 ///      shows connecting / retrying in N s with the last error / connected.
-///   3. Topics populate the table, user selects topics
+///   3. Topics populate the table, user selects topics (Select All / Deselect All act on the rows
+///      the filter shows). Transform topics are locked rows (PJ::AlwaysIncluded's locked table):
+///      shown selected and tooltipped, never saved with the selection.
 ///   4. User clicks OK
 ///   5. saveConfig() returns the full config for the source plugin
 ///
@@ -56,8 +61,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       : link_(
             options, {
                          .on_open =
-                             [this] {
+                             [this](const std::string& url) {
                                tick_count_ = 0;
+                               endpoint_.remember(url);
                                requestTopics();
                              },
                          .on_text = [this](const std::string& text) { onServerMessage(text); },
@@ -74,9 +80,12 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     return link_.take();
   }
 
-  /// The URL the source connects to: the configured `url` verbatim, else ws://address:port.
-  std::string endpoint() const {
-    return endpoint_.str();
+  /// The URL line: str() is what the source connects to.
+  PJ::WebSocket::Endpoint& endpoint() {
+    return endpoint_;
+  }
+  const PJ::WebSocket::Endpoint& endpoint() const {
+    return endpoint_;
   }
 
   /// Full catalog of topics discovered during this dialog's connection session
@@ -110,29 +119,12 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Connection fields. A full URL in the address field replaces address + port.
-    endpoint_.toWidgets(wd, link_.idle());
-    link_.toWidgets(wd);
+    link_.toWidgets(wd, endpoint_);
 
-    // Topic list — apply case-insensitive filter matching on name AND type
-    wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
-    std::vector<std::vector<std::string>> rows;
-    {
-      std::lock_guard<std::mutex> lock(topics_mutex_);
-      rows.reserve(topics_.size());
-      for (const auto& t : topics_) {
-        if (!matchesFilter(t)) {
-          continue;
-        }
-        rows.push_back({t.name, t.type});
-      }
-    }
-    wd.setTableRows("topicsList", rows);
-    wd.setListPlaceholder("topicsList", "Click to select, Click+Drag to multi-select");
-
-    if (!selected_topic_names_.empty()) {
-      wd.setSelectedItems("topicsList", selected_topic_names_);
-    }
+    // Topic list: case-insensitive filter on name AND type; transform rows are locked. The
+    // selection is always sent, so Deselect All also clears what the table shows.
+    wd.setTableHeaders("topicsList", {"Topic", "Type"});
+    PJ::AlwaysIncluded::tableToWidgets(wd, "topicsList", visibleRows(), selected_topic_names_);
 
     // OK button: connected-only. The topic selection below is no longer a
     // subscribe requirement — see the "topics" config key's dual role in
@@ -157,11 +149,15 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view widget_name) override {
     if (widget_name == "buttonConnect") {
-      if (link_.idle()) {
-        link_.connect(endpoint());
-      } else {
+      if (!link_.idle()) {
         disconnect();
+      } else if (const auto url = endpoint_.url()) {
+        link_.connect(*url);
       }
+      return true;
+    }
+    if (PJ::AlwaysIncluded::applySelectButton(widget_name, selected_topic_names_, visibleRows())) {
+      snapshotSelectedTopics();
       return true;
     }
     return false;
@@ -169,7 +165,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "topicsList") {
-      selected_topic_names_ = selected;
+      PJ::AlwaysIncluded::applyReported(selected_topic_names_, selected, visibleRows());
       snapshotSelectedTopics();
       return true;  // re-evaluate OK button state
     }
@@ -232,8 +228,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     if (cfg.is_discarded()) {
       return false;
     }
-    // `url`, when present, must be a ws:// or wss:// string; it wins over address/port.
-    if (!endpoint_.load(cfg, "127.0.0.1", kDefaultPort)) {
+    // `url` (else the legacy address/port); a config without them keeps the current URL.
+    if (!endpoint_.load(cfg)) {
       return false;
     }
     const auto array_limit = PJ::sdk::arrayLimitFromJson(cfg);
@@ -247,7 +243,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       selected_topics_snapshot_.clear();
       for (const auto& t : cfg["topics"]) {
         if (t.contains("name") && t["name"].is_string()) {
-          selected_topic_names_.push_back(t["name"].get<std::string>());
+          selected_topic_names_.insert(t["name"].get<std::string>());
           DiscoveredTopic dt;
           dt.name = t.value("name", std::string{});
           dt.type = t.value("type", std::string{});
@@ -294,9 +290,6 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       return;
     }
 
-    // Merge current selection with persisted selection
-    std::vector<std::string> wanted = selected_topic_names_;
-
     std::lock_guard<std::mutex> lock(topics_mutex_);
     topics_.clear();
     for (const auto& v : json["topics"]) {
@@ -308,17 +301,12 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       }
     }
 
-    // Re-apply selection: keep only names that still exist in the new topic list
-    std::vector<std::string> new_selection;
-    for (const auto& name : wanted) {
-      for (const auto& t : topics_) {
-        if (t.name == name) {
-          new_selection.push_back(name);
-          break;
-        }
-      }
+    // Keep only the selected names that still exist in the new topic list.
+    std::set<std::string_view> listed;
+    for (const auto& t : topics_) {
+      listed.insert(t.name);
     }
-    selected_topic_names_ = std::move(new_selection);
+    std::erase_if(selected_topic_names_, [&](const std::string& name) { return !listed.contains(name); });
   }
 
   /// Snapshot the full schema info for selected topics so saveConfig()
@@ -326,27 +314,36 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   void snapshotSelectedTopics() {
     std::lock_guard<std::mutex> lock(topics_mutex_);
     selected_topics_snapshot_.clear();
-    for (const auto& name : selected_topic_names_) {
-      for (const auto& t : topics_) {
-        if (t.name == name) {
-          selected_topics_snapshot_.push_back(t);
-          break;
-        }
+    for (const auto& t : topics_) {
+      if (selected_topic_names_.contains(t.name)) {
+        selected_topics_snapshot_.push_back(t);
       }
     }
   }
 
-  /// Case-insensitive substring match on topic name and type.
-  /// Selected topics always match (so they remain visible even when filtered).
-  bool matchesFilter(const DiscoveredTopic& t) const {
-    if (filter_.empty()) {
-      return true;
-    }
-    // Always show selected topics regardless of filter
-    for (const auto& sel : selected_topic_names_) {
-      if (sel == t.name) {
-        return true;
+  /// The table rows the filter shows, locked ones flagged.
+  PJ::AlwaysIncluded::TableRows visibleRows() const {
+    std::lock_guard<std::mutex> lock(topics_mutex_);
+    PJ::AlwaysIncluded::TableRows rows;
+    rows.reserve(topics_.size());
+    for (const auto& t : topics_) {
+      if (matchesFilter(t)) {
+        rows.push_back({{t.name, t.type}, isLocked(t)});
       }
+    }
+    return rows;
+  }
+
+  /// A transform: a locked row.
+  static bool isLocked(const DiscoveredTopic& t) {
+    return PJ::AlwaysIncluded::matchesRos2(t.schema_name);
+  }
+
+  /// Case-insensitive substring match on topic name and type.
+  /// Selected and locked topics always match (so they remain visible even when filtered).
+  bool matchesFilter(const DiscoveredTopic& t) const {
+    if (filter_.empty() || isLocked(t) || selected_topic_names_.contains(t.name)) {
+      return true;
     }
     // Case-insensitive search
     const std::string lower_filter = PJ::sdk::lowerAscii(filter_);
@@ -356,8 +353,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   }
 
   // --- State ---
-  static constexpr int kDefaultPort = 9090;  ///< the bridge server's own default
-  PJ::WebSocket::Endpoint endpoint_{"127.0.0.1", kDefaultPort, {}};
+  static constexpr uint16_t kDefaultPort = 9090;  ///< the bridge server's own default
+  PJ::WebSocket::Endpoint endpoint_{"127.0.0.1", kDefaultPort};
   int max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
   bool use_timestamp_ = false;
@@ -367,7 +364,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   mutable std::mutex topics_mutex_;
   std::vector<DiscoveredTopic> topics_;
-  std::vector<std::string> selected_topic_names_;
+  std::set<std::string> selected_topic_names_;  ///< the user's selection, what saveConfig() saves
   std::vector<DiscoveredTopic> selected_topics_snapshot_;
   int tick_count_ = 0;
   uint32_t request_id_ = 1;

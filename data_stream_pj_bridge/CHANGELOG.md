@@ -3,6 +3,17 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_pj_bridge/`.
 
+## Upcoming
+
+### Changed
+- The dialog takes the server as one URL line (`ws://127.0.0.1:9090` by default) instead of address, port and transport fields. A bare host or `host:port` gets `ws://` and port 9090; a query token is dialed as typed; an invalid URL disables Connect and the status line says why. A URL with credentials (`user:password@`) or a fragment (`#`) is refused: neither PlotJuggler nor browsers send credentials, and WebSocket URLs cannot have a fragment. The configuration saves `url`; configurations with `address`/`port` still load, and a saved `url` with credentials or a fragment loads without them.
+- The last connected URL is remembered, without its query, in PlotJuggler's settings store; it fills the line when no saved configuration names one (on first open, after a browser reload). The status line and connection messages, transport errors that quote the URL included, show it without credentials or query.
+- Select All (Ctrl+A) and Deselect All (Ctrl+Shift+A) buttons; Select All follows the filter.
+- `tf2_msgs/msg/TFMessage` topics are locked rows, shown selected with a tooltip and never hidden by the filter, and the saved selection never filters them out of the topics offered to PlotJuggler, which subscribes them. The saved selection holds only the topics the user picked.
+- The topic table's columns are titled "Topic" and "Type" (were "Topic Name" and "DataType"), like the other streamers.
+- The dialog opens at 800x600 and can be resized down to 600x450.
+- The address line has a "URL:" label to its left (was "Server URL" above it), and Connect is a plug icon button on the same row, as in the Mosaico toolbox, instead of a text button: it is inert while an attempt is in flight, pressing it during a retry wait cancels, and while connected it disconnects. The status line below says which state it is in.
+
 ## [1.1.2] - 2026-11-19
 
 ### Changed

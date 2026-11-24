@@ -3,6 +3,18 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_ros2/`.
 
+## Upcoming
+
+### Changed
+- `tf2_msgs/msg/TFMessage` topics are locked rows, shown selected with a tooltip and never hidden by the filter, and the saved selection never filters them out of the topics offered to PlotJuggler, which subscribes them. The saved selection holds only the topics the user picked.
+- A Select All button (Ctrl+A, follows the filter) and a visible Deselect All button (Ctrl+Shift+A) sit next to the filter in a "Topics" header, like the other streamers.
+- The dialog's title is the plugin's name, "ROS 2 Topic Subscriber" (was "Select ROS messages"), as in the source picker.
+- The topic table's second column is titled "Type" (was "Datatype"), like the other streamers.
+- The parser options read like the Foxglove Bridge dialog's: "Use the timestamp in the message (if present)" (the tooltip names `header.stamp`), then "When an array size exceeds:" with "Clamp" and "Skip" (were "clamp" and "discard"). The saved configuration is unchanged.
+- OK and Cancel sit in the footer the other streamers use.
+- The empty topic table shows the hint "Click to select, Click+Drag to multi-select", as the PlotJuggler Bridge does.
+- The dialog opens at 800x600 and can be resized down to 600x450.
+
 ## [1.2.1] - 2026-11-11
 
 ### Fixed

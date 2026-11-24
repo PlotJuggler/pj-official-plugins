@@ -46,6 +46,13 @@ class FoxgloveSource : public PJ::StreamSourceBase {
                runtimeHost().reportMessage(level, message);
              }}) {}
 
+  /// The default services, plus the optional settings store the dialog remembers its last URL in.
+  PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
+    auto status = StreamSourceBase::bind(services);
+    dialog_.endpoint().bind(services);
+    return status;
+  }
+
   PJ_borrowed_dialog_t getDialog() override {
     return PJ::borrowDialog(dialog_);
   }
@@ -72,7 +79,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
   PJ::Status loadConfig(std::string_view config_json) override {
     if (!dialog_.loadConfig(config_json)) {
-      return PJ::unexpected(std::string("invalid config JSON"));
+      return PJ::unexpected(
+          std::string(
+              "invalid config: expected a JSON object with a ws:// or wss:// \"url\" (or the legacy "
+              "\"address\" and \"port\")"));
     }
     return PJ::okStatus();
   }
@@ -116,7 +126,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       for (const auto& ch : dialog_.allDiscoveredChannels()) {
         advertised_channels_[ch.id] = ch;
       }
-    } else if (auto status = connection_.start(dialog_.endpoint(), subprotocols()); !status) {
+    } else if (auto status = connection_.start(dialog_.endpoint().str(), subprotocols()); !status) {
       return status;
     }
 
@@ -272,7 +282,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     topics.reserve(advertised_channels_.size());
 
     for (const auto& [_id, ch] : advertised_channels_) {
-      if (!passesAdvertiseFilter(ch.topic, selected_channels_)) {
+      if (!passesAdvertiseFilter(ch, selected_channels_)) {
         continue;
       }
       const ChannelRoute route = classifyChannel(ch);

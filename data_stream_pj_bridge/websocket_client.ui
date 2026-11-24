@@ -1,14 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>WebSocketDialog</class>
- <widget class="QWidget" name="WebSocketDialog">
+ <widget class="QDialog" name="WebSocketDialog">
   <property name="geometry">
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>550</width>
-    <height>457</height>
+    <width>800</width>
+    <height>600</height>
    </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>600</width>
+    <height>450</height>
+   </size>
   </property>
   <property name="windowTitle">
    <string>PlotJuggler Bridge</string>
@@ -32,100 +38,31 @@
       <property name="rightMargin"><number>9</number></property>
       <property name="bottomMargin"><number>9</number></property>
    <item>
-    <layout class="QGridLayout" name="gridLayout" columnstretch="0,2,1,0">
-     <item row="1" column="3">
-      <!-- min height 34 = text + the app QSS button padding (8px each side), so
-           a height-compressed layout can never squeeze the label into clipping;
-           no max cap, matching the WebRTC Connect button. -->
-      <widget class="QPushButton" name="buttonConnect">
-       <property name="minimumSize">
-        <size>
-         <width>110</width>
-         <height>34</height>
-        </size>
-       </property>
-       <property name="text">
-        <string>Connect</string>
-       </property>
-       <property name="checkable">
-        <bool>true</bool>
-       </property>
+    <layout class="QGridLayout" name="gridLayout" columnstretch="0,1,0">
+     <item row="0" column="0">
+      <widget class="QLabel" name="labelUrl">
+       <property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property>
+       <property name="text"><string>URL:</string></property>
       </widget>
      </item>
      <item row="0" column="1">
-      <widget class="QLabel" name="label_3">
-       <property name="font">
-        <font><pointsize>11</pointsize><bold>false</bold></font>
-       </property>
-       <property name="text">
-        <string>Address or URL</string>
-       </property>
+      <widget class="QLineEdit" name="lineEditUrl">
+       <property name="placeholderText"><string>ws://127.0.0.1:9090</string></property>
+       <property name="toolTip"><string>The bridge server's ws:// or wss:// URL, with any path and query, e.g. wss://robot.local:8443/bridge. A bare host or host:port gets ws:// and port 9090.</string></property>
+       <property name="minimumSize"><size><width>0</width><height>25</height></size></property>
+       <property name="maximumSize"><size><width>16777215</width><height>25</height></size></property>
       </widget>
      </item>
      <item row="0" column="2">
-      <widget class="QLabel" name="label_4">
-       <property name="font">
-        <font><pointsize>11</pointsize><bold>false</bold></font>
-       </property>
-       <property name="text">
-        <string>Port</string>
-       </property>
+      <widget class="QPushButton" name="buttonConnect">
+       <property name="toolTip"><string>Connect</string></property>
+       <property name="minimumSize"><size><width>28</width><height>25</height></size></property>
+       <property name="maximumSize"><size><width>28</width><height>25</height></size></property>
+       <property name="styleSheet"><string notr="true">QPushButton { padding: 0px; }</string></property>
       </widget>
      </item>
-     <item row="1" column="2">
-      <widget class="QLineEdit" name="lineEditPort">
-       <property name="minimumSize">
-        <size>
-         <width>0</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>16777215</width>
-         <height>25</height>
-        </size>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="1">
-      <widget class="QLineEdit" name="lineEditAddress">
-       <property name="placeholderText">
-        <string>host, or ws:// / wss:// URL</string>
-       </property>
-       <property name="toolTip">
-        <string>A host name or IP address (used with Port), or a full ws:// or wss:// URL including any path, e.g. wss://robot.local:8443/bridge</string>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>0</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>16777215</width>
-         <height>25</height>
-        </size>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="0">
-      <widget class="QLabel" name="labelTransport">
-       <property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property>
-       <property name="text"><string>Transport</string></property>
-      </widget>
-     </item>
-     <item row="1" column="0">
-      <widget class="QComboBox" name="comboBoxTransport">
-       <property name="enabled"><bool>false</bool></property>
-       <!-- Indicator only: the scheme follows a URL typed into lineEditAddress. -->
-       <item><property name="text"><string>ws://</string></property></item>
-       <item><property name="text"><string>wss://</string></property></item>
-      </widget>
-     </item>
-     <item row="2" column="0" colspan="4">
-      <!-- Connecting / retrying in N s with the last error / connected; empty when idle. -->
+     <item row="1" column="0" colspan="3">
+      <!-- Connecting / retrying in N s with the last error / connected; why the URL is invalid; else empty. -->
       <widget class="QLabel" name="labelConnectionStatus">
        <property name="text"><string/></property>
        <property name="wordWrap"><bool>true</bool></property>
@@ -141,6 +78,16 @@
      <property name="text"><string>Topics</string></property>
      <property name="filterFieldName"><string>lineEditFilter</string></property>
      <property name="filterPlaceholder"><string>Filter</string></property>
+     <widget class="QPushButton" name="btnSelectAll">
+      <property name="text"><string>Select All</string></property>
+      <property name="toolTip"><string>Select the topics the filter shows (Ctrl+A)</string></property>
+      <property name="styleSheet"><string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string></property>
+     </widget>
+     <widget class="QPushButton" name="btnDeselectAll">
+      <property name="text"><string>Deselect All</string></property>
+      <property name="toolTip"><string>Deselect every topic, also those the filter hides (Ctrl+Shift+A)</string></property>
+      <property name="styleSheet"><string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string></property>
+     </widget>
     </widget>
    </item>
    <item>
@@ -160,16 +107,6 @@
      <attribute name="verticalHeaderVisible">
       <bool>false</bool>
      </attribute>
-     <column>
-      <property name="text">
-       <string>Topic Name</string>
-      </property>
-     </column>
-     <column>
-      <property name="text">
-       <string>DataType</string>
-      </property>
-     </column>
     </widget>
    </item>
    <item>

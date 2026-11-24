@@ -40,6 +40,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
                runtimeHost().reportMessage(level, message);
              }}) {}
 
+  /// The default services, plus the optional settings store the dialog remembers its last URL in.
+  PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
+    auto status = StreamSourceBase::bind(services);
+    dialog_.endpoint().bind(services);
+    return status;
+  }
+
   PJ_borrowed_dialog_t getDialog() override {
     return PJ::borrowDialog(dialog_);
   }
@@ -84,8 +91,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     if (!dialog_.loadConfig(config_json)) {
       return PJ::unexpected(
           std::string(
-              "invalid config: expected a JSON object with a ws:// or wss:// \"url\", or "
-              "\"address\" and \"port\""));
+              "invalid config: expected a JSON object with a ws:// or wss:// \"url\" (or the legacy "
+              "\"address\" and \"port\")"));
     }
     return PJ::okStatus();
   }
@@ -128,7 +135,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       for (auto& info : dialog_.allDiscoveredTopics()) {
         advertised_topics_[info.name] = std::move(info);
       }
-    } else if (auto status = connection_.start(dialog_.endpoint()); !status) {
+    } else if (auto status = connection_.start(dialog_.endpoint().str()); !status) {
       return status;
     }
 
@@ -371,7 +378,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     std::vector<PJ::AvailableTopic> topics;
     topics.reserve(advertised_topics_.size());
     for (const auto& [name, info] : advertised_topics_) {
-      if (!passesAdvertiseFilter(name, filter)) {
+      if (!passesAdvertiseFilter(info, filter)) {
         continue;
       }
       const auto schema_bytes = reinterpret_cast<const uint8_t*>(info.schema.data());

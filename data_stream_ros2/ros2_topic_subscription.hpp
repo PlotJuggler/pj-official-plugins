@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <map>
+#include <pj_always_included/locked_table.hpp>
+#include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/streaming_source.hpp>
 #include <set>
@@ -94,15 +96,19 @@ struct SubscriptionDiff {
   return diff;
 }
 
-/// Whether `topic` should be advertised/subscribed under an (optional) filter —
-/// the dialog's saved topic selection, repurposed in demand mode as an
-/// allow-list rather than a subscribe list. An EMPTY selection means "no
-/// filter, advertise/subscribe everything" (the default when nothing is
-/// selected). Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
+/// Whether `topic` of ROS 2 type `type` should be advertised/subscribed under
+/// an (optional) filter — the dialog's saved topic selection of (name, type),
+/// repurposed in demand mode as an allow-list rather than a subscribe list. An
+/// EMPTY selection means "no filter, advertise/subscribe everything" (the
+/// default when nothing is selected). A transform type
+/// (PJ::AlwaysIncluded::matchesRos2) always passes. Mirrors
+/// PJ::FoxgloveProtocol::passesAdvertiseFilter.
 [[nodiscard]] inline bool passesAdvertiseFilter(
-    const std::string& topic, const std::vector<std::pair<std::string, std::string>>& selection) {
-  return PJ::sdk::passesSelectionFilter(
-      topic, selection, [](const auto& value) -> const std::string& { return value.first; });
+    const std::string& topic, const std::string& type,
+    const std::vector<std::pair<std::string, std::string>>& selection) {
+  return PJ::AlwaysIncluded::matchesRos2(type) ||
+         PJ::sdk::passesSelectionFilter(
+             topic, selection, [](const auto& value) -> const std::string& { return value.first; });
 }
 
 /// The topic -> type map computeRos2SubscriptionDiff() reconciles against:
@@ -117,8 +123,24 @@ struct SubscriptionDiff {
     const std::vector<std::pair<std::string, std::string>>& selection) {
   std::map<std::string, std::string> out;
   for (const auto& [topic, type] : discovered) {
-    if (passesAdvertiseFilter(topic, selection)) {
+    if (passesAdvertiseFilter(topic, type, selection)) {
       out[topic] = type;
+    }
+  }
+  return out;
+}
+
+/// The dialog's table rows (ROS-free so it is unit-testable): topics whose name
+/// contains `filter` (ignoring case), plus every transform topic, which a
+/// filter never hides and whose row is locked.
+[[nodiscard]] inline PJ::AlwaysIncluded::TableRows topicRows(
+    const std::map<std::string, std::string>& discovered, const std::string& filter) {
+  const std::string needle = PJ::sdk::lowerAscii(filter);
+  PJ::AlwaysIncluded::TableRows out;
+  for (const auto& [name, type] : discovered) {
+    const bool locked = PJ::AlwaysIncluded::matchesRos2(type);
+    if (needle.empty() || locked || PJ::sdk::lowerAscii(name).find(needle) != std::string::npos) {
+      out.push_back({{name, type}, locked});
     }
   }
   return out;

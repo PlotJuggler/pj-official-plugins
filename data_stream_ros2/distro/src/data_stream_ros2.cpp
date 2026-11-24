@@ -399,7 +399,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     std::vector<PJ::AvailableTopic> topics;
     topics.reserve(discovered_topics_.size());
     for (const auto& [topic, type] : discovered_topics_) {
-      if (!ros2_streamer::passesAdvertiseFilter(topic, selected_topics_)) {
+      if (!ros2_streamer::passesAdvertiseFilter(topic, type, selected_topics_)) {
         continue;
       }
       const std::string* schema = ensureSchemaForType(type);

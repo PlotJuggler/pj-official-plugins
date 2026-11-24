@@ -25,7 +25,7 @@ target_compile_features(pj_bridge_source_plugin PRIVATE cxx_std_20)
 target_compile_options(pj_bridge_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(pj_bridge_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json pj_bridge_protocol_lib pj_websocket_native
-  ixwebsocket::ixwebsocket
+  ixwebsocket::ixwebsocket pj_always_included
 )
 
 pj_embed_ui(pj_bridge_source_plugin
@@ -59,7 +59,7 @@ target_compile_features(pj_bridge_topic_subscription_test PRIVATE cxx_std_20)
 target_compile_options(pj_bridge_topic_subscription_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(pj_bridge_topic_subscription_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pj_bridge_topic_subscription_test PRIVATE
-  plotjuggler_sdk::plugin_sdk pj_bridge_protocol_lib nlohmann_json::nlohmann_json GTest::gtest_main
+  plotjuggler_sdk::plugin_sdk pj_bridge_protocol_lib nlohmann_json::nlohmann_json pj_always_included GTest::gtest_main
 )
 add_test(NAME pj_bridge_topic_subscription_test COMMAND pj_bridge_topic_subscription_test)
 
@@ -73,7 +73,7 @@ target_include_directories(pj_bridge_connection_test PRIVATE
 )
 target_link_libraries(pj_bridge_connection_test PRIVATE
   plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json pj_bridge_protocol_lib
-  pj_websocket_fake pj_test_support GTest::gtest_main
+  pj_websocket_fake pj_test_support pj_always_included GTest::gtest_main
 )
 add_test(NAME pj_bridge_connection_test COMMAND pj_bridge_connection_test)
 

@@ -21,6 +21,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_always_included/always_included.hpp>
 #include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/streaming_source.hpp>
 #include <set>
@@ -96,11 +97,13 @@ struct SubscriptionDiff {
 /// Whether `topic` should be advertised/subscribed under an (optional) filter —
 /// the dialog's saved topic selection, repurposed in demand mode as an
 /// allow-list rather than a subscribe list. An EMPTY selection means "no
-/// filter, advertise everything" (the default when nothing is selected).
-/// Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
-[[nodiscard]] inline bool passesAdvertiseFilter(const std::string& topic, const std::vector<std::string>& selection) {
-  return PJ::sdk::passesSelectionFilter(
-      topic, selection, [](const std::string& value) -> const std::string& { return value; });
+/// filter, advertise everything" (the default when nothing is selected). A
+/// transform type (PJ::AlwaysIncluded::matchesRos2 on the topic's ROS 2 type)
+/// always passes. Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
+[[nodiscard]] inline bool passesAdvertiseFilter(const TopicInfo& topic, const std::vector<std::string>& selection) {
+  return PJ::AlwaysIncluded::matchesRos2(topic.schema_name) ||
+         PJ::sdk::passesSelectionFilter(
+             topic.name, selection, [](const std::string& value) -> const std::string& { return value; });
 }
 
 /// The set of topic names computeSubscriptionDiff() reconciles against:
@@ -113,8 +116,8 @@ struct SubscriptionDiff {
 [[nodiscard]] inline std::set<std::string> filteredAdvertisedTopics(
     const std::map<std::string, TopicInfo>& advertised, const std::vector<std::string>& selection) {
   std::set<std::string> out;
-  for (const auto& [name, _info] : advertised) {
-    if (passesAdvertiseFilter(name, selection)) {
+  for (const auto& [name, info] : advertised) {
+    if (passesAdvertiseFilter(info, selection)) {
       out.insert(name);
     }
   }
