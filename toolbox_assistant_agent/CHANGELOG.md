@@ -6,8 +6,8 @@ below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 ## Upcoming
 
 ### Changed
-- The assistant is deprecated and no longer updated: the panel shows a notice at the top, and the plugin's description
-  says so. Use PlotJuggler from Claude Code or Codex through its MCP server instead
+- A notice at the top of the panel, and the start of the plugin's description, suggest using PlotJuggler from
+  Claude Code or Codex through its MCP server instead
   ([plotjuggler-agent](https://github.com/PlotJuggler/plotjuggler-agent#install)). The notice takes the theme's
   warning colour where PlotJuggler styles `pjStatus` labels, and is bold default text elsewhere.
 

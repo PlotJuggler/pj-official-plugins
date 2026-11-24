@@ -341,7 +341,7 @@ it is always there, so the plugin only ever drives its *contents* by name (`setL
 those lookups still reach them. On a host without that support the same `.ui` degrades to what it
 literally says: a header row with the Settings button and the drawer beside the transcript.
 
-The deprecation notice (`deprecationNotice`) is its own row of the root layout, not a child of `headerBand`: the host
+The notice suggesting the MCP server (`deprecationNotice`) is its own row of the root layout, not a child of `headerBand`: the host
 hides `headerBand`, and a notice inside it would never show. It opts into the host theme's warning colour with the
 `pjStatus=warning` property, so it reads in both themes; the border is a palette role, never a hex colour.
 

@@ -37,7 +37,7 @@
          host theme's warning ink in both themes (a host without that rule shows bold default
          text); the border uses a palette role, never a hex colour. -->
     <widget class="QLabel" name="deprecationNotice">
-     <property name="text"><string>Deprecated: this assistant is no longer updated. Use PlotJuggler from Claude Code or Codex through its MCP server instead. &lt;a href="https://github.com/PlotJuggler/plotjuggler-agent#install"&gt;How to set it up&lt;/a&gt;</string></property>
+     <property name="text"><string>We suggest using PlotJuggler from Claude Code or Codex through its MCP server instead. &lt;a href="https://github.com/PlotJuggler/plotjuggler-agent#install"&gt;How to set it up&lt;/a&gt;</string></property>
      <property name="textFormat"><enum>Qt::RichText</enum></property>
      <property name="wordWrap"><bool>true</bool></property>
      <property name="openExternalLinks"><bool>true</bool></property>

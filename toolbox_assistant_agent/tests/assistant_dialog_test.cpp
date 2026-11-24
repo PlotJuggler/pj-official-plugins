@@ -149,7 +149,9 @@ TEST(AssistantDialogUi, DeprecationNoticeIsVisibleOutsideTheHeaderBandAndLinksTo
   EXPECT_EQ(count("<widget "), count("</widget>"));
 
   const std::string label = ui.substr(notice, body - notice);
-  EXPECT_NE(label.find("Deprecated: this assistant is no longer updated."), std::string::npos);
+  EXPECT_NE(
+      label.find("We suggest using PlotJuggler from Claude Code or Codex through its MCP server instead."),
+      std::string::npos);
   EXPECT_NE(label.find("https://github.com/PlotJuggler/plotjuggler-agent#install"), std::string::npos);
   EXPECT_NE(label.find(R"(<property name="openExternalLinks"><bool>true</bool></property>)"), std::string::npos);
   EXPECT_NE(label.find(R"(<property name="wordWrap"><bool>true</bool></property>)"), std::string::npos);
