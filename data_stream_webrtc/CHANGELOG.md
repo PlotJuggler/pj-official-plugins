@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_webrtc/`.
 
-## Upcoming
+## [1.0.5] - 2026-11-24
 
 ### Fixed
 - The connection status message reads in the dark theme: it was magenta (2.5:1 on the dark dialog). It is now bold
