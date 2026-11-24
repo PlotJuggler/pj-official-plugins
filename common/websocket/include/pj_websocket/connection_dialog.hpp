@@ -21,8 +21,6 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
-#include <pj_base/sdk/service_registry.hpp>
-#include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/sdk/endpoint.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <pj_websocket/url.hpp>
@@ -109,15 +107,11 @@ class Endpoint {
     return true;
   }
 
-  /// Binds the host's optional settings store (pj.settings.v1) the first time `services` offers
-  /// one and, unless a config already named the URL, starts from the remembered one. Later
-  /// calls change nothing, so calling it every time the dialog is reached never overwrites
-  /// what the user typed.
-  void bind(PJ::sdk::ServiceRegistry services) {
-    if (settings_.valid()) {
-      return;
-    }
-    settings_ = services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{});
+  /// Binds the host's optional settings store (pj.settings.v1; an unbound view when the host has
+  /// none) and, unless a config already named the URL, starts from the remembered one. Call from
+  /// the source's bind(): the view outlives the registry it came from.
+  void bind(PJ::sdk::SettingsView settings) {
+    settings_ = settings;
     if (!settings_.valid() || from_config_) {
       return;
     }

@@ -47,10 +47,15 @@ class FoxgloveSource : public PJ::StreamSourceBase {
                runtimeHost().reportMessage(level, message);
              }}) {}
 
-  /// The dialog's URL line starts from the URL remembered in the host's settings store, bound
-  /// here because the host reaches the dialog only through this call, after bind().
+  /// The default services, plus the optional settings store the dialog remembers its last URL in.
+  PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
+    auto status = StreamSourceBase::bind(services);
+    // Looked up here, never later: on PlotJuggler 4.0 hosts the registry lives only for the bind() call.
+    dialog_.endpoint().bind(services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{}));
+    return status;
+  }
+
   PJ_borrowed_dialog_t getDialog() override {
-    dialog_.endpoint().bind(services());
     return PJ::borrowDialog(dialog_);
   }
 

@@ -19,6 +19,7 @@
 #include <pj_websocket/testing/fake_websocket_client.hpp>
 #include <set>
 #include <string>
+#include <test_support/bind_scoped_registry.hpp>
 #include <test_support/recording_runtime_host.hpp>
 #include <test_support/widget_table.hpp>
 #include <thread>
@@ -63,12 +64,18 @@ struct FoxgloveFixture {
     fakeSockets().clear();
     write_vtable.abi_version = PJ_PLUGIN_DATA_API_VERSION;
     write_vtable.struct_size = sizeof(write_vtable);
-    registry.registerService<PJ::sdk::SourceWriteHostService>(PJ_source_write_host_t{&write_vtable, &write_vtable});
-    registry.registerService<PJ::sdk::DataSourceRuntimeHostService>(host.raw());
+    registry.builder.registerService<PJ::sdk::SourceWriteHostService>(
+        PJ_source_write_host_t{&write_vtable, &write_vtable});
+    registry.builder.registerService<PJ::sdk::DataSourceRuntimeHostService>(host.raw());
     if (settings) {
-      registry.registerService<PJ::sdk::SettingsStoreService>(*settings);
+      registry.builder.registerService<PJ::sdk::SettingsStoreService>(*settings);
     }
-    EXPECT_TRUE(source.bind(PJ::sdk::ServiceRegistry(registry.view())));
+    EXPECT_TRUE(source.bind(registry.registry()));
+    registry.close();
+  }
+
+  ~FoxgloveFixture() {
+    EXPECT_EQ(registry.lateLookups(), 0) << "the source reached the registry after bind()";
   }
 
   [[nodiscard]] FakeSocket& lastSocket() const {
@@ -103,7 +110,8 @@ struct FoxgloveFixture {
 
   RecordingRuntimeHost host;
   PJ_source_write_host_vtable_t write_vtable{};
-  PJ::ServiceRegistryBuilder registry;
+  /// Valid only during bind(), like a PlotJuggler 4.0 host's.
+  toolbox_testing::BindScopedRegistry registry;
   FoxgloveSource source;
 };
 
