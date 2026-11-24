@@ -6,224 +6,283 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>905</width>
-    <height>641</height>
+    <width>460</width>
+    <height>560</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
-    <width>640</width>
-    <height>480</height>
+    <width>440</width>
+    <height>420</height>
    </size>
   </property>
   <property name="windowTitle">
    <string>ROS 2 Topic Subscriber</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
    <item>
-    <widget class="QLabel" name="labelStatus">
-     <property name="text">
-      <string>Scanning ROS 2 topics...</string>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QTabWidget" name="tabWidget">
-     <property name="currentIndex">
-      <number>0</number>
-     </property>
-     <property name="framed" stdset="0"><bool>true</bool></property>
-     <widget class="QWidget" name="tabTopicSelector">
-      <attribute name="title">
-       <string>Topic Selector</string>
-      </attribute>
-      <layout class="QVBoxLayout" name="layoutTopicSelector">
-       <item>
-        <widget class="QWidget" name="groupParser" native="true">
-         <layout class="QVBoxLayout" name="layoutParser">
-          <property name="leftMargin">
-           <number>0</number>
-          </property>
-          <property name="topMargin">
-           <number>0</number>
-          </property>
-          <property name="rightMargin">
-           <number>0</number>
-          </property>
-          <property name="bottomMargin">
-           <number>0</number>
-          </property>
+    <widget class="QWidget" name="contentWrap" native="true">
+     <layout class="QVBoxLayout" name="contentWrapLayout">
+      <property name="leftMargin">
+       <number>9</number>
+      </property>
+      <property name="topMargin">
+       <number>9</number>
+      </property>
+      <property name="rightMargin">
+       <number>9</number>
+      </property>
+      <property name="bottomMargin">
+       <number>9</number>
+      </property>
+      <item>
+       <widget class="QLabel" name="labelStatus">
+        <property name="text">
+         <string>Scanning ROS 2 topics...</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QTabWidget" name="tabWidget">
+        <property name="currentIndex">
+         <number>0</number>
+        </property>
+        <property name="framed" stdset="0"><bool>true</bool></property>
+        <widget class="QWidget" name="tabTopicSelector">
+         <attribute name="title">
+          <string>Topic Selector</string>
+         </attribute>
+         <layout class="QVBoxLayout" name="layoutTopicSelector">
           <item>
-           <widget class="QCheckBox" name="checkBoxTimestamp">
-            <property name="toolTip">
-             <string>Reads header.stamp</string>
+           <widget class="QWidget" name="groupParser" native="true">
+            <layout class="QVBoxLayout" name="layoutParser">
+             <property name="leftMargin">
+              <number>0</number>
+             </property>
+             <property name="topMargin">
+              <number>0</number>
+             </property>
+             <property name="rightMargin">
+              <number>0</number>
+             </property>
+             <property name="bottomMargin">
+              <number>0</number>
+             </property>
+             <item>
+              <widget class="QCheckBox" name="checkBoxTimestamp">
+               <property name="toolTip">
+                <string>Reads header.stamp</string>
+               </property>
+               <property name="text">
+                <string>Use the timestamp in the message (if present)</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <layout class="QHBoxLayout" name="layoutArraySize">
+               <item>
+                <widget class="QLabel" name="labelArraySize">
+                 <property name="text">
+                  <string>When an array size exceeds:</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QSpinBox" name="spinBoxArraySize">
+                 <property name="minimum">
+                  <number>10</number>
+                 </property>
+                 <property name="maximum">
+                  <number>9999</number>
+                 </property>
+                 <property name="value">
+                  <number>500</number>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="spacerArraySize">
+                 <property name="orientation">
+                  <enum>Qt::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>40</width>
+                   <height>20</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+               <item>
+                <widget class="QRadioButton" name="radioMaxClamp">
+                 <property name="text">
+                  <string>Clamp</string>
+                 </property>
+                 <property name="checked">
+                  <bool>true</bool>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string>arrayPolicyGroup</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item>
+                <widget class="QRadioButton" name="radioMaxDiscard">
+                 <property name="text">
+                  <string>Skip</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string>arrayPolicyGroup</string>
+                 </attribute>
+                </widget>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="SectionHeaderBand" name="topicsBanner">
+            <property name="text"><string>Topics</string></property>
+            <property name="filterFieldName"><string>lineEditFilter</string></property>
+            <property name="filterPlaceholder"><string>Filter</string></property>
+            <widget class="QPushButton" name="btnSelectAll">
+             <property name="text"><string>Select All</string></property>
+             <property name="toolTip"><string>Select the topics the filter shows (Ctrl+A)</string></property>
+             <property name="styleSheet"><string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string></property>
+            </widget>
+            <widget class="QPushButton" name="btnDeselectAll">
+             <property name="text"><string>Deselect All</string></property>
+             <property name="toolTip"><string>Deselect every topic, also those the filter hides (Ctrl+Shift+A)</string></property>
+             <property name="styleSheet"><string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string></property>
+            </widget>
+           </widget>
+          </item>
+          <item>
+           <widget class="QTableWidget" name="listRosTopics">
+            <property name="selectionMode">
+             <enum>QAbstractItemView::MultiSelection</enum>
+            </property>
+            <property name="selectionBehavior">
+             <enum>QAbstractItemView::SelectRows</enum>
+            </property>
+            <property name="editTriggers">
+             <set>QAbstractItemView::NoEditTriggers</set>
+            </property>
+            <property name="sortingEnabled">
+             <bool>true</bool>
+            </property>
+            <property name="alternatingRowColors">
+             <bool>true</bool>
+            </property>
+            <attribute name="verticalHeaderVisible">
+             <bool>false</bool>
+            </attribute>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="tabAdvancedOptions">
+         <attribute name="title">
+          <string>Advanced Options</string>
+         </attribute>
+         <layout class="QVBoxLayout" name="layoutAdvancedOptions">
+          <item>
+           <widget class="QLabel" name="labelStringParsing">
+            <property name="font">
+             <font>
+              <fontweight>DemiBold</fontweight>
+             </font>
             </property>
             <property name="text">
-             <string>Use the timestamp in the message (if present)</string>
+             <string>String parsing (used for instance in diagnostic_msgs/DiagnosticArray)</string>
             </property>
            </widget>
           </item>
           <item>
-           <layout class="QHBoxLayout" name="layoutArraySize">
-            <item>
-             <widget class="QLabel" name="labelArraySize">
-              <property name="text">
-               <string>When an array size exceeds:</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QSpinBox" name="spinBoxArraySize">
-              <property name="minimum">
-               <number>10</number>
-              </property>
-              <property name="maximum">
-               <number>9999</number>
-              </property>
-              <property name="value">
-               <number>500</number>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <spacer name="spacerArraySize">
-              <property name="orientation">
-               <enum>Qt::Horizontal</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>40</width>
-                <height>20</height>
-               </size>
-              </property>
-             </spacer>
-            </item>
-            <item>
-             <widget class="QRadioButton" name="radioMaxClamp">
-              <property name="text">
-               <string>Clamp</string>
-              </property>
-              <property name="checked">
-               <bool>true</bool>
-              </property>
-              <attribute name="buttonGroup">
-               <string>arrayPolicyGroup</string>
-              </attribute>
-             </widget>
-            </item>
-            <item>
-             <widget class="QRadioButton" name="radioMaxDiscard">
-              <property name="text">
-               <string>Skip</string>
-              </property>
-              <attribute name="buttonGroup">
-               <string>arrayPolicyGroup</string>
-              </attribute>
-             </widget>
-            </item>
-           </layout>
+           <widget class="QCheckBox" name="checkBoxStringSuffix">
+            <property name="text">
+             <string>remove suffixes from numbers (example: &quot;100ms&quot; -&gt; 100)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="checkBoxStringBoolean">
+            <property name="text">
+             <string>convert boolean strings (&quot;false&quot;/&quot;true&quot;) to numbers (0/1)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="spacerAdvancedOptions">
+            <property name="orientation">
+             <enum>Qt::Vertical</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>20</width>
+              <height>40</height>
+             </size>
+            </property>
+           </spacer>
           </item>
          </layout>
         </widget>
-       </item>
-       <item>
-        <widget class="SectionHeaderBand" name="topicsBanner">
-         <property name="text"><string>Topics</string></property>
-         <property name="filterFieldName"><string>lineEditFilter</string></property>
-         <property name="filterPlaceholder"><string>Filter</string></property>
-         <widget class="QPushButton" name="btnSelectAll">
-          <property name="text"><string>Select All</string></property>
-          <property name="toolTip"><string>Select the topics the filter shows (Ctrl+A)</string></property>
-          <property name="styleSheet"><string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string></property>
-         </widget>
-         <widget class="QPushButton" name="btnDeselectAll">
-          <property name="text"><string>Deselect All</string></property>
-          <property name="toolTip"><string>Deselect every topic, also those the filter hides (Ctrl+Shift+A)</string></property>
-          <property name="styleSheet"><string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string></property>
-         </widget>
-        </widget>
-       </item>
-       <item>
-        <widget class="QTableWidget" name="listRosTopics">
-         <property name="selectionMode">
-          <enum>QAbstractItemView::MultiSelection</enum>
-         </property>
-         <property name="selectionBehavior">
-          <enum>QAbstractItemView::SelectRows</enum>
-         </property>
-         <property name="editTriggers">
-          <set>QAbstractItemView::NoEditTriggers</set>
-         </property>
-         <property name="sortingEnabled">
-          <bool>true</bool>
-         </property>
-         <property name="alternatingRowColors">
-          <bool>true</bool>
-         </property>
-         <attribute name="verticalHeaderVisible">
-          <bool>false</bool>
-         </attribute>
-        </widget>
-       </item>
-      </layout>
-     </widget>
-     <widget class="QWidget" name="tabAdvancedOptions">
-      <attribute name="title">
-       <string>Advanced Options</string>
-      </attribute>
-      <layout class="QVBoxLayout" name="layoutAdvancedOptions">
-       <item>
-        <widget class="QLabel" name="labelStringParsing">
-         <property name="font">
-          <font>
-           <fontweight>DemiBold</fontweight>
-          </font>
-         </property>
-         <property name="text">
-          <string>String parsing (used for instance in diagnostic_msgs/DiagnosticArray)</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QCheckBox" name="checkBoxStringSuffix">
-         <property name="text">
-          <string>remove suffixes from numbers (example: &quot;100ms&quot; -&gt; 100)</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QCheckBox" name="checkBoxStringBoolean">
-         <property name="text">
-          <string>convert boolean strings (&quot;false&quot;/&quot;true&quot;) to numbers (0/1)</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <spacer name="spacerAdvancedOptions">
-         <property name="orientation">
-          <enum>Qt::Vertical</enum>
-         </property>
-         <property name="sizeHint" stdset="0">
-          <size>
-           <width>20</width>
-           <height>40</height>
-          </size>
-         </property>
-        </spacer>
-       </item>
-      </layout>
-     </widget>
+       </widget>
+      </item>
+     </layout>
     </widget>
    </item>
    <item>
-    <widget class="QDialogButtonBox" name="buttonBox">
-     <property name="orientation">
-      <enum>Qt::Horizontal</enum>
-     </property>
-     <property name="standardButtons">
-      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
-     </property>
-    </widget>
+    <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,0">
+     <item>
+      <spacer name="horizontalSpacer_2">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QDialogButtonBox" name="buttonBox">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="standardButtons">
+        <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+       </property>
+       <property name="centerButtons">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
   </layout>
  </widget>
