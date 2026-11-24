@@ -55,6 +55,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     const auto visible = visibleRows();
     wd.setTableHeaders("listRosTopics", {"Topic", "Type"});
     PJ::AlwaysIncluded::tableToWidgets(wd, "listRosTopics", visible, selected_topics_);
+    wd.setListPlaceholder("listRosTopics", "Click to select, Click+Drag to multi-select");
 
     if (visible.empty()) {
       wd.setText("labelStatus", "Scanning ROS 2 topics...");

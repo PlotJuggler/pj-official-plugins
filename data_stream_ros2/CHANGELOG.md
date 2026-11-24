@@ -12,6 +12,7 @@ below; for earlier releases see the git history of `data_stream_ros2/`.
 - The topic table's second column is titled "Type" (was "Datatype"), like the other streamers.
 - The parser options read like the Foxglove Bridge dialog's: "Use the timestamp in the message (if present)" (the tooltip names `header.stamp`), then "When an array size exceeds:" with "Clamp" and "Skip" (were "clamp" and "discard"). The saved configuration is unchanged.
 - OK and Cancel sit in the footer the other streamers use, and the dialog opens at a similar size (460x560, was 905x641) that can be resized larger.
+- The empty topic table shows the hint "Click to select, Click+Drag to multi-select", as the PlotJuggler Bridge does.
 
 ## [1.2.1] - 2026-11-11
 

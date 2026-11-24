@@ -693,6 +693,13 @@ TEST(FoxgloveConnectionTest, SelectAllAndDeselectAllFollowTheFilter) {
   EXPECT_TRUE(nlohmann::json::parse(dialog.widget_data())["buttonBox"].value("ok_enabled", false));
 }
 
+TEST(FoxgloveConnectionTest, AnEmptyTableShowsTheBridgeDialogsHint) {
+  FoxgloveDialog dialog(testOptions());
+  EXPECT_EQ(
+      table(dialog.widget_data(), "topicsList").value("list_placeholder", std::string{}),
+      "Click to select, Click+Drag to multi-select");
+}
+
 TEST(FoxgloveConnectionTest, TransformRowsAreLockedSelectedAndTooltipped) {
   FoxgloveDialog dialog(testOptions());
   connectDialog(dialog, {rosTf(1, "/tf"), foxgloveTf(2, "tf"), channel(3, "/imu")});

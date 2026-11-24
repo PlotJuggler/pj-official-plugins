@@ -97,6 +97,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     // selection is always sent, so Deselect All also clears what the table shows.
     wd.setTableHeaders("topicsList", {"Topic", "Type", "Encoding"});
     PJ::AlwaysIncluded::tableToWidgets(wd, "topicsList", visibleRows(), selected_topic_names_);
+    wd.setListPlaceholder("topicsList", "Click to select, Click+Drag to multi-select");
     wd.setShortcut("btnSelectAll", "Ctrl+A");
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 

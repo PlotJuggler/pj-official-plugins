@@ -13,6 +13,7 @@ below; for earlier releases see the git history of `data_stream_foxglove_bridge/
 - The topic table's columns are titled "Topic", "Type" and "Encoding" (were "Topic Name", "DataType" and "Encoding"), like the other streamers.
 - The timestamp toggle comes before the array limit in the parser options, as in the ROS 2 dialog.
 - The default server host is `127.0.0.1` (was `localhost`), as for the PlotJuggler Bridge.
+- The empty topic table shows the hint "Click to select, Click+Drag to multi-select", as the PlotJuggler Bridge does.
 
 ### Fixed
 - On a PlotJuggler without demand subscriptions, a channel the server advertises again is not subscribed a second time.
