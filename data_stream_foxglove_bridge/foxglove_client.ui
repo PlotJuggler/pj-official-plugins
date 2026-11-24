@@ -45,41 +45,26 @@
       <number>9</number>
      </property>
      <item>
-      <layout class="QGridLayout" name="gridLayout" columnstretch="0,2,1,0">
+      <layout class="QGridLayout" name="gridLayout" columnstretch="1,0">
      <property name="spacing"><number>6</number></property>
-     <item row="0" column="0">
-      <widget class="QLabel" name="labelTransport"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Transport</string></property></widget>
-     </item>
-     <item row="0" column="1">
-      <widget class="QLabel" name="labelAddressHdr"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Address or URL</string></property></widget>
-     </item>
-     <item row="0" column="2">
-      <widget class="QLabel" name="labelPortHdr"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Port</string></property></widget>
+     <item row="0" column="0" colspan="2">
+      <widget class="QLabel" name="labelUrl"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Server URL</string></property></widget>
      </item>
      <item row="1" column="0">
-      <widget class="QComboBox" name="comboBoxTransport">
-       <property name="enabled"><bool>false</bool></property>
-       <!-- Indicator only: the scheme follows a URL typed into lineEditAddress. -->
-       <item><property name="text"><string>ws://</string></property></item>
-       <item><property name="text"><string>wss://</string></property></item>
+      <widget class="QLineEdit" name="lineEditUrl">
+       <property name="placeholderText"><string>ws://127.0.0.1:8765</string></property>
+       <property name="toolTip"><string>The Foxglove server's ws:// or wss:// URL, with any user:password@, path and query, e.g. wss://robot.local:8765. A bare host or host:port gets ws:// and port 8765.</string></property>
+       <property name="minimumSize"><size><width>0</width><height>25</height></size></property>
+       <property name="maximumSize"><size><width>16777215</width><height>25</height></size></property>
       </widget>
      </item>
      <item row="1" column="1">
-      <widget class="QLineEdit" name="lineEditAddress">
-       <property name="placeholderText"><string>host, or ws:// / wss:// URL</string></property>
-       <property name="toolTip"><string>A host name or IP address (used with Port), or a full ws:// or wss:// URL including any path, e.g. wss://robot.local:8765</string></property>
-      </widget>
-     </item>
-     <item row="1" column="2">
-      <widget class="QLineEdit" name="lineEditPort"><property name="placeholderText"><string>8765</string></property></widget>
-     </item>
-     <item row="1" column="3">
       <!-- min height 34 = text + the app QSS button padding (8px each side), so a
            height-compressed layout can never squeeze the label into clipping. -->
       <widget class="QPushButton" name="buttonConnect"><property name="minimumSize"><size><width>110</width><height>34</height></size></property><property name="text"><string>Connect</string></property><property name="checkable"><bool>true</bool></property></widget>
      </item>
-     <item row="2" column="0" colspan="4">
-      <!-- Connecting / retrying in N s with the last error / connected; empty when idle. -->
+     <item row="2" column="0" colspan="2">
+      <!-- Connecting / retrying in N s with the last error / connected; why the URL is invalid; else empty. -->
       <widget class="QLabel" name="labelConnectionStatus">
        <property name="text"><string/></property>
        <property name="wordWrap"><bool>true</bool></property>
@@ -176,7 +161,7 @@
      <item>
       <widget class="SectionHeaderBand" name="channelsBanner">
        <property name="text">
-        <string>Channels</string>
+        <string>Topics</string>
        </property>
        <property name="filterFieldName">
         <string>lineEditFilter</string>
@@ -184,6 +169,16 @@
        <property name="filterPlaceholder">
         <string>Filter</string>
        </property>
+       <widget class="QPushButton" name="btnSelectAll">
+        <property name="text"><string>Select All</string></property>
+        <property name="toolTip"><string>Select the topics the filter shows (Ctrl+A)</string></property>
+        <property name="styleSheet"><string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string></property>
+       </widget>
+       <widget class="QPushButton" name="btnDeselectAll">
+        <property name="text"><string>Deselect All</string></property>
+        <property name="toolTip"><string>Deselect every topic, also those the filter hides (Ctrl+Shift+A)</string></property>
+        <property name="styleSheet"><string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string></property>
+       </widget>
       </widget>
      </item>
      <item>

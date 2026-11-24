@@ -1,11 +1,11 @@
 # WebAssembly build of this plugin, included by PlotJuggler's browser build (cmake/PjWasmPlugin.cmake).
 #
-# Over the browser's own WebSocket (common/websocket's pj_websocket_wasm); its messages are decoded
+# Over the browser's own WebSocket (common/websocket's pj_websocket_wasm pj_always_included); its messages are decoded
 # by the ROS, Protobuf and JSON parsers. A page served over https:// can open only wss://, so a
 # robot's plain ws:// foxglove_bridge needs TLS in front of it.
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/PjWasmPlugin.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../common/websocket/wasm.cmake")
-pj_wasm_common_library(base64)
+pj_wasm_common_library(base64 always_included)
 
 pj_wasm_official_plugin(pj_wasm_foxglove_bridge
   SOURCES foxglove_source.cpp

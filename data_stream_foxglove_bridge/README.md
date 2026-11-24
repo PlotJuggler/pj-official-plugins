@@ -5,11 +5,12 @@ server and streams real-time data via delegated ingest.
 
 ## Features
 
-- WebSocket connection to an address and port, or to a full `ws://` / `wss://` URL
+- WebSocket connection to a server URL typed in one line (see [Configuration](#configuration))
 - The dialog retries a refused or dropped connection with a capped backoff until cancelled; a stream whose connection is lost reconnects every 5 s
 - Connects to current servers (`foxglove.sdk.v1` subprotocol) and older ones (`foxglove.websocket.v1`); nothing to configure
 - Automatic channel discovery via Foxglove `advertise` protocol
-- Topic filtering by name in the dialog
+- Topic filtering by name and type in the dialog, Select All / Deselect All
+- Transform channels always subscribed (see [Configuration](#configuration))
 - Per-channel parser delegation by encoding:
   - `ros2msg` / `omgidl` over CDR → `parser_ros`
   - `protobuf` (binary `FileDescriptorSet` schema, base64-encoded in the advertise) → `parser_protobuf`
@@ -31,6 +32,47 @@ server and streams real-time data via delegated ingest.
 The dialog connects to a Foxglove Bridge server, discovers available
 channels, and lets you select which topics to subscribe to. Parser options
 (array size, clamp/skip, embedded timestamp) are configurable.
+
+| Key | Meaning |
+|---|---|
+| `url` | The server URL, written on save (e.g. `wss://robot.local:8765`). Loading accepts the same forgiving input as the dialog; an invalid one is rejected. |
+| `address`, `port` | Legacy keys, read only when `url` is absent: `ws://<address>:<port>` (default `localhost:8765`). Not written any more. |
+
+The dialog takes the server as one URL line (placeholder `ws://127.0.0.1:8765`). It is
+forgiving: surrounding spaces are ignored, and a bare host or `host:port` (path and query
+allowed) gets `ws://` and, without a port, port 8765. A URL with a scheme is dialed exactly
+as typed, credentials (`user:password@`), path and query included; a `ws://` or `wss://` URL
+without a port uses the scheme's own port. Another scheme, spaces, a missing host, an
+unbracketed IPv6 address or a port outside 1-65535 disables Connect and the status line
+says why.
+
+The last URL the dialog connected to is remembered in PlotJuggler's settings store
+(`pj.settings.v1`, key `durable/last_url`, which survives a browser reload) and fills the
+line next time, unless the configuration names a URL. The remembered copy is cleaned of
+credentials: the `user:password@` part and every query parameter whose name (ignoring
+case, `_` and `-`) contains password, passwd, secret, token, apikey, privatekey or
+credential, or is exactly key, auth, authorization, sig, signature, pwd, pass, session or
+jwt, are dropped; the rest is kept byte for byte. A secret inside the path cannot be
+detected and is remembered. A host without the store (older PlotJuggler) remembers
+nothing. The `url` config key itself is saved as typed, credentials included, so it
+reaches PlotJuggler's per-plugin settings and saved layouts.
+
+**Select All** (Ctrl+A) selects the topics the filter shows; **Deselect All** (Ctrl+Shift+A)
+clears every selection, also those the filter hides.
+
+Transform topics are always subscribed, whatever the selection and the host's demand: every
+advertised channel whose (type, message encoding) is `tf2_msgs/msg/TFMessage` over `cdr` or
+`foxglove.FrameTransform` over `protobuf` (the rule shared with the MCAP loader in
+[`common/always_included`](../common/always_included/include/pj_always_included/always_included.hpp)).
+Their rows are selected, disabled and carry the tooltip "Always loaded: required for 3D
+transform rendering."; a filter never hides them, Deselect All keeps them, and they are not
+written to the saved selection (they are implied). The match is on type, not name: a `/tf`
+of another type is not forced, and a transform the server does not advertise is never
+invented.
+
+To try it, replay the MCAP loader's transform fixture, which advertises `/tf`, `/tf_static`,
+a `foxglove.FrameTransform` channel, a JSON look-alike that is not forced and an ordinary
+channel: `python3 test_scripts/foxglove_mcap_player.py ../data_load_mcap/test_data/test_dialog_whitelist.mcap --loop`.
 
 ## Known Limitations
 

@@ -13,8 +13,11 @@
 
 #include <chrono>
 #include <cstring>
+#include <optional>
+#include <pj_base/sdk/settings_store_host.hpp>
 #include <pj_plugins/host/service_registry_builder.hpp>
 #include <pj_websocket/testing/fake_websocket_client.hpp>
+#include <set>
 #include <string>
 #include <test_support/recording_runtime_host.hpp>
 #include <thread>
@@ -49,13 +52,18 @@ FoxgloveConnectionOptions patientOptions() {
 
 /// One FoxgloveSource bound to a recording host, with test-length deadlines.
 struct FoxgloveFixture {
-  explicit FoxgloveFixture(bool demand_capable = true, FoxgloveConnectionOptions options = testOptions())
+  explicit FoxgloveFixture(
+      bool demand_capable = true, FoxgloveConnectionOptions options = testOptions(),
+      std::optional<PJ_settings_store_t> settings = std::nullopt)
       : host(demand_capable), source(options) {
     fakeSockets().clear();
     write_vtable.abi_version = PJ_PLUGIN_DATA_API_VERSION;
     write_vtable.struct_size = sizeof(write_vtable);
     registry.registerService<PJ::sdk::SourceWriteHostService>(PJ_source_write_host_t{&write_vtable, &write_vtable});
     registry.registerService<PJ::sdk::DataSourceRuntimeHostService>(host.raw());
+    if (settings) {
+      registry.registerService<PJ::sdk::SettingsStoreService>(*settings);
+    }
     EXPECT_TRUE(source.bind(PJ::sdk::ServiceRegistry(registry.view())));
   }
 
@@ -405,7 +413,7 @@ TEST(FoxgloveConnectionTest, StopUnsubscribesAndDropsLateEvents) {
 TEST(FoxgloveConnectionTest, DialogConnectionIsHandedToTheSource) {
   FoxgloveFixture fixture;
   FoxgloveDialog& dialog = fixture.dialog();
-  dialog.onTextChanged("lineEditAddress", "wss://robot.local:8765");
+  dialog.onTextChanged("lineEditUrl", "wss://robot.local:8765");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   FakeSocket& socket = fixture.lastSocket();
   EXPECT_EQ(socket.url, "wss://robot.local:8765");
@@ -437,7 +445,7 @@ TEST(FoxgloveConnectionTest, DialogConnectionIsHandedToTheSource) {
 TEST(FoxgloveConnectionTest, EventsTheDialogHasNotDrainedReachTheSource) {
   FoxgloveFixture fixture;
   FoxgloveDialog& dialog = fixture.dialog();
-  dialog.onTextChanged("lineEditAddress", "robot");
+  dialog.onTextChanged("lineEditUrl", "robot");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   FakeSocket& socket = fixture.lastSocket();
   socket.acceptConnection();
@@ -453,7 +461,7 @@ TEST(FoxgloveConnectionTest, EventsTheDialogHasNotDrainedReachTheSource) {
 TEST(FoxgloveConnectionTest, LegacyHostSubscribesTheDialogSelectionOnAnAdoptedConnection) {
   FoxgloveFixture fixture(/*demand_capable=*/false);
   FoxgloveDialog& dialog = fixture.dialog();
-  dialog.onTextChanged("lineEditAddress", "robot");
+  dialog.onTextChanged("lineEditUrl", "robot");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   FakeSocket& socket = fixture.lastSocket();
   socket.acceptConnection();
@@ -471,7 +479,7 @@ TEST(FoxgloveConnectionTest, LegacyHostSubscribesTheDialogSelectionOnAnAdoptedCo
 TEST(FoxgloveConnectionTest, AChannelRemovedWhileTheDialogIsOpenIsNotHandedToTheSource) {
   FoxgloveFixture fixture;
   FoxgloveDialog& dialog = fixture.dialog();
-  dialog.onTextChanged("lineEditAddress", "robot");
+  dialog.onTextChanged("lineEditUrl", "robot");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   FakeSocket& socket = fixture.lastSocket();
   socket.acceptConnection();
@@ -496,7 +504,7 @@ TEST(FoxgloveConnectionTest, AChannelRemovedWhileTheDialogIsOpenIsNotHandedToThe
 TEST(FoxgloveConnectionTest, AnAdoptedConnectionIsRedialledWithTheFoxgloveSubprotocols) {
   FoxgloveFixture fixture;
   FoxgloveDialog& dialog = fixture.dialog();
-  dialog.onTextChanged("lineEditAddress", "robot");
+  dialog.onTextChanged("lineEditUrl", "robot");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   fixture.lastSocket().acceptConnection();
   ASSERT_TRUE(dialog.onTick());
@@ -515,7 +523,7 @@ TEST(FoxgloveConnectionTest, AnAdoptedConnectionIsRedialledWithTheFoxgloveSubpro
 TEST(FoxgloveConnectionTest, DialogClearsTheCatalogWhenTheConnectionDrops) {
   fakeSockets().clear();
   FoxgloveDialog dialog(testOptions());
-  dialog.onTextChanged("lineEditAddress", "robot");
+  dialog.onTextChanged("lineEditUrl", "robot");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   const auto socket = fakeSockets().back();
   socket->acceptConnection();
@@ -531,10 +539,16 @@ TEST(FoxgloveConnectionTest, DialogClearsTheCatalogWhenTheConnectionDrops) {
 
 TEST(FoxgloveConnectionTest, DialogKeepsAddressAndPortConfigCompatible) {
   FoxgloveDialog dialog;
+  EXPECT_EQ(dialog.endpoint(), "ws://localhost:8765");
   ASSERT_TRUE(dialog.loadConfig(R"({"address":"10.0.0.2","port":9000})"));
   EXPECT_EQ(dialog.endpoint(), "ws://10.0.0.2:9000");
-  ASSERT_TRUE(dialog.loadConfig(R"({})"));
-  EXPECT_EQ(dialog.endpoint(), "ws://localhost:8765");
+  // Saved back as one url.
+  const auto saved = nlohmann::json::parse(dialog.saveConfig());
+  EXPECT_EQ(saved.value("url", std::string{}), "ws://10.0.0.2:9000");
+  EXPECT_FALSE(saved.contains("address"));
+  EXPECT_FALSE(saved.contains("port"));
+  ASSERT_TRUE(dialog.loadConfig(R"({})"));  // a config without an endpoint keeps the URL
+  EXPECT_EQ(dialog.endpoint(), "ws://10.0.0.2:9000");
   EXPECT_FALSE(dialog.loadConfig(R"({"port":"not a number"})"));
   EXPECT_FALSE(dialog.loadConfig(R"({"port":70000})"));  // not truncated to 4464
   EXPECT_FALSE(dialog.loadConfig(R"({"port":-1})"));
@@ -542,14 +556,241 @@ TEST(FoxgloveConnectionTest, DialogKeepsAddressAndPortConfigCompatible) {
   EXPECT_EQ(dialog.endpoint(), "ws://localhost:65535");
 }
 
-// The transport indicator follows the URL's scheme, so switching it must refresh the widgets.
-TEST(FoxgloveConnectionTest, DialogRefreshesWhenTheUrlSchemeChanges) {
+// Connect and the status line follow the URL's validity, so a change of it refreshes the widgets.
+TEST(FoxgloveConnectionTest, DialogRefreshesWhenTheUrlValidityChanges) {
   FoxgloveDialog dialog;
-  EXPECT_FALSE(dialog.onTextChanged("lineEditAddress", "robot"));
-  EXPECT_TRUE(dialog.onTextChanged("lineEditAddress", "ws://robot:8765"));    // address -> URL
-  EXPECT_TRUE(dialog.onTextChanged("lineEditAddress", "wss://robot:8765"));   // ws -> wss
-  EXPECT_FALSE(dialog.onTextChanged("lineEditAddress", "wss://robot:8766"));  // same scheme
-  EXPECT_TRUE(dialog.onTextChanged("lineEditAddress", "ws://robot:8766"));    // wss -> ws
+  EXPECT_FALSE(dialog.onTextChanged("lineEditUrl", "robot"));
+  EXPECT_EQ(dialog.endpoint(), "ws://robot:8765");
+  EXPECT_TRUE(dialog.onTextChanged("lineEditUrl", "robot:"));  // now invalid
+  EXPECT_FALSE(nlohmann::json::parse(dialog.widget_data())["buttonConnect"].value("enabled", true));
+  EXPECT_TRUE(dialog.onTextChanged("lineEditUrl", "robot:1"));       // valid again
+  EXPECT_FALSE(dialog.onTextChanged("lineEditUrl", "wss://robot"));  // still valid
+  EXPECT_EQ(dialog.endpoint(), "wss://robot");
+}
+
+// --- The remembered URL (pj.settings.v1) ---
+
+TEST(FoxgloveConnectionTest, DialogRemembersTheCleanedUrlAndStartsFromIt) {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost store(backend);
+  {
+    FoxgloveFixture fixture(true, testOptions(), store.view());
+    FoxgloveDialog& dialog = fixture.dialog();
+    EXPECT_EQ(dialog.endpoint(), "ws://localhost:8765");
+    dialog.onTextChanged("lineEditUrl", "wss://me:pw@robot:8765/fg?apikey=k&room=1");
+    ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+    EXPECT_FALSE(backend.getString(PJ::WebSocket::kLastUrlSettingsKey));
+    EXPECT_EQ(fixture.lastSocket().url, "wss://me:pw@robot:8765/fg?apikey=k&room=1");
+    fixture.lastSocket().acceptConnection();
+    dialog.onTick();
+    EXPECT_EQ(backend.getString(PJ::WebSocket::kLastUrlSettingsKey), "wss://robot:8765/fg?room=1");
+  }
+  FoxgloveFixture next(true, testOptions(), store.view());
+  EXPECT_EQ(next.dialog().endpoint(), "wss://robot:8765/fg?room=1");
+}
+
+// --- Channel selection: Select All / Deselect All and the always-subscribed transforms ---
+
+nlohmann::json typedChannel(
+    uint64_t id, const std::string& topic, const std::string& schema_name, const std::string& encoding) {
+  auto ch = channel(id, topic);
+  ch["schemaName"] = schema_name;
+  ch["encoding"] = encoding;
+  if (encoding == "protobuf") {
+    ch["schemaEncoding"] = "protobuf";
+    ch["schema"] = "";
+  }
+  return ch;
+}
+
+nlohmann::json rosTf(uint64_t id, const std::string& topic) {
+  return typedChannel(id, topic, "tf2_msgs/msg/TFMessage", "cdr");
+}
+
+nlohmann::json foxgloveTf(uint64_t id, const std::string& topic) {
+  return typedChannel(id, topic, "foxglove.FrameTransform", "protobuf");
+}
+
+void connectDialog(FoxgloveDialog& dialog, const std::vector<nlohmann::json>& channels) {
+  fakeSockets().clear();
+  dialog.onTextChanged("lineEditUrl", "robot");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  fakeSockets().back()->acceptConnection();
+  fakeSockets().back()->deliverText(advertise(channels));
+  dialog.onTick();
+}
+
+nlohmann::json table(FoxgloveDialog& dialog) {
+  return nlohmann::json::parse(dialog.widget_data())["topicsList"];
+}
+
+std::set<std::string> shownSelection(FoxgloveDialog& dialog) {
+  return table(dialog).value("selected_items", std::set<std::string>{});
+}
+
+std::set<std::string> savedChannels(const FoxgloveDialog& dialog) {
+  std::set<std::string> names;
+  const auto saved = nlohmann::json::parse(dialog.saveConfig());
+  for (const auto& ch : saved["channels"]) {
+    names.insert(ch.value("topic", std::string{}));
+  }
+  return names;
+}
+
+int rowOf(const nlohmann::json& tbl, const std::string& name) {
+  const auto& rows = tbl["rows"];
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i][0] == name) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+std::set<uint64_t> subscribedChannelIds(const FakeSocket& socket) {
+  std::set<uint64_t> ids;
+  for (const auto& text : socket.sent) {
+    const auto frame = nlohmann::json::parse(text);
+    if (frame.value("op", std::string{}) == "subscribe") {
+      for (const auto& sub : frame["subscriptions"]) {
+        ids.insert(sub["channelId"].get<uint64_t>());
+      }
+    }
+  }
+  return ids;
+}
+
+TEST(FoxgloveConnectionTest, SelectAllAndDeselectAllFollowTheFilter) {
+  FoxgloveDialog dialog(testOptions());
+  connectDialog(dialog, {channel(1, "/imu"), channel(2, "/odom"), channel(3, "/odom_raw")});
+  const auto data = nlohmann::json::parse(dialog.widget_data());
+  EXPECT_EQ(data["btnSelectAll"].value("shortcut", std::string{}), "Ctrl+A");
+  EXPECT_EQ(data["btnDeselectAll"].value("shortcut", std::string{}), "Ctrl+Shift+A");
+
+  dialog.onTextChanged("lineEditFilter", "odom");
+  ASSERT_TRUE(dialog.onClicked("btnSelectAll"));
+  dialog.onTextChanged("lineEditFilter", "");
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/odom", "/odom_raw"}));
+
+  // A selection the filter hides survives Select All of other rows, and Deselect All drops it.
+  dialog.onTextChanged("lineEditFilter", "imu");
+  ASSERT_TRUE(dialog.onClicked("btnSelectAll"));
+  EXPECT_EQ(savedChannels(dialog), (std::set<std::string>{"/imu", "/odom", "/odom_raw"}));
+  ASSERT_TRUE(dialog.onClicked("btnDeselectAll"));
+  dialog.onTextChanged("lineEditFilter", "");
+  EXPECT_TRUE(shownSelection(dialog).empty());
+  EXPECT_TRUE(savedChannels(dialog).empty());
+  EXPECT_TRUE(nlohmann::json::parse(dialog.widget_data())["buttonBox"].value("ok_enabled", false));
+}
+
+TEST(FoxgloveConnectionTest, TransformRowsAreLockedSelectedAndTooltipped) {
+  FoxgloveDialog dialog(testOptions());
+  connectDialog(dialog, {rosTf(1, "/tf"), foxgloveTf(2, "tf"), channel(3, "/imu")});
+  const auto tbl = table(dialog);
+  const int ros = rowOf(tbl, "/tf");
+  const int fox = rowOf(tbl, "tf");
+  const int imu = rowOf(tbl, "/imu");
+  ASSERT_GE(ros, 0);
+  ASSERT_GE(fox, 0);
+  ASSERT_GE(imu, 0);
+  EXPECT_EQ(tbl.value("disabled_rows", std::set<int>{}), (std::set<int>{ros, fox}));
+  const auto& tooltips = tbl["cell_tooltips"];
+  EXPECT_EQ(tooltips.value(std::to_string(ros) + ",0", std::string{}), PJ::AlwaysIncluded::kTooltip);
+  EXPECT_EQ(tooltips.value(std::to_string(fox) + ",0", std::string{}), PJ::AlwaysIncluded::kTooltip);
+  EXPECT_FALSE(tooltips.contains(std::to_string(imu) + ",0"));
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf", "tf"}));
+  EXPECT_TRUE(savedChannels(dialog).empty());  // implied, not saved
+}
+
+TEST(FoxgloveConnectionTest, TransformRowsSurviveDeselectAllClicksAndAFilter) {
+  FoxgloveDialog dialog(testOptions());
+  connectDialog(dialog, {rosTf(1, "/tf"), channel(3, "/imu")});
+  ASSERT_TRUE(dialog.onClicked("btnDeselectAll"));
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf"}));
+  ASSERT_TRUE(dialog.onSelectionChanged("topicsList", {"/imu"}));  // the host omits the locked row
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf", "/imu"}));
+  ASSERT_TRUE(dialog.onSelectionChanged("topicsList", {}));
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf"}));
+  dialog.onTextChanged("lineEditFilter", "imu");
+  EXPECT_NE(rowOf(table(dialog), "/tf"), -1);
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf"}));
+}
+
+TEST(FoxgloveConnectionTest, ASavedSelectionOmittingTransformsStillShowsThem) {
+  FoxgloveDialog dialog(testOptions());
+  ASSERT_TRUE(dialog.loadConfig(R"({"url":"ws://robot:8765","channels":[{"topic":"/imu"}]})"));
+  connectDialog(dialog, {rosTf(1, "/tf"), channel(3, "/imu")});
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf", "/imu"}));
+  EXPECT_TRUE(dialog.loadConfig(R"({"url":"ws://robot:8765","channels":[{"topic":"/tf"}]})"));
+}
+
+TEST(FoxgloveConnectionTest, ATfNameOfAnotherTypeIsNotForced) {
+  FoxgloveDialog dialog(testOptions());
+  connectDialog(
+      dialog, {channel(1, "/tf"), typedChannel(2, "tf", "foxglove.FrameTransform", "json"),
+               typedChannel(3, "tf_static", "foxglove.FrameTransforms", "protobuf")});
+  EXPECT_TRUE(table(dialog).value("disabled_rows", std::set<int>{}).empty());
+  EXPECT_TRUE(shownSelection(dialog).empty());
+}
+
+TEST(FoxgloveConnectionTest, AdvertisedTransformsAreSubscribedWithNothingSelected) {
+  FoxgloveFixture fixture;
+  FakeSocket& socket = fixture.startWith({{"url", "ws://robot:8765"}});
+  socket.acceptConnection();
+  socket.deliverText(advertise({channel(1, "/imu"), rosTf(2, "/tf"), foxgloveTf(3, "tf"), channel(4, "tf_static")}));
+  ASSERT_TRUE(fixture.source.poll());
+  EXPECT_EQ(subscribedChannelIds(socket), (std::set<uint64_t>{2, 3}));
+
+  // The host's desired set never drops them.
+  fixture.setActiveTopics({"/imu"});
+  ASSERT_TRUE(fixture.source.poll());
+  EXPECT_EQ(subscribedChannelIds(socket), (std::set<uint64_t>{1, 2, 3}));
+  fixture.setActiveTopics({});
+  ASSERT_TRUE(fixture.source.poll());
+  const auto unsubscribe = nlohmann::json::parse(socket.sent.back());
+  EXPECT_EQ(unsubscribe.value("op", std::string{}), "unsubscribe");
+  EXPECT_EQ(unsubscribe["subscriptionIds"].size(), 1U);
+}
+
+TEST(FoxgloveConnectionTest, TransformsPassASavedAdvertiseFilter) {
+  FoxgloveFixture fixture;
+  FakeSocket& socket =
+      fixture.startWith({{"url", "ws://robot:8765"}, {"channels", nlohmann::json::array({{{"topic", "/imu"}}})}});
+  socket.acceptConnection();
+  socket.deliverText(advertise({channel(1, "/imu"), channel(2, "/odom"), rosTf(3, "/tf")}));
+  ASSERT_TRUE(fixture.source.poll());
+  ASSERT_FALSE(fixture.host.advertisements.empty());
+  EXPECT_EQ(fixture.host.advertisements.back(), (std::vector<std::string>{"/imu", "/tf"}));
+  EXPECT_EQ(subscribedChannelIds(socket), (std::set<uint64_t>{3}));
+}
+
+TEST(FoxgloveConnectionTest, AbsentTransformsAreNotInvented) {
+  FoxgloveFixture fixture;
+  FakeSocket& socket = fixture.startWith({{"url", "ws://robot:8765"}});
+  socket.acceptConnection();
+  socket.deliverText(advertise({channel(1, "/imu")}));
+  ASSERT_TRUE(fixture.source.poll());
+  EXPECT_TRUE(socket.sent.empty());
+}
+
+TEST(FoxgloveConnectionTest, LegacyHostSubscribesTransformsToo) {
+  {
+    FoxgloveFixture fixture(/*demand_capable=*/false);
+    FakeSocket& socket =
+        fixture.startWith({{"url", "ws://robot:8765"}, {"channels", nlohmann::json::array({{{"topic", "/imu"}}})}});
+    socket.acceptConnection();
+    socket.deliverText(advertise({channel(1, "/imu"), rosTf(2, "/tf"), channel(3, "/odom")}));
+    ASSERT_TRUE(fixture.source.poll());
+    EXPECT_EQ(subscribedChannelIds(socket), (std::set<uint64_t>{1, 2}));
+  }
+  // An adopted connection: the dialog's catalog provides them.
+  FoxgloveFixture fixture(/*demand_capable=*/false);
+  FoxgloveDialog& dialog = fixture.dialog();
+  connectDialog(dialog, {channel(1, "/imu"), rosTf(2, "/tf")});
+  dialog.onAccepted("{}");
+  ASSERT_TRUE(fixture.source.start());
+  ASSERT_TRUE(fixture.source.poll());
+  EXPECT_EQ(subscribedChannelIds(*fakeSockets().back()), (std::set<uint64_t>{2}));
 }
 
 }  // namespace

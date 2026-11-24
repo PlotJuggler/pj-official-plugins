@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <pj_always_included/always_included.hpp>
 #include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/streaming_source.hpp>
 #include <set>
@@ -75,9 +76,28 @@ struct SubscriptionDiff {
       topic, selection, [](const ChannelInfo& ch) -> const std::string& { return ch.topic; });
 }
 
+/// Whether a channel is always subscribed, whatever the selection and the host's desired set:
+/// its (schemaName, encoding) is a transform type (see common/always_included). Every rule of
+/// this plugin about forced channels goes through here.
+[[nodiscard]] inline bool isAlwaysSubscribed(const ChannelInfo& ch) {
+  return PJ::AlwaysIncluded::matches(ch.schema_name, ch.encoding);
+}
+
+/// The topics of the advertised, supported channels that are always subscribed. A forced type
+/// the server does not advertise is never invented.
+[[nodiscard]] inline std::set<std::string> alwaysSubscribedTopics(const std::map<uint64_t, ChannelInfo>& advertised) {
+  std::set<std::string> out;
+  for (const auto& [_id, ch] : advertised) {
+    if (isAlwaysSubscribed(ch) && classifyChannel(ch).supported) {
+      out.insert(ch.topic);
+    }
+  }
+  return out;
+}
+
 /// The channel_id -> topic map computeSubscriptionDiff() reconciles against:
 /// supported channels only, restricted by the SAME advertise filter
-/// buildAvailableTopics applies. Advertise and subscribe stay symmetric — a
+/// buildAvailableTopics applies, which always-subscribed channels pass. Advertise and subscribe stay symmetric — a
 /// topic the filter hides from the host is never subscribed either, even if a
 /// (stale) desired set names it: the filter is explicit user configuration and
 /// outranks a leftover layout reference.
@@ -85,7 +105,7 @@ struct SubscriptionDiff {
     const std::map<uint64_t, ChannelInfo>& advertised_channels, const std::vector<ChannelInfo>& selection) {
   std::map<uint64_t, std::string> out;
   for (const auto& [channel_id, ch] : advertised_channels) {
-    if (classifyChannel(ch).supported && passesAdvertiseFilter(ch.topic, selection)) {
+    if (classifyChannel(ch).supported && (passesAdvertiseFilter(ch.topic, selection) || isAlwaysSubscribed(ch))) {
       out[channel_id] = ch.topic;
     }
   }
