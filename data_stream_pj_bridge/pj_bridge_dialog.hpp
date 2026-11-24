@@ -45,8 +45,8 @@ struct DiscoveredTopic {
 ///      connection is retried with a capped backoff until the user cancels; the status label
 ///      shows connecting / retrying in N s with the last error / connected.
 ///   3. Topics populate the table, user selects topics (Select All / Deselect All act on the rows
-///      the filter shows). Transform topics are always subscribed: their rows are selected,
-///      locked and tooltipped, and saved with the selection (PJ::AlwaysIncluded's locked table).
+///      the filter shows). Transform topics are locked rows (PJ::AlwaysIncluded's locked table):
+///      shown selected and tooltipped, never saved with the selection.
 ///   4. User clicks OK
 ///   5. saveConfig() returns the full config for the source plugin
 ///
@@ -121,14 +121,10 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
     link_.toWidgets(wd, endpoint_);
 
-    // Topic list: case-insensitive filter on name AND type. Always-subscribed rows are shown
-    // selected, disabled and tooltipped. The selection is always sent, so Deselect All also
-    // clears what the table shows.
+    // Topic list: case-insensitive filter on name AND type; transform rows are locked. The
+    // selection is always sent, so Deselect All also clears what the table shows.
     wd.setTableHeaders("topicsList", {"Topic", "Type"});
     PJ::AlwaysIncluded::tableToWidgets(wd, "topicsList", visibleRows(), selected_topic_names_);
-    wd.setListPlaceholder("topicsList", "Click to select, Click+Drag to multi-select");
-    wd.setShortcut("btnSelectAll", "Ctrl+A");
-    wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
     // OK button: connected-only. The topic selection below is no longer a
     // subscribe requirement — see the "topics" config key's dual role in
@@ -160,13 +156,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       }
       return true;
     }
-    if (widget_name == "btnSelectAll") {
-      PJ::AlwaysIncluded::selectAll(selected_topic_names_, visibleRows());
-      snapshotSelectedTopics();
-      return true;
-    }
-    if (widget_name == "btnDeselectAll") {
-      PJ::AlwaysIncluded::deselectAll(selected_topic_names_, visibleRows());
+    if (PJ::AlwaysIncluded::applySelectButton(widget_name, selected_topic_names_, visibleRows())) {
       snapshotSelectedTopics();
       return true;
     }
@@ -317,26 +307,15 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       listed.insert(t.name);
     }
     std::erase_if(selected_topic_names_, [&](const std::string& name) { return !listed.contains(name); });
-    // The always-subscribed topics join the saved selection as soon as they are listed. Copies:
-    // appending to the snapshot moves its strings.
-    std::set<std::string> saved;
-    for (const auto& t : selected_topics_snapshot_) {
-      saved.insert(t.name);
-    }
-    for (const auto& t : topics_) {
-      if (isLocked(t) && !saved.contains(t.name)) {
-        selected_topics_snapshot_.push_back(t);
-      }
-    }
   }
 
-  /// Snapshot the full schema info for the selected and locked topics so saveConfig()
+  /// Snapshot the full schema info for selected topics so saveConfig()
   /// doesn't depend on topics_ (which gets cleared on disconnect).
   void snapshotSelectedTopics() {
     std::lock_guard<std::mutex> lock(topics_mutex_);
     selected_topics_snapshot_.clear();
     for (const auto& t : topics_) {
-      if (selected_topic_names_.contains(t.name) || isLocked(t)) {
+      if (selected_topic_names_.contains(t.name)) {
         selected_topics_snapshot_.push_back(t);
       }
     }
@@ -355,7 +334,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     return rows;
   }
 
-  /// Always subscribed (a transform): shown selected and locked, saved with the selection.
+  /// A transform: a locked row.
   static bool isLocked(const DiscoveredTopic& t) {
     return PJ::AlwaysIncluded::matchesRos2(t.schema_name);
   }
@@ -385,7 +364,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   mutable std::mutex topics_mutex_;
   std::vector<DiscoveredTopic> topics_;
-  std::set<std::string> selected_topic_names_;  ///< the user's selection; locked topics need not be in it
+  std::set<std::string> selected_topic_names_;  ///< the user's selection, what saveConfig() saves
   std::vector<DiscoveredTopic> selected_topics_snapshot_;
   int tick_count_ = 0;
   uint32_t request_id_ = 1;

@@ -67,40 +67,27 @@ struct SubscriptionDiff {
   return diff;
 }
 
-/// Whether a channel is always subscribed, whatever the selection and the host's desired set:
-/// its (schemaName, encoding) is a transform type (see common/always_included). Every rule of
-/// this plugin about forced channels goes through here.
-[[nodiscard]] inline bool isAlwaysSubscribed(const ChannelInfo& ch) {
+/// Whether a channel's (schemaName, encoding) is a transform type (see
+/// common/always_included): its dialog row is locked and the advertise filter
+/// never hides it.
+[[nodiscard]] inline bool isTransform(const ChannelInfo& ch) {
   return PJ::AlwaysIncluded::matches(ch.schema_name, ch.encoding);
 }
 
-/// Whether `topic` should be advertised under an (optional) advertise filter —
+/// Whether `ch` should be advertised under an (optional) advertise filter —
 /// the dialog's saved channel selection, repurposed in demand mode as an
-/// allow-list rather than a subscribe list. A selection that is EMPTY, or holds
-/// only always-subscribed channels (the dialog saves them too), means "no
-/// filter, advertise everything" (the default when nothing is selected).
-[[nodiscard]] inline bool passesAdvertiseFilter(const std::string& topic, const std::vector<ChannelInfo>& selection) {
-  return std::all_of(selection.begin(), selection.end(), isAlwaysSubscribed) ||
+/// allow-list rather than a subscribe list. An EMPTY selection means "no
+/// filter, advertise everything" (the default when nothing is selected). A
+/// transform channel always passes.
+[[nodiscard]] inline bool passesAdvertiseFilter(const ChannelInfo& ch, const std::vector<ChannelInfo>& selection) {
+  return isTransform(ch) ||
          PJ::sdk::passesSelectionFilter(
-             topic, selection, [](const ChannelInfo& ch) -> const std::string& { return ch.topic; });
-}
-
-/// The topics of the advertised channels that are always subscribed. A forced type the server
-/// does not advertise is never invented. An unsupported one is never subscribed either:
-/// filteredAdvertisedTopics() leaves it out of what the subscription diff may subscribe.
-[[nodiscard]] inline std::set<std::string> alwaysSubscribedTopics(const std::map<uint64_t, ChannelInfo>& advertised) {
-  std::set<std::string> out;
-  for (const auto& [_id, ch] : advertised) {
-    if (isAlwaysSubscribed(ch)) {
-      out.insert(ch.topic);
-    }
-  }
-  return out;
+             ch.topic, selection, [](const ChannelInfo& sel) -> const std::string& { return sel.topic; });
 }
 
 /// The channel_id -> topic map computeSubscriptionDiff() reconciles against:
 /// supported channels only, restricted by the SAME advertise filter
-/// buildAvailableTopics applies, which always-subscribed channels pass. Advertise and subscribe stay symmetric — a
+/// buildAvailableTopics applies. Advertise and subscribe stay symmetric — a
 /// topic the filter hides from the host is never subscribed either, even if a
 /// (stale) desired set names it: the filter is explicit user configuration and
 /// outranks a leftover layout reference.
@@ -108,7 +95,7 @@ struct SubscriptionDiff {
     const std::map<uint64_t, ChannelInfo>& advertised_channels, const std::vector<ChannelInfo>& selection) {
   std::map<uint64_t, std::string> out;
   for (const auto& [channel_id, ch] : advertised_channels) {
-    if (classifyChannel(ch).supported && (passesAdvertiseFilter(ch.topic, selection) || isAlwaysSubscribed(ch))) {
+    if (classifyChannel(ch).supported && passesAdvertiseFilter(ch, selection)) {
       out[channel_id] = ch.topic;
     }
   }

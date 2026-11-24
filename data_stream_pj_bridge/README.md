@@ -9,7 +9,7 @@ streaming using the PJ binary protocol.
 - Runs on the desktop (IXWebSocket) and in the browser build (`<emscripten/websocket.h>`)
 - Topic discovery with periodic refresh (~1s) while dialog is open
 - Case-insensitive topic filter in the dialog (matches name and type), Select All / Deselect All
-- Transform topics always subscribed (see [Connection settings](#connection-settings))
+- Transform topics locked in the dialog and always advertised (see [Connection settings](#connection-settings))
 - Binary frame parsing: ZSTD-compressed multi-message payloads
 - Delegated ingest with per-topic parser binding
 - Parser options: array size, clamp/skip, embedded timestamp
@@ -23,7 +23,7 @@ streaming using the PJ binary protocol.
 | `url` | The server URL (e.g. `wss://robot.local:8443/bridge`), saved normalized. Loading accepts the same forgiving input as the dialog; an invalid one is rejected. |
 | `address`, `port` | Legacy keys, read only when `url` is absent: `ws://<address>:<port>` (default `127.0.0.1:9090`, the bridge server's default port). Never written. |
 
-The dialog takes the server as one URL line (placeholder `ws://127.0.0.1:9090`); a bare host
+The dialog takes the server as one URL line (`ws://127.0.0.1:9090` by default); a bare host
 or `host:port` gets `ws://` and port 9090. Which URLs are accepted or refused (credentials and
 fragments are), how the URL is saved, and how the last connected URL is remembered and cleaned
 of secrets: [The server URL](../common/websocket/README.md#the-server-url).
@@ -34,16 +34,16 @@ the status line under the URL shows connecting, retrying in N s with the last er
 connected.
 
 **Select All** (Ctrl+A) selects the topics the filter shows; **Deselect All** (Ctrl+Shift+A)
-clears every selection, also those the filter hides.
+clears every selection. The filter never hides a selected topic.
 
-Transform topics are always subscribed, whatever the selection and the host's demand: every
-advertised topic of type `tf2_msgs/msg/TFMessage` (the bridge serves ROS 2 topics, all CDR, so
-the topic's `encoding` field is not consulted). Their rows are locked and selected, and they are
-saved with the selection; the rule, shared with the MCAP loader and the other streamers, is in
+Transform topics are every advertised topic of type `tf2_msgs/msg/TFMessage` (the bridge
+serves ROS 2 topics, all CDR, so the topic's `encoding` field is not consulted). Their rows are
+locked, and the selection never filters them out; the rule, shared with the MCAP loader and the
+other streamers, is in
 [`always_included.hpp`](../common/always_included/include/pj_always_included/always_included.hpp).
 
 To try it, replay the MCAP loader's transform fixture (`/tf`, `/tf_static`, a
-Foxglove `transforms` topic that is not forced, `/near_miss_encoding`, which is forced here
+Foxglove `transforms` topic that is not locked, `/near_miss_encoding`, which is locked here
 because only the type counts, and an ordinary topic): `python3 test_scripts/pj_bridge_mcap_player.py ../data_load_mcap/test_data/test_dialog_whitelist.mcap --loop`.
 
 Starting the stream never waits for the network: `start()` only begins connecting, and
@@ -94,8 +94,7 @@ back to the original behavior exactly: it subscribes to the dialog's selected
 topics up front and streams them. In this mode the dialog's topic selection is
 the subscribe list. In demand mode that same selection becomes an **optional
 advertise filter** — leave it empty to advertise (and let the host subscribe to)
-everything. The always-subscribed transforms saved with the selection do not count: a
-selection of transforms only is no filter.
+everything.
 
 ### Threading and transport
 

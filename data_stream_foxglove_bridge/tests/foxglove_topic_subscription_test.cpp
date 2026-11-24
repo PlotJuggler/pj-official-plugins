@@ -153,21 +153,6 @@ TEST(ComputeSubscriptionDiffTest, MixedAddAndDropInOneDiff) {
   EXPECT_EQ(diff.to_subscribe_channel_ids[0], 30U);
 }
 
-// --- passesAdvertiseFilter ---
-
-TEST(PassesAdvertiseFilterTest, EmptySelectionAdvertisesEverything) {
-  EXPECT_TRUE(passesAdvertiseFilter("/any/topic", {}));
-}
-
-TEST(PassesAdvertiseFilterTest, NonEmptySelectionRestrictsToSelection) {
-  std::vector<ChannelInfo> selection(1);
-  selection[0].topic = "/camera/image";
-  EXPECT_TRUE(passesAdvertiseFilter("/camera/image", selection));
-  EXPECT_FALSE(passesAdvertiseFilter("/odom", selection));
-}
-
-// --- filteredAdvertisedTopics: the filter bounds SUBSCRIPTIONS, not just advertising ---
-
 ChannelInfo supportedChannel(uint64_t id, const std::string& topic) {
   ChannelInfo ch;
   ch.id = id;
@@ -178,6 +163,29 @@ ChannelInfo supportedChannel(uint64_t id, const std::string& topic) {
   ch.schema_encoding = "ros2msg";
   return ch;
 }
+
+// --- passesAdvertiseFilter ---
+
+TEST(PassesAdvertiseFilterTest, EmptySelectionAdvertisesEverything) {
+  EXPECT_TRUE(passesAdvertiseFilter(supportedChannel(1, "/any/topic"), {}));
+}
+
+TEST(PassesAdvertiseFilterTest, NonEmptySelectionRestrictsToSelection) {
+  const std::vector<ChannelInfo> selection = {supportedChannel(1, "/camera/image")};
+  EXPECT_TRUE(passesAdvertiseFilter(supportedChannel(1, "/camera/image"), selection));
+  EXPECT_FALSE(passesAdvertiseFilter(supportedChannel(2, "/odom"), selection));
+}
+
+TEST(PassesAdvertiseFilterTest, ATransformPassesWhateverTheSelection) {
+  const std::vector<ChannelInfo> selection = {supportedChannel(1, "/camera/image")};
+  auto tf = supportedChannel(2, "/tf");
+  tf.schema_name = "tf2_msgs/msg/TFMessage";
+  EXPECT_TRUE(passesAdvertiseFilter(tf, selection));
+  tf.encoding = "json";  // keyed on (schema, encoding)
+  EXPECT_FALSE(passesAdvertiseFilter(tf, selection));
+}
+
+// --- filteredAdvertisedTopics: the filter bounds SUBSCRIPTIONS, not just advertising ---
 
 TEST(FilteredAdvertisedTopicsTest, FilteredOutDesiredTopicProducesNoSubscription) {
   std::map<uint64_t, ChannelInfo> advertised;

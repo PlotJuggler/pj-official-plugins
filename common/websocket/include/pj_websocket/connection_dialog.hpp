@@ -21,6 +21,8 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_base/sdk/service_registry.hpp>
+#include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/sdk/endpoint.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <pj_websocket/url.hpp>
@@ -33,9 +35,9 @@
 namespace PJ::WebSocket {
 
 /// Settings key (service pj.settings.v1, namespaced per plugin by the host) of the last URL a
-/// dialog connected to, stored cleaned of credentials (cleanUrl). The `durable/` prefix is the
-/// host's convention for a key that survives a browser reload (values up to 2048 characters);
-/// on the desktop it is an ordinary key.
+/// dialog connected to, stored cleaned (cleanUrl: no userinfo, query or fragment). The
+/// `durable/` prefix is the host's convention for a key that survives a browser reload (values
+/// up to 2048 characters); on the desktop it is an ordinary key.
 inline constexpr std::string_view kLastUrlSettingsKey = "durable/last_url";
 
 /// Where a dialog connects: the one URL line (widget lineEditUrl), its config key and the
@@ -59,7 +61,7 @@ class Endpoint {
     return text_;
   }
 
-  /// url(), or the raw text when it is not a URL (dialing it then fails with a clear error).
+  /// url(), or the text as typed when it is not a URL.
   [[nodiscard]] std::string str() const {
     return url_ ? *url_ : text_;
   }
@@ -75,23 +77,34 @@ class Endpoint {
     return error() != before;
   }
 
-  /// Writes "url": the URL that is dialed (normalized), or the text as typed when it is not one.
+  /// Writes "url", the URL that is dialed (normalized); nothing when the line is not a URL, so
+  /// a saved config always loads.
   void save(nlohmann::json& cfg) const {
-    cfg["url"] = str();
+    if (url_) {
+      cfg["url"] = *url_;
+    }
   }
 
   /// Reads "url", else the legacy "address" / "port", composed into ws://address:port (the
   /// default host or port for the missing one). Either way the URL must pass normalizeUrl. A
-  /// config with none of them leaves the URL as it is. False for a "url" that is not a string,
-  /// or a URL normalizeUrl refuses. Throws nlohmann::json::exception for a wrong-typed address
-  /// or port.
+  /// "url" loses its userinfo and fragment first: configs saved by earlier versions may hold
+  /// them, and IXWebSocket ignored both and connected. A config with none of these keys leaves
+  /// the URL as it is. False for a "url" that is not a string, or a URL normalizeUrl refuses.
+  /// Throws nlohmann::json::exception for a wrong-typed address or port.
   [[nodiscard]] bool load(const nlohmann::json& cfg) {
     std::string text;
     if (const auto it = cfg.find("url"); it != cfg.end()) {
       if (!it->is_string()) {
         return false;
       }
-      text = it->get<std::string>();
+      const std::string stored = it->get<std::string>();
+      const UrlParts parts = splitUrl(stored);
+      if (parts.scheme) {
+        text = std::string(*parts.scheme) + "://";
+      }
+      const auto at = parts.authority.rfind('@');
+      text += at == std::string_view::npos ? parts.authority : parts.authority.substr(at + 1);
+      text += parts.rest.substr(0, parts.rest.find('#'));
     } else if (cfg.contains("address") || cfg.contains("port")) {
       std::string address = cfg.value("address", std::string{});
       text = PJ::sdk::composeEndpoint(
@@ -107,9 +120,14 @@ class Endpoint {
     return true;
   }
 
+  /// bind(SettingsView) with the store `services` holds, if any. Call from the source's bind():
+  /// on PlotJuggler 4.0 hosts the registry lives only for that call; the view outlives it.
+  void bind(const PJ::sdk::ServiceRegistry& services) {
+    bind(services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{}));
+  }
+
   /// Binds the host's optional settings store (pj.settings.v1; an unbound view when the host has
-  /// none) and, unless a config already named the URL, starts from the remembered one. Call from
-  /// the source's bind(): the view outlives the registry it came from.
+  /// none) and, unless a config already named the URL, starts from the remembered one.
   void bind(PJ::sdk::SettingsView settings) {
     settings_ = settings;
     if (!settings_.valid() || from_config_) {
@@ -123,7 +141,7 @@ class Endpoint {
     }
   }
 
-  /// Stores `dialed`, cleaned of credentials (cleanUrl), as the URL to start from next time.
+  /// Stores `dialed`, cleaned (cleanUrl), as the URL to start from next time.
   /// Call once a connection to it opened. No-op without a store.
   void remember(const std::string& dialed) const {
     if (settings_.valid()) {
@@ -266,8 +284,8 @@ class DialogConnection {
     kConnected,
   };
 
-  /// Connecting / retrying in N s with the last error / connected; empty when idle. The URL is
-  /// shown cleaned (cleanUrl): no token on screen.
+  /// Connecting / retrying in N s with the last error / connected; empty when idle. The URL,
+  /// also where the last error quotes it, is shown cleaned (cleanUrl): no token on screen.
   [[nodiscard]] std::string status() const {
     switch (state_) {
       case State::kIdle:
@@ -299,7 +317,7 @@ class DialogConnection {
     if (handlers_.on_lost) {
       handlers_.on_lost();
     }
-    last_error_ = reason.empty() ? "connection closed" : reason;
+    last_error_ = reason.empty() ? "connection closed" : withCleanUrl(reason, url_);
     state_ = State::kRetrying;
     next_attempt_ = Clock::now() + retry_delay_;
     retry_delay_ = std::min(retry_delay_ * 2, options_.retry_max);

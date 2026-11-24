@@ -4,10 +4,9 @@
 /// @brief The server URL a websocket streamer's dialog takes in one line, and the copy of it that
 ///  may be remembered.
 ///   - normalizeUrl(): what the user typed -> the URL to dial, or why it is not one.
-///   - cleanUrl(): a URL without its credentials, the only form a streamer stores in settings or
-///     shows in a status line or message.
+///   - cleanUrl(): a URL without its userinfo, query and fragment, the only form a streamer stores
+///     in settings or shows in a status line or message.
 
-#include <array>
 #include <cctype>
 #include <cstdint>
 #include <optional>
@@ -98,6 +97,8 @@ struct UrlParts {
 ///  - Without a scheme, `ws://` is prepended and, without a port, `:default_port` is appended to
 ///    the host: `robot` -> `ws://robot:9090`, `robot/bridge` -> `ws://robot:9090/bridge`.
 ///  - A URL with a scheme but no port is kept as is (the scheme's own port 80 / 443).
+///  - A query right after the authority gets a '/' before it: `robot:1?t=a` -> `ws://robot:1/?t=a`
+///    (IXWebSocket reads the port up to the next '/').
 /// Fails, with a message for the status line, on empty text, another scheme, whitespace inside,
 /// credentials (`user:pass@`: IXWebSocket parses and drops them and browsers do not send them),
 /// a fragment ('#', which RFC 6455 forbids in a WebSocket URI), a missing host, an unbracketed
@@ -136,52 +137,16 @@ struct UrlParts {
   if (!parts.scheme && !has_port) {
     out += ':' + std::to_string(default_port);
   }
+  if (parts.rest.starts_with('?')) {
+    out += '/';
+  }
   out += parts.rest;
   return out;
 }
 
-/// Whether a query parameter named `name` may carry a secret: the name, percent-decoded and
-/// compared ignoring case, '_' and '-', CONTAINS password, passwd, passphrase, secret, token,
-/// apikey, accesskey, authkey, privatekey or credential (PlotJuggler's MCP redaction rule and
-/// common URL names), or IS one of the short names key, auth, authorization, sig, signature, pwd,
-/// pw, pass, session, jwt, x-amz-signature. The short names match only exactly, so `keyframe`,
-/// `passive`, `pwm` or `session_id` are kept.
-[[nodiscard]] inline bool isSecretQueryName(std::string_view name) {
-  std::string folded;
-  for (size_t i = 0; i < name.size(); ++i) {
-    char c = name[i];
-    if (c == '%' && i + 2 < name.size() && std::isxdigit(static_cast<unsigned char>(name[i + 1])) != 0 &&
-        std::isxdigit(static_cast<unsigned char>(name[i + 2])) != 0) {
-      c = static_cast<char>(std::stoi(std::string(name.substr(i + 1, 2)), nullptr, 16));
-      i += 2;
-    }
-    if (c != '_' && c != '-') {
-      folded += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-  }
-  static constexpr std::array<std::string_view, 10> kFragments = {"password",   "passwd",    "passphrase", "secret",
-                                                                  "token",      "apikey",    "accesskey",  "authkey",
-                                                                  "privatekey", "credential"};
-  static constexpr std::array<std::string_view, 11> kExact = {
-      "key", "auth", "authorization", "sig", "signature", "pwd", "pw", "pass", "session", "jwt", "xamzsignature"};
-  for (const auto fragment : kFragments) {
-    if (folded.find(fragment) != std::string::npos) {
-      return true;
-    }
-  }
-  for (const auto exact : kExact) {
-    if (folded == exact) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/// `url` without credentials: the userinfo (`user[:password]@`) and every query parameter whose
-/// name isSecretQueryName() are removed; everything else (scheme, host, port, path, the other
-/// parameters in their order with the separator ('&' or ';') that preceded each, the fragment)
-/// is kept byte for byte. A query left empty loses its '?'. A secret inside the path cannot be
-/// told apart from an ordinary path and is kept.
+/// `url` without what may carry a secret: the userinfo (`user[:password]@`) and everything from
+/// the first '?' or '#' (query and fragment). Scheme, host, port and path are kept byte for byte;
+/// a secret inside the path cannot be told apart from an ordinary path and is kept.
 [[nodiscard]] inline std::string cleanUrl(std::string_view url) {
   const UrlParts parts = splitUrl(url);
   std::string out;
@@ -190,43 +155,21 @@ struct UrlParts {
   }
   const auto at = parts.authority.rfind('@');
   out += at == std::string_view::npos ? parts.authority : parts.authority.substr(at + 1);
-  const std::string_view rest = parts.rest;
-  const auto query = rest.find('?');
-  if (query == std::string_view::npos) {
-    return out + std::string(rest);
-  }
-  out += rest.substr(0, query);
-  const auto fragment = rest.find('#', query);
-  const std::string_view params =
-      rest.substr(query + 1, fragment == std::string_view::npos ? std::string_view::npos : fragment - query - 1);
-  std::string kept;
-  bool any = false;
-  size_t begin = 0;
-  char separator = '&';  // before the first parameter; never written
-  while (begin <= params.size()) {
-    const auto end = params.find_first_of("&;", begin);
-    const std::string_view param =
-        params.substr(begin, end == std::string_view::npos ? std::string_view::npos : end - begin);
-    if (!isSecretQueryName(param.substr(0, param.find('=')))) {
-      if (any) {
-        kept += separator;
-      }
-      kept += param;
-      any = true;
-    }
-    if (end == std::string_view::npos) {
-      break;
-    }
-    separator = params[end];
-    begin = end + 1;
-  }
-  if (any) {
-    out += '?' + kept;
-  }
-  if (fragment != std::string_view::npos) {
-    out += rest.substr(fragment);
-  }
+  out += parts.rest.substr(0, parts.rest.find_first_of("?#"));
   return out;
+}
+
+/// `text` with every occurrence of `url` replaced by cleanUrl(url): a transport error may quote
+/// the URL it dialed.
+[[nodiscard]] inline std::string withCleanUrl(std::string text, std::string_view url) {
+  if (url.empty()) {
+    return text;
+  }
+  const std::string clean = cleanUrl(url);
+  for (auto pos = text.find(url); pos != std::string::npos; pos = text.find(url, pos + clean.size())) {
+    text.replace(pos, url.size(), clean);
+  }
+  return text;
 }
 
 }  // namespace PJ::WebSocket

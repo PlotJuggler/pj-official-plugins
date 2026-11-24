@@ -4,20 +4,17 @@
 
 /// @file locked_table.hpp
 /// @brief The topic table of a streamer's dialog (PlotJuggler Bridge, Foxglove Bridge, ROS 2),
-///  whose always-included rows are locked, so every such dialog behaves the same:
-///   - a locked row is shown selected, disabled and carries kTooltip;
-///   - Select All, Deselect All and a host-reported selection never drop a locked row.
-///  `rows` are the rows the dialog's filter shows, which a filter never hides a locked row from,
-///  so they hold every locked topic the dialog knows. A selection is a set of topic names
-///  (column 0); it may lack the locked ones: withLocked() is what the dialog shows and saves.
+///  whose always-included rows are locked (the rule is in always_included.hpp), so every such
+///  dialog behaves the same. `rows` are the rows the dialog's filter shows, which never hides a
+///  locked row. A selection is a set of topic names (column 0), the one the dialog saves; locked
+///  rows are added only when the table is rendered.
 
-#include <algorithm>
 #include <pj_always_included/always_included.hpp>
-#include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace PJ::AlwaysIncluded {
@@ -28,67 +25,71 @@ struct TableRow {
 };
 using TableRows = std::vector<TableRow>;
 
-/// `selection` plus every locked row: what the dialog shows selected and saves.
-[[nodiscard]] inline std::set<std::string> withLocked(std::set<std::string> selection, const TableRows& rows) {
-  for (const auto& row : rows) {
-    if (row.locked) {
-      selection.insert(row.cells.front());
-    }
-  }
-  return selection;
-}
-
-/// Fills `table` with `rows`, the locked ones disabled with kTooltip, and selects withLocked().
-/// The host matches selected items to rows by first-column text, so a selection the filter
-/// hides is harmless and the selection survives a user sort of the table.
+/// Fills `table` with `rows`, the locked ones disabled with kTooltip, and selects `selection`
+/// plus every locked row. Also sets the table's placeholder and the shortcuts of the dialog's
+/// btnSelectAll (Ctrl+A) and btnDeselectAll (Ctrl+Shift+A). The host matches selected items to
+/// rows by first-column text, so a selection the filter hides is harmless and the selection
+/// survives a user sort of the table.
 inline void tableToWidgets(
-    PJ::WidgetData& wd, std::string_view table, const TableRows& rows, const std::set<std::string>& selection) {
+    PJ::WidgetData& wd, std::string_view table, TableRows rows, const std::set<std::string>& selection) {
   std::vector<std::vector<std::string>> cells;
   std::vector<int> locked;
+  std::vector<std::string> selected(selection.begin(), selection.end());
   cells.reserve(rows.size());
-  for (const auto& row : rows) {
+  for (auto& row : rows) {
     if (row.locked) {
       const int index = static_cast<int>(cells.size());
       locked.push_back(index);
       wd.setCellTooltip(table, index, 0, kTooltip);
+      if (!selection.contains(row.cells.front())) {
+        selected.push_back(row.cells.front());
+      }
     }
-    cells.push_back(row.cells);
+    cells.push_back(std::move(row.cells));
   }
   wd.setTableRows(table, cells);
   wd.setDisabledRows(table, locked);
-  const auto shown = withLocked(selection, rows);
-  wd.setSelectedItems(table, std::vector<std::string>(shown.begin(), shown.end()));
+  wd.setSelectedItems(table, selected);
+  wd.setListPlaceholder(table, "Click to select, Click+Drag to multi-select");
+  wd.setShortcut("btnSelectAll", "Ctrl+A");
+  wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 }
 
-/// Select All: adds every shown row; a selection the filter hides stays.
-inline void selectAll(std::set<std::string>& selection, const TableRows& rows) {
-  for (const auto& row : rows) {
-    if (!row.locked) {
-      selection.insert(row.cells.front());
+/// Applies a click on btnSelectAll (adds every shown unlocked row; a selection the filter hides
+/// stays) or btnDeselectAll (drops every selection, also one the filter hides). False for
+/// another widget.
+inline bool applySelectButton(std::string_view widget_name, std::set<std::string>& selection, const TableRows& rows) {
+  if (widget_name == "btnSelectAll") {
+    for (const auto& row : rows) {
+      if (!row.locked) {
+        selection.insert(row.cells.front());
+      }
     }
+    return true;
   }
-}
-
-/// Deselect All: drops every selection, also one the filter hides; locked rows stay selected.
-inline void deselectAll(std::set<std::string>& selection, const TableRows& rows) {
-  const auto locked = withLocked({}, rows);
-  std::erase_if(selection, [&](const std::string& name) { return !locked.contains(name); });
+  if (widget_name == "btnDeselectAll") {
+    selection.clear();
+    return true;
+  }
+  return false;
 }
 
 /// Applies the selection the host reported. The host reports only the rows it shows, so a
-/// selection the filter hides stays; a locked row it reports or omits changes nothing.
+/// selection the filter hides stays; a locked row it reports is not added.
 inline void applyReported(
     std::set<std::string>& selection, const std::vector<std::string>& reported, const TableRows& rows) {
-  std::set<std::string_view> shown;
+  std::set<std::string_view> locked;
   for (const auto& row : rows) {
-    shown.insert(row.cells.front());
+    selection.erase(row.cells.front());
+    if (row.locked) {
+      locked.insert(row.cells.front());
+    }
   }
-  const auto locked = withLocked({}, rows);
-  const auto merged = PJ::sdk::mergeVisibleSelection(
-      std::vector<std::string>(selection.begin(), selection.end()), reported,
-      [&](const std::string& name) { return shown.contains(name); },
-      [&](const std::string& name) { return !locked.contains(name); });
-  selection = std::set<std::string>(merged.begin(), merged.end());
+  for (const auto& name : reported) {
+    if (!locked.contains(name)) {
+      selection.insert(name);
+    }
+  }
 }
 
 }  // namespace PJ::AlwaysIncluded

@@ -25,9 +25,9 @@ namespace {
 /// Owns the WebSocket connection for channel discovery during the dialog session.
 /// The connection half (one ws:// / wss:// URL line, Connect / Cancel, retry with backoff, status
 /// line, the remembered last URL, handoff on OK) is the one the PlotJuggler Bridge dialog uses.
-/// Select All / Deselect All act on the rows the filter shows; transform channels are always
-/// subscribed: their rows are selected, locked and tooltipped, and saved with the selection
-/// (PJ::AlwaysIncluded's locked table).
+/// Select All / Deselect All act on the rows the filter shows; transform channels are locked
+/// rows (PJ::AlwaysIncluded's locked table): shown selected and tooltipped, never saved with the
+/// selection.
 /// Foxglove sends "advertise" messages automatically upon connection — no explicit
 /// request needed. The dialog populates the channel table and lets the user select.
 class FoxgloveDialog : public PJ::DialogPluginTyped {
@@ -93,13 +93,10 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     wd.setChecked("radioSkip", !clamp_large_arrays_);
     wd.setChecked("checkBoxUseTimestamp", use_timestamp_);
 
-    // Channel list. Always-subscribed rows are shown selected, disabled and tooltipped. The
-    // selection is always sent, so Deselect All also clears what the table shows.
+    // Channel list; transform rows are locked. The selection is always sent, so Deselect All
+    // also clears what the table shows.
     wd.setTableHeaders("topicsList", {"Topic", "Type", "Encoding"});
     PJ::AlwaysIncluded::tableToWidgets(wd, "topicsList", visibleRows(), selected_topic_names_);
-    wd.setListPlaceholder("topicsList", "Click to select, Click+Drag to multi-select");
-    wd.setShortcut("btnSelectAll", "Ctrl+A");
-    wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
     // OK button: connected-only. The channel selection below is no longer a
     // subscribe requirement — see the "channels" config key's dual role in
@@ -156,13 +153,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       }
       return true;
     }
-    if (widget_name == "btnSelectAll") {
-      PJ::AlwaysIncluded::selectAll(selected_topic_names_, visibleRows());
-      snapshotSelectedChannels();
-      return true;
-    }
-    if (widget_name == "btnDeselectAll") {
-      PJ::AlwaysIncluded::deselectAll(selected_topic_names_, visibleRows());
+    if (PJ::AlwaysIncluded::applySelectButton(widget_name, selected_topic_names_, visibleRows())) {
       snapshotSelectedChannels();
       return true;
     }
@@ -262,14 +253,14 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
-  /// The table rows the filter shows; an always-subscribed channel's row is locked.
+  /// The table rows the filter shows; a transform channel's row is locked.
   PJ::AlwaysIncluded::TableRows visibleRows() const {
     std::lock_guard<std::mutex> lock(channels_mutex_);
     PJ::AlwaysIncluded::TableRows rows;
     rows.reserve(channels_.size());
     for (const auto& ch : channels_) {
       if (matchesFilter(ch)) {
-        rows.push_back({{ch.topic, ch.schema_name, ch.schema_encoding}, PJ::FoxgloveProtocol::isAlwaysSubscribed(ch)});
+        rows.push_back({{ch.topic, ch.schema_name, ch.schema_encoding}, PJ::FoxgloveProtocol::isTransform(ch)});
       }
     }
     return rows;
@@ -278,7 +269,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   /// Case-insensitive substring match of the active filter against the topic
   /// name and datatype. An empty filter matches everything; locked rows always match.
   bool matchesFilter(const PJ::FoxgloveProtocol::ChannelInfo& ch) const {
-    if (filter_.empty() || PJ::FoxgloveProtocol::isAlwaysSubscribed(ch)) {
+    if (filter_.empty() || PJ::FoxgloveProtocol::isTransform(ch)) {
       return true;
     }
     const std::string lowered_filter = PJ::sdk::lowerAscii(filter_);
@@ -323,28 +314,19 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       // Avoid duplicates (Foxglove may re-advertise)
       const bool exists =
           std::any_of(channels_.begin(), channels_.end(), [&ch](const auto& existing) { return existing.id == ch.id; });
-      if (exists) {
-        continue;
+      if (!exists) {
+        channels_.push_back(std::move(ch));
       }
-      // An always-subscribed channel joins the saved selection as soon as it is advertised.
-      if (PJ::FoxgloveProtocol::isAlwaysSubscribed(ch) &&
-          std::none_of(
-              selected_channels_snapshot_.begin(), selected_channels_snapshot_.end(),
-              [&ch](const auto& saved) { return saved.topic == ch.topic; })) {
-        selected_channels_snapshot_.push_back(ch);
-      }
-      channels_.push_back(std::move(ch));
     }
   }
 
-  /// The selected and always-subscribed channels, one per topic, for saveConfig().
+  /// The selected channels, one per topic, for saveConfig().
   void snapshotSelectedChannels() {
     std::lock_guard<std::mutex> lock(channels_mutex_);
     selected_channels_snapshot_.clear();
     std::set<std::string_view> saved;
     for (const auto& ch : channels_) {
-      if ((selected_topic_names_.contains(ch.topic) || PJ::FoxgloveProtocol::isAlwaysSubscribed(ch)) &&
-          saved.insert(ch.topic).second) {
+      if (selected_topic_names_.contains(ch.topic) && saved.insert(ch.topic).second) {
         selected_channels_snapshot_.push_back(ch);
       }
     }
@@ -362,7 +344,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   /// Read by the source's onStart() (allDiscoveredChannels) as well as the dialog thread.
   mutable std::mutex channels_mutex_;
   std::vector<PJ::FoxgloveProtocol::ChannelInfo> channels_;
-  std::set<std::string> selected_topic_names_;  ///< the user's selection; locked topics need not be in it
+  std::set<std::string> selected_topic_names_;  ///< the user's selection, what saveConfig() saves
   std::vector<PJ::FoxgloveProtocol::ChannelInfo> selected_channels_snapshot_;
 };
 

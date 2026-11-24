@@ -1,6 +1,6 @@
 # pj_always_included: the (schema, encoding) table of channels that topic-selecting plugins
 # (data_load_mcap and the ROS 2 / PlotJuggler Bridge / Foxglove Bridge streamers) always load or
-# subscribe, the tooltip of their locked rows, and the streamers' locked topic table
+# lock, the tooltip of their locked rows, and the streamers' locked topic table
 # (locked_table.hpp). Header-only.
 
 add_library(pj_always_included INTERFACE)
@@ -15,11 +15,8 @@ if(TARGET GTest::gtest_main)
   if(DEFINED PJ_WARNING_FLAGS)
     target_compile_options(pj_always_included_test PRIVATE ${PJ_WARNING_FLAGS})
   endif()
-  # test_support/widget_table.hpp, header-only: included by path, since common/test_support is
-  # configured only for some plugins.
-  target_include_directories(pj_always_included_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
   target_link_libraries(pj_always_included_test PRIVATE
-    pj_always_included nlohmann_json::nlohmann_json GTest::gtest_main
+    pj_always_included pj_test_support nlohmann_json::nlohmann_json GTest::gtest_main
   )
   add_test(NAME pj_always_included_test COMMAND pj_always_included_test)
 endif()

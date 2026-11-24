@@ -11,8 +11,8 @@
 namespace {
 
 using PJ::WebSocket::cleanUrl;
-using PJ::WebSocket::isSecretQueryName;
 using PJ::WebSocket::normalizeUrl;
+using PJ::WebSocket::withCleanUrl;
 
 std::string norm(std::string_view text) {
   auto url = normalizeUrl(text, 9090);
@@ -40,9 +40,16 @@ TEST(NormalizeUrl, ForgivingInput) {
   EXPECT_EQ(norm("10.0.0.2/bridge?x=1"), "ws://10.0.0.2:9090/bridge?x=1");
   // "xxx://" is a scheme only when xxx has none of /?#@: here it is part of the query.
   EXPECT_EQ(norm("robot/x?next=ws://a"), "ws://robot:9090/x?next=ws://a");
-  EXPECT_EQ(norm("robot?u=wss://b:1"), "ws://robot:9090?u=wss://b:1");
+  EXPECT_EQ(norm("robot?u=wss://b:1"), "ws://robot:9090/?u=wss://b:1");
   EXPECT_EQ(norm("[::1]"), "ws://[::1]:9090");
   EXPECT_EQ(norm("WSS://Robot:1"), "wss://Robot:1");  // only the scheme is lowercased
+}
+
+TEST(NormalizeUrl, AQueryRightAfterThePortGetsAPath) {
+  // IXWebSocket reads the port up to the next '/': without one it would swallow the query.
+  EXPECT_EQ(norm("robot:9090?token=abc"), "ws://robot:9090/?token=abc");
+  EXPECT_EQ(norm("ws://robot:9090?token=abc"), "ws://robot:9090/?token=abc");
+  EXPECT_EQ(norm("wss://robot?token=abc"), "wss://robot/?token=abc");
 }
 
 TEST(NormalizeUrl, InvalidInputSaysWhy) {
@@ -81,60 +88,32 @@ TEST(NormalizeUrl, RefusesAFragment) {
 
 // normalizeUrl refuses userinfo, but a status line or a log may still show text it refused.
 TEST(CleanUrl, DropsUserinfo) {
-  EXPECT_EQ(cleanUrl("ws://user:secret@robot:9090/a?x=1"), "ws://robot:9090/a?x=1");
+  EXPECT_EQ(cleanUrl("ws://user:secret@robot:9090/a"), "ws://robot:9090/a");
   EXPECT_EQ(cleanUrl("user:secret@robot:9090"), "robot:9090");
   EXPECT_EQ(cleanUrl("wss://user@robot"), "wss://robot");
-  // The last '@' of the authority ends the userinfo; an '@' in the path or query is not userinfo.
-  EXPECT_EQ(cleanUrl("ws://u:p@ss@robot:1/x@y?m=a@b"), "ws://robot:1/x@y?m=a@b");
+  // The last '@' of the authority ends the userinfo; an '@' in the path is not userinfo.
+  EXPECT_EQ(cleanUrl("ws://u:p@ss@robot:1/x@y"), "ws://robot:1/x@y");
 }
 
-TEST(CleanUrl, DropsEachKindOfSecretParameter) {
-  for (const char* name :
-       {"password", "passwd", "secret", "token", "apikey", "privatekey", "credential", "access_token", "X-Api-Key",
-        "client_secret", "API_KEY", "credentials", "id%5Ftoken"}) {
-    EXPECT_EQ(cleanUrl(std::string("ws://h:1/p?a=1&") + name + "=v&b=2"), "ws://h:1/p?a=1&b=2") << name;
-  }
-  for (const char* name : {"access_key", "AWS_ACCESS_KEY_ID", "auth_key", "passphrase", "wifi-passphrase"}) {
-    EXPECT_EQ(cleanUrl(std::string("ws://h:1/p?a=1&") + name + "=v&b=2"), "ws://h:1/p?a=1&b=2") << name;
-  }
-  for (const char* name :
-       {"key", "auth", "authorization", "sig", "signature", "pwd", "pass", "session", "jwt", "pw", "X-Amz-Signature",
-        "x_amz_signature", "KEY", "Auth"}) {
-    EXPECT_EQ(cleanUrl(std::string("ws://h:1/p?a=1&") + name + "=v&b=2"), "ws://h:1/p?a=1&b=2") << name;
-  }
-}
-
-TEST(CleanUrl, KeepsLookAlikesAndOrder) {
-  // Short names match exactly only.
-  for (const char* name :
-       {"keyframe", "passive", "session_id", "author", "signal", "monkey", "jwtx", "pwm", "x-amz-date",
-        "signature_v"}) {
-    EXPECT_FALSE(isSecretQueryName(name)) << name;
-  }
-  EXPECT_EQ(cleanUrl("ws://h:1/p?z=1&keyframe=2&token=t&a=3&passive=4"), "ws://h:1/p?z=1&keyframe=2&a=3&passive=4");
-}
-
-TEST(CleanUrl, SemicolonSeparatesParametersToo) {
-  EXPECT_EQ(cleanUrl("ws://h:1/p?a=1;token=t;b=2"), "ws://h:1/p?a=1;b=2");
-  EXPECT_EQ(cleanUrl("ws://h:1/p?a=1&token=t;b=2"), "ws://h:1/p?a=1;b=2");
-  EXPECT_EQ(cleanUrl("ws://h:1/p?token=t;a=1&b=2"), "ws://h:1/p?a=1&b=2");
-  EXPECT_EQ(cleanUrl("ws://h:1/p?a=1;b=2"), "ws://h:1/p?a=1;b=2");
-}
-
-TEST(CleanUrl, AnEmbeddedUrlInTheQueryIsNotAScheme) {
-  EXPECT_EQ(cleanUrl("robot:1/x?next=ws://u:p@a&token=t"), "robot:1/x?next=ws://u:p@a");
+TEST(CleanUrl, DropsTheWholeQueryAndFragment) {
+  EXPECT_EQ(cleanUrl("ws://h:1/p?token=t&ns=a"), "ws://h:1/p");
+  EXPECT_EQ(cleanUrl("ws://h:1/?keyframe=1"), "ws://h:1/");
+  EXPECT_EQ(cleanUrl("ws://h:1/p?"), "ws://h:1/p");
+  EXPECT_EQ(cleanUrl("ws://h:1/p#access_token=t"), "ws://h:1/p");
+  EXPECT_EQ(cleanUrl("robot:1?next=ws://u:p@a"), "robot:1");  // an embedded URL in the query is not a scheme
 }
 
 TEST(CleanUrl, EverythingElseIsByteIdentical) {
   EXPECT_EQ(cleanUrl("wss://robot.local:8443/bridge"), "wss://robot.local:8443/bridge");
-  EXPECT_EQ(cleanUrl("ws://h:1/p?a=1&&b=2&c"), "ws://h:1/p?a=1&&b=2&c");
-  EXPECT_EQ(cleanUrl("ws://h:1/p?"), "ws://h:1/p?");
-  EXPECT_EQ(cleanUrl("ws://h:1/p?token=x"), "ws://h:1/p");  // a query left empty loses its '?'
-  EXPECT_EQ(cleanUrl("ws://h:1/p?token=x#frag"), "ws://h:1/p#frag");
-  EXPECT_EQ(cleanUrl("ws://h:1/p?a=1#token=x"), "ws://h:1/p?a=1#token=x");  // the fragment is not the query
-  EXPECT_EQ(cleanUrl("ws://[::1]:9090/?k=v"), "ws://[::1]:9090/?k=v");
+  EXPECT_EQ(cleanUrl("ws://[::1]:9090/a%20b"), "ws://[::1]:9090/a%20b");
   // A secret in the path cannot be detected.
   EXPECT_EQ(cleanUrl("ws://h:1/s3cr3t-path"), "ws://h:1/s3cr3t-path");
+}
+
+TEST(WithCleanUrl, CleansEveryQuoteOfTheUrl) {
+  EXPECT_EQ(withCleanUrl("to ws://h/p?t=1, again ws://h/p?t=1", "ws://h/p?t=1"), "to ws://h/p, again ws://h/p");
+  EXPECT_EQ(withCleanUrl("refused", "ws://h/p?t=1"), "refused");
+  EXPECT_EQ(withCleanUrl("x", ""), "x");
 }
 
 }  // namespace

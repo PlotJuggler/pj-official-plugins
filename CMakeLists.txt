@@ -241,10 +241,7 @@ if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_DERIVED_RECIPES_CON
   add_subdirectory(common/derived_recipes)
 endif()
 # Header-only fake hosts for unit tests (no external dependencies).
-if(NOT DEFINED PJ_BUILD_PLUGIN OR PJ_BUILD_PLUGIN IN_LIST PJ_DERIVED_RECIPES_CONSUMERS OR
-   PJ_BUILD_PLUGIN IN_LIST PJ_WEBSOCKET_CONSUMERS OR PJ_BUILD_PLUGIN STREQUAL "data_stream_ros2")
-  add_subdirectory(common/test_support)
-endif()
+add_subdirectory(common/test_support)
 
 # ---------------------------------------------------------------------------
 # Plugins — use -DPJ_BUILD_PLUGIN=<dir> to build a single plugin (CI mode),

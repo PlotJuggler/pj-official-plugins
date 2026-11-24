@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -50,8 +49,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   /// The default services, plus the optional settings store the dialog remembers its last URL in.
   PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
     auto status = StreamSourceBase::bind(services);
-    // Looked up here, never later: on PlotJuggler 4.0 hosts the registry lives only for the bind() call.
-    dialog_.endpoint().bind(services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{}));
+    dialog_.endpoint().bind(services);
     return status;
   }
 
@@ -284,7 +282,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     topics.reserve(advertised_channels_.size());
 
     for (const auto& [_id, ch] : advertised_channels_) {
-      if (!passesAdvertiseFilter(ch.topic, selected_channels_) && !isAlwaysSubscribed(ch)) {
+      if (!passesAdvertiseFilter(ch, selected_channels_)) {
         continue;
       }
       const ChannelRoute route = classifyChannel(ch);
@@ -333,9 +331,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     // to a now-filtered topic is dropped by the same diff.
     const auto advertised_topics = filteredAdvertisedTopics(advertised_channels_, selected_channels_);
 
-    auto desired = alwaysSubscribedTopics(advertised_channels_);
-    desired.insert(last_applied_desired_.begin(), last_applied_desired_.end());
-    const auto diff = computeSubscriptionDiff(subscriptions_, advertised_topics, desired);
+    const auto diff = computeSubscriptionDiff(subscriptions_, advertised_topics, last_applied_desired_);
 
     if (!diff.to_unsubscribe.empty()) {
       connection_.sendText(buildUnsubscribeMessage(diff.to_unsubscribe));
@@ -380,18 +376,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   void subscribeToSelectedChannels() {
     std::vector<std::string> parser_errors;
 
-    // The always-subscribed channels of the dialog's catalog (seeded into advertised_channels_)
-    // join the selection.
-    std::vector<ChannelInfo> channels = selected_channels_;
-    for (const auto& [_id, ch] : advertised_channels_) {
-      if (isAlwaysSubscribed(ch) && std::none_of(channels.begin(), channels.end(), [&](const ChannelInfo& sel) {
-            return sel.topic == ch.topic;
-          })) {
-        channels.push_back(ch);
-      }
-    }
-
-    for (const auto& ch : channels) {
+    for (const auto& ch : selected_channels_) {
       if (!classifyChannel(ch).supported) {
         parser_errors.push_back(ch.topic + " (" + ch.schema_encoding + "): unsupported encoding");
         continue;
@@ -436,10 +421,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
             break;
           }
         }
-        // A re-advertised channel (same id) that is already subscribed stays as it is.
-        const bool subscribed = std::any_of(
-            subscriptions_.begin(), subscriptions_.end(), [&](const auto& sub) { return sub.second == ch.id; });
-        if ((!user_selected && !isAlwaysSubscribed(ch)) || subscribed) {
+        if (!user_selected) {
           continue;
         }
         if (!classifyChannel(ch).supported) {

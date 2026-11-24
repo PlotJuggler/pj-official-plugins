@@ -70,7 +70,21 @@ TEST_F(SourceConnectionTest, MessagesNameTheUrlWithoutItsSecrets) {
   fakeSockets().at(0)->closeFromServer("");
   auto status = connection.poll();
   ASSERT_FALSE(status);
-  EXPECT_EQ(status.error(), "failed to connect to Test bridge at ws://robot:1/b?ns=a: closed by the server");
+  EXPECT_EQ(status.error(), "failed to connect to Test bridge at ws://robot:1/b: closed by the server");
+}
+
+TEST_F(SourceConnectionTest, ATransportErrorNamingTheUrlShowsItCleaned) {
+  Recorder recorder;
+  SourceConnection connection({.name = "Test bridge", .connect = 1s, .reconnect = std::nullopt}, recorder.handlers());
+  ASSERT_TRUE(connection.start("wss://robot/b?token=SECRET"));
+  // IXWebSocket's handshake errors quote the URL it dialed.
+  fakeSockets().at(0)->sink->push(
+      {PJ::WebSocket::Event::Type::kError, "got 401 status connecting to wss://robot/b?token=SECRET, HTTP 401"});
+  auto status = connection.poll();
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error().find("token="), std::string::npos) << status.error();
+  EXPECT_NE(status.error().find("got 401 status connecting to wss://robot/b, HTTP 401"), std::string::npos)
+      << status.error();
 }
 
 TEST_F(SourceConnectionTest, TheFirstFailureWinsAndStopsTheSocket) {

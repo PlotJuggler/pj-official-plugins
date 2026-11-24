@@ -11,18 +11,19 @@
 ///  (Foxglove's own foxglove.FrameTransform has no fixed topic name; real recordings use "tf",
 ///  "/tf" or something else entirely). The mechanism is generic; kRules is just its data.
 ///
-///  Who decides a channel is present differs:
-///   - the MCAP loader forces a matching channel only when it holds messages (it knows the
-///     file's counts; an empty channel is not selectable at all);
-///   - a streamer forces every matching channel the server advertises, since it cannot know
-///     counts before subscribing. A matching channel the server does not advertise is never
+///  How each plugin applies it:
+///   - the MCAP loader loads a matching channel only when it holds messages (it knows the file's
+///     counts; an empty channel is not selectable at all);
+///   - a streamer never hides a matching channel the server advertises: its advertise filter
+///     (the dialog's saved selection) passes it whatever the selection. PlotJuggler 4.0.0 and
+///     later subscribes every advertised transform topic itself (its streaming manager keeps
+///     FrameTransforms topics in the demand tracker's infrastructure set), so a streamer never
+///     subscribes one on its own. A matching channel the server does not advertise is never
 ///     invented.
-///  In a dialog, a forced row is shown selected, disabled and carries kTooltip; Deselect All, a
-///  host-reported selection or a saved selection that omits it never drops it. A forced channel
-///  is part of the selection the dialog saves, so a host that subscribes exactly the saved
-///  selection (one without demand subscriptions) subscribes it too. A streamer that uses the
-///  saved selection as its advertise filter ignores the forced entries: a selection of forced
-///  channels only still means "no filter". locked_table.hpp is the dialogs' shared table.
+///  In a dialog, a matching row is locked: shown selected, disabled and carrying kTooltip,
+///  whatever the selection. The saved selection is what the user picked and never gains a locked
+///  row; one that names it anyway (a config saved by an earlier version) is an ordinary selected
+///  topic. locked_table.hpp is the streamers' shared table.
 
 #include <array>
 #include <string_view>
@@ -42,7 +43,7 @@ inline constexpr std::array<Rule, 2> kRules = {{
     {"foxglove.FrameTransform", "protobuf"},
 }};
 
-/// The tooltip of a forced (locked) row, the same in every dialog.
+/// The tooltip of a locked row, the same in every dialog.
 inline constexpr std::string_view kTooltip = "Always loaded: required for 3D transform rendering.";
 
 /// True when a channel of this type is always loaded/subscribed. Exact, case-sensitive match.

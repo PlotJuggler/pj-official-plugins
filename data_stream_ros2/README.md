@@ -63,12 +63,10 @@ Above the list, **Use the timestamp in the message (if present)** reads `header.
 **When an array size exceeds** a limit, an array is clamped to it (**Clamp**) or skipped (**Skip**).
 The Advanced Options tab holds the string-parsing switches.
 
-Transform topics are always subscribed, whatever the selection and the host's demand: every
-discovered topic of type `tf2_msgs/msg/TFMessage`. Their rows are locked and selected, and they
-are saved with the selection; the rule, shared with the MCAP loader and the other streamers, is
-in [`always_included.hpp`](../common/always_included/include/pj_always_included/always_included.hpp).
-On a legacy host (no demand subscriptions) without a saved selection naming them, only the
-transforms found by the first discovery scan at start are subscribed.
+Transform topics are every discovered topic of type `tf2_msgs/msg/TFMessage`. Their rows are
+locked, and the selection never filters them out; the rule, shared with the MCAP loader and the
+other streamers, is in
+[`always_included.hpp`](../common/always_included/include/pj_always_included/always_included.hpp).
 
 To try it with a sourced ROS 2:
 

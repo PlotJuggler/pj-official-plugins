@@ -97,29 +97,18 @@ struct SubscriptionDiff {
 /// Whether `topic` should be advertised/subscribed under an (optional) filter —
 /// the dialog's saved topic selection, repurposed in demand mode as an
 /// allow-list rather than a subscribe list. An EMPTY selection means "no
-/// filter, advertise everything" (the default when nothing is selected).
-/// Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
-[[nodiscard]] inline bool passesAdvertiseFilter(const std::string& topic, const std::vector<std::string>& selection) {
-  return PJ::sdk::passesSelectionFilter(
-      topic, selection, [](const std::string& value) -> const std::string& { return value; });
-}
-
-/// The advertised topics that are always subscribed, whatever the selection and the host's
-/// desired set: those of a transform type (PJ::AlwaysIncluded::matchesRos2 on the topic's ROS 2
-/// type). A forced type the server does not advertise is never invented.
-[[nodiscard]] inline std::set<std::string> alwaysSubscribedTopics(const std::map<std::string, TopicInfo>& advertised) {
-  std::set<std::string> out;
-  for (const auto& [name, info] : advertised) {
-    if (PJ::AlwaysIncluded::matchesRos2(info.schema_name)) {
-      out.insert(name);
-    }
-  }
-  return out;
+/// filter, advertise everything" (the default when nothing is selected). A
+/// transform type (PJ::AlwaysIncluded::matchesRos2 on the topic's ROS 2 type)
+/// always passes. Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
+[[nodiscard]] inline bool passesAdvertiseFilter(const TopicInfo& topic, const std::vector<std::string>& selection) {
+  return PJ::AlwaysIncluded::matchesRos2(topic.schema_name) ||
+         PJ::sdk::passesSelectionFilter(
+             topic.name, selection, [](const std::string& value) -> const std::string& { return value; });
 }
 
 /// The set of topic names computeSubscriptionDiff() reconciles against:
 /// server-advertised topics restricted by the SAME filter buildAvailableTopics
-/// applies when advertising, which always-subscribed topics pass. Advertise and subscribe stay symmetric — a topic
+/// applies when advertising. Advertise and subscribe stay symmetric — a topic
 /// the filter hides from the host is never subscribed either, even if a (stale)
 /// desired set names it: the filter is explicit user configuration and outranks
 /// a leftover layout reference. Mirrors
@@ -128,7 +117,7 @@ struct SubscriptionDiff {
     const std::map<std::string, TopicInfo>& advertised, const std::vector<std::string>& selection) {
   std::set<std::string> out;
   for (const auto& [name, info] : advertised) {
-    if (passesAdvertiseFilter(name, selection) || PJ::AlwaysIncluded::matchesRos2(info.schema_name)) {
+    if (passesAdvertiseFilter(info, selection)) {
       out.insert(name);
     }
   }

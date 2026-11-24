@@ -12,8 +12,8 @@
  *     as-advertise-filter predicate and its application to the subscribable set.
  *   - splitTopicTypes: the multi-type-topic exclusion applied to a raw
  *     get_topic_names_and_types() result.
- *   - The always-subscribed transform topics, and the dialog's topic rows: the
- *     filter and the locked rows (the table itself is common/always_included's).
+ *   - The transform topics: the advertise filter never hides them, and the
+ *     dialog's topic rows lock them (the table itself is common/always_included's).
  */
 
 #include "../ros2_topic_subscription.hpp"
@@ -21,10 +21,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <nlohmann/json.hpp>
 #include <set>
 #include <string>
-#include <test_support/widget_table.hpp>
 #include <thread>
 #include <vector>
 
@@ -204,13 +202,13 @@ TEST(ComputeRos2SubscriptionDiffTest, TypeChangeForcesResubscribe) {
 // --- passesAdvertiseFilter ---
 
 TEST(PassesAdvertiseFilterTest, EmptySelectionAdvertisesEverything) {
-  EXPECT_TRUE(passesAdvertiseFilter("/any/topic", {}));
+  EXPECT_TRUE(passesAdvertiseFilter("/any/topic", "std_msgs/msg/String", {}));
 }
 
 TEST(PassesAdvertiseFilterTest, NonEmptySelectionRestrictsToSelection) {
   std::vector<std::pair<std::string, std::string>> selection{{"/camera/image", "sensor_msgs/msg/Image"}};
-  EXPECT_TRUE(passesAdvertiseFilter("/camera/image", selection));
-  EXPECT_FALSE(passesAdvertiseFilter("/odom", selection));
+  EXPECT_TRUE(passesAdvertiseFilter("/camera/image", "sensor_msgs/msg/Image", selection));
+  EXPECT_FALSE(passesAdvertiseFilter("/odom", "nav_msgs/msg/Odometry", selection));
 }
 
 // --- filteredDiscoveredTopics: the filter bounds SUBSCRIPTIONS, not just advertising ---
@@ -276,81 +274,52 @@ TEST(SplitTopicTypesTest, EmptyTypesListIsSkipped) {
   EXPECT_TRUE(split.single_type.empty());
 }
 
-// --- Always-subscribed transforms and the dialog's topic table ---
+// --- Transforms: never filtered out, locked in the dialog's topic table ---
 
 const std::map<std::string, std::string> kGraph = {
     {"/imu", "sensor_msgs/msg/Imu"},   {"/odom", "nav_msgs/msg/Odometry"},       {"/odom_raw", "nav_msgs/msg/Odometry"},
     {"/tf", "tf2_msgs/msg/TFMessage"}, {"/tf_static", "tf2_msgs/msg/TFMessage"},
 };
 
-/// The table the dialog renders for these rows and selection.
-nlohmann::json topicTable(const PJ::AlwaysIncluded::TableRows& rows, const std::set<std::string>& selection) {
-  PJ::WidgetData wd;
-  PJ::AlwaysIncluded::tableToWidgets(wd, "listRosTopics", rows, selection);
-  return toolbox_testing::table(wd.toJson(), "listRosTopics");
-}
-
-std::set<std::string> names(const PJ::AlwaysIncluded::TableRows& rows) {
-  std::set<std::string> out;
+/// Each row's name and whether it is locked.
+std::map<std::string, bool> lockedFlags(const PJ::AlwaysIncluded::TableRows& rows) {
+  std::map<std::string, bool> out;
   for (const auto& row : rows) {
-    out.insert(row.cells.front());
+    out[row.cells.front()] = row.locked;
   }
   return out;
 }
 
-TEST(AlwaysSubscribedTest, MatchesTheTransformTypeNotTheName) {
-  EXPECT_EQ(ros2_streamer::alwaysSubscribedTopics(kGraph), (std::set<std::string>{"/tf", "/tf_static"}));
-  // A /tf name of another type is not forced; an absent transform is not invented.
-  EXPECT_TRUE(ros2_streamer::alwaysSubscribedTopics({{"/tf", "std_msgs/msg/String"}, {"/imu", "x/msg/Y"}}).empty());
-}
-
-TEST(AlwaysSubscribedTest, TransformsPassASavedAdvertiseFilter) {
+TEST(TransformTopicsTest, TheAdvertiseFilterNeverHidesATransform) {
   const std::vector<std::pair<std::string, std::string>> selection = {{"/imu", "sensor_msgs/msg/Imu"}};
-  const auto subscribable = ros2_streamer::filteredDiscoveredTopics(kGraph, selection);
   std::set<std::string> topics;
-  for (const auto& [topic, type] : subscribable) {
+  for (const auto& [topic, type] : ros2_streamer::filteredDiscoveredTopics(kGraph, selection)) {
     topics.insert(topic);
   }
   EXPECT_EQ(topics, (std::set<std::string>{"/imu", "/tf", "/tf_static"}));
-  EXPECT_TRUE(ros2_streamer::passesAdvertiseFilter("/tf", {}));
+  EXPECT_TRUE(ros2_streamer::passesAdvertiseFilter("/tf", "tf2_msgs/msg/TFMessage", selection));
+  // Keyed on the type: a /tf name of another type is filtered like any topic.
+  EXPECT_FALSE(ros2_streamer::passesAdvertiseFilter("/tf", "std_msgs/msg/String", selection));
 }
 
-TEST(AlwaysSubscribedTest, ASavedSelectionOfTransformsOnlyIsNoFilter) {
-  // The dialog saves the transforms with the selection; alone they filter nothing.
-  const std::vector<std::pair<std::string, std::string>> transforms = {{"/tf", "tf2_msgs/msg/TFMessage"}};
-  EXPECT_TRUE(ros2_streamer::passesAdvertiseFilter("/imu", transforms));
-  EXPECT_EQ(ros2_streamer::filteredDiscoveredTopics(kGraph, transforms).size(), kGraph.size());
-  const std::vector<std::pair<std::string, std::string>> with_imu = {
-      {"/tf", "tf2_msgs/msg/TFMessage"}, {"/imu", "sensor_msgs/msg/Imu"}};
-  EXPECT_FALSE(ros2_streamer::passesAdvertiseFilter("/odom", with_imu));
+TEST(TransformTopicsTest, ASavedTfIsAnOrdinarySelectedTopic) {
+  // A config saved by an earlier version may list /tf: it filters like any selected topic.
+  const std::vector<std::pair<std::string, std::string>> selection = {{"/tf", "tf2_msgs/msg/TFMessage"}};
+  EXPECT_FALSE(ros2_streamer::passesAdvertiseFilter("/imu", "sensor_msgs/msg/Imu", selection));
+  EXPECT_EQ(ros2_streamer::filteredDiscoveredTopics(kGraph, selection).size(), 2U);
 }
 
-TEST(TopicTableTest, TransformRowsAreLockedSelectedAndTooltipped) {
-  const auto table = topicTable(ros2_streamer::topicRows(kGraph, ""), {});
-  const int tf = toolbox_testing::rowOf(table, "/tf");
-  const int tf_static = toolbox_testing::rowOf(table, "/tf_static");
-  const int imu = toolbox_testing::rowOf(table, "/imu");
-  ASSERT_GE(tf, 0);
-  ASSERT_GE(tf_static, 0);
-  ASSERT_GE(imu, 0);
-  EXPECT_EQ(table.value("disabled_rows", std::set<int>{}), (std::set<int>{tf, tf_static}));
-  const auto& tooltips = table["cell_tooltips"];
-  EXPECT_EQ(tooltips.value(std::to_string(tf) + ",0", std::string{}), PJ::AlwaysIncluded::kTooltip);
-  EXPECT_EQ(tooltips.value(std::to_string(tf_static) + ",0", std::string{}), PJ::AlwaysIncluded::kTooltip);
-  EXPECT_FALSE(tooltips.contains(std::to_string(imu) + ",0"));
-  EXPECT_EQ(toolbox_testing::shownSelection(table), (std::set<std::string>{"/tf", "/tf_static"}));
-}
-
-TEST(TopicTableTest, ATfNameOfAnotherTypeIsNotLocked) {
-  const auto table = topicTable(ros2_streamer::topicRows({{"/tf", "std_msgs/msg/String"}}, ""), {});
-  EXPECT_TRUE(table.value("disabled_rows", std::set<int>{}).empty());
-  EXPECT_TRUE(toolbox_testing::shownSelection(table).empty());
-}
-
-TEST(TopicTableTest, FilterKeepsTransformRowsVisible) {
+TEST(TopicRowsTest, TransformRowsAreLockedAndNeverFilteredOut) {
   EXPECT_EQ(
-      names(ros2_streamer::topicRows(kGraph, "ODOM")),
-      (std::set<std::string>{"/odom", "/odom_raw", "/tf", "/tf_static"}));
+      lockedFlags(ros2_streamer::topicRows(kGraph, "")),
+      (std::map<std::string, bool>{
+          {"/imu", false}, {"/odom", false}, {"/odom_raw", false}, {"/tf", true}, {"/tf_static", true}}));
+  EXPECT_EQ(
+      lockedFlags(ros2_streamer::topicRows(kGraph, "ODOM")),
+      (std::map<std::string, bool>{{"/odom", false}, {"/odom_raw", false}, {"/tf", true}, {"/tf_static", true}}));
+  EXPECT_EQ(
+      lockedFlags(ros2_streamer::topicRows({{"/tf", "std_msgs/msg/String"}}, "")),
+      (std::map<std::string, bool>{{"/tf", false}}));
 }
 
 }  // namespace

@@ -141,20 +141,6 @@ TEST(BridgeComputeSubscriptionDiffTest, PerTopicFailureRetriesOnceRemovedFromApp
   EXPECT_EQ(diff.to_subscribe, (std::vector<std::string>{"/camera/image"}));
 }
 
-// --- passesAdvertiseFilter ---
-
-TEST(BridgePassesAdvertiseFilterTest, EmptySelectionAdvertisesEverything) {
-  EXPECT_TRUE(passesAdvertiseFilter("/any/topic", {}));
-}
-
-TEST(BridgePassesAdvertiseFilterTest, NonEmptySelectionRestrictsToSelection) {
-  const std::vector<std::string> selection{"/camera/image"};
-  EXPECT_TRUE(passesAdvertiseFilter("/camera/image", selection));
-  EXPECT_FALSE(passesAdvertiseFilter("/odom", selection));
-}
-
-// --- filteredAdvertisedTopics: the filter bounds SUBSCRIPTIONS, not just advertising ---
-
 TopicInfo topic(const std::string& name, const std::string& type = "pkg/Msg") {
   TopicInfo t;
   t.name = name;
@@ -163,6 +149,27 @@ TopicInfo topic(const std::string& name, const std::string& type = "pkg/Msg") {
   t.schema = "float64 value";
   return t;
 }
+
+// --- passesAdvertiseFilter ---
+
+TEST(BridgePassesAdvertiseFilterTest, EmptySelectionAdvertisesEverything) {
+  EXPECT_TRUE(passesAdvertiseFilter(topic("/any/topic"), {}));
+}
+
+TEST(BridgePassesAdvertiseFilterTest, NonEmptySelectionRestrictsToSelection) {
+  const std::vector<std::string> selection{"/camera/image"};
+  EXPECT_TRUE(passesAdvertiseFilter(topic("/camera/image"), selection));
+  EXPECT_FALSE(passesAdvertiseFilter(topic("/odom"), selection));
+}
+
+TEST(BridgePassesAdvertiseFilterTest, ATransformPassesWhateverTheSelection) {
+  const std::vector<std::string> selection{"/camera/image"};
+  EXPECT_TRUE(passesAdvertiseFilter(topic("/tf", "tf2_msgs/msg/TFMessage"), selection));
+  // Keyed on the type: a /tf name of another type is filtered like any topic.
+  EXPECT_FALSE(passesAdvertiseFilter(topic("/tf", "std_msgs/msg/String"), selection));
+}
+
+// --- filteredAdvertisedTopics: the filter bounds SUBSCRIPTIONS, not just advertising ---
 
 TEST(BridgeFilteredAdvertisedTopicsTest, FilteredOutDesiredTopicProducesNoSubscription) {
   std::map<std::string, TopicInfo> advertised;

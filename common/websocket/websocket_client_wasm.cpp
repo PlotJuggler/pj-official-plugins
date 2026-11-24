@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <pj_websocket/url.hpp>
 #include <pj_websocket/websocket_client.hpp>
 
 EM_JS_DEPS(pj_websocket_client, "emscripten_websocket_new");
@@ -141,7 +142,7 @@ void createSocket(Task& task) {
   attributes.createOnMainThread = true;
   const EMSCRIPTEN_WEBSOCKET_T socket = pj_websocket_client_new_guarded(&attributes);
   if (socket <= 0) {
-    state.sink->push({Type::kError, "the browser refused to open a WebSocket to " + state.url});
+    state.sink->push({Type::kError, "the browser refused to open a WebSocket to " + cleanUrl(state.url)});
     return;
   }
   state.socket = socket;

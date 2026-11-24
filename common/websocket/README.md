@@ -17,13 +17,13 @@ WebSocket client transport shared by the websocket streaming plugins
   status line, handoff of the live connection to the source on OK). See
   [The server URL](#the-server-url).
 - `<pj_websocket/url.hpp>`: `normalizeUrl` (forgiving input to the URL to dial, or why it is
-  not one) and `cleanUrl` (the URL without its userinfo and secret-named query parameters).
+  not one) and `cleanUrl` (the URL without its userinfo, query and fragment).
 - `<pj_websocket/source_connection.hpp>`: the connection half of a streaming source.
   `SourceConnection` adopts the dialog's open connection or dials a fresh one, enforces the
   connect deadline, latches the first stream-stopping failure (`poll()` returns it until
   `stop()`) and, when `reconnect` is set, re-dials a lost connection on a fixed delay. Frames
   reach the owner through handlers in arrival order, on the poll thread. Its messages show
-  the URL through `cleanUrl`.
+  the URL through `cleanUrl`, also where a transport error quotes it.
 
 ## The server URL
 
@@ -34,28 +34,31 @@ The PlotJuggler Bridge and Foxglove Bridge dialogs take the server as one URL li
   query allowed) gets `ws://` and, without a port, the plugin's default port. A text starts
   with a scheme only when what precedes `://` has none of `/?#@`, so in
   `robot/x?next=ws://a` the `ws://` belongs to the query. A `ws://` or `wss://` URL without a
-  port uses the scheme's own port.
+  port uses the scheme's own port. A query right after the host or port gets a `/` before it
+  (`robot:9090?token=t` dials `ws://robot:9090/?token=t`): IXWebSocket reads the port up to
+  the next `/`.
 - **Refused**, with Connect disabled and the reason in the status line: another scheme,
   spaces, a missing host, an unbracketed IPv6 address, a port outside 1-65535, credentials
   (`user:password@`: IXWebSocket parses and drops them and browsers do not send them, so a
   server needing them would fail without saying why) and a fragment (`#`, which RFC 6455
   forbids in a WebSocket URI). A token in the query is accepted and dialed as typed.
 - **Saved** under `url` normalized, its query included, so it reaches PlotJuggler's saved
-  dialog configuration and layouts. The legacy `address` and `port` keys are read only when
-  `url` is absent, composed into `ws://address:port` and checked by the same rules; they are
-  never written.
+  dialog configuration and layouts; a line that is not a URL is not saved. A loaded `url`
+  loses its userinfo and fragment before the check (IXWebSocket ignored both, so configs that
+  hold them connected). The legacy `address` and `port` keys are read only when `url` is
+  absent, composed into `ws://address:port` and checked by the same rules; they are never
+  written.
 - **Remembered.** Once a connection opens, the URL it dialed is stored, cleaned, in
   PlotJuggler's settings store (`pj.settings.v1`, key `kLastUrlSettingsKey`, which survives a
   browser reload). The remembered URL fills the line when no saved configuration names one,
   e.g. on first open and after a browser reload; on the desktop, PlotJuggler's saved dialog
   configuration takes precedence. A host without the store (older PlotJuggler) remembers
   nothing.
-- **Cleaned** (`cleanUrl`), for the remembered copy, the status line and the messages: the
-  userinfo is dropped, and so is every query parameter (split on `&` and `;`) whose name,
-  ignoring case, `_` and `-`, contains password, passwd, passphrase, secret, token, apikey,
-  accesskey, authkey, privatekey or credential, or is exactly key, auth, authorization, sig,
-  signature, pwd, pw, pass, session, jwt or x-amz-signature. Everything else is kept byte for
-  byte; a secret inside the path cannot be detected.
+- **Cleaned** (`cleanUrl`), for the remembered copy, the status line and the messages (also
+  where a transport error quotes the URL): the userinfo, the query and the fragment are
+  dropped. Scheme, host, port and path are kept byte for byte; a secret inside the path cannot
+  be detected. A remembered URL therefore lacks its query: a server that needs one is typed
+  again, or opened from a saved configuration.
 
 ## Backends
 

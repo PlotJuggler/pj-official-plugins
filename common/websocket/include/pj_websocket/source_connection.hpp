@@ -25,7 +25,7 @@ namespace PJ::WebSocket {
 
 struct SourceConnectionOptions {
   /// Names the server in messages: "failed to connect to <name> at <url>", "<name> stream at";
-  /// <url> is shown cleaned (cleanUrl).
+  /// <url>, also where a transport error quotes it, is shown cleaned (cleanUrl).
   std::string name;
   /// How long one attempt may take before it fails with "timed out".
   std::chrono::milliseconds connect{5000};
@@ -79,7 +79,9 @@ class SourceConnection {
     begin(std::move(url), std::move(subprotocols));
     phase_ = Phase::kConnecting;
     if (auto status = dial(); !status) {
-      return PJ::unexpected("failed to connect to " + options_.name + " at " + cleanUrl(url_) + ": " + status.error());
+      return PJ::unexpected(
+          "failed to connect to " + options_.name + " at " + cleanUrl(url_) + ": " +
+          withCleanUrl(status.error(), url_));
     }
     return PJ::okStatus();
   }
@@ -237,7 +239,7 @@ class SourceConnection {
     if (phase_ == Phase::kConnecting || !options_.reconnect) {
       fail(
           (was_open ? "lost connection to " : "failed to connect to ") + options_.name + " at " + cleanUrl(url_) +
-          (reason.empty() ? "" : ": " + reason));
+          (reason.empty() ? "" : ": " + withCleanUrl(reason, url_)));
       return;
     }
     if (was_open) {

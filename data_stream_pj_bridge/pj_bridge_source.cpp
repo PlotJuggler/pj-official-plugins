@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -44,8 +43,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   /// The default services, plus the optional settings store the dialog remembers its last URL in.
   PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
     auto status = StreamSourceBase::bind(services);
-    // Looked up here, never later: on PlotJuggler 4.0 hosts the registry lives only for the bind() call.
-    dialog_.endpoint().bind(services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{}));
+    dialog_.endpoint().bind(services);
     return status;
   }
 
@@ -150,17 +148,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
     if (!demand_mode_) {
       // --- Legacy host: preserve the original behavior. ---
-      // The always-subscribed topics the dialog saw join the subscribe list; without the
-      // dialog's catalog (a configured start) only the saved selection is known. The dialog
-      // seed is only for demand mode otherwise; drop it so the legacy schema lookup resolves
-      // from selected_topics_ alone.
-      for (const auto& name : alwaysSubscribedTopics(advertised_topics_)) {
-        if (std::none_of(selected_topics_.begin(), selected_topics_.end(), [&](const TopicInfo& info) {
-              return info.name == name;
-            })) {
-          selected_topics_.push_back(advertised_topics_.at(name));
-        }
-      }
+      // The dialog seed is only for demand mode; drop it so the legacy schema
+      // lookup resolves from selected_topics_ alone.
       advertised_topics_.clear();
       if (selected_topics_.empty()) {
         runtimeHost().reportMessage(
@@ -367,18 +356,14 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
-  // The advertise filter: the names of the saved selection (empty = no filter,
-  // advertise everything), without its always-subscribed transforms, which the
-  // dialog saves too: a selection of transforms only is no filter. Derived from
-  // selected_topics_ so the two can't drift; recomputed per advertise/reconcile,
-  // both cold paths.
+  // The advertise filter: just the names of the saved selection (empty = no
+  // filter, advertise everything). Derived from selected_topics_ so the two
+  // can't drift; recomputed per advertise/reconcile, both cold paths.
   std::vector<std::string> advertiseFilter() const {
     std::vector<std::string> names;
     names.reserve(selected_topics_.size());
     for (const auto& info : selected_topics_) {
-      if (!PJ::AlwaysIncluded::matchesRos2(info.schema_name)) {
-        names.push_back(info.name);
-      }
+      names.push_back(info.name);
     }
     return names;
   }
@@ -393,7 +378,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     std::vector<PJ::AvailableTopic> topics;
     topics.reserve(advertised_topics_.size());
     for (const auto& [name, info] : advertised_topics_) {
-      if (!passesAdvertiseFilter(name, filter) && !PJ::AlwaysIncluded::matchesRos2(info.schema_name)) {
+      if (!passesAdvertiseFilter(info, filter)) {
         continue;
       }
       const auto schema_bytes = reinterpret_cast<const uint8_t*>(info.schema.data());
@@ -422,7 +407,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   // [poll thread] The single reconciliation point for demand mode: diff the
-  // applied subscriptions against last_applied_desired_ plus the always-subscribed topics over the currently
+  // applied subscriptions against last_applied_desired_ over the currently
   // advertised (and filter-passing) topics, sending ONE additive subscribe for
   // the newly wanted topics and ONE unsubscribe for the dropped ones. Called
   // after every advertise delta (onPoll) AND when a new desired set lands
@@ -430,9 +415,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // converge on one code path. Empty send lists are suppressed.
   void reconcileSubscriptions() {
     const auto advertised = filteredAdvertisedTopics(advertised_topics_, advertiseFilter());
-    auto desired = alwaysSubscribedTopics(advertised_topics_);
-    desired.insert(last_applied_desired_.begin(), last_applied_desired_.end());
-    const auto diff = computeSubscriptionDiff(applied_, advertised, desired);
+    const auto diff = computeSubscriptionDiff(applied_, advertised, last_applied_desired_);
 
     if (!diff.to_unsubscribe.empty()) {
       connection_.sendText(buildUnsubscribeMessage(diff.to_unsubscribe));

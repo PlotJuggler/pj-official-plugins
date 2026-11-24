@@ -49,19 +49,16 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Rows, selection, and the always-subscribed transform rows (selected, locked, tooltipped).
-    // Restored by topic name: the host matches rows by first-column text, which survives a
-    // user sort of the table.
-    const auto visible = visibleRows();
-    wd.setTableHeaders("listRosTopics", {"Topic", "Type"});
-    PJ::AlwaysIncluded::tableToWidgets(wd, "listRosTopics", visible, selected_topics_);
-    wd.setListPlaceholder("listRosTopics", "Click to select, Click+Drag to multi-select");
-
+    // Rows, selection, and the transform rows (selected, locked, tooltipped). Restored by topic
+    // name: the host matches rows by first-column text, which survives a user sort of the table.
+    auto visible = visibleRows();
     if (visible.empty()) {
       wd.setText("labelStatus", "Scanning ROS 2 topics...");
     } else {
       wd.setText("labelStatus", std::to_string(visible.size()) + " topic(s) found");
     }
+    wd.setTableHeaders("listRosTopics", {"Topic", "Type"});
+    PJ::AlwaysIncluded::tableToWidgets(wd, "listRosTopics", std::move(visible), selected_topics_);
 
     wd.setChecked("checkBoxTimestamp", use_embedded_timestamp_);
     wd.setValue("spinBoxArraySize", max_array_size_);
@@ -69,9 +66,6 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     wd.setChecked("radioMaxDiscard", discard_large_arrays_);
     wd.setChecked("checkBoxStringSuffix", remove_suffix_from_strings_);
     wd.setChecked("checkBoxStringBoolean", boolean_strings_to_number_);
-
-    wd.setShortcut("btnSelectAll", "Ctrl+A");
-    wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
     // OK button: discovery-running-only. Topic selection is no longer a hard
     // requirement — see selected_topics_'s dual role in Ros2StreamSource
@@ -158,18 +152,8 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   }
 
   bool onClicked(std::string_view widget_name) override {
-    if (widget_name == "btnSelectAll") {
-      // The rows the filter shows; a selection it hides stays.
-      PJ::AlwaysIncluded::selectAll(selected_topics_, visibleRows());
-      return true;
-    }
-    if (widget_name == "btnDeselectAll") {
-      // Every selection, also of topics filtered out of view; locked
-      // (always-subscribed) rows stay selected.
-      PJ::AlwaysIncluded::deselectAll(selected_topics_, visibleRows());
-      return true;  // re-render to update the table selection and OK state
-    }
-    return false;
+    // Select All / Deselect All; true re-renders the table selection and OK state.
+    return PJ::AlwaysIncluded::applySelectButton(widget_name, selected_topics_, visibleRows());
   }
 
   void onAccepted(std::string_view /*json*/) override {
@@ -195,13 +179,10 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
       // deselect it; it also leaks back into the next session's config. A
       // still-advertised restored topic is kept, preserving last-selection
       // recall. Before discovery has populated, emit as-is rather than drop
-      // every selection. The always-subscribed topics discovered are saved
-      // too, so a legacy host subscribes them.
+      // every selection.
       std::lock_guard<std::mutex> lock(topics_mutex_);
       const bool have_discovery = !discovered_topics_.empty();
-      auto names = selected_topics_;
-      names.merge(ros2_streamer::alwaysSubscribedTopics(discovered_topics_));
-      for (const auto& name : names) {
+      for (const auto& name : selected_topics_) {
         if (const auto it = discovered_topics_.find(name); it != discovered_topics_.end()) {
           arr.push_back({{"name", name}, {"type", it->second}});
         } else if (!have_discovery) {
@@ -333,7 +314,8 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
 
   mutable std::mutex topics_mutex_;
   std::map<std::string, std::string> discovered_topics_;
-  // The user's selection by topic name; locked topics need not be in it.
+  // The user's selection by topic name, what saveConfig() saves; locked rows are shown selected
+  // without being in it.
   std::set<std::string> selected_topics_;
   // The types of the loaded selection, saved back for topics not discovered yet.
   std::map<std::string, std::string> saved_types_;

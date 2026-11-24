@@ -96,39 +96,24 @@ struct SubscriptionDiff {
   return diff;
 }
 
-/// Whether `topic` should be advertised/subscribed under an (optional) filter —
-/// the dialog's saved topic selection of (name, type), repurposed in demand mode
-/// as an allow-list rather than a subscribe list. A selection that is EMPTY, or
-/// holds only always-subscribed topics (the dialog saves them too), means "no
-/// filter, advertise/subscribe everything" (the default when nothing is
-/// selected). Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
+/// Whether `topic` of ROS 2 type `type` should be advertised/subscribed under
+/// an (optional) filter — the dialog's saved topic selection of (name, type),
+/// repurposed in demand mode as an allow-list rather than a subscribe list. An
+/// EMPTY selection means "no filter, advertise/subscribe everything" (the
+/// default when nothing is selected). A transform type
+/// (PJ::AlwaysIncluded::matchesRos2) always passes. Mirrors
+/// PJ::FoxgloveProtocol::passesAdvertiseFilter.
 [[nodiscard]] inline bool passesAdvertiseFilter(
-    const std::string& topic, const std::vector<std::pair<std::string, std::string>>& selection) {
-  return std::all_of(
-             selection.begin(), selection.end(),
-             [](const auto& value) { return PJ::AlwaysIncluded::matchesRos2(value.second); }) ||
+    const std::string& topic, const std::string& type,
+    const std::vector<std::pair<std::string, std::string>>& selection) {
+  return PJ::AlwaysIncluded::matchesRos2(type) ||
          PJ::sdk::passesSelectionFilter(
              topic, selection, [](const auto& value) -> const std::string& { return value.first; });
 }
 
-/// The discovered topics that are always subscribed, whatever the selection and
-/// the host's desired set: those of a transform type
-/// (PJ::AlwaysIncluded::matchesRos2). A forced type nobody publishes is never
-/// invented.
-[[nodiscard]] inline std::set<std::string> alwaysSubscribedTopics(
-    const std::map<std::string, std::string>& discovered) {
-  std::set<std::string> out;
-  for (const auto& [topic, type] : discovered) {
-    if (PJ::AlwaysIncluded::matchesRos2(type)) {
-      out.insert(topic);
-    }
-  }
-  return out;
-}
-
 /// The topic -> type map computeRos2SubscriptionDiff() reconciles against:
 /// discovered topics only, restricted by the SAME filter buildAvailableTopics
-/// applies when advertising, which always-subscribed topics pass. Advertise and subscribe stay symmetric — a topic
+/// applies when advertising. Advertise and subscribe stay symmetric — a topic
 /// the filter hides from the host is never subscribed either, even if a
 /// (stale) desired set names it: the filter is explicit user configuration
 /// and outranks a leftover layout reference. Mirrors
@@ -138,7 +123,7 @@ struct SubscriptionDiff {
     const std::vector<std::pair<std::string, std::string>>& selection) {
   std::map<std::string, std::string> out;
   for (const auto& [topic, type] : discovered) {
-    if (passesAdvertiseFilter(topic, selection) || PJ::AlwaysIncluded::matchesRos2(type)) {
+    if (passesAdvertiseFilter(topic, type, selection)) {
       out[topic] = type;
     }
   }
@@ -146,8 +131,8 @@ struct SubscriptionDiff {
 }
 
 /// The dialog's table rows (ROS-free so it is unit-testable): topics whose name
-/// contains `filter` (ignoring case), plus every always-subscribed topic, which
-/// a filter never hides and whose row is locked.
+/// contains `filter` (ignoring case), plus every transform topic, which a
+/// filter never hides and whose row is locked.
 [[nodiscard]] inline PJ::AlwaysIncluded::TableRows topicRows(
     const std::map<std::string, std::string>& discovered, const std::string& filter) {
   const std::string needle = PJ::sdk::lowerAscii(filter);

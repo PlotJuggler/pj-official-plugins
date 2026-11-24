@@ -4,8 +4,10 @@
 
 /// @file bind_scoped_registry.hpp
 /// @brief A service registry valid only until close(), like a PlotJuggler 4.0 host's, which
-///  lives only for the bind() call. A lookup after close() is counted, not served, so a test
-///  can assert that a plugin never reaches the registry after bind().
+///  lives only for the bind() call. A lookup after close() is not served, and fails the test
+///  when the registry is destroyed: a plugin must never reach the registry after bind().
+
+#include <gtest/gtest.h>
 
 #include <pj_base/sdk/service_registry.hpp>
 #include <pj_plugins/host/service_registry_builder.hpp>
@@ -16,6 +18,9 @@ class BindScopedRegistry {
  public:
   BindScopedRegistry() : vtable_(*builder.view().vtable) {
     vtable_.get_service = &getService;
+  }
+  ~BindScopedRegistry() {
+    EXPECT_EQ(late_lookups_, 0) << "the plugin reached the registry after bind()";
   }
   BindScopedRegistry(const BindScopedRegistry&) = delete;
   BindScopedRegistry& operator=(const BindScopedRegistry&) = delete;
@@ -28,10 +33,6 @@ class BindScopedRegistry {
   /// Ends the bind() call: later lookups fail and are counted.
   void close() {
     open_ = false;
-  }
-
-  [[nodiscard]] int lateLookups() const {
-    return late_lookups_;
   }
 
   PJ::ServiceRegistryBuilder builder;
