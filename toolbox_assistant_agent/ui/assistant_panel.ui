@@ -33,6 +33,19 @@
     </widget>
    </item>
    <item>
+    <!-- Its own row, not inside headerBand: the host hides headerBand. pjStatus=warning takes the
+         host theme's warning ink in both themes (PlotJuggler after 4.2.0; earlier hosts show bold
+         default text); the border uses a palette role, never a hex colour. -->
+    <widget class="QLabel" name="deprecationNotice">
+     <property name="text"><string>Deprecated: this assistant is no longer updated. Use PlotJuggler from Claude Code or Codex through its MCP server instead. &lt;a href="https://github.com/PlotJuggler/plotjuggler-agent#install"&gt;How to set it up&lt;/a&gt;</string></property>
+     <property name="textFormat"><enum>Qt::RichText</enum></property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="openExternalLinks"><bool>true</bool></property>
+     <property name="styleSheet"><string notr="true">font-weight: 600; padding: 6px 8px; border: 1px solid palette(mid); border-radius: 4px;</string></property>
+     <property name="pjStatus" stdset="0"><string notr="true">warning</string></property>
+    </widget>
+   </item>
+   <item>
     <widget class="QWidget" name="bodyRow" native="true">
      <layout class="QHBoxLayout" name="bodyLayout">
       <property name="leftMargin"><number>0</number></property>

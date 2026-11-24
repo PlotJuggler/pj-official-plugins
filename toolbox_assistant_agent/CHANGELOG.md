@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## Upcoming
+
+### Changed
+- The assistant is deprecated and no longer updated: the panel shows a notice at the top, and the plugin's description
+  says so. Use PlotJuggler from Claude Code or Codex through its MCP server instead
+  ([plotjuggler-agent](https://github.com/PlotJuggler/plotjuggler-agent#install)). The notice takes the theme's
+  warning colour on PlotJuggler releases after 4.2.0 and is bold default text on 4.2.0.
+
 ## [0.5.2] - 2026-11-19
 
 ### Changed
