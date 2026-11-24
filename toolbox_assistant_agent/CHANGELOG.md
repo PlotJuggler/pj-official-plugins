@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
-## Upcoming
+## [0.5.3] - 2026-11-24
 
 ### Changed
 - A notice at the top of the panel, and the start of the plugin's description, suggest using PlotJuggler from
