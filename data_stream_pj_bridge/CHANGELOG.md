@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_pj_bridge/`.
 
+## Upcoming
+
+### Changed
+- The dialog takes the server as one URL line (`ws://127.0.0.1:9090` by default) instead of address, port and transport fields. A bare host or `host:port` gets `ws://` and port 9090; the typed URL is dialed exactly, credentials included; an invalid URL disables Connect and the status line says why. The configuration saves `url`; configurations with `address`/`port` still load.
+- The last connected URL is remembered (cleaned of credentials) in PlotJuggler's settings store and fills the line next time, when the host offers the store.
+- Select All (Ctrl+A) and Deselect All (Ctrl+Shift+A) buttons; Select All follows the filter.
+- `tf2_msgs/msg/TFMessage` topics are always subscribed: their rows are selected, locked and tooltipped, and Deselect All, a filter or a saved selection never drops them.
+
 ## [1.1.2] - 2026-11-19
 
 ### Changed

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -37,11 +38,13 @@ struct DiscoveredTopic {
 /// Smart dialog plugin for the PlotJuggler Bridge streamer.
 /// Owns the WebSocket connection for topic discovery during the dialog session.
 /// The dialog flow matches the original PlotJuggler plugin:
-///   1. User enters address/port (or a full ws:// / wss:// URL), clicks Connect
+///   1. User enters the server URL (a bare host[:port] gets ws:// and port 9090), clicks Connect
 ///   2. Dialog connects via WebSocket, sends get_topics. A refused, timed-out or dropped
 ///      connection is retried with a capped backoff until the user cancels; the status label
 ///      shows connecting / retrying in N s with the last error / connected.
-///   3. Topics populate the table, user selects topics
+///   3. Topics populate the table, user selects topics (Select All / Deselect All act on the rows
+///      the filter shows). Transform topics are always subscribed: their rows are selected,
+///      locked and tooltipped, and never saved (they are implied).
 ///   4. User clicks OK
 ///   5. saveConfig() returns the full config for the source plugin
 ///
@@ -58,6 +61,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
                          .on_open =
                              [this] {
                                tick_count_ = 0;
+                               endpoint_.remember();
                                requestTopics();
                              },
                          .on_text = [this](const std::string& text) { onServerMessage(text); },
@@ -74,9 +78,14 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     return link_.take();
   }
 
-  /// The URL the source connects to: the configured `url` verbatim, else ws://address:port.
+  /// The URL the source connects to (the URL line, normalized).
   std::string endpoint() const {
     return endpoint_.str();
+  }
+
+  /// The host's optional settings store, where the last connected URL is remembered.
+  void setSettings(PJ::sdk::SettingsView settings) {
+    endpoint_.setSettings(settings);
   }
 
   /// Full catalog of topics discovered during this dialog's connection session
@@ -110,13 +119,15 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Connection fields. A full URL in the address field replaces address + port.
-    endpoint_.toWidgets(wd, link_.idle());
     link_.toWidgets(wd);
+    endpoint_.toWidgets(wd, link_.idle());
 
-    // Topic list — apply case-insensitive filter matching on name AND type
+    // Topic list — apply case-insensitive filter matching on name AND type. Always-subscribed
+    // rows are shown selected, disabled and tooltipped.
     wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
     std::vector<std::vector<std::string>> rows;
+    std::vector<std::string> shown_selection = selected_topic_names_;
+    std::vector<int> locked_rows;
     {
       std::lock_guard<std::mutex> lock(topics_mutex_);
       rows.reserve(topics_.size());
@@ -124,15 +135,22 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
         if (!matchesFilter(t)) {
           continue;
         }
+        if (isLocked(t)) {
+          const int row = static_cast<int>(rows.size());
+          locked_rows.push_back(row);
+          wd.setCellTooltip("topicsList", row, 0, PJ::AlwaysIncluded::kTooltip);
+          shown_selection.push_back(t.name);
+        }
         rows.push_back({t.name, t.type});
       }
     }
     wd.setTableRows("topicsList", rows);
+    wd.setDisabledRows("topicsList", locked_rows);
     wd.setListPlaceholder("topicsList", "Click to select, Click+Drag to multi-select");
-
-    if (!selected_topic_names_.empty()) {
-      wd.setSelectedItems("topicsList", selected_topic_names_);
-    }
+    // Always sent, so Deselect All also clears what the table shows.
+    wd.setSelectedItems("topicsList", shown_selection);
+    wd.setShortcut("btnSelectAll", "Ctrl+A");
+    wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
     // OK button: connected-only. The topic selection below is no longer a
     // subscribe requirement — see the "topics" config key's dual role in
@@ -157,11 +175,32 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view widget_name) override {
     if (widget_name == "buttonConnect") {
-      if (link_.idle()) {
-        link_.connect(endpoint());
-      } else {
+      if (!link_.idle()) {
         disconnect();
+      } else if (const auto url = endpoint_.url()) {
+        link_.connect(*url);
       }
+      return true;
+    }
+    if (widget_name == "btnSelectAll") {
+      // The rows the filter shows; locked rows are selected already.
+      {
+        std::lock_guard<std::mutex> lock(topics_mutex_);
+        for (const auto& t : topics_) {
+          if (matchesFilter(t) && !isLocked(t) &&
+              std::find(selected_topic_names_.begin(), selected_topic_names_.end(), t.name) ==
+                  selected_topic_names_.end()) {
+            selected_topic_names_.push_back(t.name);
+          }
+        }
+      }
+      snapshotSelectedTopics();
+      return true;
+    }
+    if (widget_name == "btnDeselectAll") {
+      // Every selection, also one the filter hides; locked rows stay selected.
+      selected_topic_names_.clear();
+      snapshotSelectedTopics();
       return true;
     }
     return false;
@@ -169,7 +208,18 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "topicsList") {
-      selected_topic_names_ = selected;
+      // Selected rows always pass the filter, so `selected` is the whole user selection. Locked
+      // rows are implied, never part of it.
+      {
+        std::lock_guard<std::mutex> lock(topics_mutex_);
+        selected_topic_names_.clear();
+        for (const auto& name : selected) {
+          const auto it = std::find_if(topics_.begin(), topics_.end(), [&](const auto& t) { return t.name == name; });
+          if (it == topics_.end() || !isLocked(*it)) {
+            selected_topic_names_.push_back(name);
+          }
+        }
+      }
       snapshotSelectedTopics();
       return true;  // re-evaluate OK button state
     }
@@ -232,8 +282,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     if (cfg.is_discarded()) {
       return false;
     }
-    // `url`, when present, must be a ws:// or wss:// string; it wins over address/port.
-    if (!endpoint_.load(cfg, "127.0.0.1", kDefaultPort)) {
+    // `url` (else the legacy address/port); a config without them keeps the current URL.
+    if (!endpoint_.load(cfg)) {
       return false;
     }
     const auto array_limit = PJ::sdk::arrayLimitFromJson(cfg);
@@ -336,10 +386,15 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     }
   }
 
+  /// Always subscribed (a transform): shown selected and locked, never saved.
+  static bool isLocked(const DiscoveredTopic& t) {
+    return PJ::BridgeProtocol::isAlwaysSubscribed(t.schema_name);
+  }
+
   /// Case-insensitive substring match on topic name and type.
-  /// Selected topics always match (so they remain visible even when filtered).
+  /// Selected and locked topics always match (so they remain visible even when filtered).
   bool matchesFilter(const DiscoveredTopic& t) const {
-    if (filter_.empty()) {
+    if (filter_.empty() || isLocked(t)) {
       return true;
     }
     // Always show selected topics regardless of filter
@@ -356,8 +411,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   }
 
   // --- State ---
-  static constexpr int kDefaultPort = 9090;  ///< the bridge server's own default
-  PJ::WebSocket::Endpoint endpoint_{"127.0.0.1", kDefaultPort, {}};
+  static constexpr uint16_t kDefaultPort = 9090;  ///< the bridge server's own default
+  PJ::WebSocket::Endpoint endpoint_{"127.0.0.1", kDefaultPort};
   int max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
   bool use_timestamp_ = false;

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -39,6 +40,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
              [this](PJ::DataSourceMessageLevel level, const std::string& message) {
                runtimeHost().reportMessage(level, message);
              }}) {}
+
+  /// The default services, plus the optional settings store the dialog remembers its last URL in.
+  PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
+    auto status = StreamSourceBase::bind(services);
+    dialog_.setSettings(services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{}));
+    return status;
+  }
 
   PJ_borrowed_dialog_t getDialog() override {
     return PJ::borrowDialog(dialog_);
@@ -84,8 +92,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     if (!dialog_.loadConfig(config_json)) {
       return PJ::unexpected(
           std::string(
-              "invalid config: expected a JSON object with a ws:// or wss:// \"url\", or "
-              "\"address\" and \"port\""));
+              "invalid config: expected a JSON object with a ws:// or wss:// \"url\" (or the legacy "
+              "\"address\" and \"port\")"));
     }
     return PJ::okStatus();
   }
@@ -141,8 +149,17 @@ class PjBridgeSource : public PJ::StreamSourceBase {
 
     if (!demand_mode_) {
       // --- Legacy host: preserve the original behavior. ---
-      // The dialog seed is only for demand mode; drop it so the legacy schema
-      // lookup resolves from selected_topics_ alone.
+      // The always-subscribed topics the dialog saw join the subscribe list; without the
+      // dialog's catalog (a configured start) only the saved selection is known. The dialog
+      // seed is only for demand mode otherwise; drop it so the legacy schema lookup resolves
+      // from selected_topics_ alone.
+      for (const auto& name : alwaysSubscribedTopics(advertised_topics_)) {
+        if (std::none_of(selected_topics_.begin(), selected_topics_.end(), [&](const TopicInfo& info) {
+              return info.name == name;
+            })) {
+          selected_topics_.push_back(advertised_topics_.at(name));
+        }
+      }
       advertised_topics_.clear();
       if (selected_topics_.empty()) {
         runtimeHost().reportMessage(
@@ -371,7 +388,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     std::vector<PJ::AvailableTopic> topics;
     topics.reserve(advertised_topics_.size());
     for (const auto& [name, info] : advertised_topics_) {
-      if (!passesAdvertiseFilter(name, filter)) {
+      if (!passesAdvertiseFilter(name, filter) && !isAlwaysSubscribed(info.schema_name)) {
         continue;
       }
       const auto schema_bytes = reinterpret_cast<const uint8_t*>(info.schema.data());
@@ -400,7 +417,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   // [poll thread] The single reconciliation point for demand mode: diff the
-  // applied subscriptions against last_applied_desired_ over the currently
+  // applied subscriptions against last_applied_desired_ plus the always-subscribed topics over the currently
   // advertised (and filter-passing) topics, sending ONE additive subscribe for
   // the newly wanted topics and ONE unsubscribe for the dropped ones. Called
   // after every advertise delta (onPoll) AND when a new desired set lands
@@ -408,7 +425,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // converge on one code path. Empty send lists are suppressed.
   void reconcileSubscriptions() {
     const auto advertised = filteredAdvertisedTopics(advertised_topics_, advertiseFilter());
-    const auto diff = computeSubscriptionDiff(applied_, advertised, last_applied_desired_);
+    auto desired = alwaysSubscribedTopics(advertised_topics_);
+    desired.insert(last_applied_desired_.begin(), last_applied_desired_.end());
+    const auto diff = computeSubscriptionDiff(applied_, advertised, desired);
 
     if (!diff.to_unsubscribe.empty()) {
       connection_.sendText(buildUnsubscribeMessage(diff.to_unsubscribe));

@@ -16,9 +16,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <optional>
+#include <pj_base/sdk/settings_store_host.hpp>
 #include <pj_plugins/host/service_registry_builder.hpp>
 #include <pj_websocket/testing/fake_websocket_client.hpp>
 #include <random>
+#include <set>
 #include <string>
 #include <test_support/recording_runtime_host.hpp>
 #include <thread>
@@ -64,13 +67,18 @@ using FakeRuntimeHost = toolbox_testing::RecordingRuntimeHost;
 
 /// One PjBridgeSource bound to a recording host, with test-length deadlines.
 struct BridgeFixture {
-  explicit BridgeFixture(bool demand_capable = true, BridgeConnectionOptions options = testOptions())
+  explicit BridgeFixture(
+      bool demand_capable = true, BridgeConnectionOptions options = testOptions(),
+      std::optional<PJ_settings_store_t> settings = std::nullopt)
       : host(demand_capable), source(options) {
     fakeSockets().clear();
     write_vtable.abi_version = PJ_PLUGIN_DATA_API_VERSION;
     write_vtable.struct_size = sizeof(write_vtable);
     registry.registerService<PJ::sdk::SourceWriteHostService>(PJ_source_write_host_t{&write_vtable, &write_vtable});
     registry.registerService<PJ::sdk::DataSourceRuntimeHostService>(host.raw());
+    if (settings) {
+      registry.registerService<PJ::sdk::SettingsStoreService>(*settings);
+    }
     EXPECT_TRUE(source.bind(PJ::sdk::ServiceRegistry(registry.view())));
   }
 
@@ -305,7 +313,11 @@ TEST(PjBridgeConnectionTest, LegacyConfigSubscribesTheSelectionOnceOpen) {
   ASSERT_TRUE(fixture.source.start());
   FakeSocket& socket = fixture.onlySocket();
   EXPECT_EQ(socket.url, "ws://10.0.0.2:9000");
-  EXPECT_FALSE(nlohmann::json::parse(fixture.source.saveConfig()).contains("url"));
+  // A legacy address/port config is saved back as one url.
+  const auto saved = nlohmann::json::parse(fixture.source.saveConfig());
+  EXPECT_EQ(saved.value("url", std::string{}), "ws://10.0.0.2:9000");
+  EXPECT_FALSE(saved.contains("address"));
+  EXPECT_FALSE(saved.contains("port"));
 
   socket.acceptConnection();
   ASSERT_TRUE(fixture.source.poll());
@@ -457,7 +469,7 @@ TEST(PjBridgeConnectionTest, InboundOverflowDropsTheOldestDataAndKeepsTheSession
 TEST(PjBridgeConnectionTest, DialogConnectionIsHandedToTheSource) {
   BridgeFixture fixture;
   PjBridgeDialog& dialog = fixture.dialog();
-  dialog.onTextChanged("lineEditAddress", "wss://robot.local:8443/bridge");
+  dialog.onTextChanged("lineEditUrl", "wss://robot.local:8443/bridge");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   FakeSocket& socket = fixture.onlySocket();
   EXPECT_EQ(socket.url, "wss://robot.local:8443/bridge");
@@ -482,7 +494,7 @@ TEST(PjBridgeConnectionTest, DialogConnectionIsHandedToTheSource) {
 TEST(PjBridgeConnectionTest, DialogRetriesARefusedConnectionUntilTheServerAppears) {
   fakeSockets().clear();
   PjBridgeDialog dialog(testOptions());
-  dialog.onTextChanged("lineEditAddress", "ws://robot:9871");
+  dialog.onTextChanged("lineEditUrl", "ws://robot:9871");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   ASSERT_EQ(fakeSockets().size(), 1U);
   EXPECT_NE(dialog.widget_data().find("Connecting to ws://robot:9871"), std::string::npos) << dialog.widget_data();
@@ -511,7 +523,7 @@ TEST(PjBridgeConnectionTest, DialogRetriesARefusedConnectionUntilTheServerAppear
 TEST(PjBridgeConnectionTest, DialogAttemptThatNeverAnswersTimesOutUntilCancelled) {
   fakeSockets().clear();
   PjBridgeDialog dialog(testOptions());
-  dialog.onTextChanged("lineEditAddress", "ws://10.255.255.1:9871");
+  dialog.onTextChanged("lineEditUrl", "ws://10.255.255.1:9871");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
 
   std::this_thread::sleep_for(testOptions().connect + std::chrono::milliseconds(10));
@@ -530,7 +542,7 @@ TEST(PjBridgeConnectionTest, DialogAttemptThatNeverAnswersTimesOutUntilCancelled
 TEST(PjBridgeConnectionTest, DialogTreatsAnOpenArrivingAfterTheDeadlineAsATimeout) {
   fakeSockets().clear();
   PjBridgeDialog dialog(testOptions());
-  dialog.onTextChanged("lineEditAddress", "ws://robot:9090");
+  dialog.onTextChanged("lineEditUrl", "ws://robot:9090");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   std::this_thread::sleep_for(testOptions().connect + std::chrono::milliseconds(10));
   fakeSockets().back()->acceptConnection();  // too late, but queued before the tick
@@ -541,7 +553,7 @@ TEST(PjBridgeConnectionTest, DialogTreatsAnOpenArrivingAfterTheDeadlineAsATimeou
 TEST(PjBridgeConnectionTest, DialogSeesACloseThatFollowsMalformedText) {
   fakeSockets().clear();
   PjBridgeDialog dialog(testOptions());
-  dialog.onTextChanged("lineEditAddress", "ws://robot:9090");
+  dialog.onTextChanged("lineEditUrl", "ws://robot:9090");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   const auto socket = fakeSockets().back();
   socket->acceptConnection();
@@ -556,7 +568,7 @@ TEST(PjBridgeConnectionTest, DialogSeesACloseThatFollowsMalformedText) {
 TEST(PjBridgeConnectionTest, DialogKeepsTheValidTopicsWhenOneEntryIsMalformed) {
   fakeSockets().clear();
   PjBridgeDialog dialog(testOptions());
-  dialog.onTextChanged("lineEditAddress", "ws://robot:9090");
+  dialog.onTextChanged("lineEditUrl", "ws://robot:9090");
   ASSERT_TRUE(dialog.onClicked("buttonConnect"));
   const auto socket = fakeSockets().back();
   socket->acceptConnection();
@@ -582,6 +594,286 @@ TEST(PjBridgeConnectionTest, DialogDefaultsToTheBridgeServersPort) {
   EXPECT_EQ(dialog.endpoint(), "ws://127.0.0.1:9090");
   ASSERT_TRUE(dialog.loadConfig(R"({"address":"10.0.0.2"})"));
   EXPECT_EQ(dialog.endpoint(), "ws://10.0.0.2:9090");
+}
+
+// --- The URL line ---
+
+TEST(PjBridgeConnectionTest, DialogCompletesABareHostWithWsAndTheDefaultPort) {
+  fakeSockets().clear();
+  PjBridgeDialog dialog(testOptions());
+  dialog.onTextChanged("lineEditUrl", " robot.local ");
+  EXPECT_EQ(dialog.endpoint(), "ws://robot.local:9090");
+  dialog.onTextChanged("lineEditUrl", "10.0.0.2:9871/bridge");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  ASSERT_EQ(fakeSockets().size(), 1U);
+  EXPECT_EQ(fakeSockets().back()->url, "ws://10.0.0.2:9871/bridge");
+}
+
+TEST(PjBridgeConnectionTest, DialogDialsTheTypedUrlWithItsCredentials) {
+  fakeSockets().clear();
+  PjBridgeDialog dialog(testOptions());
+  dialog.onTextChanged("lineEditUrl", "wss://user:pw@robot:8443/b?token=t");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  EXPECT_EQ(fakeSockets().back()->url, "wss://user:pw@robot:8443/b?token=t");
+}
+
+TEST(PjBridgeConnectionTest, DialogInvalidUrlDisablesConnectAndSaysWhy) {
+  fakeSockets().clear();
+  PjBridgeDialog dialog(testOptions());
+  dialog.onTextChanged("lineEditUrl", "http://robot:9090");
+  const auto data = nlohmann::json::parse(dialog.widget_data());
+  EXPECT_FALSE(data["buttonConnect"].value("enabled", true));
+  EXPECT_NE(data["labelConnectionStatus"].dump().find("ws:// or wss://"), std::string::npos) << data.dump();
+  dialog.onClicked("buttonConnect");
+  EXPECT_TRUE(fakeSockets().empty());
+
+  dialog.onTextChanged("lineEditUrl", "robot");
+  EXPECT_TRUE(nlohmann::json::parse(dialog.widget_data())["buttonConnect"].value("enabled", false));
+}
+
+// --- The remembered URL (pj.settings.v1) ---
+
+TEST(PjBridgeConnectionTest, DialogStartsFromTheRememberedUrlUnlessTheConfigNamesOne) {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost store(backend);
+  backend.setString(PJ::WebSocket::kLastUrlSettingsKey, "ws://remembered:9000");
+
+  BridgeFixture fixture(true, testOptions(), store.view());
+  EXPECT_EQ(fixture.dialog().endpoint(), "ws://remembered:9000");
+  ASSERT_TRUE(fixture.source.loadConfig(R"({"topics":[]})"));  // no endpoint: the remembered URL stays
+  EXPECT_EQ(fixture.dialog().endpoint(), "ws://remembered:9000");
+  ASSERT_TRUE(fixture.source.loadConfig(R"({"url":"ws://configured:1"})"));
+  EXPECT_EQ(fixture.dialog().endpoint(), "ws://configured:1");
+
+  // A config read before the store is bound still wins.
+  PjBridgeSource other(testOptions());
+  ASSERT_TRUE(other.loadConfig(R"({"address":"legacy","port":2})"));
+  PJ::ServiceRegistryBuilder registry;
+  registry.registerService<PJ::sdk::SettingsStoreService>(store.view());
+  (void)other.bind(PJ::sdk::ServiceRegistry(registry.view()));
+  EXPECT_EQ(
+      static_cast<PjBridgeDialog*>(static_cast<PJ::DialogPluginBase*>(other.getDialog().ctx))->endpoint(),
+      "ws://legacy:2");
+}
+
+TEST(PjBridgeConnectionTest, DialogRemembersTheCleanedUrlOnceConnected) {
+  PJ::sdk::InMemorySettingsBackend backend;
+  PJ::sdk::SettingsStoreHost store(backend);
+  BridgeFixture fixture(true, testOptions(), store.view());
+  PjBridgeDialog& dialog = fixture.dialog();
+  dialog.onTextChanged("lineEditUrl", "ws://user:pw@robot:9090/b?token=t&ns=a");
+  EXPECT_FALSE(backend.getString(PJ::WebSocket::kLastUrlSettingsKey));  // not per keystroke
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  dialog.onTick();
+  EXPECT_FALSE(backend.getString(PJ::WebSocket::kLastUrlSettingsKey));  // not before it connected
+
+  fixture.onlySocket().acceptConnection();
+  dialog.onTick();
+  EXPECT_EQ(backend.getString(PJ::WebSocket::kLastUrlSettingsKey), "ws://robot:9090/b?ns=a");
+  // The config keeps the URL as typed, credentials included.
+  EXPECT_EQ(
+      nlohmann::json::parse(dialog.saveConfig()).value("url", std::string{}), "ws://user:pw@robot:9090/b?token=t&ns=a");
+}
+
+TEST(PjBridgeConnectionTest, DialogWithoutASettingsStoreBehavesAsBefore) {
+  BridgeFixture fixture;
+  EXPECT_EQ(fixture.dialog().endpoint(), "ws://127.0.0.1:9090");
+  fixture.dialog().onTextChanged("lineEditUrl", "robot");
+  ASSERT_TRUE(fixture.dialog().onClicked("buttonConnect"));
+  fixture.onlySocket().acceptConnection();
+  EXPECT_TRUE(fixture.dialog().onTick());
+}
+
+// --- Topic selection: Select All / Deselect All and the always-subscribed transforms ---
+
+std::string typedTopicsResponse(const std::vector<std::pair<std::string, std::string>>& topics) {
+  auto response = nlohmann::json::parse(getTopicsResponse({}));
+  for (const auto& [name, type] : topics) {
+    response["topics"].push_back({{"name", name}, {"type", type}, {"encoding", "ros2msg"}, {"definition", ""}});
+  }
+  return response.dump();
+}
+
+constexpr const char* kTf = "tf2_msgs/msg/TFMessage";
+constexpr const char* kFloat = "std_msgs/msg/Float64";
+
+/// Connects `dialog` and delivers one get_topics answer.
+void connectDialog(PjBridgeDialog& dialog, const std::string& topics_response) {
+  fakeSockets().clear();
+  dialog.onTextChanged("lineEditUrl", "ws://robot:9090");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  fakeSockets().back()->acceptConnection();
+  dialog.onTick();
+  fakeSockets().back()->deliverText(topics_response);
+  dialog.onTick();
+}
+
+nlohmann::json table(PjBridgeDialog& dialog) {
+  return nlohmann::json::parse(dialog.widget_data())["topicsList"];
+}
+
+std::set<std::string> shownSelection(PjBridgeDialog& dialog) {
+  return table(dialog).value("selected_items", std::set<std::string>{});
+}
+
+std::set<std::string> savedTopics(const PjBridgeDialog& dialog) {
+  std::set<std::string> names;
+  const auto saved = nlohmann::json::parse(dialog.saveConfig());
+  for (const auto& t : saved["topics"]) {
+    names.insert(t.value("name", std::string{}));
+  }
+  return names;
+}
+
+int rowOf(const nlohmann::json& tbl, const std::string& name) {
+  const auto& rows = tbl["rows"];
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i][0] == name) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+TEST(PjBridgeConnectionTest, SelectAllAndDeselectAllFollowTheFilter) {
+  PjBridgeDialog dialog(testOptions());
+  connectDialog(dialog, typedTopicsResponse({{"/imu", kFloat}, {"/odom", kFloat}, {"/odom_raw", kFloat}}));
+  const auto data = nlohmann::json::parse(dialog.widget_data());
+  EXPECT_EQ(data["btnSelectAll"].value("shortcut", std::string{}), "Ctrl+A");
+  EXPECT_EQ(data["btnDeselectAll"].value("shortcut", std::string{}), "Ctrl+Shift+A");
+
+  dialog.onTextChanged("lineEditFilter", "odom");
+  ASSERT_TRUE(dialog.onClicked("btnSelectAll"));  // the rows the filter shows
+  dialog.onTextChanged("lineEditFilter", "");
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/odom", "/odom_raw"}));
+  ASSERT_TRUE(dialog.onClicked("btnSelectAll"));
+  EXPECT_EQ(savedTopics(dialog), (std::set<std::string>{"/imu", "/odom", "/odom_raw"}));
+
+  // Deselect All drops every selection, also one the filter would hide.
+  dialog.onTextChanged("lineEditFilter", "imu");
+  ASSERT_TRUE(dialog.onClicked("btnDeselectAll"));
+  dialog.onTextChanged("lineEditFilter", "");
+  EXPECT_TRUE(shownSelection(dialog).empty());
+  EXPECT_TRUE(savedTopics(dialog).empty());
+}
+
+TEST(PjBridgeConnectionTest, OkNeedsOnlyTheConnectionNotASelection) {
+  PjBridgeDialog dialog(testOptions());
+  connectDialog(dialog, typedTopicsResponse({{"/tf", kTf}}));
+  ASSERT_TRUE(dialog.onClicked("btnDeselectAll"));
+  EXPECT_TRUE(nlohmann::json::parse(dialog.widget_data())["buttonBox"].value("ok_enabled", false));
+}
+
+TEST(PjBridgeConnectionTest, TransformRowsAreLockedSelectedAndTooltipped) {
+  PjBridgeDialog dialog(testOptions());
+  connectDialog(dialog, typedTopicsResponse({{"/tf", kTf}, {"/tf_static", kTf}, {"/imu", kFloat}}));
+  const auto tbl = table(dialog);
+  const int tf = rowOf(tbl, "/tf");
+  const int tf_static = rowOf(tbl, "/tf_static");
+  const int imu = rowOf(tbl, "/imu");
+  ASSERT_GE(tf, 0);
+  ASSERT_GE(tf_static, 0);
+  ASSERT_GE(imu, 0);
+  const auto disabled = tbl.value("disabled_rows", std::set<int>{});
+  EXPECT_EQ(disabled, (std::set<int>{tf, tf_static}));
+  const auto& tooltips = tbl["cell_tooltips"];
+  EXPECT_EQ(tooltips.value(std::to_string(tf) + ",0", std::string{}), PJ::AlwaysIncluded::kTooltip);
+  EXPECT_EQ(tooltips.value(std::to_string(tf_static) + ",0", std::string{}), PJ::AlwaysIncluded::kTooltip);
+  EXPECT_FALSE(tooltips.contains(std::to_string(imu) + ",0"));
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf", "/tf_static"}));
+  // Implied, so not saved: an empty selection still means "advertise everything".
+  EXPECT_TRUE(savedTopics(dialog).empty());
+}
+
+TEST(PjBridgeConnectionTest, TransformRowsSurviveDeselectAllClicksAndAFilter) {
+  PjBridgeDialog dialog(testOptions());
+  connectDialog(dialog, typedTopicsResponse({{"/tf", kTf}, {"/imu", kFloat}}));
+  ASSERT_TRUE(dialog.onClicked("btnDeselectAll"));
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf"}));
+
+  // The host reports only selectable rows: a selection omitting /tf does not drop it.
+  ASSERT_TRUE(dialog.onSelectionChanged("topicsList", {"/imu"}));
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf", "/imu"}));
+  ASSERT_TRUE(dialog.onSelectionChanged("topicsList", {}));
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf"}));
+
+  dialog.onTextChanged("lineEditFilter", "imu");
+  EXPECT_NE(rowOf(table(dialog), "/tf"), -1);  // a filter never hides it
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf"}));
+}
+
+TEST(PjBridgeConnectionTest, ASavedSelectionOmittingTransformsStillShowsThem) {
+  PjBridgeDialog dialog(testOptions());
+  ASSERT_TRUE(dialog.loadConfig(R"({"url":"ws://robot:9090","topics":[{"name":"/imu"}]})"));
+  connectDialog(dialog, typedTopicsResponse({{"/tf", kTf}, {"/imu", kFloat}}));
+  EXPECT_EQ(shownSelection(dialog), (std::set<std::string>{"/tf", "/imu"}));
+  EXPECT_EQ(savedTopics(dialog), (std::set<std::string>{"/imu"}));
+  // A config that lists them loads too.
+  EXPECT_TRUE(dialog.loadConfig(R"({"url":"ws://robot:9090","topics":[{"name":"/tf"}]})"));
+}
+
+TEST(PjBridgeConnectionTest, ATfNameOfAnotherTypeIsNotForced) {
+  PjBridgeDialog dialog(testOptions());
+  connectDialog(dialog, typedTopicsResponse({{"/tf", "std_msgs/msg/String"}, {"tf", kFloat}}));
+  const auto tbl = table(dialog);
+  EXPECT_TRUE(tbl.value("disabled_rows", std::set<int>{}).empty());
+  EXPECT_TRUE(shownSelection(dialog).empty());
+}
+
+TEST(PjBridgeConnectionTest, AdvertisedTransformsAreSubscribedWithNothingSelected) {
+  BridgeFixture fixture;
+  FakeSocket& socket = fixture.startWithUrl("ws://robot:9871");
+  socket.acceptConnection();
+  socket.deliverText(typedTopicsResponse({{"/imu", kFloat}, {"/tf", kTf}, {"/tf_static", kTf}, {"/fake_tf", kFloat}}));
+  ASSERT_TRUE(fixture.source.poll());
+  const auto subscribe = lastSent(socket);
+  EXPECT_EQ(subscribe.value("command", std::string{}), "subscribe");
+  EXPECT_EQ(subscribe.at("topics"), nlohmann::json::array({"/tf", "/tf_static"}));
+
+  // The host's desired set never drops them.
+  fixture.setActiveTopics({"/imu"});
+  ASSERT_TRUE(fixture.source.poll());
+  EXPECT_EQ(lastSent(socket).at("topics"), nlohmann::json::array({"/imu"}));
+  fixture.setActiveTopics({});
+  ASSERT_TRUE(fixture.source.poll());
+  const auto unsubscribe = lastSent(socket);
+  EXPECT_EQ(unsubscribe.value("command", std::string{}), "unsubscribe");
+  EXPECT_EQ(unsubscribe.at("topics"), nlohmann::json::array({"/imu"}));
+}
+
+TEST(PjBridgeConnectionTest, TransformsPassASavedAdvertiseFilter) {
+  BridgeFixture fixture;
+  ASSERT_TRUE(fixture.source.loadConfig(R"({"url":"ws://robot:9871","topics":[{"name":"/imu"}]})"));
+  ASSERT_TRUE(fixture.source.start());
+  FakeSocket& socket = fixture.onlySocket();
+  socket.acceptConnection();
+  socket.deliverText(typedTopicsResponse({{"/imu", kFloat}, {"/odom", kFloat}, {"/tf", kTf}}));
+  ASSERT_TRUE(fixture.source.poll());
+  ASSERT_FALSE(fixture.host.advertisements.empty());
+  EXPECT_EQ(fixture.host.advertisements.back(), (std::vector<std::string>{"/imu", "/tf"}));
+  EXPECT_EQ(lastSent(socket).at("topics"), nlohmann::json::array({"/tf"}));
+}
+
+TEST(PjBridgeConnectionTest, AbsentTransformsAreNotInvented) {
+  BridgeFixture fixture;
+  FakeSocket& socket = fixture.startWithUrl("ws://robot:9871");
+  socket.acceptConnection();
+  socket.deliverText(typedTopicsResponse({{"/imu", kFloat}}));
+  ASSERT_TRUE(fixture.source.poll());
+  EXPECT_EQ(commands(socket), (std::vector<std::string>{"subscribe_topic_updates", "get_topics"}));
+}
+
+TEST(PjBridgeConnectionTest, LegacyHostSubscribesTheDialogsTransformsToo) {
+  BridgeFixture fixture(/*demand_capable=*/false);
+  PjBridgeDialog& dialog = fixture.dialog();
+  connectDialog(dialog, typedTopicsResponse({{"/imu", kFloat}, {"/tf", kTf}}));
+  ASSERT_TRUE(dialog.onSelectionChanged("topicsList", {"/imu"}));
+  ASSERT_TRUE(fixture.source.start());
+  ASSERT_TRUE(fixture.source.poll());
+  FakeSocket& socket = *fakeSockets().back();
+  const auto subscribe = lastSent(socket);
+  EXPECT_EQ(subscribe.value("command", std::string{}), "subscribe");
+  EXPECT_EQ(subscribe.at("topics"), nlohmann::json::array({"/imu", "/tf"}));
 }
 
 }  // namespace

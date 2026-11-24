@@ -21,6 +21,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_always_included/always_included.hpp>
 #include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/streaming_source.hpp>
 #include <set>
@@ -103,9 +104,28 @@ struct SubscriptionDiff {
       topic, selection, [](const std::string& value) -> const std::string& { return value; });
 }
 
+/// Whether a topic of ROS 2 type `schema_name` is always subscribed, whatever the selection and
+/// the host's desired set (transforms; see common/always_included). Every rule of this plugin
+/// about forced topics goes through here.
+[[nodiscard]] inline bool isAlwaysSubscribed(std::string_view schema_name) {
+  return PJ::AlwaysIncluded::matches(schema_name, PJ::AlwaysIncluded::kRos2Encoding);
+}
+
+/// The advertised topics that are always subscribed. A forced type the server does not
+/// advertise is never invented.
+[[nodiscard]] inline std::set<std::string> alwaysSubscribedTopics(const std::map<std::string, TopicInfo>& advertised) {
+  std::set<std::string> out;
+  for (const auto& [name, info] : advertised) {
+    if (isAlwaysSubscribed(info.schema_name)) {
+      out.insert(name);
+    }
+  }
+  return out;
+}
+
 /// The set of topic names computeSubscriptionDiff() reconciles against:
 /// server-advertised topics restricted by the SAME filter buildAvailableTopics
-/// applies when advertising. Advertise and subscribe stay symmetric — a topic
+/// applies when advertising, which always-subscribed topics pass. Advertise and subscribe stay symmetric — a topic
 /// the filter hides from the host is never subscribed either, even if a (stale)
 /// desired set names it: the filter is explicit user configuration and outranks
 /// a leftover layout reference. Mirrors
@@ -113,8 +133,8 @@ struct SubscriptionDiff {
 [[nodiscard]] inline std::set<std::string> filteredAdvertisedTopics(
     const std::map<std::string, TopicInfo>& advertised, const std::vector<std::string>& selection) {
   std::set<std::string> out;
-  for (const auto& [name, _info] : advertised) {
-    if (passesAdvertiseFilter(name, selection)) {
+  for (const auto& [name, info] : advertised) {
+    if (passesAdvertiseFilter(name, selection) || isAlwaysSubscribed(info.schema_name)) {
       out.insert(name);
     }
   }
