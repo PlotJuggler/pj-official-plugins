@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_mcap/`.
 
-## Upcoming
+## [1.3.4] - 2026-11-24
 
 ### Changed
 - The tooltip of an always-loaded transform channel reads "Always loaded: required for 3D transform rendering.", the same as in the streamers' dialogs.

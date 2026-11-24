@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_ros2/`.
 
-## Upcoming
+## [1.3.0] - 2026-11-24
 
 ### Changed
 - `tf2_msgs/msg/TFMessage` topics are locked rows, shown selected with a tooltip and never hidden by the filter, and the saved selection never filters them out of the topics offered to PlotJuggler, which subscribes them. The saved selection holds only the topics the user picked.

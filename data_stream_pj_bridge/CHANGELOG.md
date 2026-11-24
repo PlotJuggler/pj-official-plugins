@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_pj_bridge/`.
 
-## Upcoming
+## [1.2.0] - 2026-11-24
 
 ### Changed
 - The dialog takes the server as one URL line (`ws://127.0.0.1:9090` by default) instead of address, port and transport fields. A bare host or `host:port` gets `ws://` and port 9090; a query token is dialed as typed; an invalid URL disables Connect and the status line says why. A URL with credentials (`user:password@`) or a fragment (`#`) is refused: neither PlotJuggler nor browsers send credentials, and WebSocket URLs cannot have a fragment. The configuration saves `url`; configurations with `address`/`port` still load, and a saved `url` with credentials or a fragment loads without them.
