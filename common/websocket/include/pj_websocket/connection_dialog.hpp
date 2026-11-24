@@ -238,17 +238,21 @@ class DialogConnection {
   [[nodiscard]] bool connected() const {
     return state_ == State::kConnected;
   }
+  /// An attempt is in flight (at most one deadline long); the retry wait between attempts is not.
+  [[nodiscard]] bool connecting() const {
+    return state_ == State::kConnecting;
+  }
 
   /// Fills the URL line (editable only while idle), the connect button and the status line.
   /// While idle with an invalid URL, Connect is disabled and the status line says why.
   void toWidgets(PJ::WidgetData& wd, const Endpoint& endpoint) const {
     wd.setText("lineEditUrl", endpoint.text());
     wd.setEnabled("lineEditUrl", idle());
-    // Pressing the button while connecting or retrying cancels, and while connected disconnects.
-    wd.setButtonText("buttonConnect", connected() ? "Connected" : (idle() ? "Connect" : "Cancel"));
-    wd.setChecked("buttonConnect", !idle());
+    // An icon-only plug button, inert while an attempt is in flight. Pressed during a retry wait
+    // it cancels, and while connected it disconnects; the status line says which state it is in.
+    wd.setButtonIconNamed("buttonConnect", "plug_connect");
     const auto& url = endpoint.url();
-    wd.setEnabled("buttonConnect", !idle() || url.has_value());
+    wd.setEnabled("buttonConnect", !connecting() && (!idle() || url.has_value()));
     wd.setLabel("labelConnectionStatus", idle() && !url ? url.error() : status());
   }
 

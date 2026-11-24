@@ -534,6 +534,25 @@ TEST(PjBridgeConnectionTest, DialogRetriesARefusedConnectionUntilTheServerAppear
   EXPECT_NE(dialog.widget_data().find("Retrying in 1 s: bridge restarting"), std::string::npos);
 }
 
+TEST(PjBridgeConnectionTest, ConnectIsAnIconButtonInertWhileAnAttemptIsInFlight) {
+  fakeSockets().clear();
+  PjBridgeDialog dialog(testOptions());
+  const auto button = [&dialog] { return nlohmann::json::parse(dialog.widget_data())["buttonConnect"]; };
+  EXPECT_EQ(button().value("button_icon_name", std::string{}), "plug_connect");
+  EXPECT_FALSE(button().contains("button_text"));
+  EXPECT_FALSE(button().contains("checked"));
+  EXPECT_TRUE(button().value("enabled", false));
+
+  dialog.onTextChanged("lineEditUrl", "ws://robot:9871");
+  ASSERT_TRUE(dialog.onClicked("buttonConnect"));
+  EXPECT_FALSE(button().value("enabled", true));  // the attempt is in flight
+
+  fakeSockets().back()->sink->push({EventType::kError, "connection refused"});
+  dialog.onTick();
+  EXPECT_TRUE(button().value("enabled", false));  // the retry wait: pressing it cancels
+  EXPECT_FALSE(button().contains("button_text"));
+}
+
 TEST(PjBridgeConnectionTest, DialogAttemptThatNeverAnswersTimesOutUntilCancelled) {
   fakeSockets().clear();
   PjBridgeDialog dialog(testOptions());

@@ -12,6 +12,7 @@ below; for earlier releases see the git history of `data_stream_pj_bridge/`.
 - `tf2_msgs/msg/TFMessage` topics are always subscribed: their rows are selected, locked and tooltipped, Deselect All, a filter or a saved selection never drops them, and they are saved with the selection, so a PlotJuggler without demand subscriptions subscribes them too.
 - The topic table's columns are titled "Topic" and "Type" (were "Topic Name" and "DataType"), like the other streamers.
 - The dialog opens at 800x600 and can be resized down to 600x450.
+- The address line has a "URL:" label to its left (was "Server URL" above it), and Connect is a plug icon button on the same row, as in the Mosaico toolbox, instead of a text button: it is inert while an attempt is in flight, pressing it during a retry wait cancels, and while connected it disconnects. The status line below says which state it is in.
 
 ## [1.1.2] - 2026-11-19
 

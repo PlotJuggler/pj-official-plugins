@@ -51,12 +51,12 @@
       <number>9</number>
      </property>
      <item>
-      <layout class="QGridLayout" name="gridLayout" columnstretch="1,0">
+      <layout class="QGridLayout" name="gridLayout" columnstretch="0,1,0">
      <property name="spacing"><number>6</number></property>
-     <item row="0" column="0" colspan="2">
-      <widget class="QLabel" name="labelUrl"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>Server URL</string></property></widget>
+     <item row="0" column="0">
+      <widget class="QLabel" name="labelUrl"><property name="font"><font><pointsize>11</pointsize><bold>false</bold></font></property><property name="text"><string>URL:</string></property></widget>
      </item>
-     <item row="1" column="0">
+     <item row="0" column="1">
       <widget class="QLineEdit" name="lineEditUrl">
        <property name="placeholderText"><string>ws://127.0.0.1:8765</string></property>
        <property name="toolTip"><string>The Foxglove server's ws:// or wss:// URL, with any path and query, e.g. wss://robot.local:8765. A bare host or host:port gets ws:// and port 8765.</string></property>
@@ -64,12 +64,15 @@
        <property name="maximumSize"><size><width>16777215</width><height>25</height></size></property>
       </widget>
      </item>
-     <item row="1" column="1">
-      <!-- min height 34 = text + the app QSS button padding (8px each side), so a
-           height-compressed layout can never squeeze the label into clipping. -->
-      <widget class="QPushButton" name="buttonConnect"><property name="minimumSize"><size><width>110</width><height>34</height></size></property><property name="text"><string>Connect</string></property><property name="checkable"><bool>true</bool></property></widget>
+     <item row="0" column="2">
+      <widget class="QPushButton" name="buttonConnect">
+       <property name="toolTip"><string>Connect</string></property>
+       <property name="minimumSize"><size><width>28</width><height>25</height></size></property>
+       <property name="maximumSize"><size><width>28</width><height>25</height></size></property>
+       <property name="styleSheet"><string notr="true">QPushButton { padding: 0px; }</string></property>
+      </widget>
      </item>
-     <item row="2" column="0" colspan="2">
+     <item row="1" column="0" colspan="3">
       <!-- Connecting / retrying in N s with the last error / connected; why the URL is invalid; else empty. -->
       <widget class="QLabel" name="labelConnectionStatus">
        <property name="text"><string/></property>

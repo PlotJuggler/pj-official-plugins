@@ -15,6 +15,7 @@ below; for earlier releases see the git history of `data_stream_foxglove_bridge/
 - The default server host is `127.0.0.1` (was `localhost`), as for the PlotJuggler Bridge.
 - The empty topic table shows the hint "Click to select, Click+Drag to multi-select", as the PlotJuggler Bridge does.
 - The dialog opens at 800x600 and can be resized down to 600x450.
+- The address line has a "URL:" label to its left (was "Server URL" above it), and Connect is a plug icon button on the same row, as in the Mosaico toolbox, instead of a text button: it is inert while an attempt is in flight, pressing it during a retry wait cancels, and while connected it disconnects. The status line below says which state it is in.
 
 ### Fixed
 - On a PlotJuggler without demand subscriptions, a channel the server advertises again is not subscribed a second time.

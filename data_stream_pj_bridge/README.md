@@ -29,7 +29,7 @@ fragments are), how the URL is saved, and how the last connected URL is remember
 of secrets: [The server URL](../common/websocket/README.md#the-server-url).
 
 After Connect, the dialog retries a refused, unanswered (5 s per attempt) or dropped
-connection with a backoff from 1 s up to 10 s until it connects or the user presses Cancel;
+connection with a backoff from 1 s up to 10 s until it connects, or the user presses the plug button during a wait or cancels the dialog;
 the status line under the URL shows connecting, retrying in N s with the last error, or
 connected.
 
