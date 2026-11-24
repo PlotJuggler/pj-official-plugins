@@ -29,6 +29,11 @@ if(TARGET GTest::gtest_main)
   target_link_libraries(pj_websocket_event_queue_test PRIVATE pj_websocket plotjuggler_sdk::plugin_sdk GTest::gtest_main)
   add_test(NAME pj_websocket_event_queue_test COMMAND pj_websocket_event_queue_test)
 
+  add_executable(pj_websocket_url_test tests/url_test.cpp)
+  target_compile_options(pj_websocket_url_test PRIVATE ${PJ_WARNING_FLAGS})
+  target_link_libraries(pj_websocket_url_test PRIVATE pj_websocket plotjuggler_sdk::plugin_sdk GTest::gtest_main)
+  add_test(NAME pj_websocket_url_test COMMAND pj_websocket_url_test)
+
   add_executable(pj_websocket_source_connection_test tests/source_connection_test.cpp)
   target_compile_options(pj_websocket_source_connection_test PRIVATE ${PJ_WARNING_FLAGS})
   target_link_libraries(pj_websocket_source_connection_test PRIVATE

@@ -13,7 +13,7 @@ target_compile_features(mcap_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mcap_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(mcap_source_plugin SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_source_plugin PRIVATE
-  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static
+  plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static pj_always_included
 )
 
 pj_embed_ui(mcap_source_plugin
@@ -57,6 +57,7 @@ target_include_directories(mcap_dialog_test PRIVATE
 target_include_directories(mcap_dialog_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_dialog_test PRIVATE
   plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static GTest::gtest_main
+  pj_always_included
 )
 add_test(NAME mcap_dialog_test COMMAND mcap_dialog_test)
 

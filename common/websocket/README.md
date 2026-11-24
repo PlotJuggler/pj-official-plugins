@@ -11,9 +11,13 @@ WebSocket client transport shared by the websocket streaming plugins
   warning about it. A source holds up to one drained batch while the queue refills, so its
   inbound data peaks at about twice that cap (1 GiB desktop, 128 MiB browser).
 - `<pj_websocket/connection_dialog.hpp>`: the connection half of a streamer's dialog.
-  `Endpoint` (address or full `ws://`/`wss://` URL, port, transport indicator, config keys)
-  and `DialogConnection` (connect/cancel, per-attempt deadline, doubling capped retry
+  `Endpoint` (the one-line server URL: validation into the Connect button and status line,
+  the `url` config key with the legacy `address`/`port`, the last URL remembered in the
+  settings store under `kLastUrlSettingsKey`) and `DialogConnection` (connect/cancel, per-attempt deadline, doubling capped retry
   backoff, status line, handoff of the live connection to the source on OK).
+- `<pj_websocket/url.hpp>`: `normalizeUrl` (forgiving input to the URL to dial, or why it is
+  not one) and `cleanUrl` (the URL without its userinfo and secret-named query parameters,
+  the only form a streamer remembers; a secret inside the path cannot be detected).
 - `<pj_websocket/source_connection.hpp>`: the connection half of a streaming source.
   `SourceConnection` adopts the dialog's open connection or dials a fresh one, enforces the
   connect deadline, latches the first stream-stopping failure (`poll()` returns it until

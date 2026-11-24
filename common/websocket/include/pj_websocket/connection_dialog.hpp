@@ -3,14 +3,14 @@
 /// @file connection_dialog.hpp
 /// @brief The connection half of a websocket streamer's dialog, shared so every such dialog looks
 ///  and behaves the same:
-///   - Endpoint: the "Address or URL" / "Port" fields and the read-only transport indicator
-///     (widgets lineEditAddress, lineEditPort, comboBoxTransport), and their config keys.
+///   - Endpoint: the one-line server URL (widget lineEditUrl), its config key and the last URL
+///     remembered through the host's optional settings store.
 ///   - DialogConnection: Connect / Cancel / Disconnect, one deadline per attempt, retries with a
 ///     doubling capped backoff until the user cancels, the status line (labelConnectionStatus),
 ///     and the handoff of the live connection to the source on OK.
 ///  Everything runs on the dialog thread and is polled from onTick(); nothing waits.
 ///
-///  The dialog's .ui must provide those widgets, with exactly two transport items: ws://, wss://.
+///  The dialog's .ui must provide lineEditUrl, buttonConnect and labelConnectionStatus.
 
 #include <algorithm>
 #include <chrono>
@@ -19,8 +19,10 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_plugins/sdk/endpoint.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_websocket/url.hpp>
 #include <pj_websocket/websocket_client.hpp>
 #include <string>
 #include <string_view>
@@ -29,85 +31,126 @@
 
 namespace PJ::WebSocket {
 
-/// Where a dialog connects: a full ws:// / wss:// URL typed into the address field, else
-/// ws://address:port.
-struct Endpoint {
-  std::string address;
-  int port = 0;
-  std::string url;  ///< Non-empty: a full ws:// or wss:// URL that replaces address/port.
+/// Settings key (service pj.settings.v1, namespaced per plugin by the host) of the last URL a
+/// dialog connected to, stored cleaned of credentials (cleanUrl). The `durable/` prefix is the
+/// host's convention for a key that survives a browser reload (values up to 2048 characters);
+/// on the desktop it is an ordinary key.
+inline constexpr std::string_view kLastUrlSettingsKey = "durable/last_url";
 
-  /// The URL to connect to.
+/// Where a dialog connects: the one URL line (widget lineEditUrl), its config key and the
+/// remembered last URL.
+class Endpoint {
+ public:
+  /// `default_host` and `default_port` make the initial URL and complete a bare host.
+  Endpoint(std::string_view default_host, uint16_t default_port)
+      : default_host_(default_host),
+        default_port_(default_port),
+        text_(PJ::sdk::composeEndpoint("ws", default_host, default_port)) {}
+
+  /// The URL to dial: exactly what was typed, normalized (normalizeUrl), credentials included.
+  [[nodiscard]] Expected<std::string> url() const {
+    return normalizeUrl(text_, default_port_);
+  }
+
+  /// url(), or the raw text when it is not a URL (dialing it then fails with a clear error).
   [[nodiscard]] std::string str() const {
-    return url.empty() ? PJ::sdk::composeEndpoint("ws", address, static_cast<uint16_t>(port)) : url;
+    const auto u = url();
+    return u ? *u : text_;
   }
 
-  /// Fills the connection widgets; they are editable only while `editable`.
-  void toWidgets(PJ::WidgetData& wd, bool editable) const {
-    wd.setText("lineEditAddress", url.empty() ? address : url);
-    wd.setText("lineEditPort", std::to_string(port));
-    wd.setEnabled("lineEditAddress", editable);
-    wd.setEnabled("lineEditPort", editable && url.empty());
-    wd.setCurrentIndex("comboBoxTransport", url.starts_with("wss://") ? 1 : 0);
-  }
-
-  /// Applies an edit of `widget_name`: nullopt when it is not a connection field, else whether
-  /// the UI must refresh (the port field and the scheme follow the URL mode).
-  std::optional<bool> onTextChanged(std::string_view widget_name, std::string_view text) {
-    if (widget_name == "lineEditAddress") {
-      const bool was_url = !url.empty();
-      const bool was_wss = url.starts_with("wss://");
-      if (isWebSocketUrl(text)) {
-        url = std::string(text);
-      } else {
-        url.clear();
-        address = std::string(text);
-      }
-      return was_url != !url.empty() || was_wss != url.starts_with("wss://");
+  /// Fills the URL line, editable only while `idle`. While idle with an invalid URL, Connect is
+  /// disabled and the status line says why; call after DialogConnection::toWidgets().
+  void toWidgets(PJ::WidgetData& wd, bool idle) const {
+    wd.setText("lineEditUrl", text_);
+    wd.setEnabled("lineEditUrl", idle);
+    const auto u = url();
+    wd.setEnabled("buttonConnect", !idle || u.has_value());
+    if (idle && !u) {
+      wd.setLabel("labelConnectionStatus", u.error());
     }
-    if (widget_name == "lineEditPort") {
-      if (const auto parsed = PJ::sdk::parsePort(text)) {
-        port = *parsed;
+  }
+
+  /// Applies an edit of `widget_name`: nullopt when it is not the URL line, else whether the UI
+  /// must refresh (Connect and the status line follow the URL's validity and error).
+  std::optional<bool> onTextChanged(std::string_view widget_name, std::string_view text) {
+    if (widget_name != "lineEditUrl") {
+      return std::nullopt;
+    }
+    const std::string before = error();
+    text_ = std::string(text);
+    return error() != before;
+  }
+
+  /// Writes "url": the URL that is dialed (credentials included), or the text as typed when
+  /// it is not one.
+  void save(nlohmann::json& cfg) const {
+    cfg["url"] = str();
+  }
+
+  /// Reads "url", else the legacy "address" / "port" (ws://address:port, the default host or port
+  /// for the missing one). A config with none of them leaves the URL as it is. False for a "url"
+  /// that is not a string or not a valid URL, or a port outside 0..65535. Throws
+  /// nlohmann::json::exception for a wrong-typed address or port.
+  [[nodiscard]] bool load(const nlohmann::json& cfg) {
+    if (const auto it = cfg.find("url"); it != cfg.end()) {
+      if (!it->is_string() || !normalizeUrl(it->get<std::string>(), default_port_)) {
+        return false;
       }
+      text_ = it->get<std::string>();
+      from_config_ = true;
+      return true;
+    }
+    if (!cfg.contains("address") && !cfg.contains("port")) {
+      return true;
+    }
+    const int64_t port = cfg.value("port", int64_t{default_port_});
+    if (port < 0 || port > 65535) {
       return false;
     }
-    return std::nullopt;
-  }
-
-  /// Writes "address", "port" and, when set, "url".
-  void save(nlohmann::json& cfg) const {
-    cfg["address"] = address;
-    cfg["port"] = port;
-    if (!url.empty()) {
-      cfg["url"] = url;
+    std::string address = cfg.value("address", std::string{});
+    if (address.empty()) {
+      address = default_host_;
     }
-  }
-
-  /// Reads what save() wrote, keeping `default_address` / `default_port` for absent keys. A
-  /// present "url" must be a ws:// or wss:// string and wins over address/port, which are then
-  /// not read at all. False for a port outside 0..65535. Throws nlohmann::json::exception for a
-  /// wrong-typed address or port.
-  [[nodiscard]] bool load(const nlohmann::json& cfg, const std::string& default_address, int default_port) {
-    std::string loaded_url;
-    if (const auto it = cfg.find("url"); it != cfg.end()) {
-      if (!it->is_string()) {
-        return false;
-      }
-      loaded_url = it->get<std::string>();
-      if (!isWebSocketUrl(loaded_url)) {
-        return false;
-      }
-    }
-    if (loaded_url.empty()) {
-      const int64_t loaded_port = cfg.value("port", int64_t{default_port});
-      if (loaded_port < 0 || loaded_port > 65535) {
-        return false;
-      }
-      address = cfg.value("address", default_address);
-      port = static_cast<int>(loaded_port);
-    }
-    url = std::move(loaded_url);
+    text_ = PJ::sdk::composeEndpoint("ws", address, static_cast<uint16_t>(port));
+    from_config_ = true;
     return true;
   }
+
+  /// Binds the optional settings store (an unbound view when the host has none) and, unless a
+  /// config already named the URL, starts from the remembered one.
+  void setSettings(PJ::sdk::SettingsView settings) {
+    settings_ = settings;
+    if (from_config_) {
+      return;
+    }
+    if (auto stored = settings_.value(kLastUrlSettingsKey); stored && !stored->isNull()) {
+      const std::string last = stored->toString();
+      if (normalizeUrl(last, default_port_)) {
+        text_ = last;
+      }
+    }
+  }
+
+  /// Stores the URL, cleaned of credentials (cleanUrl), as the one to start from next time. Call
+  /// once a connection opened. No-op without a store.
+  void remember() const {
+    if (const auto u = url(); u && settings_.valid()) {
+      (void)settings_.setValue(kLastUrlSettingsKey, cleanUrl(*u));
+    }
+  }
+
+ private:
+  /// Why the text is not a URL; empty when it is one.
+  [[nodiscard]] std::string error() const {
+    const auto u = url();
+    return u ? std::string{} : u.error();
+  }
+
+  std::string default_host_;
+  uint16_t default_port_;
+  std::string text_;
+  bool from_config_ = false;  ///< a loaded config named the URL: it wins over the remembered one
+  PJ::sdk::SettingsView settings_;
 };
 
 /// Deadlines and limits a dialog connection enforces by polling; tests shorten them.

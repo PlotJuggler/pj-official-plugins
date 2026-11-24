@@ -100,8 +100,10 @@ whitelist covers ROS 2's transform tree (`tf2_msgs/msg/TFMessage` over
 `cdr`) and Foxglove's (`foxglove.FrameTransform` over `protobuf`). The match
 is on message type, not topic name — Foxglove's convention has no fixed
 topic name the way ROS fixes `/tf`. This keeps the loader itself
-format-agnostic: the whitelist is just data (`kAlwaysIncludeRules` in
-`mcap_dialog.hpp`), not a ROS-specific code path.
+format-agnostic: the whitelist is just data (`PJ::AlwaysIncluded::kRules` in
+[`common/always_included`](../common/always_included/include/pj_always_included/always_included.hpp),
+shared with the PlotJuggler Bridge, Foxglove Bridge and ROS 2 streamers, with the locked
+rows' tooltip), not a ROS-specific code path. Unlike the streamers, the loader forces a matching channel only when it holds messages.
 
 ## How parsers see this loader
 

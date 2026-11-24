@@ -4,6 +4,7 @@
 #include <cctype>
 #include <mcap/reader.hpp>
 #include <nlohmann/json.hpp>
+#include <pj_always_included/always_included.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
@@ -27,31 +28,10 @@ struct ChannelInfo {
   uint64_t msg_count = 0;
 };
 
-struct AlwaysIncludeRule {
-  std::string schema_name;
-  std::string encoding;
-};
-
-/// Channels whose (schema, encoding) match a rule here are always loaded,
-/// regardless of user selection -- 3D rendering (Scene3D's transform tree)
-/// silently breaks without them. Keyed on message type rather than topic
-/// name because topic naming isn't consistent across producers: Foxglove's
-/// own foxglove.FrameTransform has no fixed topic-name convention the way
-/// ROS fixes /tf (real Foxglove-recorded files use topic names like plain
-/// "tf", no leading slash, or something else entirely). The mechanism here
-/// is generic -- this table is just its (currently two-entry) data.
-const std::vector<AlwaysIncludeRule> kAlwaysIncludeRules = {
-    {"tf2_msgs/msg/TFMessage", "cdr"},
-    {"foxglove.FrameTransform", "protobuf"},
-};
-
+/// Channels of a type in PJ::AlwaysIncluded::kRules are always loaded when they hold messages
+/// (see always_included.hpp for why, and how the streamers differ).
 bool isAlwaysIncluded(const ChannelInfo& ch) {
-  for (const auto& rule : kAlwaysIncludeRules) {
-    if (ch.schema == rule.schema_name && ch.encoding == rule.encoding) {
-      return true;
-    }
-  }
-  return false;
+  return PJ::AlwaysIncluded::matches(ch.schema, ch.encoding);
 }
 
 class McapDialog : public PJ::DialogPluginTyped {
@@ -137,8 +117,7 @@ class McapDialog : public PJ::DialogPluginTyped {
         disabled_row_indices.push_back(static_cast<int>(i));
       }
       if (locked_always_included) {
-        wd.setCellTooltip(
-            "tableWidget", static_cast<int>(i), 0, "Always loaded — required for 3D transform rendering.");
+        wd.setCellTooltip("tableWidget", static_cast<int>(i), 0, PJ::AlwaysIncluded::kTooltip);
       }
     }
     wd.setTableRows("tableWidget", rows);
