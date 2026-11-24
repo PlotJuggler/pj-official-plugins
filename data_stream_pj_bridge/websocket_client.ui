@@ -1,14 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>WebSocketDialog</class>
- <widget class="QWidget" name="WebSocketDialog">
+ <widget class="QDialog" name="WebSocketDialog">
   <property name="geometry">
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>550</width>
-    <height>457</height>
+    <width>800</width>
+    <height>600</height>
    </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>600</width>
+    <height>450</height>
+   </size>
   </property>
   <property name="windowTitle">
    <string>PlotJuggler Bridge</string>

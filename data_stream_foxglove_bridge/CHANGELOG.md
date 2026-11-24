@@ -14,6 +14,7 @@ below; for earlier releases see the git history of `data_stream_foxglove_bridge/
 - The timestamp toggle comes before the array limit in the parser options, as in the ROS 2 dialog.
 - The default server host is `127.0.0.1` (was `localhost`), as for the PlotJuggler Bridge.
 - The empty topic table shows the hint "Click to select, Click+Drag to multi-select", as the PlotJuggler Bridge does.
+- The dialog opens at 800x600 and can be resized down to 600x450.
 
 ### Fixed
 - On a PlotJuggler without demand subscriptions, a channel the server advertises again is not subscribed a second time.

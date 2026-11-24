@@ -11,6 +11,7 @@ below; for earlier releases see the git history of `data_stream_pj_bridge/`.
 - Select All (Ctrl+A) and Deselect All (Ctrl+Shift+A) buttons; Select All follows the filter.
 - `tf2_msgs/msg/TFMessage` topics are always subscribed: their rows are selected, locked and tooltipped, Deselect All, a filter or a saved selection never drops them, and they are saved with the selection, so a PlotJuggler without demand subscriptions subscribes them too.
 - The topic table's columns are titled "Topic" and "Type" (were "Topic Name" and "DataType"), like the other streamers.
+- The dialog opens at 800x600 and can be resized down to 600x450.
 
 ## [1.1.2] - 2026-11-19
 
