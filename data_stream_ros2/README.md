@@ -60,15 +60,11 @@ The dialog lists the discovered topics under a filter (case-insensitive, on the 
 clears every selection, also those the filter hides.
 
 Transform topics are always subscribed, whatever the selection and the host's demand: every
-discovered topic of type `tf2_msgs/msg/TFMessage` (ROS 2 topics are all CDR; the rule is shared
-with the MCAP loader in
-[`common/always_included`](../common/always_included/include/pj_always_included/always_included.hpp)).
-Their rows are selected, disabled and carry the tooltip "Always loaded: required for 3D
-transform rendering."; a filter never hides them, Deselect All keeps them, and they are not
-written to the saved selection (they are implied). The match is on type, not name: a `/tf` of
-another type is not forced, and a transform nobody publishes is never invented. On a legacy
-host (no demand subscriptions) only the transforms found by the first discovery scan at start
-are subscribed.
+discovered topic of type `tf2_msgs/msg/TFMessage`. Their rows are locked and selected, and they
+are saved with the selection; the rule, shared with the MCAP loader and the other streamers, is
+in [`always_included.hpp`](../common/always_included/include/pj_always_included/always_included.hpp).
+On a legacy host (no demand subscriptions) without a saved selection naming them, only the
+transforms found by the first discovery scan at start are subscribed.
 
 To try it with a sourced ROS 2:
 

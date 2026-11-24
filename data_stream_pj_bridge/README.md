@@ -20,27 +20,13 @@ streaming using the PJ binary protocol.
 
 | Key | Meaning |
 |---|---|
-| `url` | The server URL, written on save (e.g. `wss://robot.local:8443/bridge`). Loading accepts the same forgiving input as the dialog; an invalid one is rejected. |
-| `address`, `port` | Legacy keys, read only when `url` is absent: `ws://<address>:<port>` (default `127.0.0.1:9090`, the bridge server's default port). Not written any more. |
+| `url` | The server URL (e.g. `wss://robot.local:8443/bridge`), saved normalized. Loading accepts the same forgiving input as the dialog; an invalid one is rejected. |
+| `address`, `port` | Legacy keys, read only when `url` is absent: `ws://<address>:<port>` (default `127.0.0.1:9090`, the bridge server's default port). Never written. |
 
-The dialog takes the server as one URL line (placeholder `ws://127.0.0.1:9090`). It is
-forgiving: surrounding spaces are ignored, and a bare host or `host:port` (path and query
-allowed) gets `ws://` and, without a port, port 9090. A URL with a scheme is dialed exactly
-as typed, credentials (`user:password@`), path and query included; a `ws://` or `wss://` URL
-without a port uses the scheme's own port. Another scheme, spaces, a missing host, an
-unbracketed IPv6 address or a port outside 1-65535 disables Connect and the status line
-says why.
-
-The last URL the dialog connected to is remembered in PlotJuggler's settings store
-(`pj.settings.v1`, key `durable/last_url`, which survives a browser reload) and fills the
-line next time, unless the configuration names a URL. The remembered copy is cleaned of
-credentials: the `user:password@` part and every query parameter whose name (ignoring
-case, `_` and `-`) contains password, passwd, secret, token, apikey, privatekey or
-credential, or is exactly key, auth, authorization, sig, signature, pwd, pass, session or
-jwt, are dropped; the rest is kept byte for byte. A secret inside the path cannot be
-detected and is remembered. A host without the store (older PlotJuggler) remembers
-nothing. The `url` config key itself is saved as typed, credentials included, so it
-reaches PlotJuggler's per-plugin settings and saved layouts.
+The dialog takes the server as one URL line (placeholder `ws://127.0.0.1:9090`); a bare host
+or `host:port` gets `ws://` and port 9090. Which URLs are accepted or refused (credentials and
+fragments are), how the URL is saved, and how the last connected URL is remembered and cleaned
+of secrets: [The server URL](../common/websocket/README.md#the-server-url).
 
 After Connect, the dialog retries a refused, unanswered (5 s per attempt) or dropped
 connection with a backoff from 1 s up to 10 s until it connects or the user presses Cancel;
@@ -51,15 +37,10 @@ connected.
 clears every selection, also those the filter hides.
 
 Transform topics are always subscribed, whatever the selection and the host's demand: every
-advertised topic of type `tf2_msgs/msg/TFMessage` (the bridge serves ROS 2 topics, all CDR,
-so the rule shared with the MCAP loader in
-[`common/always_included`](../common/always_included/include/pj_always_included/always_included.hpp)
-is applied with encoding `cdr`; the topic's `encoding` field is not consulted).
-Their rows are selected, disabled and carry the tooltip "Always loaded: required for 3D
-transform rendering."; a filter never hides them, Deselect All keeps them, and they are not
-written to the saved selection (they are implied). The match is on type, not name: a `/tf`
-of another type is not forced, and a transform the server does not advertise is never
-invented.
+advertised topic of type `tf2_msgs/msg/TFMessage` (the bridge serves ROS 2 topics, all CDR, so
+the topic's `encoding` field is not consulted). Their rows are locked and selected, and they are
+saved with the selection; the rule, shared with the MCAP loader and the other streamers, is in
+[`always_included.hpp`](../common/always_included/include/pj_always_included/always_included.hpp).
 
 To try it, replay the MCAP loader's transform fixture (`/tf`, `/tf_static`, a
 Foxglove `transforms` topic that is not forced, `/near_miss_encoding`, which is forced here
@@ -113,7 +94,8 @@ back to the original behavior exactly: it subscribes to the dialog's selected
 topics up front and streams them. In this mode the dialog's topic selection is
 the subscribe list. In demand mode that same selection becomes an **optional
 advertise filter** — leave it empty to advertise (and let the host subscribe to)
-everything.
+everything. The always-subscribed transforms saved with the selection do not count: a
+selection of transforms only is no filter.
 
 ### Threading and transport
 
