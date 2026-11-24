@@ -47,14 +47,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
                runtimeHost().reportMessage(level, message);
              }}) {}
 
-  /// The default services, plus the optional settings store the dialog remembers its last URL in.
-  PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
-    auto status = StreamSourceBase::bind(services);
-    dialog_.setSettings(services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{}));
-    return status;
-  }
-
+  /// The dialog's URL line starts from the URL remembered in the host's settings store, bound
+  /// here because the host reaches the dialog only through this call, after bind().
   PJ_borrowed_dialog_t getDialog() override {
+    dialog_.endpoint().bind(services());
     return PJ::borrowDialog(dialog_);
   }
 
@@ -127,7 +123,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       for (const auto& ch : dialog_.allDiscoveredChannels()) {
         advertised_channels_[ch.id] = ch;
       }
-    } else if (auto status = connection_.start(dialog_.endpoint(), subprotocols()); !status) {
+    } else if (auto status = connection_.start(dialog_.endpoint().str(), subprotocols()); !status) {
       return status;
     }
 
@@ -435,7 +431,10 @@ class FoxgloveSource : public PJ::StreamSourceBase {
             break;
           }
         }
-        if (!user_selected && !isAlwaysSubscribed(ch)) {
+        // A re-advertised channel (same id) that is already subscribed stays as it is.
+        const bool subscribed = std::any_of(
+            subscriptions_.begin(), subscriptions_.end(), [&](const auto& sub) { return sub.second == ch.id; });
+        if ((!user_selected && !isAlwaysSubscribed(ch)) || subscribed) {
           continue;
         }
         if (!classifyChannel(ch).supported) {

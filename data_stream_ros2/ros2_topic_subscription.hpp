@@ -18,14 +18,12 @@
 
 #include <algorithm>
 #include <map>
-#include <pj_always_included/always_included.hpp>
+#include <pj_always_included/locked_table.hpp>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/streaming_dialog.hpp>
 #include <pj_plugins/sdk/streaming_source.hpp>
-#include <pj_plugins/sdk/widget_data.hpp>
 #include <set>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -99,30 +97,29 @@ struct SubscriptionDiff {
 }
 
 /// Whether `topic` should be advertised/subscribed under an (optional) filter —
-/// the dialog's saved topic selection, repurposed in demand mode as an
-/// allow-list rather than a subscribe list. An EMPTY selection means "no
+/// the dialog's saved topic selection of (name, type), repurposed in demand mode
+/// as an allow-list rather than a subscribe list. A selection that is EMPTY, or
+/// holds only always-subscribed topics (the dialog saves them too), means "no
 /// filter, advertise/subscribe everything" (the default when nothing is
 /// selected). Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
 [[nodiscard]] inline bool passesAdvertiseFilter(
     const std::string& topic, const std::vector<std::pair<std::string, std::string>>& selection) {
-  return PJ::sdk::passesSelectionFilter(
-      topic, selection, [](const auto& value) -> const std::string& { return value.first; });
+  return std::all_of(
+             selection.begin(), selection.end(),
+             [](const auto& value) { return PJ::AlwaysIncluded::matchesRos2(value.second); }) ||
+         PJ::sdk::passesSelectionFilter(
+             topic, selection, [](const auto& value) -> const std::string& { return value.first; });
 }
 
-/// Whether a topic of ROS 2 type `type` is always subscribed, whatever the
-/// selection and the host's desired set (transforms; see common/always_included).
-/// Every rule of this plugin about forced topics goes through here.
-[[nodiscard]] inline bool isAlwaysSubscribed(std::string_view type) {
-  return PJ::AlwaysIncluded::matches(type, PJ::AlwaysIncluded::kRos2Encoding);
-}
-
-/// The discovered topics that are always subscribed. A forced type nobody
-/// publishes is never invented.
+/// The discovered topics that are always subscribed, whatever the selection and
+/// the host's desired set: those of a transform type
+/// (PJ::AlwaysIncluded::matchesRos2). A forced type nobody publishes is never
+/// invented.
 [[nodiscard]] inline std::set<std::string> alwaysSubscribedTopics(
     const std::map<std::string, std::string>& discovered) {
   std::set<std::string> out;
   for (const auto& [topic, type] : discovered) {
-    if (isAlwaysSubscribed(type)) {
+    if (PJ::AlwaysIncluded::matchesRos2(type)) {
       out.insert(topic);
     }
   }
@@ -141,92 +138,27 @@ struct SubscriptionDiff {
     const std::vector<std::pair<std::string, std::string>>& selection) {
   std::map<std::string, std::string> out;
   for (const auto& [topic, type] : discovered) {
-    if (passesAdvertiseFilter(topic, selection) || isAlwaysSubscribed(type)) {
+    if (passesAdvertiseFilter(topic, selection) || PJ::AlwaysIncluded::matchesRos2(type)) {
       out[topic] = type;
     }
   }
   return out;
 }
 
-// --- The dialog's topic table (ROS-free so it is unit-testable) ---
-
-/// (topic, type) pairs in table order: the dialog's selection or its visible rows.
-using TopicList = std::vector<std::pair<std::string, std::string>>;
-
-/// The rows the table shows: topics whose name contains `filter` (ignoring
-/// case), plus every always-subscribed topic, which a filter never hides.
-[[nodiscard]] inline TopicList visibleTopics(
+/// The dialog's table rows (ROS-free so it is unit-testable): topics whose name
+/// contains `filter` (ignoring case), plus every always-subscribed topic, which
+/// a filter never hides and whose row is locked.
+[[nodiscard]] inline PJ::AlwaysIncluded::TableRows topicRows(
     const std::map<std::string, std::string>& discovered, const std::string& filter) {
   const std::string needle = PJ::sdk::lowerAscii(filter);
-  TopicList out;
+  PJ::AlwaysIncluded::TableRows out;
   for (const auto& [name, type] : discovered) {
-    if (needle.empty() || isAlwaysSubscribed(type) || PJ::sdk::lowerAscii(name).find(needle) != std::string::npos) {
-      out.emplace_back(name, type);
+    const bool locked = PJ::AlwaysIncluded::matchesRos2(type);
+    if (needle.empty() || locked || PJ::sdk::lowerAscii(name).find(needle) != std::string::npos) {
+      out.push_back({{name, type}, locked});
     }
   }
   return out;
-}
-
-/// The user selection after the table reported `reported`. The host reports
-/// only the selectable rows the filter shows, so a selection the filter hides
-/// is kept; always-subscribed topics are implied, never stored.
-[[nodiscard]] inline TopicList mergeReportedSelection(
-    const TopicList& selected, const std::vector<std::string>& reported, const TopicList& visible) {
-  const auto find_visible = [&](const std::string& name) {
-    return std::find_if(visible.begin(), visible.end(), [&](const auto& v) { return v.first == name; });
-  };
-  TopicList next;
-  for (const auto& entry : selected) {
-    if (find_visible(entry.first) == visible.end()) {
-      next.push_back(entry);
-    }
-  }
-  for (const auto& name : reported) {
-    if (const auto it = find_visible(name); it != visible.end() && !isAlwaysSubscribed(it->second)) {
-      next.push_back(*it);
-    }
-  }
-  return next;
-}
-
-/// Select All: adds every visible topic that is not always subscribed (those are selected
-/// already); a selection the filter hides is kept.
-[[nodiscard]] inline TopicList selectAllVisible(TopicList selected, const TopicList& visible) {
-  for (const auto& entry : visible) {
-    const bool present =
-        std::any_of(selected.begin(), selected.end(), [&](const auto& s) { return s.first == entry.first; });
-    if (!present && !isAlwaysSubscribed(entry.second)) {
-      selected.push_back(entry);
-    }
-  }
-  return selected;
-}
-
-/// Fills the topic table `table`: the visible rows, the selection, and the
-/// always-subscribed rows shown selected, disabled and tooltipped.
-inline void topicTableToWidgets(
-    PJ::WidgetData& wd, std::string_view table, const TopicList& visible, const TopicList& selected) {
-  std::vector<std::vector<std::string>> rows;
-  std::vector<std::string> shown;
-  std::vector<int> locked;
-  for (const auto& [name, type] : selected) {
-    shown.push_back(name);
-  }
-  for (const auto& [name, type] : visible) {
-    if (isAlwaysSubscribed(type)) {
-      const int row = static_cast<int>(rows.size());
-      locked.push_back(row);
-      wd.setCellTooltip(table, row, 0, PJ::AlwaysIncluded::kTooltip);
-      shown.push_back(name);
-    }
-    rows.push_back({name, type});
-  }
-  wd.setTableHeaders(table, {"Topic", "Datatype"});
-  wd.setTableRows(table, rows);
-  wd.setDisabledRows(table, locked);
-  // Restore selection by topic name: the host matches rows by first-column
-  // text, which is sort-agnostic, so it survives a user sort of the table.
-  wd.setSelectedItems(table, shown);
 }
 
 /// Partition a raw get_topic_names_and_types() result into single-type topics

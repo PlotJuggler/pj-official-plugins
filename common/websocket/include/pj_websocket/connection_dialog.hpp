@@ -10,7 +10,8 @@
 ///     and the handoff of the live connection to the source on OK.
 ///  Everything runs on the dialog thread and is polled from onTick(); nothing waits.
 ///
-///  The dialog's .ui must provide lineEditUrl, buttonConnect and labelConnectionStatus.
+///  The dialog's .ui must provide lineEditUrl, buttonConnect and labelConnectionStatus;
+///  DialogConnection::toWidgets() fills all three from its state and the Endpoint.
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +21,8 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <pj_base/sdk/plugin_data_api.hpp>
+#include <pj_base/sdk/service_registry.hpp>
+#include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/sdk/endpoint.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <pj_websocket/url.hpp>
@@ -45,29 +48,22 @@ class Endpoint {
   Endpoint(std::string_view default_host, uint16_t default_port)
       : default_host_(default_host),
         default_port_(default_port),
-        text_(PJ::sdk::composeEndpoint("ws", default_host, default_port)) {}
+        text_(PJ::sdk::composeEndpoint("ws", default_host, default_port)),
+        url_(normalizeUrl(text_, default_port)) {}
 
-  /// The URL to dial: exactly what was typed, normalized (normalizeUrl), credentials included.
-  [[nodiscard]] Expected<std::string> url() const {
-    return normalizeUrl(text_, default_port_);
+  /// The URL to dial (normalizeUrl of the line), or why the line is not one.
+  [[nodiscard]] const Expected<std::string>& url() const {
+    return url_;
+  }
+
+  /// The URL line as typed.
+  [[nodiscard]] const std::string& text() const {
+    return text_;
   }
 
   /// url(), or the raw text when it is not a URL (dialing it then fails with a clear error).
   [[nodiscard]] std::string str() const {
-    const auto u = url();
-    return u ? *u : text_;
-  }
-
-  /// Fills the URL line, editable only while `idle`. While idle with an invalid URL, Connect is
-  /// disabled and the status line says why; call after DialogConnection::toWidgets().
-  void toWidgets(PJ::WidgetData& wd, bool idle) const {
-    wd.setText("lineEditUrl", text_);
-    wd.setEnabled("lineEditUrl", idle);
-    const auto u = url();
-    wd.setEnabled("buttonConnect", !idle || u.has_value());
-    if (idle && !u) {
-      wd.setLabel("labelConnectionStatus", u.error());
-    }
+    return url_ ? *url_ : text_;
   }
 
   /// Applies an edit of `widget_name`: nullopt when it is not the URL line, else whether the UI
@@ -77,79 +73,86 @@ class Endpoint {
       return std::nullopt;
     }
     const std::string before = error();
-    text_ = std::string(text);
+    setText(std::string(text));
     return error() != before;
   }
 
-  /// Writes "url": the URL that is dialed (credentials included), or the text as typed when
-  /// it is not one.
+  /// Writes "url": the URL that is dialed (normalized), or the text as typed when it is not one.
   void save(nlohmann::json& cfg) const {
     cfg["url"] = str();
   }
 
-  /// Reads "url", else the legacy "address" / "port" (ws://address:port, the default host or port
-  /// for the missing one). A config with none of them leaves the URL as it is. False for a "url"
-  /// that is not a string or not a valid URL, or a port outside 0..65535. Throws
-  /// nlohmann::json::exception for a wrong-typed address or port.
+  /// Reads "url", else the legacy "address" / "port", composed into ws://address:port (the
+  /// default host or port for the missing one). Either way the URL must pass normalizeUrl. A
+  /// config with none of them leaves the URL as it is. False for a "url" that is not a string,
+  /// or a URL normalizeUrl refuses. Throws nlohmann::json::exception for a wrong-typed address
+  /// or port.
   [[nodiscard]] bool load(const nlohmann::json& cfg) {
+    std::string text;
     if (const auto it = cfg.find("url"); it != cfg.end()) {
-      if (!it->is_string() || !normalizeUrl(it->get<std::string>(), default_port_)) {
+      if (!it->is_string()) {
         return false;
       }
-      text_ = it->get<std::string>();
-      from_config_ = true;
+      text = it->get<std::string>();
+    } else if (cfg.contains("address") || cfg.contains("port")) {
+      std::string address = cfg.value("address", std::string{});
+      text = PJ::sdk::composeEndpoint(
+          "ws", address.empty() ? default_host_ : address, std::to_string(cfg.value("port", int64_t{default_port_})));
+    } else {
       return true;
     }
-    if (!cfg.contains("address") && !cfg.contains("port")) {
-      return true;
-    }
-    const int64_t port = cfg.value("port", int64_t{default_port_});
-    if (port < 0 || port > 65535) {
+    if (!normalizeUrl(text, default_port_)) {
       return false;
     }
-    std::string address = cfg.value("address", std::string{});
-    if (address.empty()) {
-      address = default_host_;
-    }
-    text_ = PJ::sdk::composeEndpoint("ws", address, static_cast<uint16_t>(port));
+    setText(std::move(text));
     from_config_ = true;
     return true;
   }
 
-  /// Binds the optional settings store (an unbound view when the host has none) and, unless a
-  /// config already named the URL, starts from the remembered one.
-  void setSettings(PJ::sdk::SettingsView settings) {
-    settings_ = settings;
-    if (from_config_) {
+  /// Binds the host's optional settings store (pj.settings.v1) the first time `services` offers
+  /// one and, unless a config already named the URL, starts from the remembered one. Later
+  /// calls change nothing, so calling it every time the dialog is reached never overwrites
+  /// what the user typed.
+  void bind(PJ::sdk::ServiceRegistry services) {
+    if (settings_.valid()) {
+      return;
+    }
+    settings_ = services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{});
+    if (!settings_.valid() || from_config_) {
       return;
     }
     if (auto stored = settings_.value(kLastUrlSettingsKey); stored && !stored->isNull()) {
-      const std::string last = stored->toString();
+      std::string last = stored->toString();
       if (normalizeUrl(last, default_port_)) {
-        text_ = last;
+        setText(std::move(last));
       }
     }
   }
 
-  /// Stores the URL, cleaned of credentials (cleanUrl), as the one to start from next time. Call
-  /// once a connection opened. No-op without a store.
-  void remember() const {
-    if (const auto u = url(); u && settings_.valid()) {
-      (void)settings_.setValue(kLastUrlSettingsKey, cleanUrl(*u));
+  /// Stores `dialed`, cleaned of credentials (cleanUrl), as the URL to start from next time.
+  /// Call once a connection to it opened. No-op without a store.
+  void remember(const std::string& dialed) const {
+    if (settings_.valid()) {
+      (void)settings_.setValue(kLastUrlSettingsKey, cleanUrl(dialed));
     }
   }
 
  private:
+  void setText(std::string text) {
+    text_ = std::move(text);
+    url_ = normalizeUrl(text_, default_port_);
+  }
+
   /// Why the text is not a URL; empty when it is one.
   [[nodiscard]] std::string error() const {
-    const auto u = url();
-    return u ? std::string{} : u.error();
+    return url_ ? std::string{} : url_.error();
   }
 
   std::string default_host_;
   uint16_t default_port_;
   std::string text_;
-  bool from_config_ = false;  ///< a loaded config named the URL: it wins over the remembered one
+  Expected<std::string> url_;  ///< normalizeUrl(text_), kept in step by setText()
+  bool from_config_ = false;   ///< a loaded config named the URL: it wins over the remembered one
   PJ::sdk::SettingsView settings_;
 };
 
@@ -169,8 +172,9 @@ class DialogConnection {
  public:
   /// What the connection reports back to the dialog, from tick().
   struct Handlers {
-    /// The socket opened; the dialog may send its first requests.
-    std::function<void()> on_open;
+    /// The socket to `url` opened (the URL connect() dialed, whatever the URL line says now);
+    /// the dialog may send its first requests.
+    std::function<void(const std::string& url)> on_open;
     /// One text frame. Wire data can be wrong-typed and nlohmann accessors throw: an exception
     /// drops the frame, so a close queued behind it is still seen.
     std::function<void(const std::string&)> on_text;
@@ -241,12 +245,17 @@ class DialogConnection {
     return state_ == State::kConnected;
   }
 
-  /// Fills the connect button and the status line.
-  void toWidgets(PJ::WidgetData& wd) const {
+  /// Fills the URL line (editable only while idle), the connect button and the status line.
+  /// While idle with an invalid URL, Connect is disabled and the status line says why.
+  void toWidgets(PJ::WidgetData& wd, const Endpoint& endpoint) const {
+    wd.setText("lineEditUrl", endpoint.text());
+    wd.setEnabled("lineEditUrl", idle());
     // Pressing the button while connecting or retrying cancels, and while connected disconnects.
     wd.setButtonText("buttonConnect", connected() ? "Connected" : (idle() ? "Connect" : "Cancel"));
     wd.setChecked("buttonConnect", !idle());
-    wd.setLabel("labelConnectionStatus", status());
+    const auto& url = endpoint.url();
+    wd.setEnabled("buttonConnect", !idle() || url.has_value());
+    wd.setLabel("labelConnectionStatus", idle() && !url ? url.error() : status());
   }
 
  private:
@@ -259,17 +268,18 @@ class DialogConnection {
     kConnected,
   };
 
-  /// Connecting / retrying in N s with the last error / connected; empty when idle.
+  /// Connecting / retrying in N s with the last error / connected; empty when idle. The URL is
+  /// shown cleaned (cleanUrl): no token on screen.
   [[nodiscard]] std::string status() const {
     switch (state_) {
       case State::kIdle:
         return {};
       case State::kConnecting:
-        return "Connecting to " + url_ + "...";
+        return "Connecting to " + cleanUrl(url_) + "...";
       case State::kRetrying:
         return "Retrying in " + std::to_string(retrySecondsLeft()) + " s: " + last_error_;
       case State::kConnected:
-        return "Connected to " + url_;
+        return "Connected to " + cleanUrl(url_);
     }
     return {};
   }
@@ -318,7 +328,7 @@ class DialogConnection {
           retry_delay_ = options_.retry_first;
           last_error_.clear();
           if (handlers_.on_open) {
-            handlers_.on_open();
+            handlers_.on_open(url_);
           }
           changed = true;
           break;

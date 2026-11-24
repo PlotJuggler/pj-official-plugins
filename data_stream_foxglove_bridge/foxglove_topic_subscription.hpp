@@ -67,15 +67,6 @@ struct SubscriptionDiff {
   return diff;
 }
 
-/// Whether `topic` should be advertised under an (optional) advertise filter —
-/// the dialog's saved channel selection, repurposed in demand mode as an
-/// allow-list rather than a subscribe list. An EMPTY selection means "no
-/// filter, advertise everything" (the default when nothing is selected).
-[[nodiscard]] inline bool passesAdvertiseFilter(const std::string& topic, const std::vector<ChannelInfo>& selection) {
-  return PJ::sdk::passesSelectionFilter(
-      topic, selection, [](const ChannelInfo& ch) -> const std::string& { return ch.topic; });
-}
-
 /// Whether a channel is always subscribed, whatever the selection and the host's desired set:
 /// its (schemaName, encoding) is a transform type (see common/always_included). Every rule of
 /// this plugin about forced channels goes through here.
@@ -83,12 +74,24 @@ struct SubscriptionDiff {
   return PJ::AlwaysIncluded::matches(ch.schema_name, ch.encoding);
 }
 
-/// The topics of the advertised, supported channels that are always subscribed. A forced type
-/// the server does not advertise is never invented.
+/// Whether `topic` should be advertised under an (optional) advertise filter —
+/// the dialog's saved channel selection, repurposed in demand mode as an
+/// allow-list rather than a subscribe list. A selection that is EMPTY, or holds
+/// only always-subscribed channels (the dialog saves them too), means "no
+/// filter, advertise everything" (the default when nothing is selected).
+[[nodiscard]] inline bool passesAdvertiseFilter(const std::string& topic, const std::vector<ChannelInfo>& selection) {
+  return std::all_of(selection.begin(), selection.end(), isAlwaysSubscribed) ||
+         PJ::sdk::passesSelectionFilter(
+             topic, selection, [](const ChannelInfo& ch) -> const std::string& { return ch.topic; });
+}
+
+/// The topics of the advertised channels that are always subscribed. A forced type the server
+/// does not advertise is never invented. An unsupported one is never subscribed either:
+/// filteredAdvertisedTopics() leaves it out of what the subscription diff may subscribe.
 [[nodiscard]] inline std::set<std::string> alwaysSubscribedTopics(const std::map<uint64_t, ChannelInfo>& advertised) {
   std::set<std::string> out;
   for (const auto& [_id, ch] : advertised) {
-    if (isAlwaysSubscribed(ch) && classifyChannel(ch).supported) {
+    if (isAlwaysSubscribed(ch)) {
       out.insert(ch.topic);
     }
   }

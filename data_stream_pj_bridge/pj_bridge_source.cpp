@@ -41,14 +41,10 @@ class PjBridgeSource : public PJ::StreamSourceBase {
                runtimeHost().reportMessage(level, message);
              }}) {}
 
-  /// The default services, plus the optional settings store the dialog remembers its last URL in.
-  PJ::Status bind(PJ::sdk::ServiceRegistry services) override {
-    auto status = StreamSourceBase::bind(services);
-    dialog_.setSettings(services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{}));
-    return status;
-  }
-
+  /// The dialog's URL line starts from the URL remembered in the host's settings store, bound
+  /// here because the host reaches the dialog only through this call, after bind().
   PJ_borrowed_dialog_t getDialog() override {
+    dialog_.endpoint().bind(services());
     return PJ::borrowDialog(dialog_);
   }
 
@@ -136,7 +132,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       for (auto& info : dialog_.allDiscoveredTopics()) {
         advertised_topics_[info.name] = std::move(info);
       }
-    } else if (auto status = connection_.start(dialog_.endpoint()); !status) {
+    } else if (auto status = connection_.start(dialog_.endpoint().str()); !status) {
       return status;
     }
 
@@ -366,14 +362,18 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
-  // The advertise filter: just the names of the saved selection (empty = no
-  // filter, advertise everything). Derived from selected_topics_ so the two
-  // can't drift; recomputed per advertise/reconcile, both cold paths.
+  // The advertise filter: the names of the saved selection (empty = no filter,
+  // advertise everything), without its always-subscribed transforms, which the
+  // dialog saves too: a selection of transforms only is no filter. Derived from
+  // selected_topics_ so the two can't drift; recomputed per advertise/reconcile,
+  // both cold paths.
   std::vector<std::string> advertiseFilter() const {
     std::vector<std::string> names;
     names.reserve(selected_topics_.size());
     for (const auto& info : selected_topics_) {
-      names.push_back(info.name);
+      if (!PJ::AlwaysIncluded::matchesRos2(info.schema_name)) {
+        names.push_back(info.name);
+      }
     }
     return names;
   }
@@ -388,7 +388,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     std::vector<PJ::AvailableTopic> topics;
     topics.reserve(advertised_topics_.size());
     for (const auto& [name, info] : advertised_topics_) {
-      if (!passesAdvertiseFilter(name, filter) && !isAlwaysSubscribed(info.schema_name)) {
+      if (!passesAdvertiseFilter(name, filter) && !PJ::AlwaysIncluded::matchesRos2(info.schema_name)) {
         continue;
       }
       const auto schema_bytes = reinterpret_cast<const uint8_t*>(info.schema.data());

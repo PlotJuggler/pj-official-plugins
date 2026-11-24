@@ -42,7 +42,7 @@
      <item row="1" column="0">
       <widget class="QLineEdit" name="lineEditUrl">
        <property name="placeholderText"><string>ws://127.0.0.1:9090</string></property>
-       <property name="toolTip"><string>The bridge server's ws:// or wss:// URL, with any user:password@, path and query, e.g. wss://robot.local:8443/bridge. A bare host or host:port gets ws:// and port 9090.</string></property>
+       <property name="toolTip"><string>The bridge server's ws:// or wss:// URL, with any path and query, e.g. wss://robot.local:8443/bridge. A bare host or host:port gets ws:// and port 9090.</string></property>
        <property name="minimumSize"><size><width>0</width><height>25</height></size></property>
        <property name="maximumSize"><size><width>16777215</width><height>25</height></size></property>
       </widget>

@@ -104,19 +104,13 @@ struct SubscriptionDiff {
       topic, selection, [](const std::string& value) -> const std::string& { return value; });
 }
 
-/// Whether a topic of ROS 2 type `schema_name` is always subscribed, whatever the selection and
-/// the host's desired set (transforms; see common/always_included). Every rule of this plugin
-/// about forced topics goes through here.
-[[nodiscard]] inline bool isAlwaysSubscribed(std::string_view schema_name) {
-  return PJ::AlwaysIncluded::matches(schema_name, PJ::AlwaysIncluded::kRos2Encoding);
-}
-
-/// The advertised topics that are always subscribed. A forced type the server does not
-/// advertise is never invented.
+/// The advertised topics that are always subscribed, whatever the selection and the host's
+/// desired set: those of a transform type (PJ::AlwaysIncluded::matchesRos2 on the topic's ROS 2
+/// type). A forced type the server does not advertise is never invented.
 [[nodiscard]] inline std::set<std::string> alwaysSubscribedTopics(const std::map<std::string, TopicInfo>& advertised) {
   std::set<std::string> out;
   for (const auto& [name, info] : advertised) {
-    if (isAlwaysSubscribed(info.schema_name)) {
+    if (PJ::AlwaysIncluded::matchesRos2(info.schema_name)) {
       out.insert(name);
     }
   }
@@ -134,7 +128,7 @@ struct SubscriptionDiff {
     const std::map<std::string, TopicInfo>& advertised, const std::vector<std::string>& selection) {
   std::set<std::string> out;
   for (const auto& [name, info] : advertised) {
-    if (passesAdvertiseFilter(name, selection) || isAlwaysSubscribed(info.schema_name)) {
+    if (passesAdvertiseFilter(name, selection) || PJ::AlwaysIncluded::matchesRos2(info.schema_name)) {
       out.insert(name);
     }
   }

@@ -1,16 +1,18 @@
 #pragma once
 
-#include <algorithm>
 #include <chrono>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <pj_always_included/locked_table.hpp>
 #include <pj_base/sdk/text_utils.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <pj_websocket/connection_dialog.hpp>
 #include <pj_websocket/websocket_client.hpp>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "pj_bridge_manifest.hpp"
@@ -44,7 +46,7 @@ struct DiscoveredTopic {
 ///      shows connecting / retrying in N s with the last error / connected.
 ///   3. Topics populate the table, user selects topics (Select All / Deselect All act on the rows
 ///      the filter shows). Transform topics are always subscribed: their rows are selected,
-///      locked and tooltipped, and never saved (they are implied).
+///      locked and tooltipped, and saved with the selection (PJ::AlwaysIncluded's locked table).
 ///   4. User clicks OK
 ///   5. saveConfig() returns the full config for the source plugin
 ///
@@ -59,9 +61,9 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       : link_(
             options, {
                          .on_open =
-                             [this] {
+                             [this](const std::string& url) {
                                tick_count_ = 0;
-                               endpoint_.remember();
+                               endpoint_.remember(url);
                                requestTopics();
                              },
                          .on_text = [this](const std::string& text) { onServerMessage(text); },
@@ -78,14 +80,12 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     return link_.take();
   }
 
-  /// The URL the source connects to (the URL line, normalized).
-  std::string endpoint() const {
-    return endpoint_.str();
+  /// The URL line: str() is what the source connects to.
+  PJ::WebSocket::Endpoint& endpoint() {
+    return endpoint_;
   }
-
-  /// The host's optional settings store, where the last connected URL is remembered.
-  void setSettings(PJ::sdk::SettingsView settings) {
-    endpoint_.setSettings(settings);
+  const PJ::WebSocket::Endpoint& endpoint() const {
+    return endpoint_;
   }
 
   /// Full catalog of topics discovered during this dialog's connection session
@@ -119,36 +119,14 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    link_.toWidgets(wd);
-    endpoint_.toWidgets(wd, link_.idle());
+    link_.toWidgets(wd, endpoint_);
 
-    // Topic list — apply case-insensitive filter matching on name AND type. Always-subscribed
-    // rows are shown selected, disabled and tooltipped.
+    // Topic list: case-insensitive filter on name AND type. Always-subscribed rows are shown
+    // selected, disabled and tooltipped. The selection is always sent, so Deselect All also
+    // clears what the table shows.
     wd.setTableHeaders("topicsList", {"Topic Name", "DataType"});
-    std::vector<std::vector<std::string>> rows;
-    std::vector<std::string> shown_selection = selected_topic_names_;
-    std::vector<int> locked_rows;
-    {
-      std::lock_guard<std::mutex> lock(topics_mutex_);
-      rows.reserve(topics_.size());
-      for (const auto& t : topics_) {
-        if (!matchesFilter(t)) {
-          continue;
-        }
-        if (isLocked(t)) {
-          const int row = static_cast<int>(rows.size());
-          locked_rows.push_back(row);
-          wd.setCellTooltip("topicsList", row, 0, PJ::AlwaysIncluded::kTooltip);
-          shown_selection.push_back(t.name);
-        }
-        rows.push_back({t.name, t.type});
-      }
-    }
-    wd.setTableRows("topicsList", rows);
-    wd.setDisabledRows("topicsList", locked_rows);
+    PJ::AlwaysIncluded::tableToWidgets(wd, "topicsList", visibleRows(), selected_topic_names_);
     wd.setListPlaceholder("topicsList", "Click to select, Click+Drag to multi-select");
-    // Always sent, so Deselect All also clears what the table shows.
-    wd.setSelectedItems("topicsList", shown_selection);
     wd.setShortcut("btnSelectAll", "Ctrl+A");
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
@@ -183,23 +161,12 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       return true;
     }
     if (widget_name == "btnSelectAll") {
-      // The rows the filter shows; locked rows are selected already.
-      {
-        std::lock_guard<std::mutex> lock(topics_mutex_);
-        for (const auto& t : topics_) {
-          if (matchesFilter(t) && !isLocked(t) &&
-              std::find(selected_topic_names_.begin(), selected_topic_names_.end(), t.name) ==
-                  selected_topic_names_.end()) {
-            selected_topic_names_.push_back(t.name);
-          }
-        }
-      }
+      PJ::AlwaysIncluded::selectAll(selected_topic_names_, visibleRows());
       snapshotSelectedTopics();
       return true;
     }
     if (widget_name == "btnDeselectAll") {
-      // Every selection, also one the filter hides; locked rows stay selected.
-      selected_topic_names_.clear();
+      PJ::AlwaysIncluded::deselectAll(selected_topic_names_, visibleRows());
       snapshotSelectedTopics();
       return true;
     }
@@ -208,18 +175,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "topicsList") {
-      // Selected rows always pass the filter, so `selected` is the whole user selection. Locked
-      // rows are implied, never part of it.
-      {
-        std::lock_guard<std::mutex> lock(topics_mutex_);
-        selected_topic_names_.clear();
-        for (const auto& name : selected) {
-          const auto it = std::find_if(topics_.begin(), topics_.end(), [&](const auto& t) { return t.name == name; });
-          if (it == topics_.end() || !isLocked(*it)) {
-            selected_topic_names_.push_back(name);
-          }
-        }
-      }
+      PJ::AlwaysIncluded::applyReported(selected_topic_names_, selected, visibleRows());
       snapshotSelectedTopics();
       return true;  // re-evaluate OK button state
     }
@@ -297,7 +253,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       selected_topics_snapshot_.clear();
       for (const auto& t : cfg["topics"]) {
         if (t.contains("name") && t["name"].is_string()) {
-          selected_topic_names_.push_back(t["name"].get<std::string>());
+          selected_topic_names_.insert(t["name"].get<std::string>());
           DiscoveredTopic dt;
           dt.name = t.value("name", std::string{});
           dt.type = t.value("type", std::string{});
@@ -344,9 +300,6 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       return;
     }
 
-    // Merge current selection with persisted selection
-    std::vector<std::string> wanted = selected_topic_names_;
-
     std::lock_guard<std::mutex> lock(topics_mutex_);
     topics_.clear();
     for (const auto& v : json["topics"]) {
@@ -358,50 +311,60 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
       }
     }
 
-    // Re-apply selection: keep only names that still exist in the new topic list
-    std::vector<std::string> new_selection;
-    for (const auto& name : wanted) {
-      for (const auto& t : topics_) {
-        if (t.name == name) {
-          new_selection.push_back(name);
-          break;
-        }
+    // Keep only the selected names that still exist in the new topic list.
+    std::set<std::string_view> listed;
+    for (const auto& t : topics_) {
+      listed.insert(t.name);
+    }
+    std::erase_if(selected_topic_names_, [&](const std::string& name) { return !listed.contains(name); });
+    // The always-subscribed topics join the saved selection as soon as they are listed. Copies:
+    // appending to the snapshot moves its strings.
+    std::set<std::string> saved;
+    for (const auto& t : selected_topics_snapshot_) {
+      saved.insert(t.name);
+    }
+    for (const auto& t : topics_) {
+      if (isLocked(t) && !saved.contains(t.name)) {
+        selected_topics_snapshot_.push_back(t);
       }
     }
-    selected_topic_names_ = std::move(new_selection);
   }
 
-  /// Snapshot the full schema info for selected topics so saveConfig()
+  /// Snapshot the full schema info for the selected and locked topics so saveConfig()
   /// doesn't depend on topics_ (which gets cleared on disconnect).
   void snapshotSelectedTopics() {
     std::lock_guard<std::mutex> lock(topics_mutex_);
     selected_topics_snapshot_.clear();
-    for (const auto& name : selected_topic_names_) {
-      for (const auto& t : topics_) {
-        if (t.name == name) {
-          selected_topics_snapshot_.push_back(t);
-          break;
-        }
+    for (const auto& t : topics_) {
+      if (selected_topic_names_.contains(t.name) || isLocked(t)) {
+        selected_topics_snapshot_.push_back(t);
       }
     }
   }
 
-  /// Always subscribed (a transform): shown selected and locked, never saved.
+  /// The table rows the filter shows, locked ones flagged.
+  PJ::AlwaysIncluded::TableRows visibleRows() const {
+    std::lock_guard<std::mutex> lock(topics_mutex_);
+    PJ::AlwaysIncluded::TableRows rows;
+    rows.reserve(topics_.size());
+    for (const auto& t : topics_) {
+      if (matchesFilter(t)) {
+        rows.push_back({{t.name, t.type}, isLocked(t)});
+      }
+    }
+    return rows;
+  }
+
+  /// Always subscribed (a transform): shown selected and locked, saved with the selection.
   static bool isLocked(const DiscoveredTopic& t) {
-    return PJ::BridgeProtocol::isAlwaysSubscribed(t.schema_name);
+    return PJ::AlwaysIncluded::matchesRos2(t.schema_name);
   }
 
   /// Case-insensitive substring match on topic name and type.
   /// Selected and locked topics always match (so they remain visible even when filtered).
   bool matchesFilter(const DiscoveredTopic& t) const {
-    if (filter_.empty() || isLocked(t)) {
+    if (filter_.empty() || isLocked(t) || selected_topic_names_.contains(t.name)) {
       return true;
-    }
-    // Always show selected topics regardless of filter
-    for (const auto& sel : selected_topic_names_) {
-      if (sel == t.name) {
-        return true;
-      }
     }
     // Case-insensitive search
     const std::string lower_filter = PJ::sdk::lowerAscii(filter_);
@@ -422,7 +385,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
 
   mutable std::mutex topics_mutex_;
   std::vector<DiscoveredTopic> topics_;
-  std::vector<std::string> selected_topic_names_;
+  std::set<std::string> selected_topic_names_;  ///< the user's selection; locked topics need not be in it
   std::vector<DiscoveredTopic> selected_topics_snapshot_;
   int tick_count_ = 0;
   uint32_t request_id_ = 1;

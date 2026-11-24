@@ -59,7 +59,7 @@ pj_emit_plugin_manifest(ros2_stream_plugin
 # ros2_topic_subscription.hpp has no rclcpp dependency, so this target builds
 # unconditionally (like the proxy above) — it does NOT require
 # PJ_BUILD_ROS2_DISTRO or a sourced ROS 2 environment.
-find_package(nlohmann_json REQUIRED)  # the table helpers' widget JSON, read back by the test
+find_package(nlohmann_json REQUIRED)  # the topic table's widget JSON, read back by the test
 add_executable(ros2_topic_subscription_test tests/ros2_topic_subscription_test.cpp)
 target_compile_features(ros2_topic_subscription_test PRIVATE cxx_std_20)
 target_compile_options(ros2_topic_subscription_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -68,6 +68,7 @@ target_link_libraries(ros2_topic_subscription_test PRIVATE
   plotjuggler_sdk::plugin_sdk
   nlohmann_json::nlohmann_json
   pj_always_included
+  pj_test_support
   GTest::gtest_main
 )
 add_test(NAME ros2_topic_subscription_test COMMAND ros2_topic_subscription_test)

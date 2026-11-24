@@ -28,8 +28,7 @@ std::string normError(std::string_view text) {
 
 TEST(NormalizeUrl, FullUrlsAreKeptAsTyped) {
   EXPECT_EQ(norm("ws://127.0.0.1:9090"), "ws://127.0.0.1:9090");
-  EXPECT_EQ(norm("wss://robot.local:8443/bridge?x=1#f"), "wss://robot.local:8443/bridge?x=1#f");
-  EXPECT_EQ(norm("ws://user:p%40ss@robot:9090/a"), "ws://user:p%40ss@robot:9090/a");
+  EXPECT_EQ(norm("wss://robot.local:8443/bridge?x=1"), "wss://robot.local:8443/bridge?x=1");
   EXPECT_EQ(norm("ws://[::1]:9090"), "ws://[::1]:9090");
   // A scheme without a port keeps the scheme's own port: no default is invented.
   EXPECT_EQ(norm("wss://robot.example.com/bridge"), "wss://robot.example.com/bridge");
@@ -39,7 +38,9 @@ TEST(NormalizeUrl, ForgivingInput) {
   EXPECT_EQ(norm("  robot  "), "ws://robot:9090");
   EXPECT_EQ(norm("robot:1234"), "ws://robot:1234");
   EXPECT_EQ(norm("10.0.0.2/bridge?x=1"), "ws://10.0.0.2:9090/bridge?x=1");
-  EXPECT_EQ(norm("user:pw@robot"), "ws://user:pw@robot:9090");
+  // "xxx://" is a scheme only when xxx has none of /?#@: here it is part of the query.
+  EXPECT_EQ(norm("robot/x?next=ws://a"), "ws://robot:9090/x?next=ws://a");
+  EXPECT_EQ(norm("robot?u=wss://b:1"), "ws://robot:9090?u=wss://b:1");
   EXPECT_EQ(norm("[::1]"), "ws://[::1]:9090");
   EXPECT_EQ(norm("WSS://Robot:1"), "wss://Robot:1");  // only the scheme is lowercased
 }
@@ -60,8 +61,28 @@ TEST(NormalizeUrl, InvalidInputSaysWhy) {
   EXPECT_NE(normError("ws://[::1").find("']'"), std::string::npos);
 }
 
+TEST(NormalizeUrl, RefusesCredentials) {
+  // IXWebSocket parses and drops userinfo and browsers do not send it: refused, never silently lost.
+  const std::string kWhy = "Credentials in the URL are not supported: neither PlotJuggler nor browsers send them.";
+  EXPECT_EQ(normError("ws://user:pw@robot:9090/a"), kWhy);
+  EXPECT_EQ(normError("wss://user@robot"), kWhy);
+  EXPECT_EQ(normError("user:pw@robot"), kWhy);
+  EXPECT_EQ(normError("u@robot?next=ws://a"), kWhy);
+  // An '@' after the authority is not userinfo.
+  EXPECT_EQ(norm("ws://robot:1/x@y?m=a@b"), "ws://robot:1/x@y?m=a@b");
+}
+
+TEST(NormalizeUrl, RefusesAFragment) {
+  // RFC 6455 forbids fragments in WebSocket URIs.
+  EXPECT_NE(normError("wss://robot.local:8443/bridge?x=1#f").find("'#'"), std::string::npos);
+  EXPECT_NE(normError("robot#top").find("'#'"), std::string::npos);
+  EXPECT_EQ(norm("ws://robot/a%23b"), "ws://robot/a%23b");  // an encoded '#' is not a fragment
+}
+
+// normalizeUrl refuses userinfo, but a status line or a log may still show text it refused.
 TEST(CleanUrl, DropsUserinfo) {
   EXPECT_EQ(cleanUrl("ws://user:secret@robot:9090/a?x=1"), "ws://robot:9090/a?x=1");
+  EXPECT_EQ(cleanUrl("user:secret@robot:9090"), "robot:9090");
   EXPECT_EQ(cleanUrl("wss://user@robot"), "wss://robot");
   // The last '@' of the authority ends the userinfo; an '@' in the path or query is not userinfo.
   EXPECT_EQ(cleanUrl("ws://u:p@ss@robot:1/x@y?m=a@b"), "ws://robot:1/x@y?m=a@b");
@@ -73,18 +94,35 @@ TEST(CleanUrl, DropsEachKindOfSecretParameter) {
         "client_secret", "API_KEY", "credentials", "id%5Ftoken"}) {
     EXPECT_EQ(cleanUrl(std::string("ws://h:1/p?a=1&") + name + "=v&b=2"), "ws://h:1/p?a=1&b=2") << name;
   }
+  for (const char* name : {"access_key", "AWS_ACCESS_KEY_ID", "auth_key", "passphrase", "wifi-passphrase"}) {
+    EXPECT_EQ(cleanUrl(std::string("ws://h:1/p?a=1&") + name + "=v&b=2"), "ws://h:1/p?a=1&b=2") << name;
+  }
   for (const char* name :
-       {"key", "auth", "authorization", "sig", "signature", "pwd", "pass", "session", "jwt", "KEY", "Auth"}) {
+       {"key", "auth", "authorization", "sig", "signature", "pwd", "pass", "session", "jwt", "pw", "X-Amz-Signature",
+        "x_amz_signature", "KEY", "Auth"}) {
     EXPECT_EQ(cleanUrl(std::string("ws://h:1/p?a=1&") + name + "=v&b=2"), "ws://h:1/p?a=1&b=2") << name;
   }
 }
 
 TEST(CleanUrl, KeepsLookAlikesAndOrder) {
   // Short names match exactly only.
-  for (const char* name : {"keyframe", "passive", "session_id", "author", "signal", "monkey", "jwtx"}) {
+  for (const char* name :
+       {"keyframe", "passive", "session_id", "author", "signal", "monkey", "jwtx", "pwm", "x-amz-date",
+        "signature_v"}) {
     EXPECT_FALSE(isSecretQueryName(name)) << name;
   }
   EXPECT_EQ(cleanUrl("ws://h:1/p?z=1&keyframe=2&token=t&a=3&passive=4"), "ws://h:1/p?z=1&keyframe=2&a=3&passive=4");
+}
+
+TEST(CleanUrl, SemicolonSeparatesParametersToo) {
+  EXPECT_EQ(cleanUrl("ws://h:1/p?a=1;token=t;b=2"), "ws://h:1/p?a=1;b=2");
+  EXPECT_EQ(cleanUrl("ws://h:1/p?a=1&token=t;b=2"), "ws://h:1/p?a=1;b=2");
+  EXPECT_EQ(cleanUrl("ws://h:1/p?token=t;a=1&b=2"), "ws://h:1/p?a=1&b=2");
+  EXPECT_EQ(cleanUrl("ws://h:1/p?a=1;b=2"), "ws://h:1/p?a=1;b=2");
+}
+
+TEST(CleanUrl, AnEmbeddedUrlInTheQueryIsNotAScheme) {
+  EXPECT_EQ(cleanUrl("robot:1/x?next=ws://u:p@a&token=t"), "robot:1/x?next=ws://u:p@a");
 }
 
 TEST(CleanUrl, EverythingElseIsByteIdentical) {

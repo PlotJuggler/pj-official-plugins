@@ -17,8 +17,12 @@
 ///   - a streamer forces every matching channel the server advertises, since it cannot know
 ///     counts before subscribing. A matching channel the server does not advertise is never
 ///     invented.
-///  In a dialog, a forced row is shown selected, disabled and carries kTooltip; deselect-all,
-///  a host-reported selection or a saved selection that omits it never drops it.
+///  In a dialog, a forced row is shown selected, disabled and carries kTooltip; Deselect All, a
+///  host-reported selection or a saved selection that omits it never drops it. A forced channel
+///  is part of the selection the dialog saves, so a host that subscribes exactly the saved
+///  selection (one without demand subscriptions) subscribes it too. A streamer that uses the
+///  saved selection as its advertise filter ignores the forced entries: a selection of forced
+///  channels only still means "no filter". locked_table.hpp is the dialogs' shared table.
 
 #include <array>
 #include <string_view>
@@ -41,9 +45,6 @@ inline constexpr std::array<Rule, 2> kRules = {{
 /// The tooltip of a forced (locked) row, the same in every dialog.
 inline constexpr std::string_view kTooltip = "Always loaded: required for 3D transform rendering.";
 
-/// The message encoding of every ROS 2 topic (PlotJuggler Bridge, ROS 2 streamer).
-inline constexpr std::string_view kRos2Encoding = "cdr";
-
 /// True when a channel of this type is always loaded/subscribed. Exact, case-sensitive match.
 [[nodiscard]] constexpr bool matches(std::string_view schema_name, std::string_view encoding) {
   for (const auto& rule : kRules) {
@@ -52,6 +53,12 @@ inline constexpr std::string_view kRos2Encoding = "cdr";
     }
   }
   return false;
+}
+
+/// matches() for a ROS 2 topic of type `type` (PlotJuggler Bridge, ROS 2 streamer): every ROS 2
+/// topic is CDR, so its own encoding field is not consulted.
+[[nodiscard]] constexpr bool matchesRos2(std::string_view type) {
+  return matches(type, "cdr");
 }
 
 }  // namespace PJ::AlwaysIncluded

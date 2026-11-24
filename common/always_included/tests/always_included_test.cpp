@@ -17,3 +17,9 @@ TEST(AlwaysIncluded, RejectsWrongEncodingOrLookAlikeSchema) {
   EXPECT_FALSE(matches("geometry_msgs/msg/TransformStamped", "cdr"));
   EXPECT_FALSE(matches("", ""));
 }
+
+TEST(AlwaysIncluded, MatchesRos2ChecksTheTypeAsCdr) {
+  EXPECT_TRUE(PJ::AlwaysIncluded::matchesRos2("tf2_msgs/msg/TFMessage"));
+  EXPECT_FALSE(PJ::AlwaysIncluded::matchesRos2("foxglove.FrameTransform"));
+  EXPECT_FALSE(PJ::AlwaysIncluded::matchesRos2("std_msgs/msg/String"));
+}

@@ -21,6 +21,7 @@
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -49,8 +50,11 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     PJ::WidgetData wd;
 
     // Rows, selection, and the always-subscribed transform rows (selected, locked, tooltipped).
-    const auto visible = visibleTopics();
-    ros2_streamer::topicTableToWidgets(wd, "listRosTopics", visible, selected_topics_);
+    // Restored by topic name: the host matches rows by first-column text, which survives a
+    // user sort of the table.
+    const auto visible = visibleRows();
+    wd.setTableHeaders("listRosTopics", {"Topic", "Datatype"});
+    PJ::AlwaysIncluded::tableToWidgets(wd, "listRosTopics", visible, selected_topics_);
 
     if (visible.empty()) {
       wd.setText("labelStatus", "Scanning ROS 2 topics...");
@@ -146,9 +150,8 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     // only for the selectable rows currently visible under the active filter.
     // Preserve selections of topics filtered out of view; otherwise typing in
     // the filter then changing visible-row selection would silently drop
-    // previously-selected hidden topics. Locked (always-subscribed) rows are
-    // implied and never stored.
-    selected_topics_ = ros2_streamer::mergeReportedSelection(selected_topics_, selected, visibleTopics());
+    // previously-selected hidden topics.
+    PJ::AlwaysIncluded::applyReported(selected_topics_, selected, visibleRows());
     // Re-render so widget_data() refreshes the OK-enabled state.
     return true;
   }
@@ -156,15 +159,13 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   bool onClicked(std::string_view widget_name) override {
     if (widget_name == "btnSelectAll") {
       // The rows the filter shows; a selection it hides stays.
-      selected_topics_ = ros2_streamer::selectAllVisible(std::move(selected_topics_), visibleTopics());
+      PJ::AlwaysIncluded::selectAll(selected_topics_, visibleRows());
       return true;
     }
     if (widget_name == "btnDeselectAll") {
-      // Clear every selection, including topics filtered out of view — the
-      // table only ever reports its visible rows, so dropping the whole set
-      // here keeps hidden selections from silently surviving a deselect-all.
-      // Locked (always-subscribed) rows stay selected: they are not part of it.
-      selected_topics_.clear();
+      // Every selection, also of topics filtered out of view; locked
+      // (always-subscribed) rows stay selected.
+      PJ::AlwaysIncluded::deselectAll(selected_topics_, visibleRows());
       return true;  // re-render to update the table selection and OK state
     }
     return false;
@@ -193,14 +194,19 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
       // deselect it; it also leaks back into the next session's config. A
       // still-advertised restored topic is kept, preserving last-selection
       // recall. Before discovery has populated, emit as-is rather than drop
-      // every selection.
+      // every selection. The always-subscribed topics discovered are saved
+      // too, so a legacy host subscribes them.
       std::lock_guard<std::mutex> lock(topics_mutex_);
       const bool have_discovery = !discovered_topics_.empty();
-      for (const auto& [name, type] : selected_topics_) {
-        if (have_discovery && discovered_topics_.find(name) == discovered_topics_.end()) {
-          continue;
+      auto names = selected_topics_;
+      names.merge(ros2_streamer::alwaysSubscribedTopics(discovered_topics_));
+      for (const auto& name : names) {
+        if (const auto it = discovered_topics_.find(name); it != discovered_topics_.end()) {
+          arr.push_back({{"name", name}, {"type", it->second}});
+        } else if (!have_discovery) {
+          const auto saved = saved_types_.find(name);
+          arr.push_back({{"name", name}, {"type", saved == saved_types_.end() ? std::string{} : saved->second}});
         }
-        arr.push_back({{"name", name}, {"type", type}});
       }
     }
     nlohmann::json cfg;
@@ -221,10 +227,13 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     auto cfg = nlohmann::json::parse(config_json, nullptr, false);
     if (!cfg.is_discarded()) {
       selected_topics_.clear();
+      saved_types_.clear();
       if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
         for (const auto& entry : cfg["selected_topics"]) {
           if (entry.is_object()) {
-            selected_topics_.emplace_back(entry.value("name", std::string{}), entry.value("type", std::string{}));
+            const auto name = entry.value("name", std::string{});
+            selected_topics_.insert(name);
+            saved_types_[name] = entry.value("type", std::string{});
           }
         }
       }
@@ -247,12 +256,12 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   }
 
  private:
-  // Snapshot of topics passing the current filter, ordered as the table
+  // Snapshot of the rows passing the current filter, ordered as the table
   // displays them. Locks the topics mutex briefly; callers must not already
   // hold it.
-  ros2_streamer::TopicList visibleTopics() {
+  PJ::AlwaysIncluded::TableRows visibleRows() {
     std::lock_guard<std::mutex> lock(topics_mutex_);
-    return ros2_streamer::visibleTopics(discovered_topics_, filter_);
+    return ros2_streamer::topicRows(discovered_topics_, filter_);
   }
 
   void startDiscovery() {
@@ -323,7 +332,10 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
 
   mutable std::mutex topics_mutex_;
   std::map<std::string, std::string> discovered_topics_;
-  std::vector<std::pair<std::string, std::string>> selected_topics_;
+  // The user's selection by topic name; locked topics need not be in it.
+  std::set<std::string> selected_topics_;
+  // The types of the loaded selection, saved back for topics not discovered yet.
+  std::map<std::string, std::string> saved_types_;
 
   // Current filter substring (case-insensitive match on topic name); empty
   // means "show everything". In-session only — not persisted via saveConfig.

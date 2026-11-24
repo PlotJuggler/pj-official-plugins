@@ -153,14 +153,6 @@ class EventQueue {
 /// thread can outlive the owner's stop() safely.
 using EventSink = std::shared_ptr<EventQueue>;
 
-/// True for "ws://" or "wss://" followed by a non-empty host; any port and path are kept as is.
-[[nodiscard]] inline bool isWebSocketUrl(std::string_view url) {
-  const std::string_view host = url.starts_with("wss://")  ? url.substr(6)
-                                : url.starts_with("ws://") ? url.substr(5)
-                                                           : std::string_view{};
-  return !host.empty() && host.front() != '/';
-}
-
 /// [native backend] The first of `candidates` that exists, else "SYSTEM" (IXWebSocket's default,
 /// which its mbedTLS build can read only on Windows): the CA bundle wss:// is verified against.
 [[nodiscard]] std::string firstExistingCaFile(const std::vector<std::string>& candidates);
