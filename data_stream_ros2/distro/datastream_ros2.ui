@@ -124,42 +124,21 @@
         </widget>
        </item>
        <item>
-        <layout class="QHBoxLayout" name="layoutFilter">
-         <item>
-          <spacer name="spacerFilter">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-         <item>
-          <widget class="QLabel" name="labelFilter">
-           <property name="text">
-            <string>Filter: </string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QLineEdit" name="lineEditFilter">
-           <property name="maximumSize">
-            <size>
-             <width>300</width>
-             <height>16777215</height>
-            </size>
-           </property>
-           <property name="clearButtonEnabled">
-            <bool>true</bool>
-           </property>
-           <property name="filterField" stdset="0"><bool>true</bool></property>
-          </widget>
-         </item>
-        </layout>
+        <widget class="SectionHeaderBand" name="topicsBanner">
+         <property name="text"><string>Topics</string></property>
+         <property name="filterFieldName"><string>lineEditFilter</string></property>
+         <property name="filterPlaceholder"><string>Filter</string></property>
+         <widget class="QPushButton" name="btnSelectAll">
+          <property name="text"><string>Select All</string></property>
+          <property name="toolTip"><string>Select the topics the filter shows (Ctrl+A)</string></property>
+          <property name="styleSheet"><string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string></property>
+         </widget>
+         <widget class="QPushButton" name="btnDeselectAll">
+          <property name="text"><string>Deselect All</string></property>
+          <property name="toolTip"><string>Deselect every topic, also those the filter hides (Ctrl+Shift+A)</string></property>
+          <property name="styleSheet"><string notr="true">QPushButton { padding: 0px 12px; margin-left: 2px; }</string></property>
+         </widget>
+        </widget>
        </item>
        <item>
         <widget class="QTableWidget" name="listRosTopics">
@@ -182,42 +161,6 @@
           <bool>false</bool>
          </attribute>
         </widget>
-       </item>
-       <item>
-        <layout class="QHBoxLayout" name="layoutTip">
-         <item>
-          <spacer name="spacerTip">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-         <item>
-          <widget class="QLabel" name="labelTip">
-           <property name="font">
-            <font>
-             <pointsize>10</pointsize>
-            </font>
-           </property>
-           <property name="text">
-            <string>Tip: [CTRL+A] select all, [CTRL+SHIFT+A] deselect all</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="btnDeselectAll">
-           <property name="visible">
-            <bool>false</bool>
-           </property>
-          </widget>
-         </item>
-        </layout>
        </item>
       </layout>
      </widget>

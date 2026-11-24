@@ -12,6 +12,8 @@
  *     as-advertise-filter predicate and its application to the subscribable set.
  *   - splitTopicTypes: the multi-type-topic exclusion applied to a raw
  *     get_topic_names_and_types() result.
+ *   - The dialog's topic table: filter, Select All / Deselect All, and the
+ *     always-subscribed transform topics (locked, tooltipped, never dropped).
  */
 
 #include "../ros2_topic_subscription.hpp"
@@ -19,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <nlohmann/json.hpp>
 #include <set>
 #include <string>
 #include <thread>
@@ -270,6 +273,109 @@ TEST(SplitTopicTypesTest, EmptyTypesListIsSkipped) {
   const auto split = splitTopicTypes(raw);
   EXPECT_TRUE(split.multi_type.empty());
   EXPECT_TRUE(split.single_type.empty());
+}
+
+// --- Always-subscribed transforms and the dialog's topic table ---
+
+using ros2_streamer::TopicList;
+
+const std::map<std::string, std::string> kGraph = {
+    {"/imu", "sensor_msgs/msg/Imu"},   {"/odom", "nav_msgs/msg/Odometry"},       {"/odom_raw", "nav_msgs/msg/Odometry"},
+    {"/tf", "tf2_msgs/msg/TFMessage"}, {"/tf_static", "tf2_msgs/msg/TFMessage"},
+};
+
+nlohmann::json topicTable(const TopicList& visible, const TopicList& selected) {
+  PJ::WidgetData wd;
+  ros2_streamer::topicTableToWidgets(wd, "listRosTopics", visible, selected);
+  return nlohmann::json::parse(wd.toJson())["listRosTopics"];
+}
+
+std::set<std::string> shown(const nlohmann::json& table) {
+  return table.value("selected_items", std::set<std::string>{});
+}
+
+std::set<std::string> names(const TopicList& topics) {
+  std::set<std::string> out;
+  for (const auto& [name, type] : topics) {
+    out.insert(name);
+  }
+  return out;
+}
+
+int rowOf(const nlohmann::json& table, const std::string& name) {
+  const auto& rows = table["rows"];
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i][0] == name) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+TEST(AlwaysSubscribedTest, MatchesTheTransformTypeNotTheName) {
+  EXPECT_TRUE(ros2_streamer::isAlwaysSubscribed("tf2_msgs/msg/TFMessage"));
+  EXPECT_FALSE(ros2_streamer::isAlwaysSubscribed("std_msgs/msg/String"));
+  EXPECT_EQ(ros2_streamer::alwaysSubscribedTopics(kGraph), (std::set<std::string>{"/tf", "/tf_static"}));
+  // A /tf name of another type is not forced; an absent transform is not invented.
+  EXPECT_TRUE(ros2_streamer::alwaysSubscribedTopics({{"/tf", "std_msgs/msg/String"}, {"/imu", "x/msg/Y"}}).empty());
+}
+
+TEST(AlwaysSubscribedTest, TransformsPassASavedAdvertiseFilter) {
+  const TopicList selection = {{"/imu", "sensor_msgs/msg/Imu"}};
+  const auto subscribable = ros2_streamer::filteredDiscoveredTopics(kGraph, selection);
+  EXPECT_EQ(names({subscribable.begin(), subscribable.end()}), (std::set<std::string>{"/imu", "/tf", "/tf_static"}));
+  EXPECT_TRUE(ros2_streamer::passesAdvertiseFilter("/tf", {}));
+}
+
+TEST(TopicTableTest, TransformRowsAreLockedSelectedAndTooltipped) {
+  const auto visible = ros2_streamer::visibleTopics(kGraph, "");
+  const auto table = topicTable(visible, {});
+  const int tf = rowOf(table, "/tf");
+  const int tf_static = rowOf(table, "/tf_static");
+  const int imu = rowOf(table, "/imu");
+  ASSERT_GE(tf, 0);
+  ASSERT_GE(tf_static, 0);
+  ASSERT_GE(imu, 0);
+  EXPECT_EQ(table.value("disabled_rows", std::set<int>{}), (std::set<int>{tf, tf_static}));
+  const auto& tooltips = table["cell_tooltips"];
+  EXPECT_EQ(tooltips.value(std::to_string(tf) + ",0", std::string{}), PJ::AlwaysIncluded::kTooltip);
+  EXPECT_EQ(tooltips.value(std::to_string(tf_static) + ",0", std::string{}), PJ::AlwaysIncluded::kTooltip);
+  EXPECT_FALSE(tooltips.contains(std::to_string(imu) + ",0"));
+  EXPECT_EQ(shown(table), (std::set<std::string>{"/tf", "/tf_static"}));
+}
+
+TEST(TopicTableTest, ATfNameOfAnotherTypeIsNotLocked) {
+  const auto visible = ros2_streamer::visibleTopics({{"/tf", "std_msgs/msg/String"}}, "");
+  const auto table = topicTable(visible, {});
+  EXPECT_TRUE(table.value("disabled_rows", std::set<int>{}).empty());
+  EXPECT_TRUE(shown(table).empty());
+}
+
+TEST(TopicTableTest, FilterKeepsTransformRowsVisible) {
+  EXPECT_EQ(
+      names(ros2_streamer::visibleTopics(kGraph, "ODOM")),
+      (std::set<std::string>{"/odom", "/odom_raw", "/tf", "/tf_static"}));
+}
+
+TEST(TopicTableTest, SelectAllTakesTheVisibleUnlockedTopicsAndKeepsHiddenOnes) {
+  const TopicList hidden = {{"/imu", "sensor_msgs/msg/Imu"}};
+  const auto selected = ros2_streamer::selectAllVisible(hidden, ros2_streamer::visibleTopics(kGraph, "odom"));
+  EXPECT_EQ(names(selected), (std::set<std::string>{"/imu", "/odom", "/odom_raw"}));
+}
+
+TEST(TopicTableTest, DeselectAllKeepsTransformsSelected) {
+  // Deselect All clears the user selection; the table still shows the transforms selected.
+  const auto table = topicTable(ros2_streamer::visibleTopics(kGraph, ""), TopicList{});
+  EXPECT_EQ(shown(table), (std::set<std::string>{"/tf", "/tf_static"}));
+}
+
+TEST(TopicTableTest, HostReportedSelectionOmittingTransformsIsOverridden) {
+  const auto visible = ros2_streamer::visibleTopics(kGraph, "o");  // /odom, /odom_raw (+ the transforms)
+  const TopicList before = {{"/imu", "sensor_msgs/msg/Imu"}, {"/odom", "nav_msgs/msg/Odometry"}};
+  // The host reports the visible selectable rows only: /odom_raw now, without the transforms.
+  const auto after = ros2_streamer::mergeReportedSelection(before, {"/odom_raw", "/tf"}, visible);
+  EXPECT_EQ(names(after), (std::set<std::string>{"/imu", "/odom_raw"}));  // hidden /imu kept, locked never stored
+  EXPECT_EQ(shown(topicTable(visible, after)), (std::set<std::string>{"/odom_raw", "/tf", "/tf_static", "/imu"}));
 }
 
 }  // namespace

@@ -13,6 +13,7 @@
  * only be called from `onPoll()`).
  */
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -173,7 +174,18 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
               "advertise topics on demand. Nothing will stream until the connection dialog is "
               "reopened and topics are selected.");
         }
-        for (const auto& [topic, type] : selected_topics_) {
+        // The always-subscribed topics of the first graph scan join the selection (a legacy
+        // host scans only here; a transform published later is not seen).
+        auto to_subscribe = selected_topics_;
+        if (!discovery_seeded_from_selection_) {
+          for (const auto& topic : ros2_streamer::alwaysSubscribedTopics(discovered_topics_)) {
+            if (std::none_of(
+                    to_subscribe.begin(), to_subscribe.end(), [&](const auto& s) { return s.first == topic; })) {
+              to_subscribe.emplace_back(topic, discovered_topics_.at(topic));
+            }
+          }
+        }
+        for (const auto& [topic, type] : to_subscribe) {
           subscribeTopic(topic, type, std::chrono::milliseconds(2000));
         }
       }
@@ -399,7 +411,7 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     std::vector<PJ::AvailableTopic> topics;
     topics.reserve(discovered_topics_.size());
     for (const auto& [topic, type] : discovered_topics_) {
-      if (!ros2_streamer::passesAdvertiseFilter(topic, selected_topics_)) {
+      if (!ros2_streamer::passesAdvertiseFilter(topic, selected_topics_) && !ros2_streamer::isAlwaysSubscribed(type)) {
         continue;
       }
       const std::string* schema = ensureSchemaForType(type);
@@ -506,7 +518,10 @@ class Ros2StreamSource : public PJ::StreamSourceBase {
     // Keyed topic -> created-with type: the diff recreates a subscription
     // whose discovered type changed (it appears in both lists).
     const std::map<std::string, std::string> current(subscription_types_.begin(), subscription_types_.end());
-    const auto diff = ros2_streamer::computeRos2SubscriptionDiff(current, subscribable, last_applied_desired_);
+    // The always-subscribed topics are wanted whatever the host's desired set says.
+    auto desired = ros2_streamer::alwaysSubscribedTopics(discovered_topics_);
+    desired.insert(last_applied_desired_.begin(), last_applied_desired_.end());
+    const auto diff = ros2_streamer::computeRos2SubscriptionDiff(current, subscribable, desired);
 
     for (const auto& topic : diff.to_unsubscribe) {
       // map erase -> shared_ptr drop -> DDS unsubscribe. binding_cache_'s

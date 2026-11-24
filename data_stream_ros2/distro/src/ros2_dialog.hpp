@@ -26,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+#include "../../ros2_topic_subscription.hpp"
 #include "datastream_ros2_ui.hpp"
 #include "ros2_manifest.hpp"
 
@@ -47,30 +48,14 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    auto visible = visibleTopics();
-    std::vector<std::vector<std::string>> rows;
-    rows.reserve(visible.size());
-    for (const auto& [name, type] : visible) {
-      rows.push_back({name, type});
-    }
-    wd.setTableHeaders("listRosTopics", {"Topic", "Datatype"});
-    wd.setTableRows("listRosTopics", rows);
+    // Rows, selection, and the always-subscribed transform rows (selected, locked, tooltipped).
+    const auto visible = visibleTopics();
+    ros2_streamer::topicTableToWidgets(wd, "listRosTopics", visible, selected_topics_);
 
-    // Restore selection by topic name (setSelectedItems): the host matches
-    // rows by first-column text, which is sort-agnostic — listRosTopics has
-    // sortingEnabled, so the selection survives a user sort of the table.
-    std::vector<std::string> selected_names;
-    selected_names.reserve(selected_topics_.size());
-    for (const auto& [sel_name, sel_type] : selected_topics_) {
-      (void)sel_type;
-      selected_names.push_back(sel_name);
-    }
-    wd.setSelectedItems("listRosTopics", selected_names);
-
-    if (rows.empty()) {
+    if (visible.empty()) {
       wd.setText("labelStatus", "Scanning ROS 2 topics...");
     } else {
-      wd.setText("labelStatus", std::to_string(rows.size()) + " topic(s) found");
+      wd.setText("labelStatus", std::to_string(visible.size()) + " topic(s) found");
     }
 
     wd.setChecked("checkBoxTimestamp", use_embedded_timestamp_);
@@ -80,8 +65,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     wd.setChecked("checkBoxStringSuffix", remove_suffix_from_strings_);
     wd.setChecked("checkBoxStringBoolean", boolean_strings_to_number_);
 
-    // Ctrl+A select-all is provided natively by the QTableWidget; bind the
-    // companion deselect-all shortcut to the button (PJ3 parity).
+    wd.setShortcut("btnSelectAll", "Ctrl+A");
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
     // OK button: discovery-running-only. Topic selection is no longer a hard
@@ -159,45 +143,27 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
       return false;
     }
     // The host emits column-0 strings (topic names) for QTableWidget — and
-    // only for the rows currently visible under the active filter. Preserve
-    // selections of topics filtered out of view; otherwise typing in the
-    // filter then changing visible-row selection would silently drop
-    // previously-selected hidden topics.
-    auto visible = visibleTopics();
-    auto isVisible = [&](const std::string& name) {
-      for (const auto& [vname, vtype] : visible) {
-        if (vname == name) {
-          return true;
-        }
-      }
-      return false;
-    };
-
-    std::vector<std::pair<std::string, std::string>> next;
-    next.reserve(selected_topics_.size() + selected.size());
-    for (const auto& [name, type] : selected_topics_) {
-      if (!isVisible(name)) {
-        next.emplace_back(name, type);
-      }
-    }
-    for (const auto& name : selected) {
-      for (const auto& [vname, vtype] : visible) {
-        if (vname == name) {
-          next.emplace_back(vname, vtype);
-          break;
-        }
-      }
-    }
-    selected_topics_ = std::move(next);
+    // only for the selectable rows currently visible under the active filter.
+    // Preserve selections of topics filtered out of view; otherwise typing in
+    // the filter then changing visible-row selection would silently drop
+    // previously-selected hidden topics. Locked (always-subscribed) rows are
+    // implied and never stored.
+    selected_topics_ = ros2_streamer::mergeReportedSelection(selected_topics_, selected, visibleTopics());
     // Re-render so widget_data() refreshes the OK-enabled state.
     return true;
   }
 
   bool onClicked(std::string_view widget_name) override {
+    if (widget_name == "btnSelectAll") {
+      // The rows the filter shows; a selection it hides stays.
+      selected_topics_ = ros2_streamer::selectAllVisible(std::move(selected_topics_), visibleTopics());
+      return true;
+    }
     if (widget_name == "btnDeselectAll") {
       // Clear every selection, including topics filtered out of view — the
       // table only ever reports its visible rows, so dropping the whole set
       // here keeps hidden selections from silently surviving a deselect-all.
+      // Locked (always-subscribed) rows stay selected: they are not part of it.
       selected_topics_.clear();
       return true;  // re-render to update the table selection and OK state
     }
@@ -284,22 +250,9 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   // Snapshot of topics passing the current filter, ordered as the table
   // displays them. Locks the topics mutex briefly; callers must not already
   // hold it.
-  std::vector<std::pair<std::string, std::string>> visibleTopics() {
-    const std::string needle = PJ::sdk::lowerAscii(filter_);
-
-    std::vector<std::pair<std::string, std::string>> out;
+  ros2_streamer::TopicList visibleTopics() {
     std::lock_guard<std::mutex> lock(topics_mutex_);
-    out.reserve(discovered_topics_.size());
-    for (const auto& [name, type] : discovered_topics_) {
-      if (!needle.empty()) {
-        const std::string haystack = PJ::sdk::lowerAscii(name);
-        if (haystack.find(needle) == std::string::npos) {
-          continue;
-        }
-      }
-      out.emplace_back(name, type);
-    }
-    return out;
+    return ros2_streamer::visibleTopics(discovered_topics_, filter_);
   }
 
   void startDiscovery() {
