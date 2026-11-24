@@ -55,8 +55,11 @@
           </property>
           <item>
            <widget class="QCheckBox" name="checkBoxTimestamp">
+            <property name="toolTip">
+             <string>Reads header.stamp</string>
+            </property>
             <property name="text">
-             <string>If present, use the timestamp in the field [header.stamp]</string>
+             <string>Use the timestamp in the message (if present)</string>
             </property>
            </widget>
           </item>
@@ -65,7 +68,7 @@
             <item>
              <widget class="QLabel" name="labelArraySize">
               <property name="text">
-               <string>Maximum size of arrays:</string>
+               <string>When an array size exceeds:</string>
               </property>
              </widget>
             </item>
@@ -83,9 +86,22 @@
              </widget>
             </item>
             <item>
+             <spacer name="spacerArraySize">
+              <property name="orientation">
+               <enum>Qt::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>40</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+            <item>
              <widget class="QRadioButton" name="radioMaxClamp">
               <property name="text">
-               <string>clamp</string>
+               <string>Clamp</string>
               </property>
               <property name="checked">
                <bool>true</bool>
@@ -98,25 +114,12 @@
             <item>
              <widget class="QRadioButton" name="radioMaxDiscard">
               <property name="text">
-               <string>discard</string>
+               <string>Skip</string>
               </property>
               <attribute name="buttonGroup">
                <string>arrayPolicyGroup</string>
               </attribute>
              </widget>
-            </item>
-            <item>
-             <spacer name="spacerArraySize">
-              <property name="orientation">
-               <enum>Qt::Horizontal</enum>
-              </property>
-              <property name="sizeHint" stdset="0">
-               <size>
-                <width>40</width>
-                <height>20</height>
-               </size>
-              </property>
-             </spacer>
             </item>
            </layout>
           </item>

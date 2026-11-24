@@ -59,6 +59,10 @@ The dialog lists the discovered topics under a filter (case-insensitive, on the 
 **Select All** (Ctrl+A) selects the topics the filter shows; **Deselect All** (Ctrl+Shift+A)
 clears every selection, also those the filter hides.
 
+Above the list, **Use the timestamp in the message (if present)** reads `header.stamp`, and
+**When an array size exceeds** a limit, an array is clamped to it (**Clamp**) or skipped (**Skip**).
+The Advanced Options tab holds the string-parsing switches.
+
 Transform topics are always subscribed, whatever the selection and the host's demand: every
 discovered topic of type `tf2_msgs/msg/TFMessage`. Their rows are locked and selected, and they
 are saved with the selection; the rule, shared with the MCAP loader and the other streamers, is

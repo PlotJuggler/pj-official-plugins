@@ -73,6 +73,13 @@
     </layout>
      </item>
      <item>
+      <widget class="QCheckBox" name="checkBoxUseTimestamp">
+       <property name="text">
+        <string>Use the timestamp in the message (if present)</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <layout class="QHBoxLayout" name="parserOptionsLayout">
        <item>
         <widget class="QLabel" name="labelArraySize">
@@ -131,13 +138,6 @@
         </widget>
        </item>
       </layout>
-     </item>
-     <item>
-      <widget class="QCheckBox" name="checkBoxUseTimestamp">
-       <property name="text">
-        <string>Use the timestamp in the message (if present)</string>
-       </property>
-      </widget>
      </item>
     </layout>
    </item>

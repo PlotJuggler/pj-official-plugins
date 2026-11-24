@@ -11,6 +11,7 @@ below; for earlier releases see the git history of `data_stream_foxglove_bridge/
 - Select All (Ctrl+A) and Deselect All (Ctrl+Shift+A) buttons; Select All follows the filter. The channel list is titled "Topics", like the other streamers.
 - Transform channels (`tf2_msgs/msg/TFMessage` over CDR, `foxglove.FrameTransform` over protobuf) are always subscribed: their rows are selected, locked and tooltipped, Deselect All, a filter or a saved selection never drops them, and they are saved with the selection, so a PlotJuggler without demand subscriptions subscribes them too.
 - The topic table's columns are titled "Topic", "Type" and "Encoding" (were "Topic Name", "DataType" and "Encoding"), like the other streamers.
+- The timestamp toggle comes before the array limit in the parser options, as in the ROS 2 dialog.
 
 ### Fixed
 - On a PlotJuggler without demand subscriptions, a channel the server advertises again is not subscribed a second time.
