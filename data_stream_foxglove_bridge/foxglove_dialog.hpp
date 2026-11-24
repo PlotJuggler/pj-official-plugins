@@ -350,7 +350,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   }
 
   // --- State ---
-  PJ::WebSocket::Endpoint endpoint_{"localhost", kDefaultPort};
+  PJ::WebSocket::Endpoint endpoint_{"127.0.0.1", kDefaultPort};
   int max_array_size_ = 500;
   bool clamp_large_arrays_ = true;
   bool use_timestamp_ = false;

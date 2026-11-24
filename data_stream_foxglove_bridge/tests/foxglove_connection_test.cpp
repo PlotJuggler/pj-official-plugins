@@ -562,7 +562,7 @@ TEST(FoxgloveConnectionTest, DialogClearsTheCatalogWhenTheConnectionDrops) {
 
 TEST(FoxgloveConnectionTest, DialogKeepsAddressAndPortConfigCompatible) {
   FoxgloveDialog dialog;
-  EXPECT_EQ(dialog.endpoint().str(), "ws://localhost:8765");
+  EXPECT_EQ(dialog.endpoint().str(), "ws://127.0.0.1:8765");
   ASSERT_TRUE(dialog.loadConfig(R"({"address":"10.0.0.2","port":9000})"));
   EXPECT_EQ(dialog.endpoint().str(), "ws://10.0.0.2:9000");
   // Saved back as one url.
@@ -576,7 +576,7 @@ TEST(FoxgloveConnectionTest, DialogKeepsAddressAndPortConfigCompatible) {
   EXPECT_FALSE(dialog.loadConfig(R"({"port":70000})"));  // not truncated to 4464
   EXPECT_FALSE(dialog.loadConfig(R"({"port":-1})"));
   ASSERT_TRUE(dialog.loadConfig(R"({"port":65535})"));
-  EXPECT_EQ(dialog.endpoint().str(), "ws://localhost:65535");
+  EXPECT_EQ(dialog.endpoint().str(), "ws://127.0.0.1:65535");
 }
 
 // Connect and the status line follow the URL's validity, so a change of it refreshes the widgets.
@@ -599,7 +599,7 @@ TEST(FoxgloveConnectionTest, DialogRemembersTheCleanedUrlAndStartsFromIt) {
   {
     FoxgloveFixture fixture(true, testOptions(), store.view());
     FoxgloveDialog& dialog = fixture.dialog();
-    EXPECT_EQ(dialog.endpoint().str(), "ws://localhost:8765");
+    EXPECT_EQ(dialog.endpoint().str(), "ws://127.0.0.1:8765");
     dialog.onTextChanged("lineEditUrl", "wss://robot:8765/fg?apikey=k&room=1");
     ASSERT_TRUE(dialog.onClicked("buttonConnect"));
     EXPECT_FALSE(backend.getString(PJ::WebSocket::kLastUrlSettingsKey));

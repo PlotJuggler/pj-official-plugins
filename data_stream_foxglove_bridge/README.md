@@ -36,9 +36,9 @@ channels, and lets you select which topics to subscribe to. Parser options
 | Key | Meaning |
 |---|---|
 | `url` | The server URL (e.g. `wss://robot.local:8765`), saved normalized. Loading accepts the same forgiving input as the dialog; an invalid one is rejected. |
-| `address`, `port` | Legacy keys, read only when `url` is absent: `ws://<address>:<port>` (default `localhost:8765`). Never written. |
+| `address`, `port` | Legacy keys, read only when `url` is absent: `ws://<address>:<port>` (default `127.0.0.1:8765`). Never written. |
 
-The dialog takes the server as one URL line (`ws://localhost:8765` by default); a bare host or
+The dialog takes the server as one URL line (`ws://127.0.0.1:8765` by default); a bare host or
 `host:port` gets `ws://` and port 8765. Which URLs are accepted or refused (credentials and
 fragments are), how the URL is saved, and how the last connected URL is remembered and cleaned
 of secrets: [The server URL](../common/websocket/README.md#the-server-url).

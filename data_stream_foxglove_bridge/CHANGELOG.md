@@ -6,12 +6,13 @@ below; for earlier releases see the git history of `data_stream_foxglove_bridge/
 ## Upcoming
 
 ### Changed
-- The dialog takes the server as one URL line (`ws://localhost:8765` by default) instead of address and port fields. A bare host or `host:port` gets `ws://` and port 8765; a query token is dialed as typed; an invalid URL disables Connect and the status line says why. A URL with credentials (`user:password@`) or a fragment (`#`) is refused: neither PlotJuggler nor browsers send credentials, and WebSocket URLs cannot have a fragment. The configuration saves `url`; configurations with `address`/`port` still load.
+- The dialog takes the server as one URL line (`ws://127.0.0.1:8765` by default) instead of address and port fields. A bare host or `host:port` gets `ws://` and port 8765; a query token is dialed as typed; an invalid URL disables Connect and the status line says why. A URL with credentials (`user:password@`) or a fragment (`#`) is refused: neither PlotJuggler nor browsers send credentials, and WebSocket URLs cannot have a fragment. The configuration saves `url`; configurations with `address`/`port` still load.
 - The last connected URL is remembered, cleaned of secret query parameters, in PlotJuggler's settings store; it fills the line when no saved configuration names one (on first open, after a browser reload). The status line and connection messages show the URL cleaned the same way.
 - Select All (Ctrl+A) and Deselect All (Ctrl+Shift+A) buttons; Select All follows the filter. The channel list is titled "Topics", like the other streamers.
 - Transform channels (`tf2_msgs/msg/TFMessage` over CDR, `foxglove.FrameTransform` over protobuf) are always subscribed: their rows are selected, locked and tooltipped, Deselect All, a filter or a saved selection never drops them, and they are saved with the selection, so a PlotJuggler without demand subscriptions subscribes them too.
 - The topic table's columns are titled "Topic", "Type" and "Encoding" (were "Topic Name", "DataType" and "Encoding"), like the other streamers.
 - The timestamp toggle comes before the array limit in the parser options, as in the ROS 2 dialog.
+- The default server host is `127.0.0.1` (was `localhost`), as for the PlotJuggler Bridge.
 
 ### Fixed
 - On a PlotJuggler without demand subscriptions, a channel the server advertises again is not subscribed a second time.
