@@ -1,5 +1,8 @@
 # Assistant Agent
 
+> **We suggest using PlotJuggler from Claude Code or Codex through its MCP server instead;**
+> [plotjuggler-agent](https://github.com/PlotJuggler/plotjuggler-agent#install) shows how to set it up.
+
 An LLM assistant embedded in PlotJuggler as a toolbox plugin. Ask it in plain language to
 describe your data, read statistics, build derived series, or mark anomalies, and it does the
 work by calling the tools PlotJuggler's own MCP server serves.

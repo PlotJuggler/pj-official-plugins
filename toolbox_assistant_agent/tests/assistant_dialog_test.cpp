@@ -125,6 +125,39 @@ TEST(AssistantDialogUi, TranscriptOptsIntoMarkdownWithoutRequiringANewWidgetClas
   EXPECT_NE(ui.find(R"(<property name="pjFollowTail" stdset="0"><bool>true</bool></property>)"), std::string::npos);
 }
 
+// The notice is its own row, not inside headerBand (the host hides headerBand), and it carries the link.
+TEST(AssistantDialogUi, DeprecationNoticeIsVisibleOutsideTheHeaderBandAndLinksToTheSetupGuide) {
+  AssistantDialog dialog;
+  const std::string ui = dialog.ui_content();
+  const size_t notice = ui.find(R"(<widget class="QLabel" name="deprecationNotice">)");
+  const size_t body = ui.find(R"(name="bodyRow")");
+  const size_t header = ui.rfind("<widget", ui.find(R"(name="headerBand")"));
+  ASSERT_NE(notice, std::string::npos);
+  ASSERT_NE(body, std::string::npos);
+  ASSERT_NE(header, std::string::npos);
+  ASSERT_LT(header, notice);
+  ASSERT_LT(notice, body);
+  // Every widget opened since headerBand is closed before the notice: it is not nested in the band.
+  auto count = [&](const std::string& needle) {
+    size_t n = 0;
+    for (size_t pos = ui.find(needle, header); pos != std::string::npos && pos < notice;
+         pos = ui.find(needle, pos + 1)) {
+      ++n;
+    }
+    return n;
+  };
+  EXPECT_EQ(count("<widget "), count("</widget>"));
+
+  const std::string label = ui.substr(notice, body - notice);
+  EXPECT_NE(
+      label.find("We suggest using PlotJuggler from Claude Code or Codex through its MCP server instead."),
+      std::string::npos);
+  EXPECT_NE(label.find("https://github.com/PlotJuggler/plotjuggler-agent#install"), std::string::npos);
+  EXPECT_NE(label.find(R"(<property name="openExternalLinks"><bool>true</bool></property>)"), std::string::npos);
+  EXPECT_NE(label.find(R"(<property name="wordWrap"><bool>true</bool></property>)"), std::string::npos);
+  EXPECT_EQ(label.find(R"(name="visible")"), std::string::npos);
+}
+
 // Mirrors ensureWorkDir's own resolution (harness_workdir.cpp): the SDK's
 // per-user data dir plus the fixed "pj-assistant-cli" leaf. Asking the SDK
 // rather than spelling the layout out keeps this correct on all three

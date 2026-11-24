@@ -3,6 +3,14 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_assistant_agent/`.
 
+## Upcoming
+
+### Changed
+- A notice at the top of the panel, and the start of the plugin's description, suggest using PlotJuggler from
+  Claude Code or Codex through its MCP server instead
+  ([plotjuggler-agent](https://github.com/PlotJuggler/plotjuggler-agent#install)). The notice takes the theme's
+  warning colour where PlotJuggler styles `pjStatus` labels, and is bold default text elsewhere.
+
 ## [0.5.2] - 2026-11-19
 
 ### Changed
