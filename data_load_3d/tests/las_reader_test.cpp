@@ -143,9 +143,11 @@ TEST(LasReader, Format0LegacyFields) {
   EXPECT_EQ(c.width, 1u);
   EXPECT_EQ(c.height, 1u);
   EXPECT_EQ(r->point_format, 0u);
-  EXPECT_FLOAT_EQ(get<float>(c, 0, "x"), 20.0f);
-  EXPECT_FLOAT_EQ(get<float>(c, 0, "y"), 0.0f);
-  EXPECT_FLOAT_EQ(get<float>(c, 0, "z"), 33.0f);
+  // 0.01 has no exact binary form, and whether int * scale + offset is fused into
+  // one FMA depends on the compiler (clang on arm64 fuses it by default).
+  EXPECT_NEAR(get<float>(c, 0, "x"), 20.0f, 1e-5f);
+  EXPECT_NEAR(get<float>(c, 0, "y"), 0.0f, 1e-5f);
+  EXPECT_NEAR(get<float>(c, 0, "z"), 33.0f, 1e-5f);
   EXPECT_EQ(get<uint16_t>(c, 0, "intensity"), 512u);
   EXPECT_EQ(get<uint8_t>(c, 0, "return_number"), 2u);
   EXPECT_EQ(get<uint8_t>(c, 0, "number_of_returns"), 3u);
