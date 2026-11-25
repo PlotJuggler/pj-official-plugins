@@ -16,6 +16,7 @@ target_include_directories(pj_lzf_c PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/contrib/l
 # --- Reader library (pure C++, no host/Qt deps) ---
 add_library(pj_3d_readers STATIC
   cloud_common.cpp
+  las_reader.cpp
   pcd_reader.cpp
   ply_reader.cpp
 )
@@ -60,6 +61,13 @@ target_compile_options(ply_reader_test PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(ply_reader_test PRIVATE
   pj_3d_readers GTest::gtest_main ${CMAKE_DL_LIBS})
 add_test(NAME ply_reader_test COMMAND ply_reader_test)
+
+add_executable(las_reader_test tests/las_reader_test.cpp)
+target_compile_features(las_reader_test PRIVATE cxx_std_20)
+target_compile_options(las_reader_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(las_reader_test PRIVATE
+  pj_3d_readers GTest::gtest_main ${CMAKE_DL_LIBS})
+add_test(NAME las_reader_test COMMAND las_reader_test)
 
 add_executable(loader_helpers_test tests/loader_helpers_test.cpp)
 target_compile_features(loader_helpers_test PRIVATE cxx_std_20)

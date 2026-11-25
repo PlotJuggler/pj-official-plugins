@@ -5,7 +5,7 @@ implementations in `${PJ3_SOURCE_DIR}/plotjuggler_plugins/`, where `PJ3_SOURCE_D
 is a checkout of [PlotJuggler 3](https://github.com/facontidavide/PlotJuggler).
 
 > **New plugins (not ports, so out of scope for this gap analysis):**
-> `data_load_3d` — static PLY/PCD 3D loader. `.pcd` and vertex-only `.ply` load as
+> `data_load_3d` — static PLY/PCD/LAS 3D loader. `.pcd`, `.las` and vertex-only `.ply` load as
 > an `sdk::PointCloud`; `.ply` with faces loads as an `sdk::Mesh3D`; one snapshot
 > at t=0 plus a scalar summary. See `data_load_3d/README.md`.
 

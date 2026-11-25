@@ -20,7 +20,7 @@
 | [![data_load_ulog](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_ulog.json)](data_load_ulog/) | DataSource | ULog file loading |
 | [![data_load_lerobot](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_lerobot.json)](data_load_lerobot/) | DataSource | LeRobot v2.1 dataset loading |
 | [![data_load_mp4](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mp4.json)](data_load_mp4/) | DataSource | MP4 video loading |
-| [![data_load_3d](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_3d.json)](data_load_3d/) | DataSource | PLY/PCD point cloud & mesh loading |
+| [![data_load_3d](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_3d.json)](data_load_3d/) | DataSource | PLY/PCD/LAS point cloud & mesh loading |
 | [![data_load_mf4](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_mf4.json)](data_load_mf4/) | DataSource | ASAM MF4/MDF loading (+ DBC CAN decode) |
 | [![data_load_blf](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlotJuggler/pj-official-plugins/badges/data_load_blf.json)](data_load_blf/) | DataSource | Vector BLF CAN-log loading (DBC decode) |
 | [data_load_candump](data_load_candump/) | DataSource | Linux SocketCAN `candump` log/screen capture loading (DBC or ARUS-CSV decode) |
