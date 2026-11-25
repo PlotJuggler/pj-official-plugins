@@ -1,8 +1,8 @@
 {
   "id": "pointcloud-3d-loader",
-  "name": "3D Loader (PLY/PCD)",
+  "name": "3D Loader (PLY/PCD/LAS)",
   "version": "1.1.0",
-  "description": "Open static 3D files: .pcd files and vertex-only .ply files load as point clouds, .ply files with faces load as meshes. Each file is a single snapshot, not a time series.",
+  "description": "Open static 3D files: .pcd files, LiDAR .las files and vertex-only .ply files load as point clouds, .ply files with faces load as meshes. Each file is a single snapshot, not a time series.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
   "website": "https://github.com/PlotJuggler/pj-official-plugins",
@@ -10,8 +10,8 @@
   "license": "MIT",
   "icon_url": "",
   "category": "data_loader",
-  "tags": ["ply", "pcd", "pointcloud", "mesh", "3d", "loader"],
-  "file_extensions": [".ply", ".pcd"],
+  "tags": ["ply", "pcd", "las", "lidar", "pointcloud", "mesh", "3d", "loader"],
+  "file_extensions": [".ply", ".pcd", ".las"],
   "min_sdk_required": "0.28.0",
   "min_plotjuggler_version": "4.0.0"
 }

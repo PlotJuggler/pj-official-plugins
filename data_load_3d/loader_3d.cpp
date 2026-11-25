@@ -14,6 +14,7 @@
 
 #include "cloud_common.hpp"
 #include "data_load_3d_manifest.hpp"
+#include "las_reader.hpp"
 #include "loader_helpers.hpp"
 #include "pcd_reader.hpp"
 #include "ply_reader.hpp"
@@ -76,6 +77,13 @@ class Load3dSource : public PJ::FileSourceBase {
       }
       return emitMesh(stem, *r->mesh, r->num_faces);
     }
+    if (ext == ".las") {
+      auto r = pj3d::readLas(bytes, stem);
+      if (!r) {
+        return PJ::unexpected(r.error());
+      }
+      return emitCloud(stem, r->cloud, r->origin);
+    }
     return PJ::unexpected("unsupported extension for 3D loader: " + ext);
   }
 
@@ -96,7 +104,11 @@ class Load3dSource : public PJ::FileSourceBase {
     return owh->pushOwned(*handle, PJ::Timestamp{0}, payload);
   }
 
-  PJ::Status emitCloud(const std::string& stem, const PJ::sdk::PointCloud& cloud) {
+  // `origin` is what the reader subtracted from the file coordinates (LAS only);
+  // it is published in the summary so the user can recover them.
+  PJ::Status emitCloud(
+      const std::string& stem, const PJ::sdk::PointCloud& cloud,
+      const std::optional<std::array<double, 3>>& origin = std::nullopt) {
     const uint64_t num_points = static_cast<uint64_t>(cloud.width) * static_cast<uint64_t>(cloud.height);
     auto payload = PJ::serializePointCloud(cloud);
     // Note: object push and summary emit are not transactional; on a summary
@@ -108,7 +120,7 @@ class Load3dSource : public PJ::FileSourceBase {
       return st;
     }
     auto centroid = pj3d::computeCentroid(cloud);
-    return emitSummary(stem, num_points, /*num_faces=*/0, centroid);
+    return emitSummary(stem, num_points, /*num_faces=*/0, centroid, origin);
   }
 
   PJ::Status emitMesh(const std::string& stem, const PJ::sdk::Mesh3D& mesh, uint64_t num_faces) {
@@ -118,12 +130,12 @@ class Load3dSource : public PJ::FileSourceBase {
         !st) {
       return st;
     }
-    return emitSummary(stem, /*num_points=*/0, num_faces, std::nullopt);
+    return emitSummary(stem, /*num_points=*/0, num_faces, std::nullopt, std::nullopt);
   }
 
   PJ::Status emitSummary(
       const std::string& stem, uint64_t num_points, uint64_t num_faces,
-      const std::optional<std::array<double, 3>>& centroid) {
+      const std::optional<std::array<double, 3>>& centroid, const std::optional<std::array<double, 3>>& origin) {
     auto topic = writeHost().ensureTopic(stem + "/summary");
     if (!topic) {
       return PJ::unexpected(topic.error());
@@ -141,6 +153,11 @@ class Load3dSource : public PJ::FileSourceBase {
       fields.push_back({"centroid/x", PJ::sdk::ValueRef{(*centroid)[0]}});
       fields.push_back({"centroid/y", PJ::sdk::ValueRef{(*centroid)[1]}});
       fields.push_back({"centroid/z", PJ::sdk::ValueRef{(*centroid)[2]}});
+    }
+    if (origin.has_value()) {
+      fields.push_back({"origin/x", PJ::sdk::ValueRef{(*origin)[0]}});
+      fields.push_back({"origin/y", PJ::sdk::ValueRef{(*origin)[1]}});
+      fields.push_back({"origin/z", PJ::sdk::ValueRef{(*origin)[2]}});
     }
     return writeHost().appendRecord(
         *topic, PJ::Timestamp{0}, PJ::Span<const PJ::sdk::NamedFieldValue>(fields.data(), fields.size()));
