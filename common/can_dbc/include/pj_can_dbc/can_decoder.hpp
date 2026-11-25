@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <pj_base/expected.hpp>
+#include <pj_can_dbc/j1939.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -63,6 +64,21 @@ class CanDecoder {
   /// Load and accumulate a DBC database from an in-memory string.
   PJ::Status loadDbcString(const std::string& dbc_text);
 
+  /// How frames find their message; kRaw (the default) matches the whole CAN
+  /// id. kJ1939 and kNmea2000 match an extended frame by its PGN (see
+  /// j1939.hpp), so one DBC message decodes that PGN from any source address
+  /// and priority; when two DBC messages share a PGN, the first loaded wins.
+  /// Standard (11-bit) frames still match by id. Set it any time; it applies
+  /// to the next lookup.
+  void setProtocol(CanProtocol protocol);
+  CanProtocol protocol() const;
+
+  /// True for an NMEA 2000 fast-packet message: protocol kNmea2000, an
+  /// extended frame, and a matched DBC message longer than 8 bytes. Its frames
+  /// must go through a FastPacketAssembler, and the assembled payload through
+  /// decode() with `variable_length` set.
+  bool isFastPacket(std::uint32_t can_id, bool extended) const;
+
   /// Number of message definitions currently loaded.
   std::size_t messageCount() const;
 
@@ -93,8 +109,15 @@ class CanDecoder {
   /// values above 2^53 lose precision (double). A standard and an extended
   /// message that share a numeric id in an ambiguous DBC (extended flag not
   /// set) cannot be told apart.
+  ///
+  /// `variable_length` is for a payload whose length varies per message (an
+  /// NMEA 2000 fast packet, where repeated fields make the DBC length only an
+  /// upper bound): it may be shorter than the message, and the signals that do
+  /// not fit are left out of the result instead of failing the frame. It is
+  /// kUndecodable only when no signal fits.
   std::vector<DecodedSignal> decode(
-      std::uint32_t can_id, bool extended, const std::vector<std::uint8_t>& data, DecodeResult& result) const;
+      std::uint32_t can_id, bool extended, const std::vector<std::uint8_t>& data, DecodeResult& result,
+      bool variable_length = false) const;
 
  private:
   struct Impl;

@@ -23,7 +23,7 @@ CPMAddPackage(
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/dbc_parser.cmake)
 pj_add_dbc_parser_library(dbc ${dbc_parser_cpp_SOURCE_DIR} ${fast_float_SOURCE_DIR})
 
-add_library(pj_can_dbc STATIC can_decoder.cpp can_topic.cpp dictionary_paths.cpp signal_row.cpp)
+add_library(pj_can_dbc STATIC can_decoder.cpp can_topic.cpp dictionary_paths.cpp fast_packet.cpp signal_row.cpp)
 # Static lib goes inside SHARED plugin .so files -> must be position-independent.
 set_target_properties(pj_can_dbc PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(pj_can_dbc PUBLIC cxx_std_20)
@@ -37,7 +37,7 @@ target_link_libraries(pj_can_dbc PUBLIC plotjuggler_sdk::base PRIVATE dbc)
 # GTest-guarded so this common target can be configured unconditionally.
 find_package(GTest QUIET CONFIG)
 if(TARGET GTest::gtest_main)
-  add_executable(pj_can_dbc_test tests/can_decoder_test.cpp tests/dictionary_paths_test.cpp)
+  add_executable(pj_can_dbc_test tests/can_decoder_test.cpp tests/dictionary_paths_test.cpp tests/j1939_test.cpp)
   target_compile_features(pj_can_dbc_test PRIVATE cxx_std_20)
   # field_test_helpers.hpp: shared findField() test helper, also used by
   # data_load_blf/data_load_candump's tests.

@@ -10,6 +10,7 @@ add_library(pj_can_dbc STATIC
   "${CMAKE_CURRENT_LIST_DIR}/can_decoder.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/can_topic.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/dictionary_paths.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/fast_packet.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/signal_row.cpp")
 target_compile_features(pj_can_dbc PUBLIC cxx_std_20)
 target_include_directories(pj_can_dbc PUBLIC "${CMAKE_CURRENT_LIST_DIR}/include")

@@ -1,4 +1,5 @@
 #include <pj_can_dbc/can_topic.hpp>
+#include <pj_can_dbc/j1939.hpp>
 
 namespace pj_can_dbc {
 
@@ -27,6 +28,23 @@ std::string canTopicName(std::string_view bus, const std::string& message_name, 
     out += std::string(bus) + "/";
   }
   out += message_name.empty() ? hexId(can_id) : message_name;
+  return out;
+}
+
+namespace {
+
+std::string hexByte(std::uint8_t value) {
+  static const char* const kHex = "0123456789ABCDEF";
+  return {'0', 'x', kHex[value >> 4], kHex[value & 0xFu]};
+}
+
+}  // namespace
+
+std::string pgnTopicName(std::string_view bus, const std::string& message_name, std::uint32_t can_id) {
+  std::string out = canTopicName(bus, message_name, can_id) + "/" + hexByte(sourceAddress(can_id));
+  if (isPdu1(can_id)) {
+    out += "/" + hexByte(pduSpecific(can_id));
+  }
   return out;
 }
 
