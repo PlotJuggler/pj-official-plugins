@@ -142,7 +142,6 @@ TEST(LasReader, Format0LegacyFields) {
   EXPECT_EQ(c.frame_id, "scan");
   EXPECT_EQ(c.width, 1u);
   EXPECT_EQ(c.height, 1u);
-  EXPECT_EQ(r->point_format, 0u);
   // 0.01 has no exact binary form, and whether int * scale + offset is fused into
   // one FMA depends on the compiler (clang on arm64 fuses it by default).
   EXPECT_NEAR(get<float>(c, 0, "x"), 20.0f, 1e-5f);
@@ -206,7 +205,6 @@ TEST(LasReader, Format8Las14) {
   ASSERT_TRUE(r) << (r ? "" : r.error());
   const auto& c = r->cloud;
   EXPECT_EQ(c.width, 2u);
-  EXPECT_EQ(r->version_minor, 4u);
   EXPECT_FLOAT_EQ(get<float>(c, 1, "z"), 7.0f);
   EXPECT_EQ(get<uint8_t>(c, 1, "return_number"), 9u);
   EXPECT_EQ(get<uint8_t>(c, 1, "number_of_returns"), 12u);
@@ -228,11 +226,47 @@ TEST(LasReader, LargeCoordinatesAreRecentred) {
   auto r = pj3d::readLas(asSpan(bytes), "c");
   ASSERT_TRUE(r) << (r ? "" : r.error());
   EXPECT_DOUBLE_EQ(r->origin[0], 500123.0);
-  EXPECT_DOUBLE_EQ(r->origin[1], 4123456.0);
-  EXPECT_DOUBLE_EQ(r->origin[2], 0.0);  // z stays below the threshold
+  EXPECT_DOUBLE_EQ(r->origin[1], 4123457.0);  // floor of the midpoint 4123457.28
+  EXPECT_DOUBLE_EQ(r->origin[2], 0.0);        // z stays below the threshold
   EXPECT_NEAR(get<float>(r->cloud, 0, "x"), 0.45f, 1e-4f);
-  EXPECT_NEAR(get<float>(r->cloud, 1, "y"), 1.78f, 1e-4f);
+  EXPECT_NEAR(get<float>(r->cloud, 1, "y"), 0.78f, 1e-4f);
   EXPECT_NEAR(get<float>(r->cloud, 1, "z"), 13.34f, 1e-4f);
+}
+
+TEST(LasReader, Las14WithOnlyTheLegacyCountSet) {
+  // Some writers bump a 1.2 header to 1.4 without filling the 64-bit count.
+  auto bytes = makeLas(4, 1, {TestPoint{}, TestPoint{}}, {1.0, 1.0, 1.0}, {0.0, 0.0, 0.0});
+  putAt<uint32_t>(bytes, 107, 2u);
+  putAt<uint64_t>(bytes, 247, 0u);
+  auto r = pj3d::readLas(asSpan(bytes), "c");
+  ASSERT_TRUE(r) << (r ? "" : r.error());
+  EXPECT_EQ(r->cloud.width, 2u);
+}
+
+TEST(LasReader, AxisStraddlingZeroIsCentredOnItsMidpoint) {
+  TestPoint a{};
+  a.xyz = {-600000, 0, 0};
+  TestPoint b{};
+  b.xyz = {600000, 0, 0};
+  auto bytes = makeLas(2, 0, {a, b}, {1.0, 1.0, 1.0}, {0.0, 0.0, 0.0});
+  auto r = pj3d::readLas(asSpan(bytes), "c");
+  ASSERT_TRUE(r) << (r ? "" : r.error());
+  // Shifting by the minimum would store 0..1.2e6, doubling the float32 step.
+  EXPECT_DOUBLE_EQ(r->origin[0], 0.0);
+  EXPECT_FLOAT_EQ(get<float>(r->cloud, 1, "x"), 600000.0f);
+}
+
+TEST(LasReader, RejectsCoordinatesOutsideFloat32) {
+  TestPoint a{};
+  a.xyz = {1, 2, 3};
+  TestPoint b{};
+  b.xyz = {2147483647, 5, 6};
+  auto bytes = makeLas(2, 0, {a, b}, {1e300, 1.0, 1.0}, {0.0, 0.0, 0.0});
+  auto r = pj3d::readLas(asSpan(bytes), "c");
+  ASSERT_FALSE(r);
+  EXPECT_NE(r.error().find("coordinate"), std::string::npos) << r.error();
+  bytes = makeLas(2, 0, {a, b}, {1e30, 1.0, 1.0}, {0.0, 0.0, 0.0});
+  EXPECT_FALSE(pj3d::readLas(asSpan(bytes), "c"));
 }
 
 TEST(LasReader, EmptyCloud) {

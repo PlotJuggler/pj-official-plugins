@@ -82,6 +82,7 @@ class Load3dSource : public PJ::FileSourceBase {
       if (!r) {
         return PJ::unexpected(r.error());
       }
+      std::vector<uint8_t>().swap(raw);  // the cloud owns a copy; LAS files reach GBs
       return emitCloud(stem, r->cloud, r->origin);
     }
     return PJ::unexpected("unsupported extension for 3D loader: " + ext);

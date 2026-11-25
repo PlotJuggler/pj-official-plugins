@@ -53,10 +53,11 @@ For a file `foo.pcd` / `foo.ply` / `foo.las` the loader emits:
 ### LAS re-centring
 
 The renderer works in float32, whose step at a UTM-sized coordinate (1e6-1e7 m)
-is 0.1-1 m. Each axis whose values exceed `kLasShiftThreshold` (`las_reader.hpp`)
-is shifted by the floor of its minimum, so the stored float32 values stay small;
-the other axes keep an origin of 0. Against laspy-written files with UTM
-coordinates at 1 mm scale, the round-trip error was 15 µm.
+is 0.1-1 m. Each axis whose values exceed 1e4 in magnitude is shifted by the
+floor of its midpoint, so the stored float32 values stay within half the cloud's
+extent; the other axes keep an origin of 0. Each file is re-centred on its own,
+so adjacent tiles of one survey loaded together overlap. A header scale or offset
+that puts a coordinate outside the float32 range is refused.
 
 ## Limitations
 

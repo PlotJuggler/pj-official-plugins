@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <vector>
 
 #include "cloud_common.hpp"
@@ -26,6 +27,11 @@ constexpr size_t kOffOffset = 155;
 constexpr size_t kOffPointCount64 = 247;  // LAS 1.4 only
 constexpr size_t kMinHeaderSize = 227;    // LAS 1.0-1.2
 constexpr size_t kHeaderSize14 = 375;
+
+// An axis whose coordinates exceed this magnitude (in file units) is re-centred
+// before narrowing to float32: at 1e4 a float32 step is ~1 mm, while georeferenced
+// LAS coordinates (UTM, state plane) reach 1e6-1e7, where it is 0.1-1 m.
+constexpr double kLasShiftThreshold = 1e4;
 
 // Point format id bits 7/6 mark LASzip-compressed records (laszip's convention).
 constexpr uint8_t kLazBits = 0xC0;
@@ -91,10 +97,10 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
 
   LasResult result;
   const uint8_t version_major = file[kOffVersionMajor];
-  result.version_minor = file[kOffVersionMinor];
-  if (version_major != 1 || result.version_minor > 4) {
+  const uint8_t version_minor = file[kOffVersionMinor];
+  if (version_major != 1 || version_minor > 4) {
     return PJ::unexpected(
-        "unsupported LAS version " + std::to_string(version_major) + "." + std::to_string(result.version_minor));
+        "unsupported LAS version " + std::to_string(version_major) + "." + std::to_string(version_minor));
   }
 
   const size_t header_size = readLE<uint16_t>(file + kOffHeaderSize);
@@ -105,7 +111,6 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
   if ((fmt & kLazBits) != 0) {
     return PJ::unexpected(std::string("LAZ-compressed point data is not supported; decompress to .las first"));
   }
-  result.point_format = fmt;
   if (fmt > kMaxPointFormat) {
     return PJ::unexpected("unsupported LAS point data record format " + std::to_string(fmt));
   }
@@ -118,9 +123,12 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
     return PJ::unexpected(std::string("malformed LAS header (header size or point data offset out of range)"));
   }
 
+  // Some writers bump a 1.2 header to 1.4 and leave the 64-bit count at 0.
   uint64_t num_points = readLE<uint32_t>(file + kOffLegacyPointCount);
-  if (result.version_minor >= 4 && header_size >= kHeaderSize14) {
-    num_points = readLE<uint64_t>(file + kOffPointCount64);
+  if (version_minor >= 4 && header_size >= kHeaderSize14) {
+    if (const uint64_t count64 = readLE<uint64_t>(file + kOffPointCount64); count64 != 0) {
+      num_points = count64;
+    }
   }
 
   std::array<double, 3> scale{};
@@ -147,35 +155,6 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
   const bool has_nir = hasNir(fmt);
   const size_t gps_src = gpsOffset(fmt);
   const size_t rgb_src = rgbOffset(fmt);
-
-  // First pass: raw coordinate range (for the float32 re-centring) and the RGB depth.
-  std::array<int32_t, 3> raw_lo;
-  std::array<int32_t, 3> raw_hi;
-  raw_lo.fill(std::numeric_limits<int32_t>::max());
-  raw_hi.fill(std::numeric_limits<int32_t>::min());
-  uint16_t max_rgb = 0;
-  for (uint64_t p = 0; p < num_points; ++p) {
-    const uint8_t* rec = records + p * record_length;
-    for (size_t a = 0; a < 3; ++a) {
-      const int32_t v = readLE<int32_t>(rec + 4 * a);
-      raw_lo[a] = std::min(raw_lo[a], v);
-      raw_hi[a] = std::max(raw_hi[a], v);
-    }
-    if (has_rgb) {
-      const uint8_t* rgb = rec + rgb_src;
-      max_rgb = std::max({max_rgb, readLE<uint16_t>(rgb), readLE<uint16_t>(rgb + 2), readLE<uint16_t>(rgb + 4)});
-    }
-  }
-  for (size_t a = 0; a < 3 && num_points > 0; ++a) {
-    const double lo = std::min(world(raw_lo[a], a), world(raw_hi[a], a));  // a negative scale swaps the ends
-    const double hi = std::max(world(raw_lo[a], a), world(raw_hi[a], a));
-    if (std::max(std::abs(lo), std::abs(hi)) > kLasShiftThreshold) {
-      result.origin[a] = std::floor(lo);
-    }
-  }
-  // The spec stores 16-bit colour, but many writers store 8-bit values in those
-  // fields; any value above 255 means the file uses the full 16-bit range.
-  const int rgb_shift = max_rgb > 255 ? 8 : 0;
 
   std::vector<ParsedField> parsed = {
       {"x", Datatype::kFloat32, 1},
@@ -214,6 +193,40 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
     return PJ::unexpected(std::string("point cloud too large"));
   }
 
+  // First pass: raw coordinate range (for the float32 re-centring) and the RGB depth.
+  std::array<int32_t, 3> raw_lo;
+  std::array<int32_t, 3> raw_hi;
+  raw_lo.fill(std::numeric_limits<int32_t>::max());
+  raw_hi.fill(std::numeric_limits<int32_t>::min());
+  uint16_t max_rgb = 0;
+  for (uint64_t p = 0; p < num_points; ++p) {
+    const uint8_t* rec = records + p * record_length;
+    for (size_t a = 0; a < 3; ++a) {
+      const int32_t v = readLE<int32_t>(rec + 4 * a);
+      raw_lo[a] = std::min(raw_lo[a], v);
+      raw_hi[a] = std::max(raw_hi[a], v);
+    }
+    if (has_rgb) {
+      const uint8_t* rgb = rec + rgb_src;
+      max_rgb = std::max({max_rgb, readLE<uint16_t>(rgb), readLE<uint16_t>(rgb + 2), readLE<uint16_t>(rgb + 4)});
+    }
+  }
+  for (size_t a = 0; a < 3 && num_points > 0; ++a) {
+    const double lo = std::min(world(raw_lo[a], a), world(raw_hi[a], a));  // a negative scale swaps the ends
+    const double hi = std::max(world(raw_lo[a], a), world(raw_hi[a], a));
+    if (std::max(std::abs(lo), std::abs(hi)) > kLasShiftThreshold) {
+      // The midpoint, not the minimum: an axis straddling zero would otherwise double its largest magnitude.
+      result.origin[a] = std::floor(std::midpoint(lo, hi));
+    }
+    const double reach = std::max(std::abs(lo - result.origin[a]), std::abs(hi - result.origin[a]));
+    if (!std::isfinite(lo) || !std::isfinite(hi) || reach > std::numeric_limits<float>::max()) {
+      return PJ::unexpected(std::string("malformed LAS header (scale/offset put coordinates outside float32)"));
+    }
+  }
+  // The spec stores 16-bit colour, but many writers store 8-bit values in those
+  // fields; any value above 255 means the file uses the full 16-bit range.
+  const int rgb_shift = max_rgb > 255 ? 8 : 0;
+
   const uint32_t off_x = field(layout, "x").offset;
   const uint32_t off_intensity = field(layout, "intensity").offset;
   const uint32_t off_return = field(layout, "return_number").offset;
@@ -235,6 +248,7 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
       put(dst, off_x + 4 * a, static_cast<float>(world(readLE<int32_t>(rec + 4 * a), a) - result.origin[a]));
     }
     put(dst, off_intensity, readLE<uint16_t>(rec + 12));
+    put(dst, off_user, rec[17]);
     const uint8_t returns_byte = rec[14];
     if (fmt < 6) {
       // Byte 14: return number bits 0-2, number of returns bits 3-5. Byte 15:
@@ -244,7 +258,6 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
       put(dst, off_class, static_cast<uint8_t>(rec[15] & 0x1F));
       put(dst, off_flags, static_cast<uint8_t>(rec[15] >> 5));
       put(dst, off_angle, static_cast<float>(readLE<int8_t>(rec + 16)));
-      put(dst, off_user, rec[17]);
       put(dst, off_source, readLE<uint16_t>(rec + 18));
     } else {
       // Byte 14: return number bits 0-3, number of returns bits 4-7. Byte 15:
@@ -254,7 +267,6 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
       put(dst, off_class, rec[16]);
       put(dst, off_flags, static_cast<uint8_t>(rec[15] & 0x0F));
       put(dst, off_angle, static_cast<float>(readLE<int16_t>(rec + 18)) * 0.006f);
-      put(dst, off_user, rec[17]);
       put(dst, off_source, readLE<uint16_t>(rec + 20));
     }
     if (has_gps) {

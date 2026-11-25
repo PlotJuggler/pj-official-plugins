@@ -10,18 +10,11 @@
 
 namespace pj3d {
 
-/// An axis whose coordinates exceed this magnitude (in file units) is re-centred
-/// before narrowing to float32: at 1e4 a float32 step is ~1 mm, while georeferenced
-/// LAS coordinates (UTM, state plane) reach 1e6-1e7, where it is 0.1-1 m.
-inline constexpr double kLasShiftThreshold = 1e4;
-
 struct LasResult {
   PJ::sdk::PointCloud cloud;
   /// Added back to the cloud's x/y/z to recover file coordinates. Per axis: 0, or
-  /// the floor of that axis' minimum when the axis exceeds kLasShiftThreshold.
+  /// the floor of the axis' midpoint when its coordinates exceed 1e4 in magnitude.
   std::array<double, 3> origin{0.0, 0.0, 0.0};
-  uint8_t version_minor = 0;
-  uint8_t point_format = 0;
 };
 
 /// Parse an uncompressed ASPRS LAS 1.0-1.4 file (point data record formats 0-10)
