@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_mf4/`.
 
+## Upcoming
+
+### Added
+- CAN FD frames (payloads longer than 8 bytes) are decoded with the DBC, including signals past byte 7. They used to be counted as "could not be decoded".
+
 ## [0.1.5] - 2026-11-09
 
 ### Changed

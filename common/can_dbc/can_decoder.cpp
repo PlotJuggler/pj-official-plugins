@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <exception>
 #include <libdbc/dbc.hpp>
 #include <libdbc/exceptions/error.hpp>
+#include <optional>
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/dictionary_paths.hpp>
 #include <sstream>
@@ -11,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace pj_can_dbc {
 
@@ -45,19 +48,27 @@ std::int64_t normalizeValueKey(std::uint32_t raw_key, bool is_signed, std::uint3
 constexpr std::uint32_t kExtendedFlag = 0x8000'0000u;
 /// Highest standard (11-bit) CAN id.
 constexpr std::uint32_t kMaxStandardId = 0x7FFu;
-/// CAN payload is at most 8 bytes; a signal must fit inside 64 bits.
+/// A signal's value must fit in 64 bits.
 constexpr std::uint32_t kMaxSignalBits = 64;
+/// Classic CAN payload size: frames up to this long decode through the pinned
+/// dbc_parser_cpp, longer ones (CAN FD, payloads reassembled from several
+/// frames) through extractRawBits() -- the parser refuses them.
+constexpr std::size_t kClassicPayloadBytes = 8;
 
-/// A signal the pinned dbc_parser_cpp can decode without an out-of-range shift:
-/// size in [1, 64] and start bit inside the 64-bit payload. A malformed DBC
-/// with a wider signal would shift a 64-bit value by >= 64 (undefined).
-bool signalLayoutInRange(const Libdbc::Signal& sig) {
-  return sig.size >= 1 && sig.size <= kMaxSignalBits && sig.start_bit < kMaxSignalBits;
+/// A signal both decode paths handle without an out-of-range shift: size in
+/// [1, 64] and start bit inside the message -- inside the 64-bit classic
+/// payload for a message of up to 8 bytes (the parser shifts a 64-bit value by
+/// the start bit, undefined at >= 64), inside its declared length for a longer
+/// one (only frames at least that long reach decode(), so it never meets the
+/// parser).
+bool signalLayoutInRange(const Libdbc::Signal& sig, std::uint32_t message_bits) {
+  return sig.size >= 1 && sig.size <= kMaxSignalBits && sig.start_bit < std::max(kMaxSignalBits, message_bits);
 }
 
 bool messageLayoutInRange(const Libdbc::Message& msg) {
+  const std::uint32_t message_bits = std::uint32_t{msg.size()} * 8u;
   for (const auto& sig : msg.get_signals()) {
-    if (!signalLayoutInRange(sig)) {
+    if (!signalLayoutInRange(sig, message_bits)) {
       return false;
     }
   }
@@ -87,7 +98,63 @@ struct SignalMeta {
   double offset = 0.0;
   std::vector<std::pair<std::int64_t, std::string>> labels;
   std::string label_name;
+  // Bit layout, read by extractRawBits()/physicalValue() for payloads longer than 8 bytes.
+  std::uint32_t start_bit = 0;
+  std::uint32_t size = 0;
+  bool is_bigendian = false;
+  bool is_signed = false;
 };
+
+namespace {
+
+/// The raw bits of one signal of a payload longer than 8 bytes, numbered as
+/// dbc_parser_cpp numbers them in a classic frame: Intel (`@1`) counts up from
+/// bit 0 = the LSB of byte 0; Motorola (`@0`) names the signal's MSB and runs
+/// in big-endian ("sawtooth") order -- the same python-can conversion the
+/// parser uses, extended past byte 7. nullopt when the signal reaches past the
+/// payload.
+std::optional<std::uint64_t> extractRawBits(const std::vector<std::uint8_t>& data, const SignalMeta& sig) {
+  const std::size_t payload_bits = data.size() * 8;
+  const auto bitAt = [&data](std::size_t byte, std::size_t bit) -> std::uint64_t {
+    return (static_cast<std::uint64_t>(data[byte]) >> bit) & 1u;
+  };
+  std::uint64_t value = 0;
+  if (sig.is_bigendian) {
+    // Position of the MSB counting from the MSB of byte 0; the signal runs on from there.
+    const std::size_t first = 8 * (sig.start_bit / 8) + (7 - sig.start_bit % 8);
+    if (first + sig.size > payload_bits) {
+      return std::nullopt;
+    }
+    for (std::size_t pos = first; pos < first + sig.size; ++pos) {
+      value = (value << 1) | bitAt(pos / 8, 7 - pos % 8);
+    }
+  } else {
+    if (std::size_t{sig.start_bit} + sig.size > payload_bits) {
+      return std::nullopt;
+    }
+    for (std::size_t pos = std::size_t{sig.start_bit} + sig.size; pos-- > sig.start_bit;) {
+      value = (value << 1) | bitAt(pos / 8, pos % 8);
+    }
+  }
+  return value;
+}
+
+/// Physical value of a signal's raw bits: two's complement for a signed signal
+/// wider than 1 bit (a 1-bit signed signal stays 0/1, as in dbc_parser_cpp),
+/// then `raw * factor + offset`.
+double physicalValue(std::uint64_t raw, const SignalMeta& sig) {
+  if (!sig.is_signed || sig.size < 2) {
+    return static_cast<double>(raw) * sig.factor + sig.offset;
+  }
+  std::int64_t value = static_cast<std::int64_t>(raw);
+  if (sig.size < 64) {
+    const std::int64_t sign_bit = std::int64_t{1} << (sig.size - 1);
+    value = (value ^ sign_bit) - sign_bit;
+  }
+  return static_cast<double>(value) * sig.factor + sig.offset;
+}
+
+}  // namespace
 
 /// Builds `SignalMeta::labels` from a signal's raw `VAL_` table: normalizes
 /// each key (see normalizeValueKey), sorts by key, and drops a duplicate
@@ -159,7 +226,18 @@ struct CanDecoder::Impl {
       }
       std::vector<SignalMeta> meta;
       for (const auto& sig : msg.get_signals()) {
-        meta.push_back(SignalMeta{sig.name, sig.unit, sig.factor, sig.offset, buildLabels(sig), {}});
+        meta.push_back(
+            SignalMeta{
+                .name = sig.name,
+                .unit = sig.unit,
+                .factor = sig.factor,
+                .offset = sig.offset,
+                .labels = buildLabels(sig),
+                .label_name = {},
+                .start_bit = sig.start_bit,
+                .size = sig.size,
+                .is_bigendian = sig.is_bigendian,
+                .is_signed = sig.is_signed});
       }
       assignLabelNames(meta);
       id_to_index[msg.id()] = messages.size();
@@ -264,13 +342,24 @@ std::vector<DecodedSignal> CanDecoder::decode(
     return out;  // matched, but the frame is truncated -> cannot decode
   }
 
+  const auto& signals = entry->signals;  // cached name/unit/labels/layout, no per-frame copy
   std::vector<double> values;
-  if (msg.parse_signals(data, values) != Libdbc::Message::ParseSignalsStatus::Success) {
-    return out;  // matched but undecodable (e.g. CAN FD payload > 8 bytes)
+  if (data.size() <= kClassicPayloadBytes) {
+    if (msg.parse_signals(data, values) != Libdbc::Message::ParseSignalsStatus::Success) {
+      return out;  // matched but undecodable
+    }
+  } else {
+    values.reserve(signals.size());
+    for (const SignalMeta& meta : signals) {
+      const auto raw = extractRawBits(data, meta);
+      if (!raw) {
+        return out;  // matched, but a signal reaches past the payload
+      }
+      values.push_back(physicalValue(*raw, meta));
+    }
   }
   result = DecodeResult::kDecoded;
 
-  const auto& signals = entry->signals;  // cached name/unit/labels, no per-frame copy
   const std::size_t count = signals.size() < values.size() ? signals.size() : values.size();
   out.reserve(count);
   for (std::size_t k = 0; k < count; ++k) {

@@ -241,8 +241,8 @@ class Mf4Source : public PJ::FileSourceBase {
       summary += "; " + std::to_string(unmatched_frames) + " CAN frames had no DBC match";
     }
     if (undecodable_frames > 0) {
-      summary += "; " + std::to_string(undecodable_frames) +
-                 " matched CAN frame(s) could not be decoded (truncated or CAN FD payload)";
+      summary +=
+          "; " + std::to_string(undecodable_frames) + " matched CAN frame(s) could not be decoded (truncated frame)";
     }
     if (skipped_no_master > 0) {
       summary += "; " + std::to_string(skipped_no_master) + " group(s) skipped (no master channel)";

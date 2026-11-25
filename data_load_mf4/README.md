@@ -21,10 +21,11 @@ dependencies.
   see `dbc_paths`). One topic per CAN message, namespaced by the frame's bus
   channel (`CAN/ch<N>/<message>`, or `CAN/<message>` when the file records no
   bus channel), one field per signal. Standard and extended (29-bit / J1939)
-  frames are disambiguated. Frames that match a message id but cannot be decoded
-  (truncated, or a CAN FD payload > 8 bytes) are counted and reported, not
-  silently dropped. A signal decoded from a DBC `VAL_` value table also gets
-  a **`<signal>_label`** text field (decoded label, or the raw value as text
+  frames are disambiguated. CAN FD frames decode like classic ones, including
+  signals past byte 7. Frames that match a message id but cannot be decoded
+  (shorter than the message, or a signal reaching past the payload) are
+  counted and reported, not silently dropped. A signal decoded from a DBC
+  `VAL_` value table also gets a **`<signal>_label`** text field (decoded label, or the raw value as text
   when unmatched) — see `common/can_dbc`'s `signal_row.hpp` for the full
   convention. It is `<signal>_label_2` (then `_3`, ...) when the message
   already has a signal named `<signal>_label`. Distinct from MDF's own native

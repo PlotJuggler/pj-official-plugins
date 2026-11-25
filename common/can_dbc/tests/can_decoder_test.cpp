@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <field_test_helpers.hpp>
+#include <iterator>
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
@@ -194,14 +196,168 @@ TEST(CanDecoder, TruncatedFrameIsUndecodable) {
   EXPECT_TRUE(sigs.empty());
 }
 
-TEST(CanDecoder, OversizedFdPayloadIsUndecodable) {
+TEST(CanDecoder, LongerFrameOnClassicMessageDecodes) {
   CanDecoder dec;
   ASSERT_TRUE(dec.loadDbcString(kDbc).has_value());
-  // A CAN FD frame (payload > 8 bytes) on a known id: the pinned decoder cannot
-  // parse it, and the caller must see kUndecodable, not a silent empty result.
-  const std::vector<std::uint8_t> data(12, 0);
+  // A 12-byte CAN FD frame on the 8-byte EngineData: its signals lie in the
+  // first 8 bytes and decode as from a classic frame; the extra bytes are ignored.
+  const std::vector<std::uint8_t> data{0xE8, 0x03, 0xB8, 0x0B, 0xFF, 0, 0, 0, 0xAA, 0xBB, 0xCC, 0xDD};
   DecodeResult result = DecodeResult::kNoMatch;
   const auto sigs = dec.decode(256, false, data, result);
+  EXPECT_EQ(result, DecodeResult::kDecoded);
+  const auto* speed = find(sigs, "Speed");
+  const auto* rpm = find(sigs, "Rpm");
+  const auto* temp = find(sigs, "Temp");
+  ASSERT_NE(speed, nullptr);
+  ASSERT_NE(rpm, nullptr);
+  ASSERT_NE(temp, nullptr);
+  EXPECT_DOUBLE_EQ(speed->value, 100.0);
+  EXPECT_DOUBLE_EQ(rpm->value, 3000.0);
+  EXPECT_DOUBLE_EQ(temp->value, -1.0);
+}
+
+// Messages longer than 8 bytes (CAN FD, or an NMEA2000 fast-packet payload
+// reassembled from several frames). dbc_parser_cpp refuses payloads over 8
+// bytes; CanDecoder reads them itself with the same bit numbering.
+//  - LongMsg (32 bytes): signals entirely past byte 7 -- Intel, Motorola,
+//    signed, a 64-bit one starting mid-byte, and the last byte.
+//  - ShortLayout (8 bytes) / LongLayout (16 bytes): the same signals in the
+//    first 8 bytes, to compare the two decode paths bit for bit.
+//  - PastEnd (16 bytes): a signal declared past the message's last byte.
+//  - TooFar (8 bytes): a start bit past 64 in a classic message, still dropped.
+const char* const kLongDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+	BA_
+	BA_DEF_
+	BA_DEF_DEF_
+	BS_
+	CM_
+	VAL_
+	VAL_TABLE_
+
+BS_:
+
+BU_: ECU
+
+BO_ 768 LongMsg: 32 ECU
+ SG_ LeHigh : 64|16@1+ (1,0) [0|65535] "" ECU
+ SG_ BeHigh : 87|16@0+ (1,0) [0|65535] "" ECU
+ SG_ SignedHigh : 96|12@1- (0.5,0) [-1024|1023.5] "" ECU
+ SG_ Wide : 124|64@1+ (1,0) [0|0] "" ECU
+ SG_ Tail : 248|8@1+ (1,0) [0|255] "" ECU
+
+BO_ 769 ShortLayout: 8 ECU
+ SG_ A : 3|12@1+ (1,0) [0|4095] "" ECU
+ SG_ B : 13|12@0+ (1,0) [0|4095] "" ECU
+ SG_ C : 16|8@1- (1,0) [-128|127] "" ECU
+ SG_ D : 39|10@0- (0.25,-3) [0|0] "" ECU
+ SG_ E : 40|16@1- (1,0) [-32768|32767] "" ECU
+ SG_ F : 63|1@1+ (1,0) [0|1] "" ECU
+ SG_ G : 7|8@0+ (1,0) [0|255] "" ECU
+ SG_ H : 52|11@0- (2,1) [0|0] "" ECU
+
+BO_ 770 LongLayout: 16 ECU
+ SG_ A : 3|12@1+ (1,0) [0|4095] "" ECU
+ SG_ B : 13|12@0+ (1,0) [0|4095] "" ECU
+ SG_ C : 16|8@1- (1,0) [-128|127] "" ECU
+ SG_ D : 39|10@0- (0.25,-3) [0|0] "" ECU
+ SG_ E : 40|16@1- (1,0) [-32768|32767] "" ECU
+ SG_ F : 63|1@1+ (1,0) [0|1] "" ECU
+ SG_ G : 7|8@0+ (1,0) [0|255] "" ECU
+ SG_ H : 52|11@0- (2,1) [0|0] "" ECU
+
+BO_ 771 PastEnd: 16 ECU
+ SG_ Over : 120|16@1+ (1,0) [0|65535] "" ECU
+
+BO_ 772 TooFar: 8 ECU
+ SG_ Far : 64|8@1+ (1,0) [0|255] "" ECU
+)DBC";
+
+TEST(CanDecoderLongPayload, LoadsMessagesLongerThanEightBytes) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kLongDbc).has_value());
+  // Every message but TooFar: a start bit past 64 is still out of range in an 8-byte message.
+  EXPECT_EQ(dec.messageCount(), 4u);
+  DecodeResult result = DecodeResult::kDecoded;
+  EXPECT_TRUE(dec.decode(772, false, std::vector<std::uint8_t>(16, 0), result).empty());
+  EXPECT_EQ(result, DecodeResult::kNoMatch);
+}
+
+TEST(CanDecoderLongPayload, DecodesSignalsPastByteSeven) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kLongDbc).has_value());
+  std::vector<std::uint8_t> data(32, 0);
+  data[8] = 0x34;  // LeHigh = 0x1234, little-endian in bytes 8..9
+  data[9] = 0x12;
+  data[10] = 0xAB;  // BeHigh = 0xABCD, big-endian in bytes 10..11
+  data[11] = 0xCD;
+  data[12] = 0xFE;  // SignedHigh = 12-bit 0xFFE = -2 -> * 0.5 = -1.0 (byte 12 + low nibble of byte 13)
+  data[13] = 0x0F;
+  // Wide = 0x0123456789ABCDEF from bit 124: its low nibble is byte 15's high
+  // nibble, the rest (0x00123456789ABCDE) runs little-endian through bytes 16..23.
+  data[15] = 0xF0;
+  const std::uint8_t wide_rest[] = {0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12, 0x00};
+  std::copy(std::begin(wide_rest), std::end(wide_rest), data.begin() + 16);
+  data[31] = 0x5A;  // Tail
+
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(768, false, data, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto value = [&sigs](const std::string& name) {
+    const auto* sig = find(sigs, name);
+    EXPECT_NE(sig, nullptr) << name;
+    return sig != nullptr ? sig->value : 0.0;
+  };
+  EXPECT_DOUBLE_EQ(value("LeHigh"), 4660.0);
+  EXPECT_DOUBLE_EQ(value("BeHigh"), 43981.0);
+  EXPECT_DOUBLE_EQ(value("SignedHigh"), -1.0);
+  EXPECT_DOUBLE_EQ(value("Wide"), static_cast<double>(0x0123456789ABCDEFull));
+  EXPECT_DOUBLE_EQ(value("Tail"), 90.0);
+}
+
+TEST(CanDecoderLongPayload, ReadsBitsLikeTheClassicPath) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kLongDbc).has_value());
+  // Bytes with high bits set, so the signed signals come out negative.
+  const std::vector<std::uint8_t> classic{0xF3, 0x9A, 0x81, 0x7E, 0xC5, 0x2D, 0xB7, 0x48};
+  std::vector<std::uint8_t> extended = classic;
+  extended.resize(16, 0xFF);
+
+  DecodeResult classic_result = DecodeResult::kNoMatch;
+  DecodeResult long_result = DecodeResult::kNoMatch;
+  const auto from_parser = dec.decode(769, false, classic, classic_result);
+  const auto from_long_path = dec.decode(770, false, extended, long_result);
+  ASSERT_EQ(classic_result, DecodeResult::kDecoded);
+  ASSERT_EQ(long_result, DecodeResult::kDecoded);
+  ASSERT_EQ(from_parser.size(), 8u);
+  ASSERT_EQ(from_long_path.size(), from_parser.size());
+  for (std::size_t i = 0; i < from_parser.size(); ++i) {
+    EXPECT_EQ(from_long_path[i].name, from_parser[i].name);
+    EXPECT_DOUBLE_EQ(from_long_path[i].value, from_parser[i].value) << from_parser[i].name;
+  }
+  // Pin a few values by hand too, so the comparison cannot pass on two equal mistakes.
+  EXPECT_DOUBLE_EQ(find(from_long_path, "A")->value, 862.0);     // (0x9AF3 >> 3) & 0xFFF = 0x35E
+  EXPECT_DOUBLE_EQ(find(from_long_path, "C")->value, -127.0);    // byte 2 = 0x81
+  EXPECT_DOUBLE_EQ(find(from_long_path, "E")->value, -18643.0);  // bytes 5..6 LE = 0xB72D, signed
+}
+
+TEST(CanDecoderLongPayload, SignalPastThePayloadIsUndecodable) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kLongDbc).has_value());
+  // PastEnd's signal runs from bit 120 to 135 of a 16-byte (128-bit) message.
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(771, false, std::vector<std::uint8_t>(16, 0), result);
+  EXPECT_EQ(result, DecodeResult::kUndecodable);
+  EXPECT_TRUE(sigs.empty());
+}
+
+TEST(CanDecoderLongPayload, FrameShorterThanLongMessageIsUndecodable) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kLongDbc).has_value());
+  // LongMsg is 32 bytes; an 8-byte frame on its id (e.g. one fast-packet chunk) must not decode.
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(768, false, std::vector<std::uint8_t>(8, 0), result);
   EXPECT_EQ(result, DecodeResult::kUndecodable);
   EXPECT_TRUE(sigs.empty());
 }
