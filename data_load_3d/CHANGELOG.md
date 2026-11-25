@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_3d/`.
 
-## Upcoming
+## [1.2.0] - 2026-11-25
 
 ### Added
 - LiDAR `.las` files (ASPRS LAS 1.0-1.4, point formats 0-10) load as point clouds, with intensity,
