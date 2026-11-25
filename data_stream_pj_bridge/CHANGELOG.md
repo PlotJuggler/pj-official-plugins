@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_stream_pj_bridge/`.
 
+## [1.2.1] - 2026-11-25
+
+### Fixed
+- The 1.2.0 downloads were stale builds that PlotJuggler refuses to load (no `pj_plugin_abi_version` export). 1.2.1 ships the 1.2.0 changes below, built from their source.
+
 ## [1.2.0] - 2026-11-24
 
 ### Changed
