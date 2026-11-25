@@ -20,7 +20,6 @@ struct LasResult {
   /// Added back to the cloud's x/y/z to recover file coordinates. Per axis: 0, or
   /// the floor of that axis' minimum when the axis exceeds kLasShiftThreshold.
   std::array<double, 3> origin{0.0, 0.0, 0.0};
-  uint8_t version_major = 0;
   uint8_t version_minor = 0;
   uint8_t point_format = 0;
 };

@@ -5,7 +5,6 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <vector>
 
 #include "cloud_common.hpp"
@@ -66,7 +65,7 @@ size_t rgbOffset(uint8_t fmt) {
     case 3:
     case 5:
       return 28;
-    default:  // 7, 8, 10
+    default:  // 7, 8, 10; not read for formats without RGB
       return 30;
   }
 }
@@ -91,22 +90,21 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
   }
 
   LasResult result;
-  result.version_major = file[kOffVersionMajor];
+  const uint8_t version_major = file[kOffVersionMajor];
   result.version_minor = file[kOffVersionMinor];
-  if (result.version_major != 1 || result.version_minor > 4) {
+  if (version_major != 1 || result.version_minor > 4) {
     return PJ::unexpected(
-        "unsupported LAS version " + std::to_string(result.version_major) + "." + std::to_string(result.version_minor));
+        "unsupported LAS version " + std::to_string(version_major) + "." + std::to_string(result.version_minor));
   }
 
   const size_t header_size = readLE<uint16_t>(file + kOffHeaderSize);
   const uint64_t data_offset = readLE<uint32_t>(file + kOffPointDataOffset);
-  const uint8_t raw_format = file[kOffPointFormat];
+  const uint8_t fmt = file[kOffPointFormat];
   const uint16_t record_length = readLE<uint16_t>(file + kOffRecordLength);
 
-  if ((raw_format & kLazBits) != 0) {
+  if ((fmt & kLazBits) != 0) {
     return PJ::unexpected(std::string("LAZ-compressed point data is not supported; decompress to .las first"));
   }
-  const uint8_t fmt = raw_format;
   result.point_format = fmt;
   if (fmt > kMaxPointFormat) {
     return PJ::unexpected("unsupported LAS point data record format " + std::to_string(fmt));
@@ -134,6 +132,7 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
       return PJ::unexpected(std::string("malformed LAS header (non-finite or zero scale/offset)"));
     }
   }
+  const auto world = [&](int32_t raw, size_t a) { return static_cast<double>(raw) * scale[a] + offset[a]; };
 
   const uint64_t available = file_size - data_offset;
   if (num_points > available / record_length) {
@@ -141,30 +140,37 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
         "LAS file truncated: header declares " + std::to_string(num_points) + " points, data holds " +
         std::to_string(available / record_length));
   }
-  if (num_points > std::numeric_limits<uint32_t>::max()) {
-    return PJ::unexpected(std::string("LAS point count exceeds the point cloud width range"));
-  }
   const uint8_t* records = file + data_offset;
 
-  // First pass: world-coordinate range (for the float32 re-centring) and the RGB depth.
-  std::array<double, 3> lo{0.0, 0.0, 0.0};
-  std::array<double, 3> hi{0.0, 0.0, 0.0};
+  const bool has_gps = hasGpsTime(fmt);
+  const bool has_rgb = hasRgb(fmt);
+  const bool has_nir = hasNir(fmt);
+  const size_t gps_src = gpsOffset(fmt);
+  const size_t rgb_src = rgbOffset(fmt);
+
+  // First pass: raw coordinate range (for the float32 re-centring) and the RGB depth.
+  std::array<int32_t, 3> raw_lo;
+  std::array<int32_t, 3> raw_hi;
+  raw_lo.fill(std::numeric_limits<int32_t>::max());
+  raw_hi.fill(std::numeric_limits<int32_t>::min());
   uint16_t max_rgb = 0;
   for (uint64_t p = 0; p < num_points; ++p) {
     const uint8_t* rec = records + p * record_length;
     for (size_t a = 0; a < 3; ++a) {
-      const double v = static_cast<double>(readLE<int32_t>(rec + 4 * a)) * scale[a] + offset[a];
-      lo[a] = (p == 0) ? v : std::min(lo[a], v);
-      hi[a] = (p == 0) ? v : std::max(hi[a], v);
+      const int32_t v = readLE<int32_t>(rec + 4 * a);
+      raw_lo[a] = std::min(raw_lo[a], v);
+      raw_hi[a] = std::max(raw_hi[a], v);
     }
-    if (hasRgb(fmt)) {
-      const uint8_t* rgb = rec + rgbOffset(fmt);
+    if (has_rgb) {
+      const uint8_t* rgb = rec + rgb_src;
       max_rgb = std::max({max_rgb, readLE<uint16_t>(rgb), readLE<uint16_t>(rgb + 2), readLE<uint16_t>(rgb + 4)});
     }
   }
-  for (size_t a = 0; a < 3; ++a) {
-    if (std::max(std::abs(lo[a]), std::abs(hi[a])) > kLasShiftThreshold) {
-      result.origin[a] = std::floor(lo[a]);
+  for (size_t a = 0; a < 3 && num_points > 0; ++a) {
+    const double lo = std::min(world(raw_lo[a], a), world(raw_hi[a], a));  // a negative scale swaps the ends
+    const double hi = std::max(world(raw_lo[a], a), world(raw_hi[a], a));
+    if (std::max(std::abs(lo), std::abs(hi)) > kLasShiftThreshold) {
+      result.origin[a] = std::floor(lo);
     }
   }
   // The spec stores 16-bit colour, but many writers store 8-bit values in those
@@ -184,15 +190,15 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
       {"user_data", Datatype::kUint8, 1},
       {"point_source_id", Datatype::kUint16, 1},
   };
-  if (hasGpsTime(fmt)) {
+  if (has_gps) {
     parsed.push_back({"gps_time", Datatype::kFloat64, 1});
   }
-  if (hasRgb(fmt)) {
+  if (has_rgb) {
     parsed.push_back({"red", Datatype::kUint8, 1});
     parsed.push_back({"green", Datatype::kUint8, 1});
     parsed.push_back({"blue", Datatype::kUint8, 1});
   }
-  if (hasNir(fmt)) {
+  if (has_nir) {
     parsed.push_back({"nir", Datatype::kUint16, 1});
   }
   auto layout_or = computeLayout(parsed);
@@ -201,6 +207,9 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
   }
   const FieldLayout& layout = *layout_or;
   const uint32_t step = layout.point_step;
+  // buildPointCloud applies the same cap; checking here too keeps the staging
+  // buffer below from being sized by an unchecked header count. It also bounds
+  // num_points below 2^32, so the width cast is exact.
   if (num_points > kMaxCloudBytes / step) {
     return PJ::unexpected(std::string("point cloud too large"));
   }
@@ -214,17 +223,16 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
   const uint32_t off_angle = field(layout, "scan_angle").offset;
   const uint32_t off_user = field(layout, "user_data").offset;
   const uint32_t off_source = field(layout, "point_source_id").offset;
-  const uint32_t off_gps = hasGpsTime(fmt) ? field(layout, "gps_time").offset : 0;
-  const uint32_t off_red = hasRgb(fmt) ? field(layout, "red").offset : 0;
-  const uint32_t off_nir = hasNir(fmt) ? field(layout, "nir").offset : 0;
+  const uint32_t off_gps = has_gps ? field(layout, "gps_time").offset : 0;
+  const uint32_t off_red = has_rgb ? field(layout, "red").offset : 0;
+  const uint32_t off_nir = has_nir ? field(layout, "nir").offset : 0;
 
-  auto buf = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(num_points * step));
+  std::vector<uint8_t> body(static_cast<size_t>(num_points * step));
   for (uint64_t p = 0; p < num_points; ++p) {
     const uint8_t* rec = records + p * record_length;
-    uint8_t* dst = buf->data() + p * step;
+    uint8_t* dst = body.data() + p * step;
     for (uint32_t a = 0; a < 3; ++a) {
-      const double v = static_cast<double>(readLE<int32_t>(rec + 4 * a)) * scale[a] + offset[a] - result.origin[a];
-      put(dst, off_x + 4 * a, static_cast<float>(v));
+      put(dst, off_x + 4 * a, static_cast<float>(world(readLE<int32_t>(rec + 4 * a), a) - result.origin[a]));
     }
     put(dst, off_intensity, readLE<uint16_t>(rec + 12));
     const uint8_t returns_byte = rec[14];
@@ -249,32 +257,27 @@ PJ::Expected<LasResult> readLas(PJ::Span<const uint8_t> file_bytes, std::string 
       put(dst, off_user, rec[17]);
       put(dst, off_source, readLE<uint16_t>(rec + 20));
     }
-    if (hasGpsTime(fmt)) {
-      put(dst, off_gps, readLE<double>(rec + gpsOffset(fmt)));
+    if (has_gps) {
+      put(dst, off_gps, readLE<double>(rec + gps_src));
     }
-    if (hasRgb(fmt)) {
-      const uint8_t* rgb = rec + rgbOffset(fmt);
+    if (has_rgb) {
+      const uint8_t* rgb = rec + rgb_src;
       for (uint32_t c = 0; c < 3; ++c) {
         put(dst, off_red + c, static_cast<uint8_t>(readLE<uint16_t>(rgb + 2 * c) >> rgb_shift));
       }
-      if (hasNir(fmt)) {
+      if (has_nir) {
         put(dst, off_nir, readLE<uint16_t>(rgb + 6));
       }
     }
   }
 
-  auto& cloud = result.cloud;
-  cloud.width = static_cast<uint32_t>(num_points);
-  cloud.height = 1;
-  cloud.point_step = step;
-  cloud.row_step = static_cast<uint32_t>(num_points * step);  // <= kMaxCloudBytes
-  cloud.is_bigendian = false;
-  cloud.is_dense = true;
-  cloud.frame_id = std::move(frame_id);
-  cloud.fields = layout.fields;
-  cloud.timestamp_ns = 0;
-  cloud.data = PJ::Span<const uint8_t>(buf->data(), buf->size());
-  cloud.anchor = buf;
+  auto cloud = buildPointCloud(
+      parsed, static_cast<uint32_t>(num_points), /*height=*/1, /*is_dense=*/true, std::move(frame_id),
+      DataFormat::kBinaryLittleEndian, PJ::Span<const uint8_t>(body.data(), body.size()));
+  if (!cloud) {
+    return PJ::unexpected(cloud.error());
+  }
+  result.cloud = std::move(*cloud);
   return result;
 }
 
