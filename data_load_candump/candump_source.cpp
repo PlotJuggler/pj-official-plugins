@@ -9,6 +9,7 @@
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
 #include <pj_can_dbc/dictionary_paths.hpp>
+#include <pj_can_dbc/fast_packet.hpp>
 #include <pj_can_dbc/signal_row.hpp>
 #include <string>
 #include <string_view>
@@ -35,7 +36,12 @@ struct InterfaceTopics {
   pj_can_dbc::CanDecoder* decoder = nullptr;  // nullptr if no dictionary assigned
   std::unordered_map<std::uint64_t, PJ::sdk::TopicHandle> decoded;
   std::unordered_map<std::uint64_t, PJ::sdk::TopicHandle> raw;
+  pj_can_dbc::FastPacketAssembler fast_packets;  // NMEA 2000 interfaces only
 };
+
+/// Bits of a 29-bit id that a J1939/NMEA 2000 topic keeps: all but the 3 priority bits, so
+/// PGN, PDU1 destination and source address -- see pj_can_dbc::pgnTopicName().
+constexpr std::uint32_t kPgnTopicIdMask = 0x03FF'FFFFu;
 
 std::uint64_t frameKey(std::uint32_t can_id, bool extended) {
   return (static_cast<std::uint64_t>(can_id) << 1) | (extended ? 1u : 0u);
@@ -140,6 +146,11 @@ class CandumpSource : public PJ::FileSourceBase {
         }
       }
     }
+    for (auto& [iface, decoder] : decoders) {
+      if (const auto it = dialog_.interfaceProtocols().find(iface); it != dialog_.interfaceProtocols().end()) {
+        decoder.setProtocol(it->second);
+      }
+    }
     if (decoders.empty()) {
       runtimeHost().reportMessage(
           PJ::DataSourceMessageLevel::kWarning, "no dictionary assigned to any interface; nothing will be decoded");
@@ -170,6 +181,7 @@ class CandumpSource : public PJ::FileSourceBase {
     std::uint64_t line_no = 0;
     std::uint64_t bytes_read = 0;
     std::uint64_t decoded_frames = 0;
+    std::uint64_t fast_packet_messages = 0;
     std::uint64_t unmatched = 0;
     std::uint64_t undecodable = 0;
     std::uint64_t no_dictionary = 0;
@@ -256,28 +268,48 @@ class CandumpSource : public PJ::FileSourceBase {
       }
       // Built once per frame, reused by whichever of decoded/raw applies.
       const std::uint64_t key = frameKey(parsed.can_id, parsed.extended);
+      // J1939 / NMEA 2000: an extended frame finds its message by PGN, and its topic also names the source.
+      const bool by_pgn = current_topics->decoder != nullptr &&
+                          current_topics->decoder->protocol() != pj_can_dbc::CanProtocol::kRaw && parsed.extended;
 
       pj_can_dbc::DecodeResult result = pj_can_dbc::DecodeResult::kNoMatch;
       std::vector<pj_can_dbc::DecodedSignal> signals;
+      std::int64_t record_ns = ts_ns;
+      bool fast_packet = false;
       if (current_topics->decoder != nullptr) {
-        signals = current_topics->decoder->decode(parsed.can_id, parsed.extended, parsed.data, result);
+        fast_packet = current_topics->decoder->isFastPacket(parsed.can_id, parsed.extended);
+        if (fast_packet) {
+          // One frame of an NMEA 2000 fast packet: decode once the message is complete, at its first frame's time.
+          const auto message = current_topics->fast_packets.add(parsed.can_id, parsed.data, ts_ns);
+          if (!message) {
+            continue;
+          }
+          ++fast_packet_messages;
+          record_ns = message->timestamp_ns;
+          signals = current_topics->decoder->decode(
+              parsed.can_id, parsed.extended, message->payload, result, /*variable_length=*/true);
+        } else {
+          signals = current_topics->decoder->decode(parsed.can_id, parsed.extended, parsed.data, result);
+        }
       }
 
       if (result == pj_can_dbc::DecodeResult::kDecoded && !signals.empty()) {
         ++decoded_frames;
-        auto it = current_topics->decoded.find(key);
+        const std::uint64_t decoded_key = by_pgn ? frameKey(parsed.can_id & kPgnTopicIdMask, true) : key;
+        auto it = current_topics->decoded.find(decoded_key);
         if (it == current_topics->decoded.end()) {
-          const std::string topic_name = pj_can_dbc::canTopicName(
-              std::string_view(parsed.interface), current_topics->decoder->messageName(parsed.can_id, parsed.extended),
-              parsed.can_id);
+          const std::string message_name = current_topics->decoder->messageName(parsed.can_id, parsed.extended);
+          const std::string topic_name =
+              by_pgn ? pj_can_dbc::pgnTopicName(std::string_view(parsed.interface), message_name, parsed.can_id)
+                     : pj_can_dbc::canTopicName(std::string_view(parsed.interface), message_name, parsed.can_id);
           auto topic = writeHost().ensureTopic(topic_name);
           if (!topic) {
             continue;  // best-effort within the loop
           }
-          it = current_topics->decoded.emplace(key, *topic).first;
+          it = current_topics->decoded.emplace(decoded_key, *topic).first;
           ++decoded_topic_count;
         }
-        (void)writeHost().appendRecord(it->second, PJ::Timestamp{ts_ns}, decoded_row_builder.build(signals));
+        (void)writeHost().appendRecord(it->second, PJ::Timestamp{record_ns}, decoded_row_builder.build(signals));
         continue;
       }
 
@@ -289,8 +321,8 @@ class CandumpSource : public PJ::FileSourceBase {
         ++unmatched;
       }
 
-      if (!raw_unassigned) {
-        continue;
+      if (!raw_unassigned || fast_packet) {
+        continue;  // a fast packet's frames are no message on their own: not shown as raw bytes
       }
       auto it = current_topics->raw.find(key);
       if (it == current_topics->raw.end()) {
@@ -319,6 +351,18 @@ class CandumpSource : public PJ::FileSourceBase {
 
     std::string summary = "Decoded " + std::to_string(decoded_frames) + " CAN frame(s) into " +
                           std::to_string(decoded_topic_count) + " message topic(s)";
+    if (fast_packet_messages > 0) {
+      summary += " (" + std::to_string(fast_packet_messages) +
+                 " of them NMEA 2000 fast-packet messages, each reassembled from several frames)";
+    }
+    std::uint64_t dropped_fast_packet_frames = 0;
+    for (const auto& [iface, interface_topics] : topics_by_interface) {
+      dropped_fast_packet_frames += interface_topics.fast_packets.droppedFrames();
+    }
+    if (dropped_fast_packet_frames > 0) {
+      summary += "; " + std::to_string(dropped_fast_packet_frames) +
+                 " NMEA 2000 fast-packet frame(s) dropped (missing, out-of-order or incomplete message)";
+    }
     if (no_dictionary > 0) {
       summary += "; " + std::to_string(no_dictionary) + " frame(s) on interfaces with no dictionary";
     }

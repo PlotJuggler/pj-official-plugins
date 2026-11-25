@@ -34,6 +34,14 @@ references.
   the LEN8_DLC brace length marker (`{F}`, decodes via `UnderscoreDlc`), the
   5-space SFF-indent applied once an EFF/error frame has been seen in a
   session, and a short (right-padded) interface name.
+- `n2k.log` + `n2k.dbc` — J1939 / NMEA 2000 (the DBC is the one in
+  `common/can_dbc/tests/j1939_test.cpp`: ids carry the Vector flag and source
+  address `0xFE`, as exporters write them). The capture covers one PGN from
+  two sources with a priority change (`VesselHeading`, 0x10 and 0x04), two
+  interleaved fast packets of one PGN from two sources, one 20 bytes and one
+  10 bytes long (`PositionLike`, its `Tail` signal only in the long one), a
+  fast packet missing frame 1, a PDU1 request to destination 0x23
+  (`ISORequest`), a PGN not in the DBC, and a standard frame (`StdMsg`).
 - `relative_tz.log` / `relative_td.log` — same frame repeated with,
   respectively, monotonically increasing small timestamps (`-t z` shape,
   `%03llu` zero-padded seconds) and a non-monotonic sequence (`-t d`,

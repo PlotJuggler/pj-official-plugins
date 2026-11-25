@@ -26,6 +26,30 @@ namespace {
 /// File name (no folder) of the capture the forced time mode was chosen for.
 constexpr char kTimeModeFileKey[] = "time_mode_file";
 
+/// Per-interface protocol: {"can0": "j1939"}; an interface without an entry is raw CAN.
+constexpr char kProtocolsKey[] = "iface_protocols";
+
+/// comboProtocol items, in pj_can_dbc::CanProtocol order, and their config names.
+struct ProtocolName {
+  pj_can_dbc::CanProtocol protocol;
+  const char* label;
+  const char* config;
+};
+constexpr ProtocolName kProtocols[] = {
+    {pj_can_dbc::CanProtocol::kRaw, "Raw CAN", "raw"},
+    {pj_can_dbc::CanProtocol::kJ1939, "J1939", "j1939"},
+    {pj_can_dbc::CanProtocol::kNmea2000, "NMEA 2000", "nmea2000"},
+};
+
+const ProtocolName& protocolName(pj_can_dbc::CanProtocol protocol) {
+  for (const auto& name : kProtocols) {
+    if (name.protocol == protocol) {
+      return name;
+    }
+  }
+  return kProtocols[0];
+}
+
 /// Renders `value` with "," thousands separators (e.g. 16000 -> "16,000").
 /// No locale dependence, matching this file's existing no-double/no-locale
 /// number formatting.
@@ -163,6 +187,11 @@ std::string CandumpDialog::ui_content() const {
   return kCandumpDialogUi;
 }
 
+pj_can_dbc::CanProtocol CandumpDialog::protocolOf(const std::string& iface) const {
+  const auto it = iface_protocols_.find(iface);
+  return it == iface_protocols_.end() ? pj_can_dbc::CanProtocol::kRaw : it->second;
+}
+
 std::string CandumpDialog::currentInterface() const {
   if (selected_interface_index_ >= 0 && selected_interface_index_ < static_cast<int>(interface_names_.size())) {
     return interface_names_[static_cast<std::size_t>(selected_interface_index_)];
@@ -178,7 +207,7 @@ std::string CandumpDialog::widget_data() {
 
   PJ::WidgetData wd;
   wd.setText("labelSummary", summary_);
-  wd.setTableHeaders("tableInterfaces", {"Interface", "Frames", "Messages", "Dictionary"});
+  wd.setTableHeaders("tableInterfaces", {"Interface", "Frames", "Messages", "Dictionary", "Protocol"});
   // The Dictionary column follows the live assignment (the picker edits it
   // after the scan), so it is filled here rather than in scanFile().
   constexpr std::size_t kDictionaryColumn = 3;
@@ -189,6 +218,7 @@ std::string CandumpDialog::widget_data() {
       dict_paths[row] = it->second.front();
     }
     rows[row][kDictionaryColumn] = dict_paths[row].empty() ? "none" : basenameOf(dict_paths[row]);
+    rows[row][kDictionaryColumn + 1] = protocolName(protocolOf(interface_names_[row])).label;
   }
   wd.setTableRows("tableInterfaces", rows);
   for (std::size_t row = 0; row < dict_paths.size(); ++row) {
@@ -205,6 +235,13 @@ std::string CandumpDialog::widget_data() {
   const std::string iface = currentInterface();
   wd.setEnabled("buttonDictionary", !iface.empty());
   wd.setEnabled("buttonClearDictionary", !iface.empty());
+  std::vector<std::string> protocol_labels;
+  for (const auto& name : kProtocols) {
+    protocol_labels.emplace_back(name.label);
+  }
+  wd.setItems("comboProtocol", protocol_labels);
+  wd.setCurrentIndex("comboProtocol", static_cast<int>(protocolOf(iface)));
+  wd.setEnabled("comboProtocol", !iface.empty());
 
   wd.setChecked("checkRawUnassigned", raw_unassigned_);
 
@@ -228,6 +265,13 @@ std::string CandumpDialog::saveConfig() const {
   cfg["iface_dicts"] = mapping;
   if (const auto base = pj_can_dbc::auxBaseDirToSave(filepath_, !mapping.empty())) {
     cfg[pj_can_dbc::kAuxBaseDirKey] = *base;
+  }
+  if (!iface_protocols_.empty()) {
+    nlohmann::json protocols = nlohmann::json::object();
+    for (const auto& [iface, protocol] : iface_protocols_) {
+      protocols[iface] = protocolName(protocol).config;
+    }
+    cfg[kProtocolsKey] = protocols;
   }
   cfg["raw_unassigned"] = raw_unassigned_;
   cfg["time_mode"] = time_mode_override_;
@@ -287,6 +331,19 @@ bool CandumpDialog::applyConfigJson(std::string_view config_json, bool scan_now)
         }
       }
       paths = pj_can_dbc::resolveAuxPaths(paths, context);
+    }
+  }
+  iface_protocols_.clear();
+  if (cfg.contains(kProtocolsKey) && cfg[kProtocolsKey].is_object()) {
+    for (const auto& [key, value] : cfg[kProtocolsKey].items()) {
+      if (!isValidInterfaceKey(key) || !value.is_string()) {
+        continue;  // hand-edited config: skip the bad entry, keep the rest
+      }
+      for (const auto& name : kProtocols) {
+        if (value.get<std::string>() == name.config && name.protocol != pj_can_dbc::CanProtocol::kRaw) {
+          iface_protocols_[key] = name.protocol;
+        }
+      }
     }
   }
   if (!filepath_.empty()) {
@@ -352,6 +409,19 @@ bool CandumpDialog::onIndexChanged(std::string_view widget_name, int index) {
     time_mode_override_ = index;
     return true;
   }
+  if (widget_name == "comboProtocol") {
+    const std::string iface = currentInterface();
+    if (iface.empty() || index < 0 || index >= static_cast<int>(std::size(kProtocols))) {
+      return false;
+    }
+    const auto protocol = kProtocols[static_cast<std::size_t>(index)].protocol;
+    if (protocol == pj_can_dbc::CanProtocol::kRaw) {
+      iface_protocols_.erase(iface);
+    } else {
+      iface_protocols_[iface] = protocol;
+    }
+    return true;
+  }
   return false;
 }
 
@@ -382,10 +452,10 @@ void CandumpDialog::scanFile() {
   for (const auto& iface : scan.interfaces) {
     total_frames += iface.frames;
     interface_names_.push_back(iface.interface);
-    // Dictionary column (index 3) is filled per render in widget_data().
+    // Dictionary and Protocol columns (index 3, 4) are filled per render in widget_data().
     interface_rows_.push_back(
         {iface.interface, formatThousands(iface.frames) + (scan.truncated ? "+" : ""),
-         formatThousands(iface.distinct_ids), std::string{}});
+         formatThousands(iface.distinct_ids), std::string{}, std::string{}});
   }
 
   if (scan.lines_scanned == 0) {

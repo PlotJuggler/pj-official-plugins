@@ -56,6 +56,7 @@ add_executable(candump_source_test
   tests/candump_decode_test.cpp
   tests/candump_dialog_test.cpp
   tests/candump_layout_paths_test.cpp
+  tests/candump_protocol_test.cpp
   candump_dialog.cpp
 )
 target_compile_features(candump_source_test PRIVATE cxx_std_20)
