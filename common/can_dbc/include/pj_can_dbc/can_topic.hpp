@@ -27,4 +27,11 @@ std::string canTopicName(std::uint16_t bus_channel, const std::string& message_n
 /// empty message name falls back to the hex id.
 std::string canTopicName(std::string_view bus, const std::string& message_name, std::uint32_t can_id);
 
+/// Topic name for a message matched by PGN (CanProtocol::kJ1939 / kNmea2000):
+/// canTopicName(bus, ...) plus the source address, "/0xSA", and for a PDU1
+/// (destination-specific) message the destination too, "/0xSA/0xDA" -- two
+/// hex digits each. The same PGN from different sources (two GNSS receivers)
+/// thus stays in separate topics, while a priority change does not split one.
+std::string pgnTopicName(std::string_view bus, const std::string& message_name, std::uint32_t can_id);
+
 }  // namespace pj_can_dbc

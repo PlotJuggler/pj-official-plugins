@@ -48,6 +48,8 @@ std::int64_t normalizeValueKey(std::uint32_t raw_key, bool is_signed, std::uint3
 constexpr std::uint32_t kExtendedFlag = 0x8000'0000u;
 /// Highest standard (11-bit) CAN id.
 constexpr std::uint32_t kMaxStandardId = 0x7FFu;
+/// Highest extended (29-bit) CAN id.
+constexpr std::uint32_t kMaxExtendedId = 0x1FFF'FFFFu;
 /// A signal's value must fit in 64 bits.
 constexpr std::uint32_t kMaxSignalBits = 64;
 /// Classic CAN payload size: frames up to this long decode through the pinned
@@ -216,6 +218,11 @@ struct CanDecoder::Impl {
   // Keyed by the DBC message id exactly as stored (raw, possibly with the
   // extended flag). Lookup handles both the raw and Vector-flagged forms.
   std::unordered_map<std::uint32_t, std::size_t> id_to_index;
+  // The 29-bit messages for CanProtocol::kJ1939 / kNmea2000, first loaded wins in both: by id
+  // without priority (the message written for one sender) and by PGN (any sender).
+  std::unordered_map<std::uint32_t, std::size_t> sender_to_index;
+  std::unordered_map<std::uint32_t, std::size_t> pgn_to_index;
+  CanProtocol protocol = CanProtocol::kRaw;
 
   void addFrom(const Libdbc::DbcParser& parser) {
     for (const auto& msg : parser.get_messages()) {
@@ -239,6 +246,14 @@ struct CanDecoder::Impl {
                 .is_signed = sig.is_signed});
       }
       assignLabelNames(meta);
+      // 29-bit: the Vector flag set, or a raw id above the 11-bit range (as find() reads it).
+      // An id that does not fit in 29 bits is no CAN id and would claim PGN 0: Vector's
+      // VECTOR__INDEPENDENT_SIG_MSG placeholder for orphan signals is 0xC0000000.
+      const std::uint32_t id29 = msg.id() & ~kExtendedFlag;
+      if (((msg.id() & kExtendedFlag) != 0 || msg.id() > kMaxStandardId) && id29 <= kMaxExtendedId) {
+        sender_to_index.emplace(withoutPriority(id29), messages.size());
+        pgn_to_index.emplace(pgnFromCanId(id29), messages.size());
+      }
       id_to_index[msg.id()] = messages.size();
       messages.push_back(MessageEntry{msg, std::move(meta)});
     }
@@ -248,6 +263,15 @@ struct CanDecoder::Impl {
     const auto resolve = [this](std::unordered_map<std::uint32_t, std::size_t>::const_iterator it) {
       return it == id_to_index.end() ? nullptr : &messages[it->second];
     };
+    if (extended && protocol != CanProtocol::kRaw) {
+      // The message written for this very sender wins over the PGN's first one: an OEM DBC
+      // may define one PGN once per source, each with its own layout.
+      if (const auto sender = sender_to_index.find(withoutPriority(can_id)); sender != sender_to_index.end()) {
+        return &messages[sender->second];
+      }
+      const auto it = pgn_to_index.find(pgnFromCanId(can_id));
+      return it == pgn_to_index.end() ? nullptr : &messages[it->second];
+    }
     if (extended) {
       // Prefer the Vector-flagged 29-bit message so an extended frame is not
       // shadowed by a standard message sharing the same numeric id. Fall back
@@ -304,6 +328,22 @@ PJ::Status CanDecoder::loadDbcFile(const std::string& path) {
   return PJ::okStatus();
 }
 
+void CanDecoder::setProtocol(CanProtocol protocol) {
+  impl_->protocol = protocol;
+}
+
+CanProtocol CanDecoder::protocol() const {
+  return impl_->protocol;
+}
+
+bool CanDecoder::isFastPacket(std::uint32_t can_id, bool extended) const {
+  if (impl_->protocol != CanProtocol::kNmea2000 || !extended) {
+    return false;
+  }
+  const MessageEntry* entry = impl_->find(can_id, extended);
+  return entry != nullptr && entry->message.size() > kClassicPayloadBytes;
+}
+
 std::size_t CanDecoder::messageCount() const {
   return impl_->messages.size();
 }
@@ -324,7 +364,8 @@ std::string CanDecoder::messageName(std::uint32_t can_id, bool extended) const {
 }
 
 std::vector<DecodedSignal> CanDecoder::decode(
-    std::uint32_t can_id, bool extended, const std::vector<std::uint8_t>& data, DecodeResult& result) const {
+    std::uint32_t can_id, bool extended, const std::vector<std::uint8_t>& data, DecodeResult& result,
+    bool variable_length) const {
   result = DecodeResult::kNoMatch;
   std::vector<DecodedSignal> out;
 
@@ -337,13 +378,15 @@ std::vector<DecodedSignal> CanDecoder::decode(
 
   // Reject frames shorter than the message: dbc_parser_cpp would zero-fill the
   // missing bytes and return "success" with silently wrong signal values.
-  if (data.size() < static_cast<std::size_t>(msg.size())) {
+  if (!variable_length && data.size() < static_cast<std::size_t>(msg.size())) {
     return out;  // matched, but the frame is truncated -> cannot decode
   }
 
   const auto& signals = entry->signals;  // cached name/unit/labels/layout, no per-frame copy
-  std::vector<double> values;
-  if (data.size() <= kClassicPayloadBytes) {
+  std::vector<double> values;            // one per signal
+  // Variable length only: false for a signal past the payload's end, which is left out of the result.
+  std::vector<bool> fits;
+  if (!variable_length && data.size() <= kClassicPayloadBytes) {
     if (msg.parse_signals(data, values) != Libdbc::Message::ParseSignalsStatus::Success) {
       return out;  // matched but undecodable
     }
@@ -351,10 +394,16 @@ std::vector<DecodedSignal> CanDecoder::decode(
     values.reserve(signals.size());
     for (const SignalMeta& meta : signals) {
       const auto raw = extractRawBits(data, meta);
-      if (!raw) {
+      if (!raw && !variable_length) {
         return out;  // matched, but a signal reaches past the payload
       }
-      values.push_back(physicalValue(*raw, meta));
+      values.push_back(raw ? physicalValue(*raw, meta) : 0.0);
+      if (variable_length) {
+        fits.push_back(raw.has_value());
+      }
+    }
+    if (variable_length && std::find(fits.begin(), fits.end(), true) == fits.end()) {
+      return out;  // not even the first signal fits
     }
   }
   result = DecodeResult::kDecoded;
@@ -362,6 +411,9 @@ std::vector<DecodedSignal> CanDecoder::decode(
   const std::size_t count = signals.size() < values.size() ? signals.size() : values.size();
   out.reserve(count);
   for (std::size_t k = 0; k < count; ++k) {
+    if (!fits.empty() && !fits[k]) {
+      continue;
+    }
     const SignalMeta& meta = signals[k];
     DecodedSignal decoded{.name = meta.name, .value = values[k], .unit = meta.unit};
     if (!meta.labels.empty()) {

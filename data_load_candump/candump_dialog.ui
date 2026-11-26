@@ -131,6 +131,11 @@
      <property name="text">
       <string>Interfaces</string>
      </property>
+     <widget class="QComboBox" name="comboProtocol">
+      <property name="toolTip">
+       <string>Protocol of the selected interface: J1939 and NMEA 2000 match messages by PGN, from any source address</string>
+      </property>
+     </widget>
      <widget class="QPushButton" name="buttonDictionary">
       <property name="text">
        <string>Choose .dbc / .csv...</string>
@@ -170,7 +175,7 @@
       <bool>true</bool>
      </property>
      <property name="columnCount">
-      <number>4</number>
+      <number>5</number>
      </property>
      <attribute name="horizontalHeaderHighlightSections">
       <bool>false</bool>
@@ -199,6 +204,11 @@
      <column>
       <property name="text">
        <string>Dictionary</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Protocol</string>
       </property>
      </column>
     </widget>

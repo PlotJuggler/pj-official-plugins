@@ -1,0 +1,34 @@
+VERSION "1.0.0"
+
+NS_ :
+	BA_
+	BA_DEF_
+	BA_DEF_DEF_
+	BS_
+	CM_
+	VAL_
+	VAL_TABLE_
+
+BS_:
+
+BU_: ECU
+
+BO_ 2314277630 VesselHeading: 8 ECU
+ SG_ SID : 0|8@1+ (1,0) [0|255] "" ECU
+ SG_ Heading : 8|16@1+ (0.0001,0) [0|6.5535] "rad" ECU
+
+BO_ 2565537790 ISORequest: 3 ECU
+ SG_ RequestedPGN : 0|24@1+ (1,0) [0|16777215] "" ECU
+
+BO_ 2381841918 PositionLike: 20 ECU
+ SG_ SID : 0|8@1+ (1,0) [0|255] "" ECU
+ SG_ Days : 8|16@1+ (1,0) [0|65535] "d" ECU
+ SG_ Seconds : 24|32@1+ (0.0001,0) [0|0] "s" ECU
+ SG_ Count : 56|8@1+ (1,0) [0|255] "" ECU
+ SG_ Tail : 136|16@1+ (1,0) [0|65535] "" ECU
+
+BO_ 2381906174 LateStart: 12 ECU
+ SG_ Late : 16|8@1+ (1,0) [0|255] "" ECU
+
+BO_ 256 StdMsg: 8 ECU
+ SG_ Value : 0|8@1+ (1,0) [0|255] "" ECU

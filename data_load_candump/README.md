@@ -47,6 +47,26 @@ exact line references into those files.
   when unmatched) — see `common/can_dbc`'s `signal_row.hpp` for the full
   convention. It is `<signal>_label_2` (then `_3`, ...) when the message
   already has a signal named `<signal>_label`.
+- **J1939 / NMEA 2000** (per interface, next to its dictionary): an extended
+  frame finds its DBC message by **PGN**, so one DBC message decodes that
+  parameter group from every source address and priority (a DBC stores one
+  sample id per message). Decoded topics name the source too,
+  `CAN/{interface}/{message}/0x{SA}`, and a destination-specific (PDU1)
+  message its destination, `CAN/{interface}/{message}/0x{SA}/0x{DA}`, so the
+  same PGN from two GNSS receivers stays in two topics; a priority change does
+  not split one. Standard (11-bit) frames still match by id. When a DBC
+  defines one PGN several times (once per sender, each with its own layout),
+  the message whose id names the frame's source address (and PDU1 destination)
+  is used, else the first one.
+  - **NMEA 2000 fast packets**: a DBC message longer than 8 bytes is a fast
+    packet; its frames (up to 32, at most 223 bytes) are reassembled per CAN
+    id, so per source, and the message is recorded at its first frame's time.
+    A frame that does not continue its message in order (a lost or repeated
+    frame, a new sequence counter), or a message the capture ends in the
+    middle of, is dropped; the summary counts those frames. The payload length varies per message (repeated fields),
+    so a signal past the end of a shorter payload is left out of that row
+    instead of failing it. Fast-packet frames never show up as raw bytes.
+  - J1939 multi-frame transport (TP.CM / TP.DT / BAM) is not reassembled.
 - Interfaces without an assigned dictionary, and frames a dictionary can't
   match or decode, optionally fall back to raw bytes:
   `CAN/{interface}/0x{id}/byte0..N` (toggle in the dialog, on by default).
@@ -111,10 +131,14 @@ included), as candump prints them.
   "filepath": "/path/to/capture.log",
   "iface_dicts": { "can0": ["powertrain.dbc"], "vcan1": ["dictionary.csv"] },
   "aux_base_dir": "/path/to",
+  "iface_protocols": { "can1": "nmea2000" },
   "raw_unassigned": true,
   "time_mode": 0
 }
 ```
+
+`iface_protocols`: `"j1939"` or `"nmea2000"` per interface; an interface
+without an entry is raw CAN (matched by the whole id).
 
 `time_mode`: `0` auto-detect, `1` force absolute, `2` force relative
 monotonic (`-t z`), `3` force relative delta (`-t d`). A forced mode is saved
@@ -149,6 +173,14 @@ ctest --test-dir <build> -R 'candump|can_dbc'
   imported.
 - CAN XL payloads are never decoded (frames are recognized and counted, like
   CAN FD) — out of scope for this version, same as CAN FD.
+- A DBC message with a signal wider than 64 bits (for example the NMEA 2000
+  text fields of `ProductInformation` or the AIS static-data names) is
+  dropped whole at load, its numeric signals included.
+- J1939 multi-frame transport (TP.CM / TP.DT / BAM) is not reassembled: a
+  J1939 message longer than 8 bytes does not decode.
+- An NMEA 2000 fast-packet PGN that the DBC describes with a message of 8
+  bytes or less is not reassembled: each of its frames decodes on its own,
+  with wrong values.
 - Multiplexed CAN signals are not decoded (a `dbc_parser_cpp` limitation,
   shared with the MF4/BLF loaders).
 - `.log`/`.txt` are not exclusive to this loader: PlotJuggler picks the

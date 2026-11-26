@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <pj_can_dbc/j1939.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <string>
 #include <vector>
@@ -37,6 +38,11 @@ class CandumpDialog : public PJ::DialogPluginTyped {
   // file's directory); the saved config stores the portable form instead.
   const std::map<std::string, std::vector<std::string>>& interfaceDicts() const {
     return iface_dicts_;
+  }
+  /// Interfaces whose frames are J1939 or NMEA 2000 (see pj_can_dbc::CanProtocol); an interface
+  /// missing here is raw CAN.
+  const std::map<std::string, pj_can_dbc::CanProtocol>& interfaceProtocols() const {
+    return iface_protocols_;
   }
   bool rawUnassigned() const {
     return raw_unassigned_;
@@ -74,6 +80,7 @@ class CandumpDialog : public PJ::DialogPluginTyped {
   void scanFile();
   bool applyConfigJson(std::string_view config_json, bool scan_now);
   std::string currentInterface() const;
+  pj_can_dbc::CanProtocol protocolOf(const std::string& iface) const;
 
   static constexpr std::uint64_t kTailBytes = 65536;
 
@@ -88,6 +95,7 @@ class CandumpDialog : public PJ::DialogPluginTyped {
   int selected_interface_index_ = 0;
 
   std::map<std::string, std::vector<std::string>> iface_dicts_;
+  std::map<std::string, pj_can_dbc::CanProtocol> iface_protocols_;  // non-raw interfaces only
   bool raw_unassigned_ = true;
   int time_mode_override_ = 0;
 };

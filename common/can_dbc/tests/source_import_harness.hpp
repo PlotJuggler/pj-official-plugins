@@ -36,10 +36,11 @@ struct ImportCapture {
   };
 
   bool ok = false;
-  std::string error;                          ///< bind/loadConfig/start failure
-  std::string saved_config;                   ///< saveConfig() after the import
-  std::map<std::string, std::uint64_t> rows;  ///< topic name -> records appended
-  std::vector<Message> messages;              ///< report_message calls, in order
+  std::string error;                                            ///< bind/loadConfig/start failure
+  std::string saved_config;                                     ///< saveConfig() after the import
+  std::map<std::string, std::uint64_t> rows;                    ///< topic name -> records appended
+  std::map<std::string, std::vector<std::int64_t>> timestamps;  ///< topic name -> record times (ns), in order
+  std::vector<Message> messages;                                ///< report_message calls, in order
 
   bool hasTopic(const std::string& name) const {
     return rows.find(name) != rows.end();
@@ -58,6 +59,7 @@ class CaptureHost {
  public:
   std::map<std::uint32_t, std::string> topic_names;
   std::map<std::string, std::uint64_t> rows;
+  std::map<std::string, std::vector<std::int64_t>> timestamps;
   std::vector<ImportCapture::Message> messages;
 
   PJ_source_write_host_t writeHost() {
@@ -99,9 +101,11 @@ class CaptureHost {
     return view.data == nullptr ? std::string{} : std::string(view.data, view.size);
   }
 
-  void count(PJ_topic_handle_t topic) {
+  void count(PJ_topic_handle_t topic, int64_t timestamp_ns) {
     const auto it = topic_names.find(topic.id);
-    ++rows[it == topic_names.end() ? std::string() : it->second];
+    const std::string name = it == topic_names.end() ? std::string() : it->second;
+    ++rows[name];
+    timestamps[name].push_back(timestamp_ns);
   }
 
   static bool ensureTopic(void* ctx, PJ_string_view_t name, PJ_topic_handle_t* out, PJ_error_t*) noexcept {
@@ -124,13 +128,15 @@ class CaptureHost {
     return true;
   }
   static bool appendRecord(
-      void* ctx, PJ_topic_handle_t topic, int64_t, const PJ_named_field_value_t*, uint64_t, PJ_error_t*) noexcept {
-    static_cast<CaptureHost*>(ctx)->count(topic);
+      void* ctx, PJ_topic_handle_t topic, int64_t timestamp_ns, const PJ_named_field_value_t*, uint64_t,
+      PJ_error_t*) noexcept {
+    static_cast<CaptureHost*>(ctx)->count(topic, timestamp_ns);
     return true;
   }
   static bool appendBoundRecord(
-      void* ctx, PJ_topic_handle_t topic, int64_t, const PJ_bound_field_value_t*, uint64_t, PJ_error_t*) noexcept {
-    static_cast<CaptureHost*>(ctx)->count(topic);
+      void* ctx, PJ_topic_handle_t topic, int64_t timestamp_ns, const PJ_bound_field_value_t*, uint64_t,
+      PJ_error_t*) noexcept {
+    static_cast<CaptureHost*>(ctx)->count(topic, timestamp_ns);
     return true;
   }
   static bool appendArrowStream(
@@ -195,6 +201,7 @@ inline ImportCapture runImport(const std::string& plugin_path, const std::string
     }
   }
   result.rows = host.rows;
+  result.timestamps = host.timestamps;
   result.messages = host.messages;
   return result;
 }
