@@ -18,7 +18,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -27,6 +30,10 @@
 #include <vector>
 
 namespace ulog_container {
+
+/// The largest ULog timestamp (microseconds) whose nanoseconds fit in int64 (about 292 years). Anything above is a
+/// damaged value: converting it would overflow.
+inline constexpr uint64_t kMaxTimestampUs = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) / 1000;
 
 struct TimedParameter {
   ulog_cpp::Parameter parameter;
@@ -68,15 +75,25 @@ class ULogContainer : public ulog_cpp::DataContainer {
   std::vector<TimedParameter> timed_changes_;
 };
 
-/// Reads `path` through `container` in 64 KiB chunks. `after_chunk(bytes_read)`
-/// returns false to stop early. Returns false if the file cannot be opened.
+struct ReadOutcome {
+  bool opened = false;
+  /// Set when ulog_cpp threw while reading (some damaged messages raise more than its ParsingException): the read
+  /// stopped there, and everything before it is in the container.
+  std::string error;
+};
+
+/// Reads `path` (UTF-8, as the host passes it) through `container` in 64 KiB chunks. `after_chunk(bytes_read)` returns
+/// false to stop early.
 template <typename AfterChunk>
-bool readLog(
+ReadOutcome readLog(
     const std::string& path, const std::shared_ptr<ulog_cpp::DataContainer>& container, AfterChunk&& after_chunk) {
-  std::ifstream file(path, std::ios::binary);
+  // A narrow path is read in the ANSI code page on Windows; a char8_t path is not.
+  std::ifstream file(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::binary);
+  ReadOutcome outcome;
   if (!file.is_open()) {
-    return false;
+    return outcome;
   }
+  outcome.opened = true;
   ulog_cpp::Reader reader{container};
   static constexpr size_t kChunkSize = 65536;
   std::vector<uint8_t> buffer(kChunkSize);
@@ -87,13 +104,18 @@ bool readLog(
     if (count == 0) {
       break;
     }
-    reader.readChunk(buffer.data(), static_cast<int>(count));
+    try {
+      reader.readChunk(buffer.data(), static_cast<int>(count));
+    } catch (const std::exception& e) {
+      outcome.error = e.what();
+      break;
+    }
     bytes_read += count;
     if (!after_chunk(bytes_read)) {
       break;
     }
   }
-  return true;
+  return outcome;
 }
 
 }  // namespace ulog_container

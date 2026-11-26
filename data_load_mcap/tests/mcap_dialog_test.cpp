@@ -342,9 +342,12 @@ TEST(McapDialogTest, SchemalessChannelsAreOfferedInThePicker) {
 }
 
 // Writes one split of a ROS 2 bag: `count` messages on each of `topics`.
-void writeBagSplit(const std::filesystem::path& path, const std::vector<std::string>& topics, int count) {
+void writeBagSplit(
+    const std::filesystem::path& path, const std::vector<std::string>& topics, int count, bool summary_offsets = true) {
+  mcap::McapWriterOptions options("ros2");
+  options.noSummaryOffsets = !summary_offsets;
   mcap::McapWriter writer;
-  ASSERT_TRUE(writer.open(path.string(), mcap::McapWriterOptions("ros2")).ok());
+  ASSERT_TRUE(writer.open(path.string(), options).ok());
   mcap::Schema schema("std_msgs/msg/Int32", "ros2msg", "int32 data");
   writer.addSchema(schema);
   const std::string payload(8, '\0');
@@ -365,6 +368,28 @@ void writeBagSplit(const std::filesystem::path& path, const std::vector<std::str
 
 void writeText(const std::filesystem::path& path, const std::string& text) {
   std::ofstream(path, std::ios::binary) << text;
+}
+
+// Without SummaryOffset records the dialog cannot jump to the channel and
+// statistics groups; it must still list the same channels and counts.
+TEST(McapDialogTest, RecordingWithoutSummaryOffsetsListsChannelsAndCounts) {
+  const auto path = std::filesystem::temp_directory_path() / "pj_mcap_no_summary_offsets_dialog_test.mcap";
+  writeBagSplit(path, {"/a", "/b"}, 4, /*summary_offsets=*/false);
+
+  McapDialog dialog;
+  nlohmann::json cfg;
+  cfg["filepath"] = path.string();
+  ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+  EXPECT_TRUE(dialog.analyzeError().empty()) << dialog.analyzeError();
+
+  const auto rows = nlohmann::json::parse(dialog.widget_data())["tableWidget"]["rows"];
+  ASSERT_EQ(rows.size(), 2u) << rows.dump();
+  EXPECT_EQ(rows[0][0], "/a");
+  EXPECT_EQ(rows[0][3], "4");
+  EXPECT_EQ(rows[1][0], "/b");
+  EXPECT_EQ(rows[1][3], "4");
+
+  std::filesystem::remove(path);
 }
 
 // A split rosbag2 bag opened through its metadata.yaml shows ONE channel list:
