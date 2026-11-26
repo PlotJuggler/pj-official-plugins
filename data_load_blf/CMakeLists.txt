@@ -47,6 +47,7 @@ target_link_libraries(blf_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
   blf_core
   pj_can_dbc
+  pj_utf8_path
   nlohmann_json::nlohmann_json)
 
 pj_embed_manifest(blf_source_plugin

@@ -17,6 +17,7 @@ target_link_libraries(toolbox_anomaly_detector_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
   anomaly_helpers
   pj_toolbox_preview
+  pj_utf8_path
   nlohmann_json::nlohmann_json
   ${CMAKE_DL_LIBS}
 )
@@ -50,6 +51,7 @@ if(TARGET GTest::gtest_main)
   target_link_libraries(toolbox_anomaly_detector_dialog_test PRIVATE
     plotjuggler_sdk::plugin_host
     plotjuggler_sdk::plugin_sdk
+    pj_utf8_path
     nlohmann_json::nlohmann_json
     GTest::gtest_main
   )

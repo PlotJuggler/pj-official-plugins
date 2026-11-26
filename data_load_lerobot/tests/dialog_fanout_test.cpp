@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <vector>
 
@@ -26,8 +27,9 @@ namespace fs = std::filesystem;
 // Minimal valid v2.1 dataset tree with `episodes` episodes (indices 0..N-1) under a fresh temp dir whose folder
 // name is the dataset name we expect to surface (deliberately not "info").
 fs::path makeDatasetFixture(const std::string& prefix = "pusht_v21_dialogfix", int episodes = 1) {
-  const fs::path root = fs::temp_directory_path() /
-                        fs::path(prefix + "_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+  const fs::path root =
+      fs::temp_directory_path() /
+      PJ::utf8_path::pathFromUtf8(prefix + "_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
   fs::remove_all(root);
   fs::create_directories(root / "meta");
   std::ofstream(root / "meta" / "info.json") << R"({
@@ -104,6 +106,21 @@ TEST(LeRobotDialogFanout, SaveConfigEmitsDisplayNameFromDatasetRoot) {
   ASSERT_TRUE(j.contains("display_name"));
   EXPECT_EQ(j["display_name"].get<std::string>(), root.filename().string());
   EXPECT_NE(j["display_name"].get<std::string>(), std::string("info"));
+
+  fs::remove_all(root);
+}
+
+// The host hands the dialog its path as UTF-8; on Windows a narrow conversion reads it in the ANSI code page. The
+// dataset name that goes back to the host is UTF-8 too.
+TEST(LeRobotDialogFanout, OpensDatasetUnderNonAsciiFolder) {
+  const fs::path root = makeDatasetFixture(PJ::utf8_path::utf8String(u8"utf8_\u043f\u0443\u0442\u044c_\u98db\u884c"));
+  LeRobotDialog d;
+  ASSERT_TRUE(
+      d.loadConfig(nlohmann::json{{"filepath", PJ::utf8_path::pathToUtf8(root / "meta" / "info.json")}}.dump()));
+  ASSERT_NE(d.model(), nullptr) << d.datasetError();
+
+  const auto j = nlohmann::json::parse(d.saveConfig());
+  EXPECT_EQ(j["display_name"].get<std::string>(), PJ::utf8_path::pathToUtf8(root.filename()));
 
   fs::remove_all(root);
 }

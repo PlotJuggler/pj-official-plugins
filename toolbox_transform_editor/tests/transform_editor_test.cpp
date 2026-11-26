@@ -1560,6 +1560,28 @@ TEST(TransformEditorLibrary, TheNewFieldsRoundTripAndAnOldLibraryStillLoads) {
   std::filesystem::remove_all(dir);
 }
 
+// The host hands the Export target over as UTF-8; on Windows a narrow conversion reads it in the ANSI code page.
+TEST(TransformEditorLibrary, ExportWritesToAFileUnderANonAsciiPath) {
+  Rig rig;
+  Snippet twice;
+  twice.name = "twice";
+  twice.function_body = "return value*2";
+  rig.dialog().setSnippets({twice});
+
+  const auto dir = std::filesystem::temp_directory_path() /
+                   std::filesystem::path(u8"te_snippets_utf8_\u043f\u0443\u0442\u044c_\u98db\u884c");
+  std::filesystem::create_directories(dir);
+  const std::string path = PJ::utf8_path::pathToUtf8(
+      dir / std::filesystem::path(u8"\u0444\u0443\u043d\u043a\u0446\u0438\u0438_\u95a2\u6570.json"));
+
+  EXPECT_TRUE(rig.dialog().onFileSelected("buttonSaveFunctions", path));
+  const auto loaded = loadSnippetsFromPath(PJ::utf8_path::pathFromUtf8(path));
+  ASSERT_TRUE(loaded);
+  ASSERT_EQ(loaded->size(), 1u);
+  EXPECT_EQ((*loaded)[0].name, "twice");
+  std::filesystem::remove_all(dir);
+}
+
 TEST(TransformEditorLibrary, TheBuiltInsKeepTheNineSeriesFunctionsAndAddTheObjectOnes) {
   const auto snippets = defaultSnippets();
   const auto count = [&](const std::string& kind) {

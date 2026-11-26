@@ -2,6 +2,11 @@
 
 One entry per released version (newest first).
 
+## Upcoming
+
+### Fixed
+- On Windows, a file in a folder or with a name that has non-ASCII characters (Cyrillic, Chinese, accents) opens instead of failing with "cannot open file".
+
 ## [0.1.2] - 2026-11-19
 
 ### Fixed

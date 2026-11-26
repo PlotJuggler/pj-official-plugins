@@ -4,6 +4,7 @@
 #include "pj_video_demux/video_demux.hpp"
 
 #include <ios>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <utility>
 
@@ -301,7 +302,7 @@ Expected<std::vector<uint8_t>> LazyAccessUnitReader::readUnit(const AccessUnit& 
   std::lock_guard<std::mutex> lock(mutex_);
   if (!open_attempted_) {
     open_attempted_ = true;
-    stream_.open(path_, std::ios::binary);
+    stream_.open(PJ::utf8_path::pathFromUtf8(path_), std::ios::binary);
     open_failed_ = !stream_.is_open();
   }
   if (open_failed_) {

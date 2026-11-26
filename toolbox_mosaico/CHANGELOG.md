@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_mosaico/`.
 
+## Upcoming
+
+### Fixed
+- A TLS certificate path with non-ASCII characters (Cyrillic, Chinese, accents) is no longer refused with "TLS certificate path contains invalid characters". On Windows the connection itself still needs a certificate path with ASCII characters only.
+
 ## [1.3.1] - 2026-11-09
 
 ### Changed

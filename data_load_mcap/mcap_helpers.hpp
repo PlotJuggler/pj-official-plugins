@@ -3,12 +3,14 @@
 // Note: MCAP_IMPLEMENTATION must be defined in exactly one translation unit
 // before including this header.
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <mcap/reader.hpp>
 #include <memory>
 #include <optional>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -373,19 +375,20 @@ struct RecordingFiles {
 /// with per-file compression (.mcap.zstd) are rejected, never half-loaded.
 inline RecordingFiles resolveRecordingFiles(const std::string& path) {
   namespace fs = std::filesystem;
-  const auto has_extension = [](const fs::path& p, std::string_view ext) {
-    std::string e = p.extension().string();
-    std::transform(e.begin(), e.end(), e.begin(), [](char c) {
-      return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-    });
-    return e == ext;
+  // A string test on the UTF-8 name: building a filesystem path from it would read it in the ANSI code page on
+  // Windows, and path::string() would give back ANSI bytes. `ext` is lower case.
+  const auto has_extension = [](std::string_view name, std::string_view ext) {
+    return name.size() >= ext.size() &&
+           std::equal(
+               name.end() - static_cast<std::ptrdiff_t>(ext.size()), name.end(), ext.begin(),
+               [](char a, char b) { return ((a >= 'A' && a <= 'Z') ? static_cast<char>(a - 'A' + 'a') : a) == b; });
   };
 
-  const fs::path yaml_path(path);
-  if (!has_extension(yaml_path, ".yaml") && !has_extension(yaml_path, ".yml")) {
+  if (!has_extension(path, ".yaml") && !has_extension(path, ".yml")) {
     return {{path}, {}};
   }
 
+  const fs::path yaml_path = utf8_path::pathFromUtf8(path);
   std::ifstream in(yaml_path, std::ios::binary);
   if (!in) {
     return {{}, "Cannot open " + path};
@@ -409,14 +412,14 @@ inline RecordingFiles resolveRecordingFiles(const std::string& path) {
 
   RecordingFiles out;
   for (const std::string& relative : meta.relative_file_paths) {
-    const fs::path file = yaml_path.parent_path() / relative;
-    if (!has_extension(file, ".mcap")) {
+    const fs::path file = yaml_path.parent_path() / utf8_path::pathFromUtf8(relative);
+    if (!has_extension(relative, ".mcap")) {
       return {{}, "Only MCAP-storage ROS 2 bags are supported; unsupported bag file: " + relative};
     }
     if (!fs::exists(file)) {
-      return {{}, "ROS 2 bag file listed in metadata.yaml is missing: " + file.string()};
+      return {{}, "ROS 2 bag file listed in metadata.yaml is missing: " + utf8_path::pathToUtf8(file)};
     }
-    out.paths.push_back(file.string());
+    out.paths.push_back(utf8_path::pathToUtf8(file));
   }
   return out;
 }

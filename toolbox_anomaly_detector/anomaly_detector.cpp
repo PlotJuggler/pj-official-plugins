@@ -31,6 +31,7 @@
 #include <pj_base/span.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -337,7 +338,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
       return true;
     }
     if (name == "load_rule_button") {
-      std::ifstream in(std::string{path});
+      std::ifstream in(PJ::utf8_path::pathFromUtf8(path));
       if (!in) {
         status_ = "Error: cannot read " + std::string(path);
         return true;
@@ -495,7 +496,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     anomaly_core::Rule rule;
     rule.code = code_;
     rule.source = selected_source_;
-    std::ofstream out(path);
+    std::ofstream out(PJ::utf8_path::pathFromUtf8(path));
     if (!out) {
       return "Error: cannot write " + path;
     }
