@@ -236,7 +236,7 @@ std::pair<uint64_t, uint64_t> chunkIndexGroup(const std::vector<uint8_t>& data) 
   EXPECT_TRUE(mcap::McapReader::ReadFooter(readable, data.size() - mcap::internal::FooterLength, &footer).ok());
   mcap::RecordReader records(readable, footer.summaryOffsetStart, data.size() - mcap::internal::FooterLength);
   while (auto record = records.next()) {
-    mcap::SummaryOffset offset;
+    mcap::SummaryOffset offset{};
     if (record->opcode == mcap::OpCode::SummaryOffset && mcap::McapReader::ParseSummaryOffset(*record, &offset).ok() &&
         offset.groupOpCode == mcap::OpCode::ChunkIndex) {
       return {offset.groupStart, offset.groupStart + offset.groupLength};
@@ -367,7 +367,7 @@ uint64_t summaryOffsetRecordOf(const std::vector<uint8_t>& data, mcap::OpCode gr
   EXPECT_TRUE(mcap::McapReader::ReadFooter(readable, data.size() - mcap::internal::FooterLength, &footer).ok());
   mcap::RecordReader records(readable, footer.summaryOffsetStart, data.size() - mcap::internal::FooterLength);
   while (auto record = records.next()) {
-    mcap::SummaryOffset offset;
+    mcap::SummaryOffset offset{};
     if (record->opcode == mcap::OpCode::SummaryOffset && mcap::McapReader::ParseSummaryOffset(*record, &offset).ok() &&
         offset.groupOpCode == group) {
       return records.curRecordOffset();
