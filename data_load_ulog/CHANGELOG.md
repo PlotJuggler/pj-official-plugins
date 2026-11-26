@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_ulog/`.
 
-## Upcoming
+## [1.4.1] - 2026-11-26
 
 ### Fixed
 - A log with an empty text info entry (PX4 writes some, such as
