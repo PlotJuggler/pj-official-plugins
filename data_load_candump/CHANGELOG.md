@@ -10,8 +10,8 @@ One entry per released version (newest first).
 - NMEA 2000 fast-packet messages (DBC messages longer than 8 bytes) are reassembled from their frames and decoded; signals past the end of a shorter message are left out of that row. Frames that cannot be reassembled are counted in the import summary.
 
 ### Fixed
-
 - A signed 64-bit DBC signal is read as two's complement. A negative value used to show as a huge positive one.
+- On Windows, a file in a folder or with a name that has non-ASCII characters (Cyrillic, Chinese, accents) opens instead of failing with "cannot open file".
 
 ## [0.1.2] - 2026-11-19
 

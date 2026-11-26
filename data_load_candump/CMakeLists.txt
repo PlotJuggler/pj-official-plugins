@@ -29,6 +29,7 @@ target_link_libraries(candump_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
   candump_core
   pj_can_dbc
+  pj_utf8_path
   nlohmann_json::nlohmann_json)
 
 pj_embed_manifest(candump_source_plugin
@@ -75,6 +76,7 @@ target_link_libraries(candump_source_test PRIVATE
   plotjuggler_sdk::plugin_host
   candump_core
   pj_can_dbc
+  pj_utf8_path
   nlohmann_json::nlohmann_json
   GTest::gtest_main)
 add_test(NAME candump_source_test COMMAND candump_source_test)

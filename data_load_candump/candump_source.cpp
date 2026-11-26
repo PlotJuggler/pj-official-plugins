@@ -11,6 +11,7 @@
 #include <pj_can_dbc/dictionary_paths.hpp>
 #include <pj_can_dbc/fast_packet.hpp>
 #include <pj_can_dbc/signal_row.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -24,8 +25,9 @@
 
 namespace {
 
+// A string test: building a filesystem path from the UTF-8 name would read it in the ANSI code page on Windows.
 bool endsWithCsv(const std::string& path) {
-  return PJ::sdk::lowerAscii(std::filesystem::path(path).extension().string()) == ".csv";
+  return path.size() >= 4 && PJ::sdk::lowerAscii(path.substr(path.size() - 4)) == ".csv";
 }
 
 /// Per-interface decode/topic state, resolved once per bus-name CHANGE
@@ -80,13 +82,13 @@ class CandumpSource : public PJ::FileSourceBase {
     }
 
     std::error_code ec;
-    const std::uintmax_t file_size = std::filesystem::file_size(filepath, ec);
+    const std::uintmax_t file_size = std::filesystem::file_size(PJ::utf8_path::pathFromUtf8(filepath), ec);
     const std::uint64_t total_bytes = ec ? 0 : static_cast<std::uint64_t>(file_size);
     (void)runtimeHost().progressStart("Importing candump", total_bytes, true);
 
     candump_detail::TimeMode mode = candump_detail::TimeMode::kAbsolute;
     {
-      std::ifstream prescan(filepath);
+      std::ifstream prescan(PJ::utf8_path::pathFromUtf8(filepath));
       if (!prescan.is_open()) {
         return PJ::unexpected(std::string("cannot open file: ") + filepath);
       }
@@ -152,7 +154,7 @@ class CandumpSource : public PJ::FileSourceBase {
           PJ::DataSourceMessageLevel::kWarning, "no dictionary assigned to any interface; nothing will be decoded");
     }
 
-    std::ifstream file(filepath);
+    std::ifstream file(PJ::utf8_path::pathFromUtf8(filepath));
     if (!file.is_open()) {
       return PJ::unexpected(std::string("cannot open file: ") + filepath);
     }

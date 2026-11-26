@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <pj_base/sdk/platform.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <vector>
 
@@ -106,6 +108,19 @@ TEST(VideoDemuxTest, IndexAndReadHevcFixture) {
 
 TEST(VideoDemuxTest, IndexAndReadAv1Fixture) {
   indexAndReadFixture(fixture("test_av1.mp4"), "av1");
+}
+
+// The host passes the path as UTF-8: libavformat opens it by itself, the lazy reader through a filesystem path.
+TEST(VideoDemuxTest, IndexAndReadFixtureInNonAsciiFolder) {
+  namespace fs = std::filesystem;
+  const fs::path dir =
+      fs::temp_directory_path() / fs::path(u8"pj_video_demux_utf8_\u043f\u0443\u0442\u044c_\u98db\u884c");
+  fs::create_directories(dir);
+  const fs::path copy = dir / fs::path(u8"\u0432\u0438\u0434\u0435\u043e_\u52d5\u753b.mp4");
+  fs::copy_file(fixture("test_h264.mp4"), copy, fs::copy_options::overwrite_existing);
+  indexAndReadFixture(PJ::utf8_path::pathToUtf8(copy), "h264");
+  std::error_code ec;
+  fs::remove_all(dir, ec);
 }
 
 TEST(VideoDemuxTest, IndexAndReadExternalVideo) {

@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -12,15 +13,15 @@ using namespace lerobot;  // NOLINT(build/namespaces) — test-local convenience
 namespace {
 
 // Writes a minimal but realistic LeRobot v2.1 tree under a fresh temp dir.
-// `version` lets a test override codebase_version for the v3 gate case.
-fs::path makeFixture(const std::string& version = "v2.1") {
+// `version` lets a test override codebase_version for the v3 gate case; `camera` is the video feature's UTF-8 name.
+fs::path makeFixture(const std::string& version = "v2.1", const std::string& camera = "observation.images.top") {
   const fs::path root =
       fs::temp_directory_path() /
       fs::path("lerobot_fixture_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" + version);
   fs::remove_all(root);
   fs::create_directories(root / "meta");
   fs::create_directories(root / "data" / "chunk-000");
-  fs::create_directories(root / "videos" / "chunk-000" / "observation.images.top");
+  fs::create_directories(root / "videos" / "chunk-000" / PJ::utf8_path::pathFromUtf8(camera));
 
   std::ofstream(root / "meta" / "info.json") << R"({
     "codebase_version": ")" << version << R"(",
@@ -32,7 +33,7 @@ fs::path makeFixture(const std::string& version = "v2.1") {
     "features": {
       "observation.state": {"dtype": "float32", "shape": [3], "names": ["a","b","c"]},
       "action": {"dtype": "float32", "shape": [2]},
-      "observation.images.top": {"dtype": "video", "shape": [224,224,3]}
+      ")" << camera << R"(": {"dtype": "video", "shape": [224,224,3]}
     }
   })";
 
@@ -101,6 +102,29 @@ TEST(LoadDatasetModel, WalksUpFromParquetFile) {
   EXPECT_EQ(
       model->episodeVideo(1, "observation.images.top"),
       root / "videos" / "chunk-000" / "observation.images.top" / "episode_000001.mp4");
+
+  fs::remove_all(root);
+}
+
+// The host hands over UTF-8: a camera name with non-ASCII characters is a folder name in the video path.
+TEST(LoadDatasetModel, NonAsciiCameraNameJoinsIntoTheVideoPath) {
+  // Arrange
+  const std::string camera =
+      PJ::utf8_path::utf8String(u8"observation.images.\u043a\u0430\u043c\u0435\u0440\u0430_\u52d5\u753b");
+  const fs::path root = makeFixture("v2.1", camera);
+
+  // Act
+  auto model = loadDatasetModel(root / "meta" / "info.json");
+
+  // Assert
+  ASSERT_TRUE(model.has_value()) << (model.has_value() ? "" : model.error());
+  ASSERT_EQ(model->camera_names.size(), 1u);
+  EXPECT_EQ(model->camera_names[0], camera);
+  // Compared as paths: the template joins with '/', and Windows path comparison treats '/' and '\\' alike.
+  const fs::path expected = root / "videos" / "chunk-000" / PJ::utf8_path::pathFromUtf8(camera) / "episode_000001.mp4";
+  EXPECT_TRUE(model->episodeVideo(1, camera) == expected)
+      << PJ::utf8_path::pathToUtf8(model->episodeVideo(1, camera)) << " vs " << PJ::utf8_path::pathToUtf8(expected);
+  EXPECT_TRUE(fs::is_directory(model->episodeVideo(1, camera).parent_path()));
 
   fs::remove_all(root);
 }

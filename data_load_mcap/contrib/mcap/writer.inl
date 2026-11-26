@@ -1,4 +1,5 @@
 #include "crc32.hpp"
+#include "local_utf8_path.hpp"
 #include <algorithm>
 #include <cassert>
 #include <iostream>
@@ -45,7 +46,12 @@ FileWriter::~FileWriter() {
 
 Status FileWriter::open(std::string_view filename) {
   end();
+#ifdef _WIN32
+  // PJ4 local patch (not upstream): fopen reads the UTF-8 name in the ANSI code page.
+  file_ = ::_wfopen(internal::pathFromUtf8(filename).c_str(), L"wb");
+#else
   file_ = std::fopen(filename.data(), "wb");
+#endif
   if (!file_) {
     const auto msg = internal::StrCat("failed to open file \"", filename, "\" for writing");
     return Status(StatusCode::OpenFailed, msg);

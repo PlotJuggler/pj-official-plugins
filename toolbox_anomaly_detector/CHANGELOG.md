@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `toolbox_anomaly_detector/`.
 
+## Upcoming
+
+### Fixed
+- On Windows, a rule can be saved to and loaded from a folder or file name that has non-ASCII characters (Cyrillic, Chinese, accents).
+
 ## [0.3.2] - 2026-11-23
 
 ### Fixed

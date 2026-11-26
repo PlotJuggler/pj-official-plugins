@@ -310,11 +310,12 @@ void MosaicoDialog::initFromSettings() {
   if (!history.empty()) {
     const std::string uri = state_.uri;
     const ServerCredentials creds = resolveCredentials(settings_, uri);
-    // Same printable-ASCII gate as the explicit Connect handler (PJ3
-    // connectToServer validates both paths). On auto-connect PJ3 shows no
+    // Same gate as the explicit Connect handler (PJ3 connectToServer
+    // validates both paths): printable ASCII for the URI and API key, no
+    // control characters in the certificate path. On auto-connect PJ3 shows no
     // popup, so a malformed persisted value silently aborts the auto-connect
     // rather than handing control bytes to gRPC.
-    if (isPrintableAscii(uri) && isPrintableAscii(creds.cert_path) && isPrintableAscii(creds.api_key)) {
+    if (isPrintableAscii(uri) && hasNoControlChars(creds.cert_path) && isPrintableAscii(creds.api_key)) {
       state_.connecting = true;
       state_.suppress_connect_error = true;  // PJ3 AutoConnect: no error notification on failure.
       postCommand([w = worker_.get(), uri, creds] { w->connectAsync(uri, creds); });
@@ -854,8 +855,8 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       notify(PJ::ToolboxMessageLevel::kError, "Server URI contains invalid characters (control or non-ASCII bytes).");
       return true;
     }
-    if (!isPrintableAscii(creds.cert_path)) {
-      notify(PJ::ToolboxMessageLevel::kError, "TLS certificate path contains invalid characters.");
+    if (!hasNoControlChars(creds.cert_path)) {
+      notify(PJ::ToolboxMessageLevel::kError, "TLS certificate path contains control characters.");
       return true;
     }
     if (!isPrintableAscii(creds.api_key)) {

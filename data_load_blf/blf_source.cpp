@@ -5,6 +5,7 @@
 #include <pj_can_dbc/can_decoder.hpp>
 #include <pj_can_dbc/can_topic.hpp>
 #include <pj_can_dbc/signal_row.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -50,7 +51,7 @@ class BlfSource : public PJ::FileSourceBase {
     }
 
     std::error_code ec;
-    const std::uintmax_t file_size = std::filesystem::file_size(filepath, ec);
+    const std::uintmax_t file_size = std::filesystem::file_size(PJ::utf8_path::pathFromUtf8(filepath), ec);
     const std::uint64_t total = ec ? 0 : static_cast<std::uint64_t>(file_size);
     (void)runtimeHost().progressStart("Importing BLF", total, true);
 

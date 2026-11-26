@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_3d/`.
 
+## Upcoming
+
+### Fixed
+- On Windows, a file in a folder or with a name that has non-ASCII characters (Cyrillic, Chinese, accents) opens instead of failing with "cannot open file".
+
 ## [1.2.0] - 2026-11-25
 
 ### Added

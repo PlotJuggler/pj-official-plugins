@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <sstream>
 #include <system_error>
 
@@ -13,6 +14,8 @@ namespace {
 
 using nlohmann::json;
 namespace fs = std::filesystem;
+using PJ::utf8_path::pathFromUtf8;
+using PJ::utf8_path::pathToUtf8;
 
 constexpr int kMaxRootWalk = 6;
 constexpr const char* kDefaultDataPath = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet";
@@ -65,13 +68,13 @@ double doubleField(const json& obj, const char* key, double fallback) {
 PJ::Expected<json> readJsonFile(const fs::path& path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) {
-    return PJ::unexpected("cannot open " + path.string());
+    return PJ::unexpected("cannot open " + pathToUtf8(path));
   }
   std::stringstream buffer;
   buffer << in.rdbuf();
   json parsed = json::parse(buffer.str(), nullptr, /*allow_exceptions=*/false);
   if (parsed.is_discarded()) {
-    return PJ::unexpected("invalid JSON in " + path.string());
+    return PJ::unexpected("invalid JSON in " + pathToUtf8(path));
   }
   return parsed;
 }
@@ -132,7 +135,7 @@ PJ::Expected<fs::path> resolveRoot(const fs::path& picked) {
     }
     dir = dir.parent_path();
   }
-  return PJ::unexpected("not a LeRobot dataset: meta/info.json not found near " + picked.string());
+  return PJ::unexpected("not a LeRobot dataset: meta/info.json not found near " + pathToUtf8(picked));
 }
 
 // `names` may be a flat array (["a","b"]) or a dict of arrays
@@ -212,7 +215,7 @@ PJ::Status parseEpisodes(const fs::path& root, const std::vector<std::string>& t
   fs::path ep_path = root / "meta" / "episodes.jsonl";
   std::ifstream in(ep_path, std::ios::binary);
   if (!in) {
-    return PJ::unexpected("missing " + ep_path.string());
+    return PJ::unexpected("missing " + pathToUtf8(ep_path));
   }
   std::string line;
   while (std::getline(in, line)) {
@@ -253,7 +256,8 @@ void synthesizeShardsV2(DatasetModel& model) {
   for (const auto& ep : model.episodes) {
     const int64_t chunk = model.chunks_size > 0 ? ep.episode_index / model.chunks_size : 0;
     EpisodeShard shard;
-    shard.parquet_path = model.root / expandPathTemplate(model.data_path_tmpl, chunk, ep.episode_index, {});
+    shard.parquet_path =
+        model.root / pathFromUtf8(expandPathTemplate(model.data_path_tmpl, chunk, ep.episode_index, {}));
     shard.row_from = 0;
     shard.row_to = ep.length;
     if (!ep.task_text.empty()) {
@@ -261,7 +265,7 @@ void synthesizeShardsV2(DatasetModel& model) {
     }
     for (const std::string& cam : model.camera_names) {
       VideoShard vs;
-      vs.mp4_path = model.root / expandPathTemplate(model.video_path_tmpl, chunk, ep.episode_index, cam);
+      vs.mp4_path = model.root / pathFromUtf8(expandPathTemplate(model.video_path_tmpl, chunk, ep.episode_index, cam));
       // start_ns / end_ns left absent → whole-file playback, unchanged from
       // the original v2.x behavior.
       shard.videos[cam] = std::move(vs);

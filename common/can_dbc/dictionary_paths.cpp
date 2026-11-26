@@ -4,6 +4,7 @@
 #include <fstream>
 #include <optional>
 #include <pj_can_dbc/dictionary_paths.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -15,10 +16,9 @@ namespace {
 
 namespace fs = std::filesystem;
 
-fs::path toPath(std::string_view utf8) {
-  return fs::path(std::u8string_view(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size()));
-}
+using PJ::utf8_path::pathFromUtf8;
 
+/// Forward-slash form, so a stored path reads the same on every platform.
 std::string toUtf8(const fs::path& path) {
   const auto text = path.generic_u8string();
   return std::string(reinterpret_cast<const char*>(text.data()), text.size());
@@ -33,7 +33,7 @@ fs::path dataDir(std::string_view data_file) {
   if (data_file.empty() || isUrl(data_file)) {
     return {};
   }
-  return toPath(data_file).lexically_normal().parent_path();
+  return pathFromUtf8(data_file).lexically_normal().parent_path();
 }
 
 /// True when `path` has more components than `dir` and starts with all of them.
@@ -70,8 +70,8 @@ std::optional<std::pair<fs::path, fs::path>> movedRoots(std::string_view saved_d
   if (saved_data_file.empty() || data_file.empty() || isUrl(saved_data_file) || isUrl(data_file)) {
     return std::nullopt;
   }
-  const fs::path old_file = toPath(saved_data_file).lexically_normal();
-  const fs::path new_file = toPath(data_file).lexically_normal();
+  const fs::path old_file = pathFromUtf8(saved_data_file).lexically_normal();
+  const fs::path new_file = pathFromUtf8(data_file).lexically_normal();
   if (!old_file.is_absolute() || !new_file.is_absolute()) {
     return std::nullopt;
   }
@@ -96,7 +96,7 @@ std::string toConfigPath(std::string_view aux_path, std::string_view data_file) 
   if (isUrl(aux_path)) {
     return std::string(aux_path);
   }
-  const fs::path aux = toPath(aux_path);
+  const fs::path aux = pathFromUtf8(aux_path);
   const fs::path dir = dataDir(data_file);
   if (!aux.is_absolute() || !dir.is_absolute()) {
     return std::string(aux_path);
@@ -128,12 +128,12 @@ std::string resolveAuxPath(std::string_view stored, const AuxPathContext& contex
   if (stored.empty() || isUrl(stored) || context.data_file.empty() || isUrl(context.data_file)) {
     return std::string(stored);
   }
-  const fs::path path = toPath(stored);
+  const fs::path path = pathFromUtf8(stored);
   const fs::path current = dataDir(context.data_file);
   if (path.is_relative()) {
     const bool use_saved_base =
         context.saved_data_file.empty() && !context.base_dir.empty() && !isUrl(context.base_dir);
-    const fs::path base = use_saved_base ? toPath(context.base_dir) : current;
+    const fs::path base = use_saved_base ? pathFromUtf8(context.base_dir) : current;
     return toUtf8((base / path).lexically_normal());
   }
   const auto roots = movedRoots(context.saved_data_file, context.data_file);
@@ -169,7 +169,7 @@ std::vector<std::string> resolveAuxPaths(const std::vector<std::string>& stored,
 }
 
 PJ::Expected<std::string> readAuxFile(const std::string& path, std::string_view kind) {
-  const fs::path file = toPath(path);
+  const fs::path file = pathFromUtf8(path);
   std::error_code ec;
   if (!fs::is_regular_file(file, ec)) {
     return PJ::unexpected(std::string(kind) + " file not found: " + path);

@@ -11,6 +11,7 @@
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/parser_array_policy.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -206,7 +207,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       // invalid path with the stale schema. Clearing by hand (not via
       // loadAndCompileProtoFile) avoids flashing "could not open" errors on
       // intermediate keystrokes.
-      if (std::ifstream(proto_file_path_).good()) {
+      if (std::ifstream(PJ::utf8_path::pathFromUtf8(proto_file_path_)).good()) {
         loadAndCompileProtoFile();
       } else {
         message_types_.clear();
@@ -290,7 +291,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     // available.
     restoreMessageTypesFromCompiledSchema();
     if (!proto_file_path_.empty()) {
-      std::ifstream proto_file(proto_file_path_);
+      std::ifstream proto_file(PJ::utf8_path::pathFromUtf8(proto_file_path_));
       if (proto_file.good()) {
         proto_file.close();
 
@@ -370,7 +371,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     }
 
     // Read file content for preview
-    std::ifstream file(proto_file_path_);
+    std::ifstream file(PJ::utf8_path::pathFromUtf8(proto_file_path_));
     if (!file.is_open()) {
       compile_error_ = "Could not open file: " + proto_file_path_;
       return;

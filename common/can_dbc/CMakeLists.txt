@@ -32,7 +32,7 @@ if(DEFINED PJ_WARNING_FLAGS)
 endif()
 target_include_directories(pj_can_dbc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # dbc is PRIVATE: can_decoder.hpp hides it behind a pImpl (no dbc header leaks).
-target_link_libraries(pj_can_dbc PUBLIC plotjuggler_sdk::base PRIVATE dbc)
+target_link_libraries(pj_can_dbc PUBLIC plotjuggler_sdk::base PRIVATE dbc pj_utf8_path)
 
 # GTest-guarded so this common target can be configured unconditionally.
 find_package(GTest QUIET CONFIG)

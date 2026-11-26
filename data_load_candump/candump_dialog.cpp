@@ -8,6 +8,7 @@
 #include <pj_base/time_format.hpp>
 #include <pj_can_dbc/dictionary_paths.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -117,7 +118,7 @@ void appendCounterLine(
 /// prescan cap can stop long before the end of a multi-million-line file,
 /// so the displayed "end of capture" time comes from here instead.
 std::optional<std::int64_t> readTailLastTimestampNs(const std::string& path, std::uint64_t tail_bytes) {
-  std::ifstream file(path, std::ios::binary);
+  std::ifstream file(PJ::utf8_path::pathFromUtf8(path), std::ios::binary);
   if (!file.is_open()) {
     return std::nullopt;
   }
@@ -435,7 +436,7 @@ void CandumpDialog::scanFile() {
     return;
   }
 
-  std::ifstream file(filepath_);
+  std::ifstream file(PJ::utf8_path::pathFromUtf8(filepath_));
   if (!file.is_open()) {
     summary_ = "Failed to open file.";
     return;

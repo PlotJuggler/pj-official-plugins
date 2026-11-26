@@ -70,6 +70,10 @@ TEST_F(Mf4LayoutPaths, SiblingDictionaryFolderFollowsCopy) {
   checkCopiedLayoutUsesTheCopysDbc("data", "dbc");
 }
 
+TEST_F(Mf4LayoutPaths, NonAsciiFolderImports) {
+  checkNonAsciiFolderImports();
+}
+
 TEST_F(Mf4LayoutPaths, MissingDbcReportsNotFoundWarning) {
   checkMissingDbcReportsNotFoundWarning();
 }

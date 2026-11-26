@@ -9,6 +9,7 @@
 #include <pj_base/builtin/mesh3d_codec.hpp>
 #include <pj_base/builtin/point_cloud_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <vector>
 
@@ -48,7 +49,7 @@ class Load3dSource : public PJ::FileSourceBase {
   }
 
   PJ::Status importData() override {
-    std::ifstream in(filepath_, std::ios::binary);
+    std::ifstream in(PJ::utf8_path::pathFromUtf8(filepath_), std::ios::binary);
     if (!in) {
       return PJ::unexpected("cannot open file: " + filepath_);
     }

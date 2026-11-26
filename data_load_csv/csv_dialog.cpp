@@ -6,6 +6,7 @@
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <set>
 #include <string>
 #include <vector>
@@ -354,8 +355,7 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
   if (filepath_.empty()) {
     return;
   }
-  // Paths from the host are UTF-8; use a Unicode filesystem path on Windows.
-  std::ifstream file(std::filesystem::path(std::u8string(filepath_.begin(), filepath_.end())));
+  std::ifstream file(PJ::utf8_path::pathFromUtf8(filepath_));
   if (!file.is_open()) {
     return;
   }

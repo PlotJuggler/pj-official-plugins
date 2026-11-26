@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "local_utf8_path.hpp"
 #include <algorithm>
 #include <cassert>
 #ifndef MCAP_COMPRESSION_NO_LZ4
@@ -373,7 +374,12 @@ Status McapReader::open(std::string_view filename) {
     std::fclose(file_);
     file_ = nullptr;
   }
+#ifdef _WIN32
+  // PJ4 local patch (not upstream): fopen reads the UTF-8 name in the ANSI code page.
+  file_ = ::_wfopen(internal::pathFromUtf8(filename).c_str(), L"rb");
+#else
   file_ = std::fopen(filename.data(), "rb");
+#endif
   if (!file_) {
     const auto msg = internal::StrCat("failed to open \"", filename, "\"");
     return Status{StatusCode::OpenFailed, msg};
