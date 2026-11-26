@@ -22,6 +22,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mcap/writer.hpp>
 #include <sstream>
 #include <vector>
@@ -86,7 +87,9 @@ class MemoryReadable : public mcap::IReadable {
 // The writer chunks by default; pass chunked=false for a flat recording, or
 // with_message_index=false to suppress Message Index records — a valid,
 // spec-conformant writer mode that the read-order tests below depend on.
-std::vector<uint8_t> createTestMcap(uint64_t message_count = 10, bool chunked = true, bool with_message_index = true) {
+std::vector<uint8_t> createTestMcap(
+    uint64_t message_count = 10, bool chunked = true, bool with_message_index = true,
+    const std::function<void(mcap::McapWriterOptions&)>& tweak_options = {}) {
   MemoryWritable writable;
   mcap::McapWriter writer;
 
@@ -95,6 +98,9 @@ std::vector<uint8_t> createTestMcap(uint64_t message_count = 10, bool chunked = 
   options.chunkSize = 1024;  // small, so a multi-message fixture spans many chunks
   options.noChunking = !chunked;
   options.noMessageIndex = !with_message_index;
+  if (tweak_options) {
+    tweak_options(options);
+  }
   writer.open(writable, options);
 
   // Add a schema
@@ -203,6 +209,116 @@ TEST(McapHelpersTest, PopulateSummaryFromReader) {
   auto& schema = info.schemas.begin()->second;
   EXPECT_EQ(schema->name, "test_msg");
   EXPECT_EQ(schema->encoding, "json");
+}
+
+// --- readChannelSummary: what the import dialog reads on the GUI thread ---
+
+// Records every read, so a test can tell which parts of the file were touched.
+class RecordingReadable : public MemoryReadable {
+ public:
+  using MemoryReadable::MemoryReadable;
+
+  uint64_t read(std::byte** output, uint64_t offset, uint64_t size) override {
+    const uint64_t n = MemoryReadable::read(output, offset, size);
+    ranges.emplace_back(offset, offset + n);
+    return n;
+  }
+
+  std::vector<std::pair<uint64_t, uint64_t>> ranges;
+};
+
+// [start, end) of the ChunkIndex group, from the summary's SummaryOffset records.
+std::pair<uint64_t, uint64_t> chunkIndexGroup(const std::vector<uint8_t>& data) {
+  MemoryReadable readable(data);
+  mcap::Footer footer;
+  EXPECT_TRUE(mcap::McapReader::ReadFooter(readable, data.size() - mcap::internal::FooterLength, &footer).ok());
+  mcap::RecordReader records(readable, footer.summaryOffsetStart, data.size() - mcap::internal::FooterLength);
+  while (auto record = records.next()) {
+    mcap::SummaryOffset offset;
+    if (record->opcode == mcap::OpCode::SummaryOffset && mcap::McapReader::ParseSummaryOffset(*record, &offset).ok() &&
+        offset.groupOpCode == mcap::OpCode::ChunkIndex) {
+      return {offset.groupStart, offset.groupStart + offset.groupLength};
+    }
+  }
+  ADD_FAILURE() << "no ChunkIndex SummaryOffset";
+  return {0, 0};
+}
+
+// The dialog needs schemas, channels and counts only. Parsing the chunk
+// indexes of a bag with one chunk per message (300k of them) froze the GUI for
+// half a second per call.
+TEST(McapReadChannelSummaryTest, DoesNotReadTheChunkIndexes) {
+  const auto data = createTestMcap(
+      /*message_count=*/200, /*chunked=*/true, /*with_message_index=*/true,
+      [](mcap::McapWriterOptions& options) { options.chunkSize = 1; });
+  const auto [index_start, index_end] = chunkIndexGroup(data);
+  ASSERT_GT(index_end - index_start, 200u) << "fixture needs a chunk index to skip";
+
+  RecordingReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+  readable.ranges.clear();
+
+  McapSummaryInfo info;
+  ASSERT_TRUE(readChannelSummary(reader, info).ok());
+
+  EXPECT_EQ(info.schemas.size(), 1u);
+  ASSERT_EQ(info.channels.size(), 1u);
+  EXPECT_EQ(info.channels.begin()->second->topic, "/test/topic");
+  ASSERT_TRUE(info.statistics.has_value());
+  EXPECT_EQ(info.statistics->messageCount, 200u);
+  EXPECT_EQ(info.statistics->channelMessageCounts.at(info.channels.begin()->first), 200u);
+
+  const auto overlapping = std::count_if(readable.ranges.begin(), readable.ranges.end(), [&](const auto& range) {
+    return range.first < index_end && range.second > index_start;
+  });
+  EXPECT_EQ(overlapping, 0) << "reads inside the chunk indexes [" << index_start << ", " << index_end << ")";
+}
+
+// Each file below has a summary the selective read cannot use; the full read
+// must still deliver the same channels and counts.
+void expectChannelSummaryViaFallback(const std::vector<uint8_t>& data) {
+  MemoryReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+
+  McapSummaryInfo info;
+  ASSERT_TRUE(readChannelSummary(reader, info).ok());
+
+  EXPECT_EQ(info.schemas.size(), 1u);
+  ASSERT_EQ(info.channels.size(), 1u);
+  EXPECT_EQ(info.channels.begin()->second->topic, "/test/topic");
+  ASSERT_TRUE(info.statistics.has_value());
+  EXPECT_EQ(info.statistics->messageCount, 20u);
+  EXPECT_EQ(info.statistics->channelMessageCounts.at(info.channels.begin()->first), 20u);
+}
+
+TEST(McapReadChannelSummaryTest, FallsBackWithoutSummaryOffsets) {
+  expectChannelSummaryViaFallback(
+      createTestMcap(20, true, true, [](mcap::McapWriterOptions& options) { options.noSummaryOffsets = true; }));
+}
+
+TEST(McapReadChannelSummaryTest, FallsBackWithoutStatistics) {
+  // The scan rebuilds the statistics the writer left out.
+  expectChannelSummaryViaFallback(
+      createTestMcap(20, true, true, [](mcap::McapWriterOptions& options) { options.noStatistics = true; }));
+}
+
+TEST(McapReadChannelSummaryTest, FallsBackWithoutASummary) {
+  expectChannelSummaryViaFallback(
+      createTestMcap(20, true, true, [](mcap::McapWriterOptions& options) { options.noSummary = true; }));
+}
+
+TEST(McapReadChannelSummaryTest, FallsBackWhenTheFooterIsDamaged) {
+  auto data = createTestMcap(20);
+  data[data.size() - 4] ^= 0xFF;  // trailing magic
+  expectChannelSummaryViaFallback(data);
+}
+
+TEST(McapReadChannelSummaryTest, FailsOnAReaderThatWasNotOpened) {
+  mcap::McapReader reader;
+  McapSummaryInfo info;
+  EXPECT_FALSE(readChannelSummary(reader, info).ok());
 }
 
 TEST(McapHelpersTest, ReadMessagesIteration) {

@@ -274,6 +274,29 @@ inline void populateSummaryFromReader(const mcap::McapReader& reader, McapSummar
   info.statistics = reader.statistics();
 }
 
+/// Schemas, channels and statistics of an opened file: all the import dialog needs, on the GUI thread.
+/// readSummary() parses every ChunkIndex and builds an interval tree over them, about half a second for
+/// a bag with 300k chunks, so the SummaryOffset records are tried first. The full read, with its fallback
+/// scan, runs only when they cannot deliver the three groups: no summary, no SummaryOffset section, no
+/// Statistics, or a group (or a schema a channel names) that no SummaryOffset record covers.
+inline mcap::Status readChannelSummary(mcap::McapReader& reader, McapSummaryInfo& info) {
+  info = {};
+  if (mcap::IReadable* source = reader.dataSource();
+      source != nullptr && readSelectiveSummary(*source, info).ok() && !info.channels.empty() &&
+      std::all_of(info.channels.begin(), info.channels.end(), [&](const auto& entry) {
+        return isSchemaless(entry.second->schemaId) || info.schemas.count(entry.second->schemaId) != 0;
+      })) {
+    return mcap::StatusCode::Success;
+  }
+
+  info = {};
+  const auto status = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan);
+  if (status.ok()) {
+    populateSummaryFromReader(reader, info);
+  }
+  return status;
+}
+
 /// What a rosbag2 metadata.yaml says about where its data lives.
 struct Rosbag2Metadata {
   bool is_rosbag2 = false;         ///< top-level rosbag2_bagfile_information key present
