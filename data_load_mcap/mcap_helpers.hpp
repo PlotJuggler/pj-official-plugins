@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace PJ::McapHelpers {
@@ -167,6 +168,12 @@ struct McapSummaryInfo {
 /// Read only Schema, Channel, and Statistics records from the MCAP summary
 /// by using SummaryOffset entries to seek directly to each group, skipping
 /// expensive MessageIndex and ChunkIndex data.
+///
+/// Succeeds only when the three groups read back whole: every record parses and has its group's opcode,
+/// and no fewer channels and schemas were found than Statistics counts. Anything else (a SummaryOffset
+/// that points at the wrong place, a record the writer damaged) is an error, so the caller falls back to
+/// McapReader::readSummary, which does not trust the offsets. The Statistics counts are a floor only:
+/// some writers count just the channels that hold messages, so a summary may list more.
 inline mcap::Status readSelectiveSummary(mcap::IReadable& reader, McapSummaryInfo& info) {
   const uint64_t file_size = reader.size();
 
@@ -188,12 +195,9 @@ inline mcap::Status readSelectiveSummary(mcap::IReadable& reader, McapSummaryInf
     return mcap::Status{mcap::StatusCode::InvalidFooter, "no SummaryOffset section available"};
   }
 
-  struct GroupRange {
-    mcap::ByteOffset start = 0;
-    mcap::ByteOffset end = 0;
-  };
-  GroupRange schema_range, channel_range, stats_range;
-  bool found_any = false;
+  // A writer may describe one group with several SummaryOffset records: keep every range.
+  using GroupRanges = std::vector<std::pair<mcap::ByteOffset, mcap::ByteOffset>>;
+  GroupRanges schema_ranges, channel_ranges, stats_ranges;
 
   mcap::RecordReader offset_reader(reader, summary_offset_start, file_size - mcap::internal::FooterLength);
   while (auto record = offset_reader.next()) {
@@ -201,65 +205,81 @@ inline mcap::Status readSelectiveSummary(mcap::IReadable& reader, McapSummaryInf
       continue;
     }
     mcap::SummaryOffset so;
-    if (!mcap::McapReader::ParseSummaryOffset(*record, &so).ok()) {
-      continue;
+    if (status = mcap::McapReader::ParseSummaryOffset(*record, &so); !status.ok()) {
+      return status;
     }
+    const std::pair<mcap::ByteOffset, mcap::ByteOffset> range{so.groupStart, so.groupStart + so.groupLength};
     if (so.groupOpCode == mcap::OpCode::Schema) {
-      schema_range = {so.groupStart, so.groupStart + so.groupLength};
-      found_any = true;
+      schema_ranges.push_back(range);
     } else if (so.groupOpCode == mcap::OpCode::Channel) {
-      channel_range = {so.groupStart, so.groupStart + so.groupLength};
-      found_any = true;
+      channel_ranges.push_back(range);
     } else if (so.groupOpCode == mcap::OpCode::Statistics) {
-      stats_range = {so.groupStart, so.groupStart + so.groupLength};
-      found_any = true;
+      stats_ranges.push_back(range);
     }
   }
+  if (!offset_reader.status().ok()) {
+    return offset_reader.status();
+  }
 
-  if (!found_any) {
+  if (schema_ranges.empty() && channel_ranges.empty() && stats_ranges.empty()) {
     return mcap::Status{mcap::StatusCode::MissingStatistics, "no relevant SummaryOffset records found"};
   }
 
-  if (schema_range.start != 0) {
-    mcap::RecordReader rdr(reader, schema_range.start, schema_range.end);
-    while (auto record = rdr.next()) {
-      if (record->opcode != mcap::OpCode::Schema) {
-        continue;
+  const auto read_group = [&reader](const GroupRanges& ranges, mcap::OpCode opcode, const auto& parse) -> mcap::Status {
+    for (const auto& [start, end] : ranges) {
+      mcap::RecordReader records(reader, start, end);
+      while (auto record = records.next()) {
+        if (record->opcode != opcode) {
+          return mcap::Status{mcap::StatusCode::InvalidRecord, "unexpected record in a summary group"};
+        }
+        if (auto parsed = parse(*record); !parsed.ok()) {
+          return parsed;
+        }
       }
-      auto ptr = std::make_shared<mcap::Schema>();
-      if (mcap::McapReader::ParseSchema(*record, ptr.get()).ok()) {
-        info.schemas.try_emplace(ptr->id, ptr);
+      if (!records.status().ok()) {
+        return records.status();
       }
     }
-  }
-  if (channel_range.start != 0) {
-    mcap::RecordReader rdr(reader, channel_range.start, channel_range.end);
-    while (auto record = rdr.next()) {
-      if (record->opcode != mcap::OpCode::Channel) {
-        continue;
-      }
+    return mcap::Status{mcap::StatusCode::Success};
+  };
+
+  status = read_group(schema_ranges, mcap::OpCode::Schema, [&info](const mcap::Record& record) {
+    auto ptr = std::make_shared<mcap::Schema>();
+    auto parsed = mcap::McapReader::ParseSchema(record, ptr.get());
+    if (parsed.ok()) {
+      info.schemas.try_emplace(ptr->id, ptr);
+    }
+    return parsed;
+  });
+  if (status.ok()) {
+    status = read_group(channel_ranges, mcap::OpCode::Channel, [&info](const mcap::Record& record) {
       auto ptr = std::make_shared<mcap::Channel>();
-      if (mcap::McapReader::ParseChannel(*record, ptr.get()).ok()) {
+      auto parsed = mcap::McapReader::ParseChannel(record, ptr.get());
+      if (parsed.ok()) {
         info.channels.try_emplace(ptr->id, ptr);
       }
-    }
+      return parsed;
+    });
   }
-  if (stats_range.start != 0) {
-    mcap::RecordReader rdr(reader, stats_range.start, stats_range.end);
-    while (auto record = rdr.next()) {
-      if (record->opcode != mcap::OpCode::Statistics) {
-        continue;
-      }
+  if (status.ok()) {
+    status = read_group(stats_ranges, mcap::OpCode::Statistics, [&info](const mcap::Record& record) {
       mcap::Statistics stats;
-      if (mcap::McapReader::ParseStatistics(*record, &stats).ok()) {
-        info.statistics = stats;
-        break;
+      auto parsed = mcap::McapReader::ParseStatistics(record, &stats);
+      if (parsed.ok()) {
+        info.statistics = std::move(stats);
       }
-    }
+      return parsed;
+    });
+  }
+  if (!status.ok()) {
+    return status;
   }
 
   if (!info.statistics) {
     return mcap::Status{mcap::StatusCode::MissingStatistics, "Statistics record not found in summary"};
+  }
+  if (info.schemas.size() < info.statistics->schemaCount || info.channels.size() < info.statistics->channelCount) {
+    return mcap::Status{mcap::StatusCode::InvalidRecord, "summary groups hold fewer records than Statistics counts"};
   }
   return mcap::StatusCode::Success;
 }
@@ -277,15 +297,11 @@ inline void populateSummaryFromReader(const mcap::McapReader& reader, McapSummar
 /// Schemas, channels and statistics of an opened file: all the import dialog needs, on the GUI thread.
 /// readSummary() parses every ChunkIndex and builds an interval tree over them, about half a second for
 /// a bag with 300k chunks, so the SummaryOffset records are tried first. The full read, with its fallback
-/// scan, runs only when they cannot deliver the three groups: no summary, no SummaryOffset section, no
-/// Statistics, or a group (or a schema a channel names) that no SummaryOffset record covers.
+/// scan, runs whenever readSelectiveSummary() fails: no summary, no SummaryOffset section, no Statistics,
+/// or a summary whose groups are damaged or incomplete.
 inline mcap::Status readChannelSummary(mcap::McapReader& reader, McapSummaryInfo& info) {
   info = {};
-  if (mcap::IReadable* source = reader.dataSource();
-      source != nullptr && readSelectiveSummary(*source, info).ok() && !info.channels.empty() &&
-      std::all_of(info.channels.begin(), info.channels.end(), [&](const auto& entry) {
-        return isSchemaless(entry.second->schemaId) || info.schemas.count(entry.second->schemaId) != 0;
-      })) {
+  if (mcap::IReadable* source = reader.dataSource(); source != nullptr && readSelectiveSummary(*source, info).ok()) {
     return mcap::StatusCode::Success;
   }
 

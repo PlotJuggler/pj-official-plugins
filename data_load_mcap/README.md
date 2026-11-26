@@ -68,8 +68,12 @@ through `runtimeHost().bindChannel(...)`.
 The dialog lists the discovered channels with schema and encoding info
 so the user can select which topics to import. It reads them through the
 summary's SummaryOffset records, without parsing the chunk indexes (which
-can take a second or more on a bag with hundreds of thousands of chunks),
-and falls back to the full summary read when those records are missing. Per-import options:
+can take a second or more on a bag with hundreds of thousands of chunks).
+It falls back to the full summary read, which scans the data when the
+summary is unusable, when the summary has no SummaryOffset records or no
+Statistics, or when a group is damaged or incomplete (a record that does
+not parse, fewer channels or schemas than the Statistics count).
+Per-import options:
 
 - **Topic filter** — space-separated AND matching against channel names.
 - **Max array size** + **clamp vs. discard** — forwarded to the bound
