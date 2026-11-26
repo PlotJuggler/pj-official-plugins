@@ -14,9 +14,7 @@ class DataLoadMcapConan(ConanFile):
     version = "0"
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
-    # mcap headers are vendored in contrib/mcap/ (from the parallel-reader
-    # fork). We still need lz4 and zstd for chunk decompression — previously
-    # transitively from the mcap/ package, now declared directly here.
+    # mcap headers are vendored in contrib/mcap/ (parallel-reader fork); lz4 and zstd decompress chunks.
     requires = (
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",

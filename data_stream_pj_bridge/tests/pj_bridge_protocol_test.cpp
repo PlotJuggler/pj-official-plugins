@@ -28,39 +28,30 @@ namespace {
 
 using namespace PJ::BridgeProtocol;
 
-// Helper to build a valid compressed binary frame for testing.
 std::vector<uint8_t> buildTestFrame(const std::vector<RawMessage>& messages) {
-  // Build uncompressed payload
   std::vector<uint8_t> payload;
   for (const auto& msg : messages) {
-    // topic_len (2 bytes)
     auto topic_len = static_cast<uint16_t>(msg.topic_name.size());
     payload.insert(payload.end(), reinterpret_cast<uint8_t*>(&topic_len), reinterpret_cast<uint8_t*>(&topic_len) + 2);
 
-    // topic (N bytes)
     payload.insert(payload.end(), msg.topic_name.begin(), msg.topic_name.end());
 
-    // timestamp_ns (8 bytes)
     auto ts = static_cast<uint64_t>(msg.timestamp_ns);
     payload.insert(payload.end(), reinterpret_cast<uint8_t*>(&ts), reinterpret_cast<uint8_t*>(&ts) + 8);
 
-    // cdr_len (4 bytes)
     auto cdr_len = static_cast<uint32_t>(msg.cdr_size);
     payload.insert(payload.end(), reinterpret_cast<uint8_t*>(&cdr_len), reinterpret_cast<uint8_t*>(&cdr_len) + 4);
 
-    // cdr_data (M bytes)
     if (msg.cdr_data && msg.cdr_size > 0) {
       payload.insert(payload.end(), msg.cdr_data, msg.cdr_data + msg.cdr_size);
     }
   }
 
-  // Compress with ZSTD
   size_t compress_bound = ZSTD_compressBound(payload.size());
   std::vector<uint8_t> compressed(compress_bound);
   size_t compressed_size = ZSTD_compress(compressed.data(), compress_bound, payload.data(), payload.size(), 1);
   compressed.resize(compressed_size);
 
-  // Build header: magic(4) + msg_count(4) + uncompressed_size(4) + flags(4)
   std::vector<uint8_t> frame;
 
   uint32_t magic = kMagic;
@@ -76,16 +67,12 @@ std::vector<uint8_t> buildTestFrame(const std::vector<RawMessage>& messages) {
   uint32_t flags = 0;
   frame.insert(frame.end(), reinterpret_cast<uint8_t*>(&flags), reinterpret_cast<uint8_t*>(&flags) + 4);
 
-  // Append compressed payload
   frame.insert(frame.end(), compressed.begin(), compressed.end());
 
   return frame;
 }
 
-// --- parseBinaryFrame ---
-
 TEST(PjBridgeProtocolTest, ParseBinaryFrameValid) {
-  // Create test data
   const uint8_t cdr_data[] = {0x01, 0x02, 0x03, 0x04};
   RawMessage input_msg;
   input_msg.topic_name = "/test/topic";
@@ -145,7 +132,6 @@ TEST(PjBridgeProtocolTest, ParseBinaryFrameTooSmall) {
 
 TEST(PjBridgeProtocolTest, ParseBinaryFrameWrongMagic) {
   auto frame = buildTestFrame({});
-  // Corrupt the magic
   frame[0] = 0xFF;
 
   std::vector<RawMessage> messages;
@@ -220,8 +206,6 @@ TEST(PjBridgeProtocolTest, ParseBinaryFrameGarbagePayload) {
   EXPECT_FALSE(parseBinaryFrame(frame.data(), frame.size(), messages, decompress_buffer));
 }
 
-// --- buildRequest ---
-
 TEST(PjBridgeProtocolTest, BuildRequestListTopics) {
   auto req = buildRequest("list_topics", "abc-123");
   EXPECT_EQ(req, R"({"command":"list_topics","id":"abc-123","protocol_version":1})");
@@ -232,11 +216,8 @@ TEST(PjBridgeProtocolTest, BuildRequestSubscribe) {
   EXPECT_EQ(req, R"({"command":"subscribe","id":"xyz-789","protocol_version":1})");
 }
 
-// --- generateRequestId ---
-
 TEST(PjBridgeProtocolTest, GenerateRequestIdFormat) {
   auto id = generateRequestId();
-  // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 chars)
   EXPECT_EQ(id.size(), 36u);
   EXPECT_EQ(id[8], '-');
   EXPECT_EQ(id[13], '-');

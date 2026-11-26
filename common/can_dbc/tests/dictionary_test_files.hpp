@@ -1,8 +1,8 @@
 #pragma once
 
-// Host-free temp-file helpers shared by the dictionary-path tests: the
-// pj_can_dbc unit test and (through source_import_harness.hpp) the layout-path
-// tests of data_load_blf / data_load_candump / data_load_mf4.
+// Host-free temp-file helpers shared by the dictionary-path tests: the pj_can_dbc unit test and
+// (through source_import_harness.hpp) the layout-path tests of data_load_blf / data_load_candump /
+// data_load_mf4.
 
 #include <gtest/gtest.h>
 

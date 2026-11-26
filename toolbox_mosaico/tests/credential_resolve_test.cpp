@@ -126,8 +126,8 @@ TEST(HeadlessTargetUri, TlsFirstAndPlaintextRetryOnlyByStoredOptIn) {
 }
 
 TEST(InteractiveCredentials, EnvFallbackStaysUnguarded) {
-  // The panel's resolve keeps the unguarded env fallback: the user chose the
-  // server there, so the key applies to whatever they typed (PJ3 parity).
+  // The panel's resolve keeps the unguarded env fallback: the user chose the server there, so the key applies to
+  // whatever they typed.
   PJ::sdk::SettingsView view{};
   EnvGuard env(nullptr, "msco_secret");
   EXPECT_EQ(resolveCredentials(view, kTarget).api_key, "msco_secret");

@@ -18,22 +18,19 @@ ULogContainer::ULogContainer(bool keep_samples)
 
 void ULogContainer::fileHeader(const ulog_cpp::FileHeader& header) {
   ulog_cpp::DataContainer::fileHeader(header);
-  // Until the first data message arrives, the file start is the clock, and it
-  // stays the floor: a parameter change is never stamped before the header
-  // timestamp, even when data records are.
+  // The file start is the clock until the first data message, and stays its floor: a parameter change is never
+  // stamped before the header timestamp, even when data records are.
   file_start_us_ = header.header().timestamp;
   clock_us_ = file_start_us_;
 }
 
 void ULogContainer::data(const ulog_cpp::Data& data_msg) {
   if (keep_samples_) {
-    // Base stores the sample (and throws on an unknown subscription, which the
-    // reader treats as corruption) — let that happen before touching the clock.
+    // The base throws on an unknown subscription (treated as corruption): let it happen before the clock moves.
     ulog_cpp::DataContainer::data(data_msg);
   }
 
-  // One subscription lookup per msg_id, not per record: ulog_cpp never removes
-  // a subscription, so a resolved slot stays valid.
+  // One subscription lookup per msg_id, not per record: ulog_cpp never removes a subscription.
   const size_t id = data_msg.msgId();
   if (id >= timestamp_offsets_.size()) {
     timestamp_offsets_.resize(id + 1, kUnknownOffset);
@@ -69,8 +66,7 @@ void ULogContainer::parameter(const ulog_cpp::Parameter& parameter_msg) {
     return;  // initial snapshot: base keeps it in initialParameters()
   }
   TimedParameter timed{parameter_msg, clock_us_};
-  // Post-header fields are never resolved by headerComplete(); resolve here so
-  // value() can be read (same as the base does for its own changed copy).
+  // headerComplete() does not resolve post-header fields; value() needs it (the base does the same for its copy).
   timed.parameter.field().resolveDefinition(messageFormats(), 0);
 
   uint64_t& last = last_stamp_us_[timed.parameter.field().name()];

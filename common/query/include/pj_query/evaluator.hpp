@@ -15,10 +15,10 @@ struct ValidationResult {
   int column = 0;
 };
 
-/// Plugin-implemented seam for expression validation/evaluation. A Lua adapter
-/// owns its state locally, validates the raw text (after its chosen expansion),
-/// evaluates Query::expanded(), and clears metadata between rows. Query::complete
-/// describes the editing grammar; it is not authoritative evaluator validation.
+/// Plugin-implemented seam for expression validation/evaluation. A Lua adapter owns its state
+/// locally, validates the raw text (after its chosen expansion), evaluates Query::expanded(), and
+/// clears metadata between rows. Query::complete describes the editing grammar; it is not
+/// authoritative evaluator validation.
 class Evaluator {
  public:
   virtual ~Evaluator() = default;

@@ -334,10 +334,6 @@ nlohmann::json renameVar(Rig& rig, int row, const std::string& text, bool press_
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// The trial run
-// ---------------------------------------------------------------------------
-
 TEST(TransformEditorTrial, SubmitsEphemeralWithNoOutputsAndParsesTheReport) {
   Rig rig;
   rig.load(onDemandConfig("my_filter"));
@@ -562,10 +558,6 @@ TEST(TransformEditorTrial, StatusReadsUnavailableWithItsReason) {
   EXPECT_EQ(parseTrialReport(kNumberReport).readout, "value: 1.83");
   EXPECT_EQ(parseTrialReport(kUnavailableReport).readout, "") << "an unknown-typed output is not a number output";
 }
-
-// ---------------------------------------------------------------------------
-// Create
-// ---------------------------------------------------------------------------
 
 TEST(TransformEditorCreate, ModifySendsTheInferFlagTheInferredOutputsParamsEditorStateAndInstant) {
   Rig rig;
@@ -879,10 +871,6 @@ TEST(TransformEditorCreate, PreviewTicksReuseTheResolvedBuild) {
   EXPECT_EQ(TransformEditorPreviewTestPeer::builds(rig.editor), after_first + 2);
 }
 
-// ---------------------------------------------------------------------------
-// Saved states keep loading
-// ---------------------------------------------------------------------------
-
 TEST(TransformEditorSavedState, AV10TransformStateLoadsAndKeepsItsShape) {
   Rig rig;
   rig.load(
@@ -945,10 +933,6 @@ TEST(TransformEditorSavedState, AStateSavedByThisEditorLoadsBackWithItsVars) {
   other.refresh();
   EXPECT_EQ(other.dialog().variableNames(), (std::vector<std::string>{"b_cloud", "lidar"}));
 }
-
-// ---------------------------------------------------------------------------
-// Layout and variables
-// ---------------------------------------------------------------------------
 
 TEST(TransformEditorLayout, TheRemovedWidgetsAreGone) {
   Rig rig;
@@ -1015,7 +999,7 @@ TEST(TransformEditorLayout, ObjectTopicsDroppedFromTheDatasetsTreeAreTheOnlyWayT
   EXPECT_EQ(rows[0][3], "image");
   EXPECT_EQ(rows[1][3], "point cloud");
   EXPECT_EQ(rig.dialog().variableNames(), (std::vector<std::string>{"img", "a"}));
-  // The removed button is not a click target any more.
+  // The removed button is not a click target.
   EXPECT_FALSE(rig.dialog().onClicked("buttonAddObjectTopic"));
 }
 
@@ -1180,10 +1164,6 @@ TEST(TransformEditorVars, PythonRecipesRunThePythonChunk) {
   EXPECT_NE(rig.dp.submits.back().script.find("def evaluate"), std::string::npos);
   EXPECT_EQ(rig.dialog().canCreateReason(), "");
 }
-
-// ---------------------------------------------------------------------------
-// The preview of the outputs
-// ---------------------------------------------------------------------------
 
 TEST(TransformEditorPreview, ObjectOutputsPreviewInAnEphemeralRecipeShownInTheEmbeddedSceneView) {
   Rig rig;
@@ -1509,10 +1489,6 @@ TEST(TransformEditorPreview, SummaryReadsAPointCloudReport) {
       "o: unavailable (no frame)");
 }
 
-// ---------------------------------------------------------------------------
-// The Function Library
-// ---------------------------------------------------------------------------
-
 TEST(TransformEditorLibrary, TheNewFieldsRoundTripAndAnOldLibraryStillLoads) {
   const auto dir = std::filesystem::temp_directory_path() / "te_snippets_test";
   std::filesystem::create_directories(dir);
@@ -1539,7 +1515,7 @@ TEST(TransformEditorLibrary, TheNewFieldsRoundTripAndAnOldLibraryStillLoads) {
   EXPECT_EQ((*loaded)[1].kind, "series");
   EXPECT_TRUE((*loaded)[1].inputs.empty());
 
-  // A library written by v1.0.x has none of the fields; a hand-edited one may have them malformed.
+  // An older library has none of the fields; a hand-edited one may have them malformed.
   {
     std::ofstream out(path);
     out << R"([{"name":"old","global_code":"g","function_body":"return value","language":"python"},)"
@@ -1711,10 +1687,6 @@ TEST(TransformEditorLibrary, SavingAnObjectFunctionRecordsItsInputs) {
   EXPECT_EQ(saved.function_body, "return cloud:count()");
 }
 
-// ---------------------------------------------------------------------------
-// The asynchronous preview and its teardown
-// ---------------------------------------------------------------------------
-
 TEST(TransformEditorPreview, PendingYieldsThenCompletesAndReleasesOnce) {
   Host host;
   host.pending_polls = 2;
@@ -1806,7 +1778,7 @@ TEST(TransformEditorPreview, AnEditWaitsForTheDebounceAndDropsTheRunInFlight) {
 TEST(TransformEditorPreview, TheSeriesPreviewReadsExactlyTheNameTheHostReturned) {
   const std::string real = "toolbox-transform-editor/__te_obj_preview__/value";
   // The real series: topic `<owner>/<id>`, one column per output. Decoys: a topic whose column leaf is also
-  // `value`, one at the name the editor used to guess, and one with the same leaf under another topic.
+  // `value`, one at a guessed name, and one with the same leaf under another topic.
   auto build = [&](bool with_real) {
     auto store = std::make_unique<PJ::testing::ToolboxTestStore>();
     if (with_real) {
@@ -1897,10 +1869,6 @@ TEST(TransformEditorPreview, ClearingBodyOrInputClearsCompletedAndPendingReports
     EXPECT_FALSE(TransformEditorPreviewTestPeer::showsReport(editor));
   }
 }
-
-// ---------------------------------------------------------------------------
-// The preview series while the host replays it
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -2052,10 +2020,6 @@ TEST(TransformEditorSeries, TheHostsFirstSeriesErrorIsOnTheStatusLine) {
       << statusOf(rig) << " (the chunk line is the user's line)";
 }
 
-// ---------------------------------------------------------------------------
-// A cursor before the first sample, errors that survive, errors in the user's own lines
-// ---------------------------------------------------------------------------
-
 TEST(TransformEditorTrial, ACursorBeforeTheFirstEntryRunsThereAndSaysSoInDisplaySeconds) {
   Rig rig;
   rig.playback.display_offset_ns = 1000000000000;  // display 0 s is raw 1000 s
@@ -2191,12 +2155,8 @@ TEST(TransformEditorTrial, ASeriesFunctionErrorIsRemappedToTheUsersLine) {
   EXPECT_EQ(rig.dialog().canCreateReason(), "test: line 2: unknown global 'yy'");
 }
 
-// ---------------------------------------------------------------------------
-// The preview's zoom, and renaming a Var
-// ---------------------------------------------------------------------------
-
-// The editor turns the preview's zoom on every tick, also while the banner covers the plot; with a curve
-// it sends the series and chart_auto_zoom, as before the zoom. There is no Fit button.
+// The editor turns the preview's zoom on every tick, also while the banner covers the plot; with a curve it
+// sends the series and chart_auto_zoom. There is no Fit button.
 TEST(TransformEditorChart, ThePreviewZoomsAndSendsTheSeriesWithAutoZoom) {
   {
     Rig empty;
@@ -2324,10 +2284,6 @@ TEST(TransformEditorVars, AnAbandonedRenamePromptDoesNotHijackTheCreatePrompt) {
   EXPECT_EQ(rig.dp.created[0].id, "made");
   EXPECT_EQ(rig.dialog().variableNames(), std::vector<std::string>{"cloud"});
 }
-
-// ---------------------------------------------------------------------------
-// Text outputs
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -2635,10 +2591,6 @@ TEST(TransformEditorTextOutput, ALibraryFunctionKeepsItsTextOutput) {
   rig.dialog().loadSnippetsIntoEditor({"twice"});
   EXPECT_FALSE(rig.widgets()["textOutputCheck"]["checked"].get<bool>());
 }
-
-// ---------------------------------------------------------------------------
-// A view of a recipe another owner made (the host's {"view": ...} config)
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -2953,10 +2905,6 @@ TEST(TransformEditorView, APythonObjectRecipeShowsItsLanguageAndParams) {
   EXPECT_EQ(rig.dp.submit_calls, 0);
   EXPECT_EQ(rig.dp.validate_calls, 0);
 }
-
-// ---------------------------------------------------------------------------
-// Floor host: no typed requests, no catalog v2
-// ---------------------------------------------------------------------------
 
 TEST(TransformEditorFloorTest, TheSeriesPathStillCreatesATransformOnAFloorHost) {
   TransformEditorPreviewTestPeer::FloorHost host;

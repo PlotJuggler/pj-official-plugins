@@ -12,26 +12,21 @@ namespace assistant_agent {
 struct CliLocation {
   std::string path;                   // the executable to use as argv[0] ('' if not found)
   std::string bin_dir;                // its containing directory, for the child's PATH
-  std::vector<std::string> searched;  // directories actually probed, in order, for the error message
-  // Windows only: a `.cmd`/`.ps1` launcher (the shape npm installs a CLI as)
-  // found where no native `.exe` was. Never executed -- CreateProcess only
-  // runs a native .exe (see subprocess.hpp); this is here purely so
-  // cannotFindCliMessage can name it and point at the native installer
-  // instead of leaving the user to guess why a CLI that clearly "works from
-  // a terminal" cannot be spawned. LAST member so nothing before it shifts.
+  std::vector<std::string> searched;  // directories probed, in order, for the error message
+  // Windows only: a `.cmd`/`.ps1` launcher (how npm installs a CLI) found where no native
+  // `.exe` was. Never executed (CreateProcess runs only a native .exe, see subprocess.hpp);
+  // cannotFindCliMessage names it so the user is pointed at the native installer. LAST member
+  // so nothing before it shifts.
   std::string npm_shim;
 };
 
-// Resolve `configured` (the Settings "CLI path" value, or a bare name like "claude"/"codex") to
-// an executable. POSIX and Windows only — see the blocks below; other platforms return
-// `configured` as-is, with nothing searched, so the build stays clean without pretending to
-// search anywhere.
+// Resolves `configured` (the Settings "CLI path", or a bare name like "claude"/"codex") to an
+// executable. POSIX and Windows only; other platforms return `configured` as-is, nothing searched.
 [[nodiscard]] CliLocation locateCli(const std::string& configured);
 
-// The PATH override to hand to runProcess's `extra_env` so a child whose shebang is
-// `#!/usr/bin/env node` (npm-installed `codex` under nvm, notably) finds its own interpreter even
-// when `loc.bin_dir` never made it into this process's own PATH. Empty when `loc.bin_dir` is
-// empty — nothing to prepend, nothing to override.
+// The PATH override for runProcess's `extra_env`, so a child whose shebang is
+// `#!/usr/bin/env node` (npm-installed `codex` under nvm) finds its own interpreter even when
+// `loc.bin_dir` is not in this process's PATH. Empty when `loc.bin_dir` is empty.
 [[nodiscard]] std::vector<std::pair<std::string, std::string>> childEnvFor(const CliLocation& loc);
 
 }  // namespace assistant_agent
@@ -51,8 +46,7 @@ struct CliLocation {
 
 namespace assistant_agent {
 
-// Shared between the POSIX and Windows implementations below: everything
-// that does not depend on which platform's search order calls it.
+// Shared by the POSIX and Windows implementations below.
 namespace detail {
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -63,9 +57,7 @@ inline bool isExecutableFile(const std::string& path) {
 
 #elif defined(_WIN32)
 
-// A CLI here means a native .exe — see subprocess.hpp's Windows contract.
-// endsWithCi is platform_util.hpp's (assistant_agent::detail), unqualified
-// lookup finds it since this reopens the same namespace.
+// A CLI here means a native .exe (subprocess.hpp's Windows contract).
 inline bool isExecutableFile(const std::string& path) {
   if (path.empty() || !endsWithCi(path, ".exe")) {
     return false;
@@ -76,10 +68,8 @@ inline bool isExecutableFile(const std::string& path) {
 
 #endif
 
-// Expands a leading "~/" (and, on Windows, "~\") using the home directory;
-// every other path (relative, or already absolute) is returned unchanged.
-// No home directory resolved leaves the tilde in place — the existence
-// check just fails on it.
+// Expands a leading "~/" (on Windows also "~\"); other paths are unchanged. Without a home
+// directory the tilde stays and the existence check fails on it.
 inline std::string expandTilde(const std::string& path) {
   const bool tilde_slash = path.size() >= 2 && path[0] == '~' && path[1] == '/';
 #if defined(_WIN32)
@@ -110,18 +100,16 @@ inline std::vector<std::string> splitPath(const std::string& path_env, char sep)
   return dirs;
 }
 
-// A directory joins `searched` at most once, in the order it was first probed — the same
-// directory reachable through both PATH and a fallback (e.g. PATH already contains
-// ~/.local/bin) should not read like two separate misses in the error message.
+// A directory joins `searched` at most once, so one reachable through both PATH and a
+// fallback does not read as two misses in the error message.
 inline void addSearched(std::vector<std::string>& searched, const std::string& dir) {
   if (!dir.empty() && std::find(searched.begin(), searched.end(), dir) == searched.end()) {
     searched.push_back(dir);
   }
 }
 
-// Try `dir/name` (`dir\name` on Windows — built through std::filesystem::path
-// so the separator is always the native one); on success append it (as
-// bin_dir/path pair via the caller) and report true.
+// Tries `dir/name`, built through std::filesystem::path so the separator is native; on
+// success fills `found_path`/`found_bin_dir` and returns true.
 inline bool tryDir(
     const std::string& dir, const std::string& name, std::vector<std::string>& searched, std::string& found_path,
     std::string& found_bin_dir) {
@@ -150,9 +138,8 @@ namespace assistant_agent {
 
 namespace detail {
 
-// Parses "vMAJOR.MINOR.PATCH" or "MAJOR.MINOR.PATCH" into three ints; false (and an all-zero
-// triple) if it doesn't look like a semver at all — callers use that to skip non-numeric alias
-// contents ("lts/*", "node") and non-version directory entries alike.
+// Parses "vMAJOR.MINOR.PATCH" or "MAJOR.MINOR.PATCH"; false (all-zero triple) for anything
+// else, which skips non-numeric nvm aliases ("lts/*", "node") and non-version directories.
 inline bool parseSemver(const std::string& raw, int& major, int& minor, int& patch) {
   std::string s = raw;
   if (!s.empty() && s[0] == 'v') {
@@ -183,9 +170,9 @@ inline bool parseSemver(const std::string& raw, int& major, int& minor, int& pat
   return true;
 }
 
-// Resolves the nvm node bin/ directory to search, or "" if nvm is not installed at all: the
-// alias's numeric version when useful, else the highest installed version by numeric semver
-// comparison (never lexicographic — "v9.0.0" must lose to "v22.0.0").
+// The nvm node bin/ directory to search, or "" if nvm is not installed: the default alias's
+// version if numeric, else the highest installed by numeric semver comparison (never
+// lexicographic: "v9.0.0" must lose to "v22.0.0").
 inline std::string nvmBinDir(const std::string& home) {
   const std::string nvm_dir = home + "/.nvm";
   const std::string versions_dir = nvm_dir + "/versions/node";
@@ -251,7 +238,7 @@ inline CliLocation locateCli(const std::string& configured) {
   const std::string path_env = getEnvUtf8("PATH").value_or("");
   for (const std::string& dir : detail::splitPath(path_env, ':')) {
     if (dir.empty()) {
-      continue;  // an empty PATH entry means "current directory" in the shell, never intended here
+      continue;  // an empty PATH entry means the current directory in a shell; never intended here
     }
     if (detail::tryDir(dir, configured, loc.searched, loc.path, loc.bin_dir)) {
       return loc;
@@ -263,8 +250,6 @@ inline CliLocation locateCli(const std::string& configured) {
     if (detail::tryDir(*home + "/.local/bin", configured, loc.searched, loc.path, loc.bin_dir)) {
       return loc;
     }
-    // nvmBinDir() already picked the one version directory worth trying (the alias, or else the
-    // highest installed version); nothing else under ~/.nvm needs probing.
     const std::string nvm_bin = detail::nvmBinDir(*home);
     if (!nvm_bin.empty() && detail::tryDir(nvm_bin, configured, loc.searched, loc.path, loc.bin_dir)) {
       return loc;
@@ -306,8 +291,7 @@ inline CliLocation locateCli(const std::string& configured) {
   }
 
   if (configured.find('/') != std::string::npos || configured.find('\\') != std::string::npos) {
-    // An explicit path (relative or absolute): resolve it directly, never
-    // against PATH or any fallback directory.
+    // An explicit path is resolved directly, never against PATH or fallback directories.
     const std::string expanded = detail::expandTilde(configured);
     detail::addSearched(loc.searched, expanded);
 
@@ -327,9 +311,8 @@ inline CliLocation locateCli(const std::string& configured) {
       }
     }
 
-    // No native .exe anywhere: settle for identifying an npm launcher so
-    // cannotFindCliMessage (cli_probe.hpp) can name it instead of leaving
-    // the user to guess. It is never executed (see CliLocation::npm_shim).
+    // No native .exe: identify an npm launcher so cannotFindCliMessage can name it
+    // (never executed, see CliLocation::npm_shim).
     std::error_code ec;
     const bool is_shim_ext = detail::endsWithCi(expanded, ".cmd") || detail::endsWithCi(expanded, ".bat") ||
                              detail::endsWithCi(expanded, ".ps1");
@@ -344,10 +327,8 @@ inline CliLocation locateCli(const std::string& configured) {
     return loc;
   }
 
-  // A bare name: `exe` is what tryDir probes for (always ending in .exe —
-  // Windows runs no other kind of CLI, see subprocess.hpp); `stem` is what
-  // an npm shim would be named instead, e.g. "codex.cmd" beside a missing
-  // "codex.exe".
+  // A bare name: `exe` is what tryDir probes (always .exe, see subprocess.hpp); `stem` names
+  // an npm shim instead, e.g. "codex.cmd" beside a missing "codex.exe".
   const bool already_exe = detail::endsWithCi(configured, ".exe");
   const std::string exe = already_exe ? configured : configured + ".exe";
   const std::string stem = already_exe ? configured.substr(0, configured.size() - 4) : configured;
@@ -370,8 +351,7 @@ inline CliLocation locateCli(const std::string& configured) {
 
   const std::string path_env = getEnvUtf8("PATH").value_or("");
   for (std::string dir : detail::splitPath(path_env, ';')) {
-    // PATH entries containing a space are commonly quoted end to end
-    // ("C:\Program Files\x"); strip that before using the directory.
+    // PATH entries with a space are commonly quoted end to end ("C:\Program Files\x").
     if (dir.size() >= 2 && dir.front() == '"' && dir.back() == '"') {
       dir = dir.substr(1, dir.size() - 2);
     }
@@ -385,7 +365,7 @@ inline CliLocation locateCli(const std::string& configured) {
   }
 
   if (const auto home = userHomeDir(); home.has_value() && !home->empty()) {
-    // The native Claude CLI installer's default location.
+    // The native Claude CLI installer's location.
     const std::string local_bin = pathToUtf8(utf8ToPath(*home) / utf8ToPath(".local") / utf8ToPath("bin"));
     if (detail::tryDir(local_bin, exe, loc.searched, loc.path, loc.bin_dir)) {
       return loc;
@@ -399,10 +379,8 @@ inline CliLocation locateCli(const std::string& configured) {
     }
   }
 
-  // Last resort: an npm shim under %APPDATA%\npm, checked but never added
-  // to `searched` — this is not a directory the plugin otherwise searches,
-  // only a place to look for something to NAME in the "install the native
-  // build instead" message.
+  // Last resort: an npm shim under %APPDATA%\npm, only to NAME it in the "install the native
+  // build" message, so it is not added to `searched`.
   if (const auto appdata = getEnvUtf8("APPDATA")) {
     probeShimIn(pathToUtf8(utf8ToPath(*appdata) / utf8ToPath("npm")));
   }
@@ -414,9 +392,7 @@ inline std::vector<std::pair<std::string, std::string>> childEnvFor(const CliLoc
   if (loc.bin_dir.empty()) {
     return {};
   }
-  // runProcess's Windows environment-block builder (subprocess.hpp) replaces
-  // an existing "Path" entry case-insensitively, so the literal casing of
-  // the key here does not matter.
+  // runProcess's environment-block builder replaces an existing "Path" case-insensitively.
   return {{"PATH", loc.bin_dir + ";" + getEnvUtf8("PATH").value_or("")}};
 }
 

@@ -2,8 +2,7 @@
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/PjWasmPlugin.cmake")
 pj_wasm_common_library(toolbox_preview utf8_path)
 
-# The toolbox carries no script engine: it submits its rule through the host's
-# pj.data_processors.v1 service, so only the Luau-free helper layer is built.
+# The toolbox submits its rule through pj.data_processors.v1, so only the Luau-free helpers are built.
 pj_wasm_official_plugin(pj_wasm_anomaly_detector
   SOURCES anomaly_detector.cpp core/anomaly_helpers.cpp
   INCLUDES core

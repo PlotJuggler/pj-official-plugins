@@ -129,8 +129,8 @@ TEST(DescriptorImportQuery, UntrustedThenEnvAllowlisted) {
   const SourceDescriptor d = descriptor();
   const std::string json = mosaico::toSourceDescriptorJson(d);
 
-  // 1. Valid + untrusted: the host owns the cache in the M3 flow, so the
-  // provider never reports a materialization or a size estimate.
+  // 1. Valid + untrusted: the host owns the cache, so the provider never reports a materialization or a size
+  // estimate.
   auto result = freshResult();
   ASSERT_TRUE(provider.queryDescriptor(view(json), &result, nullptr));
   EXPECT_EQ(result.trust, PJ_DESCRIPTOR_TRUST_NEEDS_CONFIRMATION);

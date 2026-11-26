@@ -1,11 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// WHEP multi-camera streaming client DataSource. Thin wrapper over the Qt-free
-// cores (video_emit / whep_connection / whep_client). Each selected mediamtx
-// path gets its OWN WhepConnection (one PC, one recvonly H.264 track) and one
-// canonical PJ.VideoFrame topic <prefix>/<path>. Per-camera reconnect with
-// exponential backoff; 401/403 is terminal for that camera until restart.
+// WHEP multi-camera streaming client DataSource, a thin wrapper over the cores (video_emit / whep_connection /
+// whep_client). Each selected mediamtx path gets its own WhepConnection (one PC, one recvonly H.264 track) and one
+// canonical PJ.VideoFrame topic <prefix>/<path>. Per-camera reconnect with exponential backoff; 401/403 is terminal
+// for that camera until restart.
 #include <algorithm>
 #include <atomic>
 #include <cstdint>

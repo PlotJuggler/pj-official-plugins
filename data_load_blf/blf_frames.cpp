@@ -13,17 +13,16 @@ namespace blf_detail {
 
 namespace {
 
-/// DBC/BLF extended-frame flag: bit 31 of the CAN id.
+/// Extended-frame flag in the DBC/BLF CAN id (bit 31).
 constexpr std::uint32_t kExtendedFlag = 0x8000'0000u;
 constexpr std::uint32_t kCanIdMask = 0x1FFF'FFFFu;
-/// ObjectFlags_e::TimeTenMics — timestamp is in 10-microsecond ticks (else ns).
+/// ObjectFlags_e::TimeTenMics: timestamps are 10 us ticks (else ns).
 constexpr std::uint32_t kTimeTenMics = 0x1u;
 
-/// Windows SYSTEMTIME -> nanoseconds since the Unix epoch (treated as UTC).
+/// Windows SYSTEMTIME as UTC.
 std::int64_t sysTimeToNs(const lblf::blf_struct::sysTime_t& st) {
-  // A far-future year (the field is file-controlled, e.g. 32767) overflows the
-  // nanosecond duration_cast; int64 ns only spans ~year 1678..2262. Bound the
-  // year so a corrupt header yields epoch 0, not undefined arithmetic.
+  // The year is file-controlled (e.g. 32767) and int64 ns only spans ~1678..2262, so a corrupt header yields epoch
+  // 0 instead of overflowing the duration_cast.
   if (st.year == 0 || st.year < 1678 || st.year > 2262) {
     return 0;
   }
@@ -38,7 +37,7 @@ std::int64_t sysTimeToNs(const lblf::blf_struct::sysTime_t& st) {
   return duration_cast<nanoseconds>(tp.time_since_epoch()).count();
 }
 
-/// start + rel without signed overflow (clamps to the int64 range).
+/// Clamps to the int64 range.
 std::int64_t saturatingAddNs(std::int64_t start, std::int64_t rel) {
   if (rel > 0 && start > std::numeric_limits<std::int64_t>::max() - rel) {
     return std::numeric_limits<std::int64_t>::max();
@@ -69,8 +68,7 @@ PJ::Status readCanFrames(const std::string& path, const CanFrameCallback& cb, Bl
   stats = {};
   try {
     lblf::blf_reader reader(path);
-    // Filled before the first callback so consumers can report progress
-    // against it while stats.can_frames / skipped_objects advance live.
+    // Set before the first callback so consumers can report progress against it.
     stats.total_objects = reader.getfileStatistics().objCount;
     const std::int64_t start_ns = sysTimeToNs(reader.getfileStatistics().meas_start_time);
     bool keep_going = true;

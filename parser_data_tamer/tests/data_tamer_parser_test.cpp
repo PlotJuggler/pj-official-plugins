@@ -64,12 +64,10 @@ const PJ::sdk::testing::RecordedField* findField(const PJ::sdk::testing::Recorde
 // Build a DataTamer binary snapshot payload:
 //   uint32_t mask_size | active_mask bytes | uint32_t payload_size | payload bytes
 std::vector<uint8_t> buildSnapshot(const DataTamerParser::Schema& schema, const std::vector<double>& values) {
-  // All fields active: mask = all 1s.
   size_t num_fields = schema.fields.size();
   size_t mask_bytes = (num_fields + 7) / 8;
   std::vector<uint8_t> mask(mask_bytes, 0xFF);
 
-  // Serialize payload: all values as their declared types.
   std::vector<uint8_t> payload_buf;
   for (size_t i = 0; i < std::min(num_fields, values.size()); i++) {
     const auto& field = schema.fields[i];
@@ -101,7 +99,6 @@ std::vector<uint8_t> buildSnapshot(const DataTamerParser::Schema& schema, const 
     }
   }
 
-  // Assemble: mask_size(4) + mask + payload_size(4) + payload
   std::vector<uint8_t> result;
   auto push32 = [&](uint32_t val) {
     auto* p = reinterpret_cast<const uint8_t*>(&val);
@@ -114,19 +111,16 @@ std::vector<uint8_t> buildSnapshot(const DataTamerParser::Schema& schema, const 
   return result;
 }
 
-// Include the same headers and hash as a writer-produced schema.
+// Adds the header lines and hash a writer-produced schema carries.
 std::string schemaText(const std::string& fields) {
   std::string text = "### version: 5\n### channel_name: plugin_test\n\n" + fields;
   text.insert(text.find('\n') + 1, "### hash: " + std::to_string(DataTamerParser::SchemaTextHash(text)) + "\n");
   return text;
 }
 
-// ---- Tests ----
-
 TEST(DataTamerParserTest, ManifestContainsEncoding) {
   DTFixture f;
   f.setUp();
-  // Manifest uses "encoding" as an array containing all supported encodings
   EXPECT_NE(f.handle.manifest().find("\"data_tamer\""), std::string::npos);
 }
 
@@ -214,7 +208,6 @@ TEST(DataTamerParserTest, EmptyPayload) {
   std::string schema_text = schemaText("float64 x\n");
   ASSERT_TRUE(f.bindSchema(schema_text));
 
-  // All fields inactive: mask = all 0s.
   std::vector<uint8_t> payload;
   auto push32 = [&](uint32_t val) {
     auto* p = reinterpret_cast<const uint8_t*>(&val);
@@ -225,14 +218,12 @@ TEST(DataTamerParserTest, EmptyPayload) {
   push32(0);             // payload_size = 0
 
   ASSERT_TRUE(f.parse(payload));
-  // No fields emitted since the field is inactive.
   EXPECT_EQ(f.recorder.rows().size(), 0u);
 }
 
-// A mask_size larger than the remaining buffer used to underflow BufferSpan::size
-// and walk the read cursor off the end into a wild pointer (segfault on the next
-// Deserialize). It must now be rejected cleanly. Bare 0xFFFFFFFF is the minimal
-// reproducer: mask_size = 4 GiB with only the 4 header bytes present.
+// A mask_size larger than the remaining buffer must be rejected: it would underflow
+// BufferSpan::size and walk the read cursor off the end. Bare 0xFFFFFFFF (4 GiB with
+// only the 4 header bytes present) is the minimal case.
 TEST(DataTamerParserTest, OversizedMaskSizeIsRejected) {
   DTFixture f;
   f.setUp();

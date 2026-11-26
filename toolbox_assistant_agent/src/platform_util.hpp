@@ -10,48 +10,32 @@
 
 namespace assistant_agent {
 
-// UTF-8 <-> std::filesystem::path conversions, plus environment-variable and
-// home-directory lookups that answer in UTF-8. Every narrow std::string in
-// this plugin is UTF-8; on POSIX that is already what the filesystem and
-// getenv() speak, so these are the identity. On MSVC, both
-// std::filesystem::path::string() and std::getenv() go through the ANSI
-// codepage instead -- feeding either straight into a subprocess's argv, or
-// round-tripping a non-ASCII path through a std::string, would silently
-// mangle any character outside it. These four functions are the one place
-// that narrowing happens, so every other Windows branch in this plugin can
-// stay UTF-8 throughout instead of re-deriving the conversion.
+// UTF-8 <-> std::filesystem::path conversions, plus environment and home-directory lookups
+// that answer in UTF-8. Every narrow std::string in this plugin is UTF-8, which POSIX
+// already speaks. On MSVC, std::filesystem::path::string() and std::getenv() use the ANSI
+// codepage and would mangle non-ASCII characters in a subprocess argv or a path round trip;
+// these four functions are the one place that narrowing happens.
 
-// `p.string()` on POSIX (already UTF-8); on Windows, `p.u8string()` narrowed
-// to `std::string` -- UTF-8, not the ANSI codepage `p.string()` would give.
+// POSIX: `p.string()`. Windows: `p.u8string()` narrowed, not the ANSI `p.string()`.
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& p);
 
-// The inverse: `path(s)` on POSIX; on Windows `s` is first read as UTF-8
-// (via `std::u8string`) rather than the ANSI codepage `path(s)` would assume.
+// The inverse. Windows reads `s` as UTF-8 (via `std::u8string`), not the ANSI codepage.
 [[nodiscard]] std::filesystem::path utf8ToPath(const std::string& s);
 
-// `PJ::sdk::getEnv(name)` on POSIX (already UTF-8); on Windows,
-// `GetEnvironmentVariableW` narrowed to UTF-8 -- `std::getenv()` there reads
-// the ANSI codepage and would mangle anything outside it. nullopt when the
-// variable is unset or empty, matching PJ::sdk::getEnv's own contract.
+// POSIX: `PJ::sdk::getEnv(name)`. Windows: `GetEnvironmentVariableW` narrowed to UTF-8.
+// nullopt when unset or empty, like PJ::sdk::getEnv.
 [[nodiscard]] std::optional<std::string> getEnvUtf8(const char* name);
 
-// `HOME` first -- the existing test fixtures (ScopedEnv) set it even on
-// Windows, so tests do not depend on the real signed-in profile -- then, on
-// Windows only, `USERPROFILE` when `HOME` is absent. nullopt when neither
-// resolves.
+// `HOME` first (tests set it even on Windows via ScopedEnv), then on Windows `USERPROFILE`.
+// nullopt when neither resolves.
 [[nodiscard]] std::optional<std::string> userHomeDir();
 
 }  // namespace assistant_agent
 
 namespace assistant_agent::detail {
 
-// Case-insensitive suffix match, ASCII only -- Windows filenames and
-// extensions are case-insensitive throughout this plugin (`.exe`/`.cmd`/
-// `.ps1`, PATH-entry stripping), never the codepage-sensitive kind the four
-// functions above guard against, since every suffix compared here is ASCII.
-// Plain std::string comparison, no platform API needed, so it is available
-// on every platform (subprocess.hpp's Windows runProcess and cli_locator.hpp's
-// Windows locateCli both use it; nothing off Windows currently does).
+// ASCII-only case-insensitive suffix match, for Windows extensions (`.exe`/`.cmd`/`.ps1`).
+// Platform-neutral; only the Windows code paths use it.
 inline bool endsWithCi(const std::string& s, const std::string& suffix) {
   if (s.size() < suffix.size()) {
     return false;
@@ -93,9 +77,7 @@ inline std::optional<std::string> userHomeDir() {
 
 namespace assistant_agent {
 
-// Windows-only: the UTF-8 <-> UTF-16 conversions every Windows branch in this
-// plugin needs (subprocess.hpp's argv/env/cwd, cli_locator.hpp's PATH
-// search). Kept here rather than duplicated per file.
+// UTF-8 <-> UTF-16 conversions for the Windows branches (subprocess.hpp, cli_locator.hpp).
 namespace detail {
 
 inline std::wstring utf8ToWide(const std::string& s) {
@@ -131,9 +113,7 @@ inline std::filesystem::path utf8ToPath(const std::string& s) {
 
 inline std::optional<std::string> getEnvUtf8(const char* name) {
   const std::wstring wname = detail::utf8ToWide(name);
-  // Called first with a null buffer purely to size it: the return value is
-  // the needed length INCLUDING the terminating NUL, or 0 when the variable
-  // is not set at all (GetLastError() == ERROR_ENVVAR_NOT_FOUND).
+  // Null buffer: returns the needed length INCLUDING the terminating NUL, or 0 when unset.
   const DWORD needed = GetEnvironmentVariableW(wname.c_str(), nullptr, 0);
   if (needed == 0) {
     return std::nullopt;
@@ -143,10 +123,10 @@ inline std::optional<std::string> getEnvUtf8(const char* name) {
   if (written == 0) {
     return std::nullopt;
   }
-  buf.resize(written);  // exclude the trailing NUL GetEnvironmentVariableW counted in `needed`
+  buf.resize(written);  // drop the NUL counted in `needed`
   std::string value = detail::wideToUtf8(buf);
   if (value.empty()) {
-    return std::nullopt;  // matches PJ::sdk::getEnv: empty collapses to absent
+    return std::nullopt;  // like PJ::sdk::getEnv: empty means absent
   }
   return value;
 }

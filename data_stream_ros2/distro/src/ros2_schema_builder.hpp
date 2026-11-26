@@ -1,13 +1,8 @@
 #pragma once
 
 /// @file ros2_schema_builder.hpp
-/// @brief Build a ROS .msg-style schema string from a runtime ROS 2 type name.
-///
-/// `parser_ros` (the ROS message parser plugin) consumes the textual `.msg`
-/// definition concatenated for the root type plus every nested type, with
-/// `===` separators — the same shape rosbag2 stores. We synthesise that on
-/// the fly using the C++ introspection typesupport that the user's ROS
-/// installation already ships, so we don't need .msg files on disk.
+/// Builds the `.msg` schema `parser_ros` consumes (root type plus every nested type, `===` separators, the shape
+/// rosbag2 stores) from the installed ROS's C++ introspection typesupport, so no .msg files are needed on disk.
 
 #include <rclcpp/typesupport_helpers.hpp>
 #include <rosidl_typesupport_introspection_cpp/field_types.hpp>
@@ -21,17 +16,9 @@ namespace ros2_streamer {
 
 namespace detail {
 
-// Resolve the non-deprecated `rclcpp` typesupport handle accessor for the ROS
-// distro this translation unit is being compiled against.
-//   • humble          → `get_typesupport_handle` (the only one available)
-//   • jazzy onward    → `get_message_typesupport_handle` (the previous name
-//                       is deprecated with `[[deprecated]]` and breaks the
-//                       build under `-Werror=deprecated-declarations`)
-//
-// The CMake glue passes `-DROS_DISTRO_<UPPER>` for the active distribution,
-// so adding a new distro means just listing it here. The `else` branch is
-// the forward-compatible default: any unknown future distro is assumed to
-// follow the `get_message_typesupport_handle` naming.
+// humble only has `get_typesupport_handle`; jazzy onward deprecates it in favor of `get_message_typesupport_handle`,
+// which breaks the build under -Werror=deprecated-declarations. CMake passes -DROS_DISTRO_<UPPER>; an unknown future
+// distro is assumed to follow the newer naming.
 inline const rosidl_message_type_support_t* getMessageTypesupportHandle(
     const std::string& type_name, const std::string& typesupport_identifier, rcpputils::SharedLibrary& library) {
 #if defined(ROS_DISTRO_HUMBLE)

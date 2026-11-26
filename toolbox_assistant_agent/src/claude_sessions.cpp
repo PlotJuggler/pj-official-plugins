@@ -20,11 +20,9 @@ namespace {
 
 using nlohmann::json;
 
-// The first "text" block in a `user`/`assistant` message's `content`, which is
-// either a plain string (typical for a real user prompt) or an array of typed
-// blocks (a tool_result-bearing user message, or any assistant message).
-// Returns nullopt when there is no text to show — e.g. a user message that
-// carries only tool_result blocks, which loadTranscript intentionally ignores.
+// The first "text" block in a message's `content`: a plain string (a real user
+// prompt) or an array of typed blocks. nullopt when there is no text, e.g. a user
+// message carrying only tool_result blocks.
 std::optional<std::string> firstTextBlock(const json& content) {
   if (content.is_string()) {
     return content.get<std::string>();
@@ -43,12 +41,10 @@ std::optional<std::string> firstTextBlock(const json& content) {
 }  // namespace
 
 std::string claudeCwdSlug(const std::string& cwd) {
-  // Claude Code maps every non-alphanumeric character to '-' -- observed
-  // against a real store: "/home/u/Work/plotjuggler_sdk" ->
-  // "-home-u-Work-plotjuggler-sdk". The old '/'+'.' rule missed '_', spaces,
-  // and (once this plugin runs on Windows) ':' and '\'. `cwd` is UTF-8, so a
-  // multi-byte code point -- one lead byte plus its continuation bytes,
-  // each 0x80-0xBF -- has to collapse to exactly ONE '-', not one per byte.
+  // Claude Code maps every non-alphanumeric character to '-'
+  // ("/home/u/Work/plotjuggler_sdk" -> "-home-u-Work-plotjuggler-sdk"). `cwd` is
+  // UTF-8, so a multi-byte code point (lead byte plus 0x80-0xBF continuation bytes)
+  // collapses to exactly ONE '-'.
   std::string slug;
   slug.reserve(cwd.size());
   std::size_t i = 0;
@@ -82,12 +78,8 @@ std::filesystem::path claudeSessionsDir(const std::string& work_dir) {
 }
 
 std::optional<std::time_t> parseIso8601Utc(const std::string& iso8601) {
-  // PJ::parseIso8601Utc (pj_base/time_format.hpp) owns the parse: it is strict
-  // about the calendar, understands the fractional seconds and the zone suffix
-  // (Z or a numeric offset), and is locale-independent. It answers in Unix
-  // nanoseconds; the drawer only ever labels to the minute, so this narrows to
-  // whole seconds, flooring rather than truncating so a pre-epoch timestamp
-  // lands on the second that contains it.
+  // Narrows PJ::parseIso8601Utc's Unix nanoseconds to whole seconds, flooring (not
+  // truncating) so a pre-epoch timestamp lands on the second that contains it.
   const std::optional<std::int64_t> ns = PJ::parseIso8601Utc(iso8601);
   if (!ns) {
     return std::nullopt;
@@ -115,9 +107,7 @@ std::string formatShortDate(const std::string& iso8601, bool local) {
     return {};
   }
 #endif
-  // Fixed English month names rather than strftime's %b: the drawer's date is
-  // a compact key next to the title, and it must not change shape with the
-  // user's locale.
+  // Not strftime's %b: the label must not change shape with the locale.
   static constexpr const char* kMonths[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
   if (tm.tm_mon < 0 || tm.tm_mon > 11) {
@@ -162,7 +152,7 @@ std::vector<ConversationSummary> listConversations(const std::filesystem::path& 
       }
       const json rec = json::parse(line, nullptr, /*allow_exceptions=*/false);
       if (!rec.is_object()) {
-        continue;  // corrupt line: skip it, keep reading the rest of the file
+        continue;
       }
       const auto type_it = rec.find("type");
       if (type_it == rec.end() || !type_it->is_string()) {
@@ -175,7 +165,7 @@ std::vector<ConversationSummary> listConversations(const std::filesystem::path& 
         if (summary.first_ts.empty()) {
           summary.first_ts = t;
         }
-        summary.last_ts = t;  // records are appended in order; last write wins
+        summary.last_ts = t;
       }
 
       if (type == "assistant") {
@@ -193,12 +183,10 @@ std::vector<ConversationSummary> listConversations(const std::filesystem::path& 
           }
         }
       }
-      // attachment / queue-operation / last-prompt / atis-latch / anything
-      // future: not part of this listing, ignored by construction (no branch).
     }
 
     if (summary.assistant_messages == 0) {
-      continue;  // a cancelled turn or a test run against this cwd, not a real conversation
+      continue;  // a cancelled turn or test run, not a real conversation
     }
     if (!ai_title.empty()) {
       summary.title = ai_title;
@@ -212,7 +200,7 @@ std::vector<ConversationSummary> listConversations(const std::filesystem::path& 
   }
 
   std::sort(out.begin(), out.end(), [](const ConversationSummary& a, const ConversationSummary& b) {
-    return a.last_ts > b.last_ts;  // ISO 8601 sorts lexicographically -- newest first
+    return a.last_ts > b.last_ts;  // ISO 8601 sorts lexicographically
   });
   return out;
 }
@@ -239,7 +227,7 @@ std::vector<ChatMessage> loadTranscript(const std::filesystem::path& dir, const 
     }
     const std::string& type = type_it->get_ref<const std::string&>();
     if (type != "user" && type != "assistant") {
-      continue;  // ai-title, attachment, queue-operation, last-prompt, ... : not transcript rows
+      continue;
     }
     const auto msg = rec.find("message");
     if (msg == rec.end() || !msg->is_object()) {
@@ -255,12 +243,10 @@ std::vector<ChatMessage> loadTranscript(const std::filesystem::path& dir, const 
       if (const std::optional<std::string> text = firstTextBlock(content); text.has_value()) {
         out.push_back({ChatMessage::Role::User, stripCatalogPrefix(*text)});
       }
-      continue;  // tool_result blocks (if any) carry no row of their own
+      continue;
     }
 
-    // assistant: one row per text/tool_use block, in order, left unmerged --
-    // the caller replays these through ChatSession's own appendAssistant, the
-    // same call the live path uses to fold a streamed reply into one row.
+    // assistant: one row per text/tool_use block, left unmerged (appendAssistant folds them).
     if (!content.is_array()) {
       continue;
     }
@@ -285,8 +271,7 @@ std::vector<ChatMessage> loadTranscript(const std::filesystem::path& dir, const 
 bool deleteConversation(const std::filesystem::path& dir, const std::string& id) {
   std::error_code ec;
   std::filesystem::remove(dir / (id + ".jsonl"), ec);
-  // remove(path, ec) does not treat "already absent" as an error: ec stays
-  // clear either way, which is exactly "ignore absence".
+  // remove(path, ec) leaves ec clear for an already-absent file.
   return !ec;
 }
 

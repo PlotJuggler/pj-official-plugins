@@ -14,7 +14,7 @@
 #include "codex_stream.hpp"
 #include "harness_workdir.hpp"
 #include "private_file.hpp"  // writePrivateTempFile / removePrivateTempFile
-#include "stream_json.hpp"   // NdjsonSplitter (generic; not Claude-specific)
+#include "stream_json.hpp"   // NdjsonSplitter
 #include "subprocess.hpp"
 #include "system_prompt.hpp"
 
@@ -22,13 +22,9 @@ namespace assistant_agent {
 
 namespace {
 
-// TOML basic-string escaping for the config values buildCodexArgv passes
-// through `-c key="value"`. Without it, a Windows path like `C:\Users\x`
-// would be read by Codex's own TOML parser as escape sequences (`\U...`
-// among them) instead of a literal backslash -- corrupting the value (or
-// failing to parse) rather than naming the file/URL/env-var this plugin
-// meant. POSIX values never contain a backslash or a quote, so their output
-// is byte-identical to the unescaped string.
+// TOML basic-string escaping for the values buildCodexArgv passes through `-c key="value"`.
+// Without it a Windows path like `C:\Users\x` is parsed by Codex as escape sequences
+// (`\U...`). POSIX values contain no backslash or quote and come out unchanged.
 std::string tomlBasicString(const std::string& s) {
   std::string out;
   out.reserve(s.size() + 2);
@@ -69,8 +65,7 @@ std::vector<std::string> buildCodexArgv(
   const bool resuming = !session_id.empty();
   std::vector<std::string> argv = {cli_path, "exec"};
   if (resuming) {
-    // No -C on resume: Codex resolves the thread from its own session store
-    // regardless of cwd (verified 2026-09-03 on CLI 0.153.0).
+    // No -C on resume: Codex resolves the thread from its own session store regardless of cwd.
     argv.push_back("resume");
     argv.push_back(session_id);
   }
@@ -82,12 +77,10 @@ std::vector<std::string> buildCodexArgv(
     argv.push_back("-C");
     argv.push_back(workdir);
   }
-  // The tool-withholding spine. There is no `--tools ""` equivalent in Codex:
-  // every call, ours included, runs inside Code Mode (a JS host with no
-  // require/process/fetch), so disabling it would also disable our own MCP
-  // tools — it stays on. What withholds the rest is these `-c` config values
-  // plus the seven `--disable`s below. Not a default to be relaxed; see the
-  // "not negotiable" note in claude_backend.cpp's own buildClaudeArgv.
+  // The tool-withholding spine. Codex has no `--tools ""` equivalent: every call, ours
+  // included, runs inside Code Mode (a JS host with no require/process/fetch), so disabling
+  // it would also disable our MCP tools. What withholds the rest is these `-c` values plus
+  // the `--disable`s below. Never relax these; see buildClaudeArgv.
   const auto addConfig = [&argv](const std::string& key_value) {
     argv.push_back("-c");
     argv.push_back(key_value);
@@ -103,13 +96,10 @@ std::vector<std::string> buildCodexArgv(
     argv.push_back("--disable");
     argv.push_back(name);
   }
-  // Replaces Codex's own "You are Codex" persona with ours.
   addConfig("model_instructions_file=\"" + tomlBasicString(instructions_path) + "\"");
-  // Our tools reach the model through this MCP server; without
-  // default_tools_approval_mode="approve" every call fails outright with
-  // "requires approval, but approval policy is never" (approval_policy=
-  // "never" above disables Codex's OWN interactive prompt, it does not grant
-  // MCP tools an exemption on its own).
+  // Without default_tools_approval_mode="approve" every MCP call fails with "requires
+  // approval, but approval policy is never": approval_policy="never" disables Codex's own
+  // prompt but does not exempt MCP tools.
   addConfig("mcp_servers.pj.url=\"" + tomlBasicString(mcp_url) + "\"");
   addConfig("mcp_servers.pj.bearer_token_env_var=\"" + tomlBasicString(token_env_name) + "\"");
   addConfig("mcp_servers.pj.required=true");
@@ -132,8 +122,7 @@ CodexBackend::~CodexBackend() {
   if (!instructions_path_.empty()) {
     removePrivateTempFile(instructions_path_);
   }
-  // work_dir_ is deliberately left in place -- it holds Codex's session
-  // state, which is exactly what `codex exec resume` comes back to.
+  // work_dir_ stays: it holds the session state `codex exec resume` comes back to.
 }
 
 bool CodexBackend::ensureWorkDir(std::string& error) {
@@ -195,7 +184,7 @@ bool CodexBackend::deleteConversation(const std::string& id) {
 
 void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& tools, const EventSink& sink) {
   cancel_.store(false);
-  last_metrics_ = TurnMetrics{};  // per-turn, so a failed turn cannot report the previous one's cost
+  last_metrics_ = TurnMetrics{};  // a failed turn must not report the previous one's cost
 
   const auto fail = [&sink](std::string why) {
     sink({BackendEvent::Kind::Error, std::move(why)});
@@ -213,21 +202,17 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
     return fail(cannotFindCliMessage(cli_path_, loc));
   }
 
-  // Whether this turn carries `resume`, captured before the stream's
-  // thread.started record overwrites the memory's id: it is what turns a
-  // silent, empty-stdout exit 1 into "that session is gone" instead of a
-  // generic failure.
+  // Captured before thread.started overwrites the memory's id: it turns a silent,
+  // empty-stdout exit 1 into "that session is gone".
   const std::string resume_id = memory_->session_id;
   ListingsTurn listings_turn(*memory_);
   const std::string payload = composePayload(text, tools.features, tools.catalog, *memory_);
 
   const std::vector<std::string> argv = buildCodexArgv(
       loc.path, work_dir_, tools.mcp->url, kCodexMcpTokenEnvVar, instructions_path_, model_, memory_->session_id);
-  // The bearer token travels only through the child's environment, never
-  // argv (/proc/<pid>/cmdline is world-readable) — the same reason
-  // ClaudeBackend keeps its own token inside a private --mcp-config file.
-  // childEnvFor(loc) rides along on top of it so a `codex` resolved through
-  // nvm (its shebang is `#!/usr/bin/env node`) finds its own node binary too.
+  // The bearer token travels only through the child's environment, never argv
+  // (/proc/<pid>/cmdline is readable). childEnvFor(loc) rides along so a `codex` resolved
+  // through nvm (shebang `#!/usr/bin/env node`) finds its own node.
   std::vector<std::pair<std::string, std::string>> extra_env = {{kCodexMcpTokenEnvVar, tools.mcp->bearer_token}};
   for (auto& entry : childEnvFor(loc)) {
     extra_env.push_back(std::move(entry));
@@ -269,10 +254,8 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
         break;
       }
       case CodexEvent::Kind::ErrorItem:
-        // Codex emits the same item.completed/error shape for a startup
-        // notice ("Code Mode is unavailable...", printed before
-        // turn.started) as for a genuine mid-turn failure; `in_turn` is the
-        // only thing that tells them apart.
+        // A startup notice ("Code Mode is unavailable...", before turn.started) has the same
+        // shape as a mid-turn failure; `in_turn` is the only thing that tells them apart.
         if (in_turn) {
           sink({BackendEvent::Kind::Error, ev.text.empty() ? "Codex reported an error" : ev.text});
           errored = true;
@@ -301,9 +284,8 @@ void CodexBackend::sendUserMessage(const std::string& text, const TurnTools& too
   } else if (cancel_.load()) {
     sink({BackendEvent::Kind::Error, "cancelled"});
   } else if (!resume_id.empty() && !saw_thread_started) {
-    // Verbatim what the CLI does for `resume <id>` when it has no such
-    // thread: exit 1, stdout completely empty (the reason is on stderr only,
-    // which is discarded) -- the one failure where retrying cannot help.
+    // What the CLI does for `resume <id>` with no such thread: exit 1 and empty stdout
+    // (the reason is on stderr only, which is discarded). Retrying cannot help.
     BackendEvent err{
         BackendEvent::Kind::Error, "this conversation can no longer be resumed: Codex has no session " + resume_id};
     err.resume_failed = true;

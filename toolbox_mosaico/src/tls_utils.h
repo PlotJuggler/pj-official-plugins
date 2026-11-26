@@ -10,10 +10,9 @@
 #include <string>
 #include <string_view>
 
-// Returns true if every byte of `s` is printable ASCII (0x20–0x7E inclusive).
-// Header/URI/api-key values handed to gRPC must be pure printable ASCII:
-// control bytes (CR, LF, NUL) are exactly what gRPC asserts-and-aborts on, so
-// they are rejected at the earliest boundary (PJ3 main_window.cpp:947-963).
+// Returns true if every byte of `s` is printable ASCII (0x20-0x7E inclusive).
+// Header/URI/api-key values handed to gRPC must be pure printable ASCII: control bytes (CR, LF, NUL) make gRPC
+// assert-and-abort, so they are rejected at the earliest boundary.
 [[nodiscard]] inline bool isPrintableAscii(std::string_view s) {
   for (unsigned char c : s) {
     if (c < 0x20 || c > 0x7E) {

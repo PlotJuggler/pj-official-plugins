@@ -4,9 +4,7 @@ from conan import ConanFile
 
 # Single source of truth for the plotjuggler_sdk version: the SDK_VERSION file at the
 # repo root (read live), shared by the root recipe and every plugin recipe. Edit it with
-# scripts/bump_core_version.py. Mosaico's cursor-aware query-assist needs the caret dialog
-# SDK (onCodeChangedWithCursor / codeChanged(code,cursor) / codeCursor) that landed in
-# 0.5.1, which the repo-wide pin (now 0.6.0) comfortably satisfies.
+# scripts/bump_core_version.py.
 _SDK_VERSION = (
     open(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "SDK_VERSION"))
     .read()

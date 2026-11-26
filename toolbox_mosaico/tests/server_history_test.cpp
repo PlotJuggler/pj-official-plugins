@@ -11,8 +11,6 @@
 #include <string>
 #include <vector>
 
-// ---------- normalizeServerKey ----------
-
 TEST(ServerHistoryNormalize, StripsGrpcScheme) {
   EXPECT_EQ(normalizeServerKey("grpc://demo.mosaico.dev:6726"), std::string("demo.mosaico.dev:6726"));
 }
@@ -49,8 +47,6 @@ TEST(ServerHistoryNormalize, EmptyInputYieldsEmpty) {
 TEST(ServerHistoryNormalize, MalformedSchemeOnlyYieldsEmpty) {
   EXPECT_EQ(normalizeServerKey("grpc://"), std::string(""));
 }
-
-// ---------- promoteToHead ----------
 
 TEST(ServerHistoryPromote, PrependsNewKey) {
   std::vector<std::string> h = {"a:1", "b:2"};

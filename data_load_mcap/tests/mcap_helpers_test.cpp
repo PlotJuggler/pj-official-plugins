@@ -1,19 +1,3 @@
-/**
- * @file mcap_helpers_test.cpp
- * @brief Unit tests for MCAP file reading helpers.
- *
- * These tests verify the MCAP summary reading functions work correctly by
- * creating MCAP data entirely in memory (no disk I/O). We use MemoryWritable
- * and MemoryReadable helper classes to simulate file operations, making the
- * tests fast and portable across machines.
- *
- * What we test:
- *   - Reading schemas and channels from MCAP summary
- *   - Iterating through messages
- *   - Handling multi-channel MCAP files
- *   - Empty MCAP files
- */
-
 #define MCAP_IMPLEMENTATION
 #include "../mcap_helpers.hpp"
 
@@ -37,7 +21,7 @@ namespace {
 
 using namespace PJ::McapHelpers;
 
-// Helper class to write MCAP data to an in-memory buffer
+// In-memory MCAP writer/reader: no disk I/O, so the tests are fast and portable.
 class MemoryWritable : public mcap::IWritable {
  public:
   void handleWrite(const std::byte* data, uint64_t size) override {
@@ -59,7 +43,6 @@ class MemoryWritable : public mcap::IWritable {
   std::vector<uint8_t> buffer_;
 };
 
-// Helper class to read MCAP data from an in-memory buffer
 class MemoryReadable : public mcap::IReadable {
  public:
   explicit MemoryReadable(const std::vector<uint8_t>& data) : data_(data) {}
@@ -85,10 +68,9 @@ class MemoryReadable : public mcap::IReadable {
   std::vector<std::byte> read_buffer_;
 };
 
-// Create a minimal valid MCAP file with schema, channel, messages and summary.
-// The writer chunks by default; pass chunked=false for a flat recording, or
-// with_message_index=false to suppress Message Index records — a valid,
-// spec-conformant writer mode that the read-order tests below depend on.
+// A minimal valid MCAP file with one schema, one channel, messages and a summary. Chunked by default; chunked=false
+// gives a flat recording, with_message_index=false suppresses Message Index records (a valid, spec-conformant writer
+// mode that the read-order tests below depend on).
 std::vector<uint8_t> createTestMcap(
     uint64_t message_count = 10, bool chunked = true, bool with_message_index = true,
     const std::function<void(mcap::McapWriterOptions&)>& tweak_options = {}) {
@@ -105,21 +87,18 @@ std::vector<uint8_t> createTestMcap(
   }
   writer.open(writable, options);
 
-  // Add a schema
   mcap::Schema schema;
   schema.name = "test_msg";
   schema.encoding = "json";
   schema.data.assign(reinterpret_cast<const std::byte*>("{}"), reinterpret_cast<const std::byte*>("{}") + 2);
   writer.addSchema(schema);
 
-  // Add a channel
   mcap::Channel channel;
   channel.topic = "/test/topic";
   channel.schemaId = schema.id;
   channel.messageEncoding = "json";
   writer.addChannel(channel);
 
-  // Write some messages
   mcap::Message msg;
   msg.channelId = channel.id;
   msg.sequence = 0;
@@ -138,8 +117,6 @@ std::vector<uint8_t> createTestMcap(
   return writable.data();
 }
 
-// --- McapReader basic tests ---
-
 TEST(McapHelpersTest, ReadMcapBasic) {
   auto mcap_data = createTestMcap(5);
   MemoryReadable readable(mcap_data);
@@ -148,15 +125,12 @@ TEST(McapHelpersTest, ReadMcapBasic) {
   auto status = reader.open(readable);
   ASSERT_TRUE(status.ok()) << status.message;
 
-  // Read summary via standard method
   status = reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan);
   ASSERT_TRUE(status.ok()) << status.message;
 
-  // Verify we got schema and channel
   EXPECT_EQ(reader.schemas().size(), 1u);
   EXPECT_EQ(reader.channels().size(), 1u);
 
-  // Verify statistics
   auto stats = reader.statistics();
   ASSERT_TRUE(stats.has_value());
   EXPECT_EQ(stats->messageCount, 5u);
@@ -171,11 +145,9 @@ TEST(McapHelpersTest, ReadSelectiveSummaryValid) {
   McapSummaryInfo info;
   auto status = readSelectiveSummary(readable, info);
 
-  // Note: readSelectiveSummary requires SummaryOffset records which may not
-  // be present in minimal MCAP files. The fallback path in the plugin handles this.
-  // If the test fails, it's expected for minimal files without SummaryOffset.
+  // readSelectiveSummary needs SummaryOffset records, which minimal MCAP files may lack (the plugin falls back to the
+  // full summary read then).
   if (!status.ok()) {
-    // This is expected for minimal MCAP files - they may not have SummaryOffset section
     EXPECT_TRUE(status.code == mcap::StatusCode::MissingStatistics || status.code == mcap::StatusCode::InvalidFooter)
         << "Unexpected error: " << status.message;
   } else {
@@ -202,18 +174,14 @@ TEST(McapHelpersTest, PopulateSummaryFromReader) {
   EXPECT_TRUE(info.statistics.has_value());
   EXPECT_EQ(info.statistics->messageCount, 3u);
 
-  // Verify channel details
   auto& channel = info.channels.begin()->second;
   EXPECT_EQ(channel->topic, "/test/topic");
   EXPECT_EQ(channel->messageEncoding, "json");
 
-  // Verify schema details
   auto& schema = info.schemas.begin()->second;
   EXPECT_EQ(schema->name, "test_msg");
   EXPECT_EQ(schema->encoding, "json");
 }
-
-// --- readChannelSummary: what the import dialog reads on the GUI thread ---
 
 // Records every read, so a test can tell which parts of the file were touched.
 class RecordingReadable : public MemoryReadable {
@@ -246,9 +214,8 @@ std::pair<uint64_t, uint64_t> chunkIndexGroup(const std::vector<uint8_t>& data) 
   return {0, 0};
 }
 
-// The dialog needs schemas, channels and counts only. Parsing the chunk
-// indexes of a bag with one chunk per message (300k of them) froze the GUI for
-// half a second per call.
+// The dialog needs schemas, channels and counts only: parsing the chunk indexes of a bag with one chunk per message
+// (300k of them) would freeze the GUI for half a second per call.
 TEST(McapReadChannelSummaryTest, DoesNotReadTheChunkIndexes) {
   const auto data = createTestMcap(
       /*message_count=*/200, /*chunked=*/true, /*with_message_index=*/true,
@@ -277,8 +244,8 @@ TEST(McapReadChannelSummaryTest, DoesNotReadTheChunkIndexes) {
   EXPECT_EQ(overlapping, 0) << "reads inside the chunk indexes [" << index_start << ", " << index_end << ")";
 }
 
-// Each file below has a summary the selective read cannot use; the full read
-// must still deliver the same channels and counts.
+// The summaries below cannot be used by the selective read; the full read must still deliver the same channels and
+// counts.
 void expectChannelSummaryViaFallback(const std::vector<uint8_t>& data) {
   MemoryReadable readable(data);
   mcap::McapReader reader;
@@ -316,8 +283,6 @@ TEST(McapReadChannelSummaryTest, FallsBackWhenTheFooterIsDamaged) {
   data[data.size() - 4] ^= 0xFF;  // trailing magic
   expectChannelSummaryViaFallback(data);
 }
-
-// --- A summary whose offsets or records are damaged must not lose channels ---
 
 // Two channels with different message counts, so a lost one shows in the table and the counts.
 std::vector<uint8_t> createTwoChannelMcap() {
@@ -412,7 +377,7 @@ TEST(McapReadChannelSummaryTest, UndamagedTwoChannelFileIsReadSelectively) {
   EXPECT_EQ(info.channels.size(), 2u);
 }
 
-// A Channel record that does not parse used to be skipped: its topic vanished from the picker.
+// A Channel record that does not parse must not be skipped: its topic would vanish from the picker.
 TEST(McapReadChannelSummaryTest, ACorruptChannelRecordInTheSummaryFallsBack) {
   auto data = createTwoChannelMcap();
   const uint64_t offset_record = summaryOffsetRecordOf(data, mcap::OpCode::Channel);
@@ -442,7 +407,7 @@ TEST(McapReadChannelSummaryTest, AChannelGroupRunningPastTheSummaryFallsBack) {
 }
 
 // Two SummaryOffset records for one opcode, each covering part of the channels (a writer that emits the
-// group in two runs): the last record used to win and the first run's channels were lost.
+// group in two runs): the first run's channels must not be lost to the last record.
 TEST(McapReadChannelSummaryTest, ChannelGroupsSplitAcrossTwoSummaryOffsetsAreBothRead) {
   auto data = createTwoChannelMcap();
   const uint64_t offset_record = summaryOffsetRecordOf(data, mcap::OpCode::Channel);
@@ -494,7 +459,6 @@ TEST(McapHelpersTest, ReadMessagesIteration) {
   ASSERT_TRUE(reader.open(readable).ok());
   ASSERT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::NoFallbackScan).ok());
 
-  // Iterate through messages
   uint64_t count = 0;
   for (const auto& msg_view : reader.readMessages()) {
     EXPECT_EQ(msg_view.channel->topic, "/test/topic");
@@ -511,35 +475,30 @@ TEST(McapHelpersTest, McapWithMultipleChannels) {
   mcap::McapWriterOptions options("test");
   writer.open(writable, options);
 
-  // Schema 1
   mcap::Schema schema1;
   schema1.name = "type_a";
   schema1.encoding = "json";
   schema1.data.assign(reinterpret_cast<const std::byte*>("{}"), reinterpret_cast<const std::byte*>("{}") + 2);
   writer.addSchema(schema1);
 
-  // Schema 2
   mcap::Schema schema2;
   schema2.name = "type_b";
   schema2.encoding = "json";
   schema2.data.assign(reinterpret_cast<const std::byte*>("{}"), reinterpret_cast<const std::byte*>("{}") + 2);
   writer.addSchema(schema2);
 
-  // Channel 1
   mcap::Channel channel1;
   channel1.topic = "/sensor/imu";
   channel1.schemaId = schema1.id;
   channel1.messageEncoding = "json";
   writer.addChannel(channel1);
 
-  // Channel 2
   mcap::Channel channel2;
   channel2.topic = "/sensor/gps";
   channel2.schemaId = schema2.id;
   channel2.messageEncoding = "json";
   writer.addChannel(channel2);
 
-  // Write messages to both channels
   mcap::Message msg;
   const char* data = "{}";
   msg.data = reinterpret_cast<const std::byte*>(data);
@@ -558,7 +517,6 @@ TEST(McapHelpersTest, McapWithMultipleChannels) {
   writer.close();
   auto mcap_data = writable.data();
 
-  // Read and verify
   MemoryReadable readable(mcap_data);
   mcap::McapReader reader;
   ASSERT_TRUE(reader.open(readable).ok());
@@ -600,19 +558,12 @@ TEST(McapHelpersTest, EmptyMcap) {
   EXPECT_EQ(stats->messageCount, 0u);
 }
 
-// ---------------------------------------------------------------------------
-// Message-index detection — which read order a recording can actually replay.
-//
-// LogTimeOrder requires Message Index records. Two very different recordings
-// lack them while still reporting a non-empty chunkIndexes() list:
-//   * a valid file written with McapWriterOptions::noMessageIndex = true;
-//   * any file whose summary had to be reconstructed by a fallback scan,
-//     because synthesized chunk indexes always carry messageIndexLength == 0.
-// Asking "are there chunk indexes?" answers neither. These tests pin the
-// distinction, because getting it wrong imports zero messages.
-// ---------------------------------------------------------------------------
+// Message-index detection: LogTimeOrder requires Message Index records, and two recordings lack them while still
+// reporting a non-empty chunkIndexes() list: a valid file written with McapWriterOptions::noMessageIndex = true, and
+// any file whose summary was reconstructed by a fallback scan (synthesized chunk indexes always carry
+// messageIndexLength == 0). "Are there chunk indexes?" answers neither; getting it wrong imports zero messages.
 
-// Count messages actually delivered by an iteration in the given read order.
+// Messages actually delivered by an iteration in the given read order.
 uint64_t countDeliveredMessages(mcap::McapReader& reader, mcap::ReadMessageOptions::ReadOrder order) {
   mcap::ReadMessageOptions opts;
   opts.readOrder = order;
@@ -644,13 +595,12 @@ TEST(McapMessageIndexTest, ChunkedRecordingWithIndexesHasThem) {
 
   ASSERT_FALSE(reader.chunkIndexes().empty());
   EXPECT_FALSE(lacksMessageIndexes(reader.chunkIndexes()));
-  // The fast path stays available for healthy indexed recordings.
+  // Healthy indexed recordings keep the fast path.
   EXPECT_EQ(countDeliveredMessages(reader, mcap::ReadMessageOptions::ReadOrder::LogTimeOrder), 400u);
 }
 
-// A perfectly valid recording — no corruption at all — that simply opted out
-// of message indexes. chunkIndexes() is non-empty, so an "is it empty?" test
-// wrongly concludes log-time replay is possible.
+// A valid, undamaged recording that opted out of message indexes: chunkIndexes() is non-empty, so an "is it empty?"
+// test wrongly concludes log-time replay is possible.
 TEST(McapMessageIndexTest, ValidRecordingWrittenWithoutMessageIndexes) {
   auto data = createTestMcap(/*message_count=*/400, /*chunked=*/true, /*with_message_index=*/false);
   MemoryReadable readable(data);
@@ -662,8 +612,8 @@ TEST(McapMessageIndexTest, ValidRecordingWrittenWithoutMessageIndexes) {
   EXPECT_TRUE(lacksMessageIndexes(reader.chunkIndexes()));
 }
 
-// Damaging the trailing magic forces readSummary() down the fallback-scan
-// path, which synthesizes chunk indexes with messageIndexLength == 0.
+// Damaging the trailing magic forces readSummary() down the fallback scan, which synthesizes chunk indexes with
+// messageIndexLength == 0.
 TEST(McapMessageIndexTest, SummaryReconstructedByFallbackScanLacksIndexes) {
   auto data = createTestMcap(/*message_count=*/400);
   ASSERT_GT(data.size(), 8u);
@@ -679,8 +629,7 @@ TEST(McapMessageIndexTest, SummaryReconstructedByFallbackScanLacksIndexes) {
   EXPECT_TRUE(lacksMessageIndexes(reader.chunkIndexes()));
 }
 
-// Why the distinction matters: asking for LogTimeOrder without message indexes
-// silently yields nothing, while FileOrder recovers every message.
+// LogTimeOrder without message indexes silently yields nothing, while FileOrder recovers every message.
 TEST(McapMessageIndexTest, LogTimeOrderYieldsNothingWithoutMessageIndexes) {
   auto data = createTestMcap(/*message_count=*/400, /*chunked=*/true, /*with_message_index=*/false);
   MemoryReadable readable(data);
@@ -717,15 +666,8 @@ TEST(McapMessageIndexTest, FileOrderRecoversFooterDamagedRecording) {
   EXPECT_EQ(countDeliveredMessages(reader, mcap::ReadMessageOptions::ReadOrder::FileOrder), 400u);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Import outcome policy
-//
-// These pin the rule that decides whether an import is reported as a success,
-// a partial recovery, or a failure. The rule lives here rather than inline in
-// McapSource::importData precisely so it can be tested: importData needs a
-// live runtime host, so the branches below were previously unreachable from
-// any test.
-// ─────────────────────────────────────────────────────────────────────────────
+// The rule that reports an import as a success, a partial recovery or a failure lives in classifyImportOutcome rather
+// than inline in McapSource::importData, which needs a live runtime host to test.
 
 TEST(ImportOutcome, CleanRunWithAcceptedMessagesSucceeds) {
   EXPECT_EQ(
@@ -733,22 +675,19 @@ TEST(ImportOutcome, CleanRunWithAcceptedMessagesSucceeds) {
       ImportOutcome::kSuccess);
 }
 
-// A selection whose topics genuinely hold no messages is not an error: the
-// reader offered nothing, so there is nothing to have failed at.
+// A selection whose topics hold no messages is not an error: the reader offered nothing.
 TEST(ImportOutcome, CleanRunOfferingNothingSucceeds) {
   EXPECT_EQ(classifyImportOutcome(true, /*pushed=*/0, /*accepted=*/0, false), ImportOutcome::kSuccess);
 }
 
-// The trap this rule exists for: the reader finishes cleanly, but every push
-// was rejected. Below kMaxConsecutivePushFailures nothing aborts the run, so
-// without this the load is announced as a success over an empty dataset.
+// The trap this rule exists for: the reader finishes cleanly but every push was rejected. Below
+// kMaxConsecutivePushFailures nothing aborts the run, so the load would be announced as a success over an empty
+// dataset.
 TEST(ImportOutcome, CleanRunWithEverythingRejectedFails) {
   EXPECT_EQ(classifyImportOutcome(true, /*pushed=*/50, /*accepted=*/0, false), ImportOutcome::kFailed);
 }
 
-// Deliberately independent of Statistics: a recording may carry an absent,
-// empty or untruthful Statistics record, and one push is enough to prove the
-// reader offered data regardless of what the metadata claims.
+// Independent of Statistics, which may be absent, empty or untruthful: one push proves the reader offered data.
 TEST(ImportOutcome, RejectionFailureDoesNotDependOnMessageCounts) {
   EXPECT_EQ(classifyImportOutcome(true, /*pushed=*/1, /*accepted=*/0, false), ImportOutcome::kFailed);
 }
@@ -758,14 +697,12 @@ TEST(ImportOutcome, FailedViewWithNothingAcceptedFails) {
       classifyImportOutcome(/*view_status_ok=*/false, /*pushed=*/0, /*accepted=*/0, false), ImportOutcome::kFailed);
 }
 
-// Data that did land is kept — matching the pre-SDK plugin — but the caller
-// must tell the user the dataset is incomplete.
+// Data that did land is kept, but the caller must tell the user the dataset is incomplete.
 TEST(ImportOutcome, FailedViewWithSomeAcceptedIsPartial) {
   EXPECT_EQ(classifyImportOutcome(false, /*pushed=*/10, /*accepted=*/4, false), ImportOutcome::kPartial);
 }
 
-// A cancel is never a failure and never a partial-recovery warning: the
-// truncation was requested, so whatever landed before it is legitimate.
+// A cancel is never a failure nor a partial-recovery warning: the truncation was requested.
 TEST(ImportOutcome, CancelIsNeverAFailure) {
   EXPECT_EQ(
       classifyImportOutcome(true, /*pushed=*/50, /*accepted=*/0, /*stop_requested=*/true), ImportOutcome::kSuccess);
@@ -773,14 +710,8 @@ TEST(ImportOutcome, CancelIsNeverAFailure) {
       classifyImportOutcome(false, /*pushed=*/50, /*accepted=*/7, /*stop_requested=*/true), ImportOutcome::kSuccess);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// File-order retry after a failed indexed read
-// ─────────────────────────────────────────────────────────────────────────────
-
-// The summary advertised message indexes, so the indexed path was taken, but
-// the index records themselves were unreadable and nothing came out. A serial
-// file-order scan ignores message indexes entirely and can still recover the
-// file.
+// The summary advertised message indexes but the index records are unreadable and nothing came out: a serial
+// file-order scan ignores message indexes and can still recover the file.
 TEST(ShouldRetryInFileOrder, FailedReadThatProducedNothingIsRetried) {
   EXPECT_TRUE(shouldRetryInFileOrder(
       /*view_status_ok=*/false, /*pushed=*/0, /*accepted=*/0,
@@ -803,13 +734,8 @@ TEST(ShouldRetryInFileOrder, NoRetryOnSuccessOrCancel) {
   EXPECT_FALSE(shouldRetryInFileOrder(false, 0, 0, /*stop_requested=*/true));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Recoverable vs terminal reader problems
-// ─────────────────────────────────────────────────────────────────────────────
-
-// LinearMessageView::onMessage reports these per message and keeps iterating,
-// so one stray record must not turn a complete import into "partially
-// recovered".
+// LinearMessageView::onMessage reports these per message and keeps iterating, so one stray record must not turn a
+// complete import into "partially recovered".
 TEST(ProblemIsTerminal, PerMessageProblemsAreRecoverable) {
   EXPECT_FALSE(problemIsTerminal(mcap::StatusCode::InvalidChannelId));
   EXPECT_FALSE(problemIsTerminal(mcap::StatusCode::InvalidSchemaId));
@@ -821,10 +747,6 @@ TEST(ProblemIsTerminal, EverythingElseEndsTheScan) {
   EXPECT_TRUE(problemIsTerminal(mcap::StatusCode::ReadFailed));
   EXPECT_TRUE(problemIsTerminal(mcap::StatusCode::NoMessageIndexesAvailable));
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Progress denominator
-// ─────────────────────────────────────────────────────────────────────────────
 
 TEST(ProgressTotal, CountsOnlySelectedChannels) {
   mcap::Statistics stats;
@@ -862,22 +784,12 @@ TEST(ProgressTotal, EmptySelectionIsZeroNotTheFileTotal) {
   EXPECT_EQ(progressTotal(stats, {}), 0u);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Schemaless channels
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Schema ids are 1-based, so 0 is the spec's "no schema" sentinel (schemaless
-// JSON), not a dangling reference. Shared by the dialog's channel filter and
-// the source's binding loop so they cannot disagree.
+// Schema ids are 1-based, so 0 is the spec's "no schema" sentinel (schemaless JSON), not a dangling reference.
 TEST(IsSchemaless, ZeroIsTheNoSchemaSentinel) {
   EXPECT_TRUE(isSchemaless(0));
   EXPECT_FALSE(isSchemaless(1));
   EXPECT_FALSE(isSchemaless(42));
 }
-
-// ---------------------------------------------------------------------------
-// rosbag2 metadata.yaml resolution
-// ---------------------------------------------------------------------------
 
 TEST(Rosbag2Metadata, ParsesStorageAndFileListFromRealLayout) {
   // Trimmed from a real `ros2 bag record --max-bag-size` output; the QoS

@@ -61,10 +61,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog | PJ::kCapabilityPerTopicPause;
   }
 
-  /// pj.topic_subscription.v1 (host -> plugin): the host pushes the full active-
-  /// topic set here (see setActiveTopicsThunk). Every other extension id is
-  /// unknown -> nullptr, the default DataSourcePluginBase::pluginExtension()
-  /// behavior for a host that doesn't ask for this one.
+  /// pj.topic_subscription.v1: the host pushes the full active-topic set here (see setActiveTopicsThunk).
   const void* pluginExtension(std::string_view id) override {
     if (id == PJ_TOPIC_SUBSCRIPTION_EXTENSION_V1) {
       static const PJ_topic_subscription_v1_t ext{sizeof(PJ_topic_subscription_v1_t), &setActiveTopicsThunk};
@@ -96,7 +93,6 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
-    // Read selected channels with schema info from dialog config
     selected_channels_.clear();
     if (cfg.contains("channels") && cfg["channels"].is_array()) {
       for (const auto& ch : cfg["channels"]) {
@@ -113,16 +109,14 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       }
     }
 
-    // Adopt the dialog's connection when it hands over an open one (it stays connected on
-    // accept); otherwise connect fresh, e.g. for a configured start without the dialog. Either
-    // way start() returns before the connection completes: onPoll() drives the rest, and every
-    // transport event (the server's one-shot serverInfo + "advertise" burst included) waits in
-    // the connection's queue in arrival order until the poll thread applies it.
+    // Adopt the dialog's open connection, else connect fresh (configured start without the dialog). Either way start()
+    // returns before the connection completes: onPoll() drives the rest, and every transport event (including the
+    // server's one-shot serverInfo + "advertise" burst) waits in the connection's queue until the poll thread applies
+    // it.
     adopted_ = connection_.adopt(dialog_.takeConnection());
     if (adopted_) {
-      // The server already sent its one-shot "advertise" burst and will not re-send it. The
-      // dialog discovered the FULL channel catalog during that burst (not just what the user
-      // selected); seeding from it is the only way to learn about unselected topics here.
+      // The server will not re-send its one-shot "advertise" burst; the dialog saw the full catalog (not just the
+      // selection), so seeding from it is the only way to learn about unselected topics.
       for (const auto& ch : dialog_.allDiscoveredChannels()) {
         advertised_channels_[ch.id] = ch;
       }
@@ -130,16 +124,12 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       return status;
     }
 
-    // Demand mode is decided ONCE per start, by the very first advertise attempt: a
-    // host that lacks the notify_available_topics tail slot (old PJ4) returns an
-    // explicit error, so a new plugin detects it and degrades to the legacy
-    // selection-driven subscribe path below, byte-for-byte. A host that accepts it is
-    // re-notified on every advertise/unadvertise delta (see onTextMessage) and drives
-    // subscriptions solely through pj.topic_subscription.v1 (see onPoll / applyDesiredTopics).
+    // Decided once per start by the first advertise attempt: a host without the notify_available_topics tail slot
+    // returns an error and the selection-driven legacy subscribe path is used. Otherwise the host is re-notified on
+    // every advertise/unadvertise delta (see onTextMessage) and drives subscriptions solely through
+    // pj.topic_subscription.v1 (see onPoll / applyDesiredTopics); there is no auto-subscribe.
     demand_mode_ = static_cast<bool>(refreshAdvertisedTopics());
 
-    // Demand mode has no auto-subscribe: the host asks for exactly what it wants to
-    // display via set_active_topics, applied on the poll thread (see onPoll).
     if (!demand_mode_) {
       if (selected_channels_.empty()) {
         runtimeHost().reportMessage(
@@ -154,17 +144,14 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status onPoll() override {
-    // Applies the queued events; re-dials a lost connection every FoxgloveConnectionOptions::reconnect.
+    // Re-dials a lost connection every FoxgloveConnectionOptions::reconnect.
     if (auto status = connection_.poll(); !status) {
       return status;  // the first connection of this start failed: stops the stream
     }
 
-    // Demand mode: apply the host's latest desired active-topic set, if it wrote one
-    // since the last poll. demand_mode_ and last_applied_desired_ deliberately survive
-    // a reconnect (host capability doesn't change mid-session) — the channels that got
-    // cleared on reconnect re-subscribe against last_applied_desired_ as they
-    // re-advertise (reconcileSubscriptions runs after every advertise delta), so no
-    // special reconnect handling is needed here.
+    // demand_mode_ and last_applied_desired_ deliberately survive a reconnect: the channels cleared on reconnect
+    // re-subscribe against last_applied_desired_ as they re-advertise (reconcileSubscriptions runs after every
+    // advertise delta).
     if (demand_mode_ && connection_.isOpen()) {
       applyDesiredTopics();
     }
@@ -193,12 +180,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   }
 
  private:
-  // Resolve a channel's schema payload once, in one place, for both binding
-  // (subscribe) and advertising: Foxglove base64-encodes binary schemas (the
-  // protobuf FileDescriptorSet) in the advertise JSON, while text schemas
-  // (ros2msg/omgidl) arrive verbatim. Zero-copy for text schemas (the view aliases
-  // ch.schema); base64 decodes into `b64_storage`, which must outlive the returned
-  // view (unused otherwise).
+  // Foxglove base64-encodes binary schemas (the protobuf FileDescriptorSet) in the advertise JSON; text schemas
+  // (ros2msg/omgidl) arrive verbatim and the view aliases ch.schema. Base64 decodes into `b64_storage`, which must
+  // outlive the returned view.
   static std::string_view resolveSchemaBytes(
       const ChannelInfo& ch, const ChannelRoute& route, std::string& b64_storage) {
     if (route.schema_is_base64) {
@@ -208,9 +192,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     return ch.schema;
   }
 
-  // Create a parser binding for a supported channel and record it for its
-  // subscription id. Returns an error string on binding failure, std::nullopt
-  // on success. Shared by both subscribe paths (stolen-socket and fresh-connect).
+  // Returns an error string on binding failure, std::nullopt on success.
   std::optional<std::string> bindChannel(const ChannelInfo& ch, uint32_t sub_id) {
     const ChannelRoute route = classifyChannel(ch);
 
@@ -223,8 +205,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       parser_cfg["label_keyed_arrays"] = true;
     }
 
-    // `decoded` must outlive the ensureParserBinding call below — the host
-    // consumes the schema span synchronously, same as data_load_mcap.
+    // `decoded` must outlive ensureParserBinding: the host consumes the schema span synchronously.
     std::string decoded;
     const std::string_view schema_bytes = resolveSchemaBytes(ch, route, decoded);
     const PJ::Span<const uint8_t> schema_span(
@@ -255,9 +236,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, msg);
   }
 
-  // Allocate a subscription id for `ch`, record it, and bind its parser; binding
-  // failures land in `parser_errors`. The caller sends the subscribe frame (the
-  // legacy paths send per-channel, reconcileSubscriptions batches).
+  // Binding failures land in `parser_errors`. The caller sends the subscribe frame.
   uint32_t registerSubscription(const ChannelInfo& ch, std::vector<std::string>& parser_errors) {
     const uint32_t sub_id = next_subscription_id_++;
     subscriptions_[sub_id] = ch.id;
@@ -267,14 +246,11 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     return sub_id;
   }
 
-  // Build the AvailableTopic list for notify_available_topics from advertised_channels_:
-  // supported encodings only, restricted by the dialog's saved selection. That selection
-  // is dual-purpose (see foxglove_dialog.hpp's OK-gate comment): on a legacy host it is
-  // the subscribe list (subscribeToSelectedChannels); here, in demand mode, it acts as an
-  // OPTIONAL advertise filter — an empty selection means "advertise everything".
-  // `schema_storage` backs the base64-decoded schema spans and must outlive the returned
-  // topics; it is reserved up front so no push_back can reallocate out from under an
-  // already-taken span (text-schema spans alias advertised_channels_ directly).
+  // Supported encodings only, restricted by the dialog's saved selection. The selection is dual-purpose (see
+  // foxglove_dialog.hpp's OK-gate comment): the subscribe list on a legacy host (subscribeToSelectedChannels), an
+  // optional advertise filter in demand mode (empty = advertise everything).
+  // `schema_storage` backs the base64-decoded schema spans and must outlive the returned topics; it is reserved up
+  // front so no push_back can reallocate under an already-taken span (text-schema spans alias advertised_channels_).
   std::vector<PJ::AvailableTopic> buildAvailableTopics(std::vector<std::string>& schema_storage) const {
     schema_storage.clear();
     schema_storage.reserve(advertised_channels_.size());
@@ -298,19 +274,15 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     return topics;
   }
 
-  // Advertise the current (filtered) full channel set to the host. The FIRST call, from
-  // onStart(), also decides demand_mode_ via the returned status. Later calls (from
-  // onTextMessage, after an advertise/unadvertise delta) are only made when demand_mode_ is
-  // already true — no point re-probing a host that has already been found to lack the slot.
+  // The first call (onStart) also decides demand_mode_ via the returned status; later calls (after an
+  // advertise/unadvertise delta) are made only when demand_mode_ is already true.
   PJ::Status refreshAdvertisedTopics() {
     std::vector<std::string> schema_storage;
     const auto topics = buildAvailableTopics(schema_storage);
     return runtimeHost().notifyAvailableTopics(PJ::Span<const PJ::AvailableTopic>(topics.data(), topics.size()));
   }
 
-  // Demand-mode wrapper around refreshAdvertisedTopics() for the steady-state calls
-  // (advertise/unadvertise deltas), where a failure is only worth a warning — unlike
-  // the first call in onStart(), whose status DECIDES demand_mode_.
+  // For steady-state calls, where a failure only merits a warning (the first call in onStart() decides demand_mode_).
   void refreshAdvertisedTopicsAndWarn() {
     if (auto status = refreshAdvertisedTopics(); !status) {
       runtimeHost().reportMessage(
@@ -318,17 +290,13 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     }
   }
 
-  // [poll thread] The single reconciliation point for demand mode: diff the live
-  // subscriptions against last_applied_desired_ over the currently-advertised channels,
-  // unsubscribing what fell out and subscribing+binding what is newly wanted. Called
-  // from applyDesiredTopics (a new desired set landed) AND after every advertise delta
-  // in onTextMessage — so desired-then-advertised (mid-stream advertise, or the
-  // resubscribe burst after a reconnect) and advertised-then-desired converge on the
-  // same code path instead of two.
+  // [poll thread] The single reconciliation point for demand mode: diffs live subscriptions against
+  // last_applied_desired_ over the advertised channels, unsubscribing what fell out and subscribing and binding what is
+  // newly wanted. Runs after every new desired set and every advertise delta, so desired-then-advertised (mid-stream
+  // advertise, resubscribe burst after a reconnect) and advertised-then-desired converge.
   void reconcileSubscriptions() {
-    // Filter-aware: a topic the advertise filter hides from the host must not be
-    // subscribed either (see filteredAdvertisedTopics) — and a live subscription
-    // to a now-filtered topic is dropped by the same diff.
+    // A topic the advertise filter hides must not be subscribed (see filteredAdvertisedTopics); a live subscription to
+    // a now-filtered topic is dropped by the same diff.
     const auto advertised_topics = filteredAdvertisedTopics(advertised_channels_, selected_channels_);
 
     const auto diff = computeSubscriptionDiff(subscriptions_, advertised_topics, last_applied_desired_);
@@ -358,8 +326,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     }
   }
 
-  // [poll thread] Apply the host's latest desired active-topic set, if it wrote one
-  // since the last poll (latest-wins slot — see setActiveTopicsThunk).
+  // [poll thread] Latest-wins slot, see setActiveTopicsThunk.
   void applyDesiredTopics() {
     auto desired = desired_topics_slot_.take();
     if (!desired) {
@@ -369,10 +336,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     reconcileSubscriptions();
   }
 
-  // Subscribe to all selected channels using the channel info already captured by the dialog.
-  // Only for a connection adopted from the dialog: the server will not re-send "advertise", and
-  // the selection's channel ids are this server session's. A fresh connection subscribes from
-  // the advertise burst instead, by topic, since saved ids may belong to an earlier session.
+  // Uses the channel info already captured by the dialog. Only for an adopted connection: the server will not re-send
+  // "advertise" and the selection's channel ids belong to this server session. A fresh connection subscribes from the
+  // advertise burst, by topic, since saved ids may belong to an earlier session.
   void subscribeToSelectedChannels() {
     std::vector<std::string> parser_errors;
 
@@ -404,16 +370,14 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       std::vector<std::string> parser_errors;
 
       for (const auto& ch : channels) {
-        // Track server-advertised channels (full info — schema included — so
-        // refreshAdvertisedTopics()/bindChannel() never need to re-parse).
+        // Full info, schema included, so refreshAdvertisedTopics()/bindChannel() never re-parse.
         advertised_channels_[ch.id] = ch;
 
         if (demand_mode_) {
-          continue;  // subscriptions are reconciled once, below, against the host's desired set
+          continue;  // reconciled once, below, against the host's desired set
         }
 
-        // Legacy mode: the dialog's saved selection is the subscribe list, exactly
-        // as before pj.topic_subscription.v1 existed.
+        // Legacy mode: the dialog's saved selection is the subscribe list.
         bool user_selected = false;
         for (const auto& sel : selected_channels_) {
           if (sel.topic == ch.topic) {
@@ -435,18 +399,16 @@ class FoxgloveSource : public PJ::StreamSourceBase {
 
       reportParserErrors(parser_errors);
 
-      // Even an empty advertise is published: after a reconnect it is what clears the previous
-      // session's topics from the host.
+      // Even an empty advertise is published: after a reconnect it is what clears the previous session's topics from
+      // the host.
       if (demand_mode_) {
-        // A channel may advertise AFTER the host already asked for its topic (mid-stream
-        // advertise, or the resubscribe burst after a reconnect) — the reconcile picks it
-        // up from last_applied_desired_ without waiting for another set_active_topics call.
+        // A channel may advertise after the host asked for its topic; the reconcile picks it up from
+        // last_applied_desired_ without another set_active_topics.
         reconcileSubscriptions();
         refreshAdvertisedTopicsAndWarn();
       }
     }
 
-    // Handle unadvertise: server removed channels
     if (op == "unadvertise") {
       auto channel_ids = json.value("channelIds", nlohmann::json::array());
       std::vector<std::string> removed_topics;
@@ -460,7 +422,6 @@ class FoxgloveSource : public PJ::StreamSourceBase {
           removed_topics.push_back(it->second.topic);
           advertised_channels_.erase(it);
         }
-        // Clean up subscriptions referencing removed channels
         for (auto sub_it = subscriptions_.begin(); sub_it != subscriptions_.end();) {
           if (sub_it->second == removed_id) {
             binding_by_subscription_.erase(sub_it->first);
@@ -483,7 +444,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       }
     }
 
-    // Handle server status/warning messages (level: 0=info, 1=warning, 2=error)
+    // level: 0=info, 1=warning, 2=error
     if (op == "status") {
       int level = json.value("level", 0);
       std::string status_msg = json.value("message", "");
@@ -498,9 +459,8 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     }
   }
 
-  // [poll thread] The socket opened, or reopened after a loss. Comes before the server's
-  // serverInfo + "advertise" burst in the queue, so state reset here never wipes a catalog that
-  // burst populated.
+  // [poll thread] The socket opened, or reopened after a loss. Queued before the server's serverInfo + "advertise"
+  // burst, so state reset here never wipes a catalog that burst populated.
   void onOpen(bool reconnected) {
     if (!reconnected) {
       if (!demand_mode_ && adopted_) {
@@ -508,8 +468,7 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       }
       return;
     }
-    // A fresh server session: reset subscription state so new advertise messages create fresh
-    // bindings.
+    // A fresh server session: new advertise messages must create fresh bindings.
     subscriptions_.clear();
     binding_by_subscription_.clear();
     advertised_channels_.clear();
@@ -526,9 +485,9 @@ class FoxgloveSource : public PJ::StreamSourceBase {
     if (it == binding_by_subscription_.end()) {
       return;
     }
-    // The queued frame itself anchors the payload, so the PayloadView fetcher stays valid after
-    // onPoll returns (ObjectIngestPolicy may defer dispatch) without copying it. The span is
-    // re-derived from the moved string by offset: a short string's bytes move with it.
+    // The queued frame anchors the payload, so the PayloadView fetcher stays valid after onPoll returns
+    // (ObjectIngestPolicy may defer dispatch) without a copy. The span is re-derived from the moved string by offset
+    // because a short string's bytes move with it.
     const auto offset = static_cast<size_t>(frame.payload_data - reinterpret_cast<const uint8_t*>(message.data()));
     auto frame_buffer = std::make_shared<const std::string>(std::move(message));
     const PJ::Span<const uint8_t> bytes{
@@ -556,28 +515,22 @@ class FoxgloveSource : public PJ::StreamSourceBase {
   std::map<uint64_t, ChannelInfo> advertised_channels_;  // channel_id -> full channel info (schema included)
   uint32_t next_subscription_id_ = 1;
 
-  // --- Demand-driven per-topic subscription (pj.topic_subscription.v1) ---
+  // Demand-driven per-topic subscription (pj.topic_subscription.v1). Poll-thread-only unless noted.
 
-  // Decided once per start() by the first notify_available_topics attempt (see onStart);
-  // false means an old host was detected and the legacy selection-driven subscribe path is
-  // used instead, byte-for-byte. Poll-thread-only after start().
+  // Decided once per start() by the first notify_available_topics attempt (see onStart); false means an old host and
+  // the legacy selection-driven subscribe path.
   bool demand_mode_ = false;
 
-  // The most recent desired-topic set delivered by the host (via applyDesiredTopics).
-  // Poll-thread-only. Retained so reconcileSubscriptions() can pick up a channel that
-  // advertises AFTER the host already asked for its topic (mid-stream advertise, or the
-  // resubscribe burst after a reconnect).
+  // Retained so reconcileSubscriptions() picks up a channel that advertises after the host asked for its topic
+  // (mid-stream advertise, resubscribe burst after a reconnect).
   std::set<std::string> last_applied_desired_;
 
-  // Cross-thread control-plane surface: setActiveTopicsThunk (entered on the HOST GUI thread via
-  // pluginExtension/set_active_topics) writes; applyDesiredTopics (poll thread, from onPoll) drains.
-  // Its own mutex — the only new cross-thread surface this feature adds; subscriptions_/
-  // advertised_channels_/binding_by_subscription_ stay poll-thread-only, same as before.
+  // Written by setActiveTopicsThunk (host GUI thread), drained by applyDesiredTopics (poll thread). Its own mutex;
+  // subscriptions_/advertised_channels_/binding_by_subscription_ stay poll-thread-only.
   PJ::FoxgloveProtocol::DesiredTopicsSlot desired_topics_slot_;
 
-  // [host GUI thread] pj.topic_subscription.v1's set_active_topics: stash the full desired set
-  // into desired_topics_slot_ and return. ctx is the FoxgloveSource instance (DataSourceHandle::
-  // context()), per the ABI doc — NOT the extension pointer returned by pluginExtension().
+  // [host GUI thread] set_active_topics: stash the full desired set in desired_topics_slot_. `ctx` is the
+  // FoxgloveSource (DataSourceHandle::context()), not the extension pointer from pluginExtension().
   static bool setActiveTopicsThunk(
       void* ctx, const PJ_string_view_t* names, uint64_t count, PJ_error_t* /*out_error*/) noexcept {
     auto* self = static_cast<FoxgloveSource*>(ctx);

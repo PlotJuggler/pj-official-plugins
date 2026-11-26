@@ -44,25 +44,22 @@ class MqttSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    // Always populate available encodings first (needed even if config is empty)
+    // Encodings are needed even when the config is empty (first run).
     dialog_.setAvailableEncodings(PJ::sdk::parseEncodingsJson(runtimeHost().listAvailableEncodings()));
 
-    // Load config if provided (empty config on first run is OK)
     if (!config_json.empty()) {
-      (void)dialog_.loadConfig(config_json);  // Ignore errors, use defaults
+      (void)dialog_.loadConfig(config_json);  // errors keep the defaults
     }
 
-    // Capture the parser configuration the app injects under "_parser_config"
-    // (e.g. the protobuf descriptor + message type). Streaming sources must
-    // forward it to ensureParserBinding, otherwise schema-based parsers bind
-    // with no schema and drop every message.
+    // The parser configuration the app injects under "_parser_config" (e.g. the
+    // protobuf descriptor + message type) must reach ensureParserBinding, or
+    // schema-based parsers bind with no schema and drop every message.
     parser_config_override_ = PJ::sdk::parserConfigOverride(config_json);
 
     return PJ::okStatus();
   }
 
   PJ::Status onStart() override {
-    // Read config from dialog
     auto cfg = nlohmann::json::parse(dialog_.saveConfig(), nullptr, false);
     if (cfg.is_discarded()) {
       return PJ::unexpected("invalid dialog config");
@@ -72,7 +69,6 @@ class MqttSource : public PJ::StreamSourceBase {
     qos_ = cfg.value("qos", 0);
     default_encoding_ = cfg.value("default_encoding", std::string("json"));
 
-    // Read selected topics (from dialog discovery)
     selected_topics_.clear();
     if (cfg.contains("selected_topics") && cfg["selected_topics"].is_array()) {
       for (const auto& t : cfg["selected_topics"]) {
@@ -90,7 +86,6 @@ class MqttSource : public PJ::StreamSourceBase {
       client_ = std::make_unique<mqtt::async_client>(
           pj::mqtt_support::brokerUri(connection), pj::mqtt_support::randomClientId("plotjuggler_mqtt_"));
 
-      // Set up callback for incoming messages
       client_->set_message_callback([this](mqtt::const_message_ptr msg) {
         MqttMessage m;
         m.topic = msg->get_topic();

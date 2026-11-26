@@ -18,11 +18,10 @@
 
 namespace {
 
-/// Stream-selection dialog for the LSL source. Discovery runs on a background
-/// thread (resolve_streams blocks for its wait_time, pacing the loop); onTick()
-/// reports when the discovered set changed so the host re-renders. Selection is
-/// restored by column-0 text (stream name), which survives a user sort of the
-/// table (same contract as ros2_dialog.hpp).
+/// Discovery runs on a background thread (resolve_streams blocks for its
+/// wait_time, pacing the loop); onTick() reports when the discovered set changed
+/// so the host re-renders. Selection is restored by column-0 text (stream name),
+/// which survives a user sort of the table.
 class LslDialog : public PJ::DialogPluginTyped {
  public:
   ~LslDialog() override {
@@ -51,8 +50,7 @@ class LslDialog : public PJ::DialogPluginTyped {
     wd.setTableHeaders("tableStreams", {"Name", "Type", "Channels", "Rate (Hz)", "Source ID"});
     wd.setTableRows("tableStreams", rows);
 
-    // Restore selection by name (column 0). Host matches first-column text, so a
-    // sorted table keeps the right rows selected.
+    // The host matches first-column text, so a sorted table keeps the right rows selected.
     std::vector<std::string> selected_names;
     selected_names.reserve(selected_.size());
     for (const auto& s : selected_) {
@@ -77,11 +75,10 @@ class LslDialog : public PJ::DialogPluginTyped {
     if (widget != "tableStreams") {
       return false;
     }
-    // `selected` = column-0 names currently selected. Keep previously-selected
-    // streams that are not currently listed (went offline) so their selection
-    // survives; replace the listed portion with the new selection. Take ONE
-    // consistent snapshot of discovered_ (the discovery thread can replace it
-    // between accesses), and rebuild the whole selection from that snapshot.
+    // `selected` = column-0 names currently selected. Previously-selected
+    // streams that are no longer listed (went offline) are kept; the listed
+    // portion is replaced. One snapshot of discovered_ (the discovery thread can
+    // replace it between accesses) is used throughout.
     const bool was_empty = selected_.empty();
     std::vector<DiscoveredStream> snapshot;
     {
@@ -110,8 +107,7 @@ class LslDialog : public PJ::DialogPluginTyped {
       }
     }
     selected_ = std::move(next);
-    // Re-render when the OK-enable state (selection emptiness) flips, so the OK
-    // button updates immediately rather than on the next onTick.
+    // Re-render when the OK-enable state (selection emptiness) flips.
     return was_empty != selected_.empty();
   }
 
@@ -178,7 +174,7 @@ class LslDialog : public PJ::DialogPluginTyped {
 
   void ensureDiscovery() {
     if (discovery_running_.exchange(true)) {
-      return;  // already running
+      return;
     }
     stop_flag_ = false;
     discovery_thread_ = std::thread([this] { discoveryLoop(); });

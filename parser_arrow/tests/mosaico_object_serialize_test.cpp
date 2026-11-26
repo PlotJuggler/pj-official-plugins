@@ -1,22 +1,15 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Locks in the per-row canonicalization contract for the Mosaico 3D-object
-// ontologies, using the REAL server Arrow shapes (verified live against
-// demo.mosaico.dev):
-//   * point_cloud2 — ROS PointCloud2: a packed `data` blob + a `fields`
-//     descriptor (list<struct{name,offset,datatype,count}>) + width/height/
-//     point_step/row_step/... -> one sdk::PointCloud per row (copied through
-//     verbatim, no packing, no decode).
-//   * pose — top-level position/orientation structs -> sdk::PosesInFrame.
-//   * motion_state (odometry) — the pose nested under a `pose` struct
-//     (pose/position, pose/orientation) -> sdk::PosesInFrame.
+// Per-row canonicalization contract for the Mosaico 3D-object ontologies, using the real server Arrow shapes:
+//   * point_cloud2: ROS PointCloud2, a packed `data` blob + a `fields` descriptor
+//     (list<struct{name,offset,datatype,count}>) + width/height/point_step/row_step/... -> one sdk::PointCloud per
+//     row, copied through verbatim.
+//   * pose: top-level position/orientation structs -> sdk::PosesInFrame.
+//   * motion_state (odometry): the pose nested under a `pose` struct -> sdk::PosesInFrame.
 //
-// Each must register the topic ONCE with {"builtin_object_type":"kX"} (no
-// codec-id key) and serialize via the pj_base canonical codec. The tests build
-// synthetic tables matching those shapes and drive the real helpers against a
-// recording fake toolbox host (no Flight/gRPC), then deserialize each pushed
-// blob and assert the fields round-trip.
+// The tests build synthetic tables matching those shapes, serialize each decoded object with the pj_base canonical
+// codec, deserialize it and assert the fields round-trip.
 
 #include <arrow/api.h>
 #include <arrow/array/builder_binary.h>
@@ -41,12 +34,6 @@
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Recording fake host (mirror of image_serialize_test.cpp). Captures every
-// registerObjectTopic + pushOwnedObject.
-// ---------------------------------------------------------------------------
-
-// ---- small Arrow array builders --------------------------------------------
 std::shared_ptr<arrow::Array> i64Col(const std::vector<std::int64_t>& v) {
   arrow::Int64Builder b;
   EXPECT_TRUE(b.AppendValues(v).ok());

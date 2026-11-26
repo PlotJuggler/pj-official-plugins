@@ -14,8 +14,8 @@ class DataLoadMf4Conan(ConanFile):
     version = "0"
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
-    # mdflib itself is vendored via CPM (no Conan recipe); it needs zlib + expat,
-    # which we provide from Conan so mdflib reuses them via find_package.
+    # mdflib is vendored via CPM (no Conan recipe); zlib + expat come from Conan so mdflib finds them via
+    # find_package.
     requires = (
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",

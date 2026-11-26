@@ -26,7 +26,6 @@
 
 namespace {
 
-/// Map ULog BasicType to PJ::PrimitiveType.
 PJ::PrimitiveType ulogTypeToPrimitive(ulog_cpp::Field::BasicType type) {
   switch (type) {
     case ulog_cpp::Field::BasicType::INT8:
@@ -133,9 +132,8 @@ PJ::sdk::Log::Level toLogLevel(ulog_cpp::Logging::Level level) {
   return PJ::sdk::Log::Level::kUnknown;
 }
 
-/// How one leaf of a record becomes one cell of the row handed to the host.
-/// ULog scalars are 1, 2, 4 or 8 bytes; one kind per width keeps each copy a
-/// fixed-size move instead of a call into memcpy.
+/// How one leaf of a record becomes one cell of the host row. One kind per scalar width (1, 2, 4 or 8 bytes) keeps each
+/// copy a fixed-size move instead of a memcpy call.
 struct LeafPlan {
   enum class Kind : uint8_t { kCopy1, kCopy2, kCopy4, kCopy8, kBool, kString };
   size_t offset;
@@ -143,14 +141,12 @@ struct LeafPlan {
   Kind kind;
 };
 
-/// Everything about a subscription's rows that does not change from record to
-/// record, worked out once: where each leaf sits, and a row whose field handles
-/// and value types are already filled in. Decoding a record is then one pass
-/// that patches the values in place, with no format walk, no intermediate
-/// ValueRef and no per-record allocation.
+/// What does not change from record to record of a subscription, worked out once: where each leaf sits, and a row with
+/// field handles and value types already filled in. Decoding a record then patches the values in place: no format
+/// walk, no intermediate ValueRef, no per-record allocation.
 struct RowPlan {
   std::vector<LeafPlan> leaves;
-  std::vector<PJ::PrimitiveType> types;  // one per leaf, same order
+  std::vector<PJ::PrimitiveType> types;  // parallel to `leaves`
   std::vector<PJ_bound_field_value_t> row;
 
   RowPlan() = default;
@@ -174,7 +170,7 @@ struct RowPlan {
     });
   }
 
-  /// Build the row once the host has handed out a field handle per leaf.
+  /// Needs one field handle per leaf.
   void bind(const std::vector<PJ::sdk::FieldHandle>& handles) {
     row.clear();
     for (size_t i = 0; i < leaves.size(); ++i) {
@@ -185,8 +181,7 @@ struct RowPlan {
     }
   }
 
-  /// Fill `row` from one raw record. A leaf that falls outside `raw_size` (a
-  /// truncated or corrupt record) becomes null rather than an out-of-bounds read.
+  /// A leaf outside `raw_size` (a truncated or corrupt record) becomes null, never an out-of-bounds read.
   void decode(const uint8_t* raw, size_t raw_size) {
     for (size_t i = 0; i < leaves.size(); ++i) {
       const LeafPlan& leaf = leaves[i];
@@ -195,8 +190,8 @@ struct RowPlan {
       if (cell.is_null) {
         continue;
       }
-      // ULog scalars are little-endian, and every member of the value union
-      // starts at its first byte, so copying the leaf's bytes sets the member.
+      // ULog scalars are little-endian and every member of the value union starts at its first byte, so copying the
+      // leaf's bytes sets the member.
       const uint8_t* src = raw + leaf.offset;
       switch (leaf.kind) {
         case LeafPlan::Kind::kCopy1:
@@ -234,14 +229,12 @@ std::string sampleList(const std::vector<std::string>& names, size_t max_shown) 
   return out;
 }
 
-/// Writes every data record to the host as the reader hands it over, instead
-/// of keeping the whole log in memory and writing it afterwards. Nothing but
-/// the record being decoded is held, so peak memory no longer grows with the
-/// file, and the bytes are decoded while they are still in cache.
+/// Writes each data record to the host as the reader hands it over; only the record being decoded is held, so peak
+/// memory does not grow with the file.
 class StreamingContainer : public ulog_container::ULogContainer {
  public:
-  /// `multi_instance` holds the message names whose topics carry a `.NN`
-  /// instance suffix. It has to be known before the first record is written, hence the first pass.
+  /// `multi_instance`: the message names whose topics carry a `.NN` instance suffix. Known before the first record is
+  /// written, hence the first pass.
   StreamingContainer(PJ::sdk::SourceWriteHostView write_host, std::set<std::string> multi_instance)
       : ULogContainer(false), write_host_(write_host), multi_instance_(std::move(multi_instance)) {}
 
@@ -257,9 +250,8 @@ class StreamingContainer : public ulog_container::ULogContainer {
       topics_.resize(id + 1);
     }
     if (!topics_[id]) {
-      // A format ulog_cpp could not resolve throws from here. Left to escape,
-      // the reader would take it for file corruption and resync on every
-      // record: fail the import instead, and never retry this subscription.
+      // A format ulog_cpp could not resolve throws from here. Left to escape, the reader would take it for corruption
+      // and resync on every record: fail the import instead, and never retry this subscription.
       try {
         topics_[id] = openTopic(data_msg.msgId());
       } catch (const std::exception& e) {
@@ -274,9 +266,8 @@ class StreamingContainer : public ulog_container::ULogContainer {
       return;
     }
 
-    // ulog_cpp validates the message FRAME, not the payload against the
-    // format. A record shorter than its format is corrupt: skip it rather
-    // than fabricate a timestamp and null fields for it.
+    // ulog_cpp validates the message FRAME, not the payload against the format. A record shorter than its format is
+    // corrupt: skip it rather than fabricate a timestamp and null fields.
     const auto& raw = data_msg.data();
     if (raw.size() < topic.min_size) {
       if (result.short_records++ == 0) {
@@ -285,8 +276,7 @@ class StreamingContainer : public ulog_container::ULogContainer {
       return;
     }
 
-    // Timestamp is uint64_t microseconds; a format without one falls back to
-    // the sample index, exactly as the original DataLoadULog did.
+    // Microseconds; a format without a timestamp falls back to the sample index, as in PlotJuggler 3.
     uint64_t timestamp_us = sample_index;
     if (topic.ts_offset) {
       std::memcpy(&timestamp_us, raw.data() + *topic.ts_offset, sizeof(timestamp_us));
@@ -299,9 +289,8 @@ class StreamingContainer : public ulog_container::ULogContainer {
     result.earliest_record_us = std::min(result.earliest_record_us, timestamp_us);
 
     topic.plan.decode(raw.data(), raw.size());
-    // Straight to the host's C entry point: the SDK's appendBoundRecord takes
-    // ValueRef cells and rebuilds this row in a fresh vector on every call. An
-    // SDK overload accepting a ready-made row would let this go back through it.
+    // Straight to the host's C entry point: the SDK's appendBoundRecord takes ValueRef cells and rebuilds this row in a
+    // fresh vector on every call.
     const PJ_source_write_host_t& host = write_host_.raw();
     if (!host.vtable->append_bound_record(
             host.ctx, topic.handle, ts_ns, topic.plan.row.data(), topic.plan.row.size(), &host_error_)) {
@@ -309,15 +298,13 @@ class StreamingContainer : public ulog_container::ULogContainer {
     }
   }
 
-  /// What the import has to report once the file is read.
   struct Result {
     std::string write_error;  // first host error; once set, no further record is written
     // Smallest record timestamp written, sample-index fallbacks included: the dataset's time range starts there.
     uint64_t earliest_record_us = std::numeric_limits<uint64_t>::max();
     size_t series_count = 0;
-    // Diagnostics are aggregated and reported once: a malformed log can define
-    // thousands of subscriptions, and one message per problem would flood the
-    // host (whose dedup is by exact text).
+    // Diagnostics are aggregated and reported once: a malformed log can define thousands of subscriptions, and one
+    // message per problem would flood the host (whose dedup is by exact text).
     std::vector<std::string> topics_without_timestamp;
     size_t short_records = 0;
     size_t out_of_range_timestamps = 0;  // records skipped: their nanoseconds would overflow int64
@@ -336,20 +323,17 @@ class StreamingContainer : public ulog_container::ULogContainer {
     uint64_t samples_seen = 0;
   };
 
-  /// Creates the host topic and its fields on a subscription's first record,
-  /// so a subscription that never logs anything leaves no empty topic behind.
+  /// Runs on a subscription's first record, so a subscription that never logs anything leaves no empty topic.
   std::unique_ptr<Topic> openTopic(uint16_t msg_id) {
     auto topic = std::make_unique<Topic>();
     const auto& sub = subscriptionsByMessageId().at(msg_id);
     const auto& format = *sub->format();
 
-    // Build topic name, adding multi_id suffix when needed.
     const auto& added = sub->getAddLoggedMessage();
     topic->name = added.messageName();
 
-    // ulog_cpp keeps the FIRST subscription of a (name, multi_id) pair in its
-    // by-name table; a later duplicate under another msg_id was never imported,
-    // and must not be merged into the first one's topic now.
+    // ulog_cpp keeps the FIRST subscription of a (name, multi_id) pair in its by-name table; a later duplicate under
+    // another msg_id was never imported and must not be merged into the first one's topic.
     const auto& by_name = subscriptionsByNameAndMultiId();
     const auto first = by_name.find({topic->name, added.multiId()});
     if (first == by_name.end() || first->second != sub) {
@@ -375,9 +359,8 @@ class StreamingContainer : public ulog_container::ULogContainer {
     }
     topic->handle = *handle;
 
-    // Rows are appended by handle: the by-name path copies every field name
-    // into each row and makes the host re-resolve it, per field per record.
-    // collectFlatFieldNames and forEachFlatLeaf visit the leaves in the same order.
+    // Rows are appended by handle: the by-name path copies every field name into each row and makes the host re-resolve
+    // it, per field per record. collectFlatFieldNames and forEachFlatLeaf visit the leaves in the same order.
     topic->plan = RowPlan(format);
     if (topic->plan.leaves.size() != field_names.size()) {
       return topic;
@@ -394,17 +377,14 @@ class StreamingContainer : public ulog_container::ULogContainer {
     }
     topic->plan.bind(field_handles);
 
-    // The spec mandates a `uint64_t timestamp` field but not its position, so
-    // locate it by name (original plugin issue #1154 for formats without one).
+    // The spec mandates a `uint64_t timestamp` field but not its position: locate it by name.
     topic->ts_offset = ulog_flatten::findTimestampOffset(format);
     if (!topic->ts_offset) {
       result.topics_without_timestamp.push_back(topic->name);
     }
-    // A trailing `_padding*` field is not required to be present in the logged
-    // bytes (ULog spec, "Padding"), so the minimum valid payload size excludes
-    // it; padding anywhere else still counts (see ulog_flatten::loggedSizeBytes).
-    // That size under-counts a format with duplicate field names, so the
-    // timestamp is covered explicitly: it is read before any bounds-checked leaf.
+    // A trailing `_padding*` field may be absent from the logged bytes (ULog spec, "Padding"), so the minimum payload
+    // excludes it; other padding still counts (see ulog_flatten::loggedSizeBytes). That size under-counts a format
+    // with duplicate field names, so the timestamp is covered explicitly: it is read before any bounds-checked leaf.
     topic->min_size = ulog_flatten::loggedSizeBytes(format);
     if (topic->ts_offset) {
       topic->min_size = std::max(topic->min_size, *topic->ts_offset + sizeof(uint64_t));
@@ -450,8 +430,8 @@ class ULogSource : public PJ::FileSourceBase {
             std::filesystem::path(std::u8string(filepath_.begin(), filepath_.end())), size_error),
         1);
 
-    // One bar over both passes. The first only parses, so it gets a small share;
-    // the second also writes every record to the host, which is where the time goes.
+    // One bar over both passes: the first only parses (small share); the second writes every record to the host, which
+    // is where the time goes.
     static constexpr uint64_t kProgressSteps = 1000;
     static constexpr uint64_t kScanSteps = 50;
     const auto steps = [&](uint64_t bytes_read, uint64_t span) {
@@ -459,9 +439,8 @@ class ULogSource : public PJ::FileSourceBase {
     };
     (void)runtimeHost().progressStart("Importing ULog", kProgressSteps, true);
 
-    // First pass: subscriptions only. A topic name carries a `.NN` suffix when
-    // any instance of it has multi_id > 0, and instances can be added anywhere
-    // in the file, so the names must be settled before the first record is written.
+    // First pass: subscriptions only. A topic name carries a `.NN` suffix when any instance of it has multi_id > 0, and
+    // instances can be added anywhere in the file, so the names must be settled before the first record is written.
     std::set<std::string> multi_instance;
     uint64_t scanned_bytes = 0;
     bool stopped_in_scan = false;
@@ -483,10 +462,9 @@ class ULogSource : public PJ::FileSourceBase {
       }
     }
 
-    // Second pass: decode and write each record as it is read. A stop request
-    // ends the read; everything written up to there is already with the host
-    // ("Stop and Keep" flushes it, Discard evicts the dataset host-side). A stop
-    // that came during the first pass keeps the part of the file read by then.
+    // Second pass: decode and write each record as it is read. A stop request ends the read; everything written up to
+    // there is already with the host ("Stop and Keep" flushes it, Discard evicts the dataset host-side). A stop during
+    // the first pass keeps the part of the file read by then.
     auto data_container = std::make_shared<StreamingContainer>(writeHost(), std::move(multi_instance));
     const auto& result = data_container->result;
     const auto read = ulog_container::readLog(filepath_, data_container, [&](uint64_t bytes_read) {
@@ -525,9 +503,8 @@ class ULogSource : public PJ::FileSourceBase {
       return PJ::unexpected(err_msg);
     }
 
-    // Recoverable problems (mid-file corruption, unsupported appended-data
-    // offsets, ...) don't abort the import: ulog_cpp resynchronises and keeps
-    // going. Surface them so a partial result is never mistaken for a complete one.
+    // Recoverable problems (mid-file corruption, ...) don't abort the import: ulog_cpp resynchronises and keeps going.
+    // Surface them so a partial result is never mistaken for a complete one.
     if (!data_container->parsingErrors().empty()) {
       const auto& errors = data_container->parsingErrors();
       runtimeHost().reportMessage(
@@ -590,7 +567,7 @@ class ULogSource : public PJ::FileSourceBase {
 
     // `_parameters`: one field per parameter, so each is a series right under the topic. The initial snapshot is one
     // record at the snapshot time; each in-flight change is a record at the data-message clock it appeared under
-    // (PlotJuggler#1245) naming only its parameter: the host stores the others as null, which a numeric series skips.
+    // naming only its parameter: the host stores the others as null, which a numeric series skips.
     // PX4 parameters are int32/float only; anything else is collected and reported once instead of silently skipped.
     {
       std::vector<std::string> non_numeric_params;

@@ -9,43 +9,32 @@
 #include <utility>
 #include <vector>
 
-#include "claude_sessions.hpp"  // ConversationSummary, for listConversations()
-#include "harness_memory.hpp"   // HarnessMemory + composePayload
+#include "claude_sessions.hpp"  // ConversationSummary
+#include "harness_memory.hpp"   // HarnessMemory
 #include "llm_backend.hpp"
-#include "stream_json.hpp"  // TurnMetrics, reported by the CLI in its result record
+#include "stream_json.hpp"  // TurnMetrics
 
 namespace assistant_agent {
 
-// The command line handed to the CLI, built where a test can read it.
-//
-// This exists as a free function for one reason: the flags that keep headless
-// Claude off the user's machine are three entries in a vector, and nothing
-// stopped a well-meant change from removing them. `ClaudeBackendCommandLineIsLocked`
-// asserts them; that property is not negotiable.
-//
-// An empty `model` or `session_id` simply omits its flag.
+// The command line handed to the CLI, a free function so a test can read it: the flags
+// that keep headless Claude off the user's machine are three vector entries, and
+// `ClaudeBackendCommandLineIsLocked` asserts them. An empty `model` or `session_id`
+// omits its flag.
 [[nodiscard]] std::vector<std::string> buildClaudeArgv(
     const std::string& cli_path, const std::string& mcp_config_path, const std::string& system_prompt,
     const std::string& model, const std::string& session_id);
 
-// composePayload now lives in harness_memory.hpp (backend-agnostic, shared
-// with CodexBackend) and is pulled in transitively via the #include above.
-
-// Remote backend driving the user's Claude Code CLI subscription headlessly —
-// NO Anthropic API key, no per-token billing. Per turn it spawns
-// `claude -p --output-format stream-json ... "<message>"` and parses the
-// streamed events for the transcript. Headless Claude accepts external tools
-// ONLY via MCP, so it is pointed at this plugin's endpoint on PlotJuggler's own
-// MCP server (TurnTools::mcp, wrapped in a --mcp-config file); PlotJuggler runs
-// the tools. Conversation context is preserved across turns via the CLI's
-// --resume with the session id Claude reports — held in a caller-owned
-// HarnessMemory so that rebuilding this object (a settings change) does not
-// silently start over.
+// Drives the user's Claude Code CLI subscription headlessly (no API key, no per-token
+// billing). Per turn it spawns `claude -p --output-format stream-json` and parses the
+// streamed events. Headless Claude accepts external tools ONLY via MCP, so it is pointed
+// at this plugin's endpoint on PlotJuggler's MCP server (TurnTools::mcp, in a
+// --mcp-config file) and PlotJuggler runs the tools. Context carries across turns via
+// --resume with the session id Claude reports, held in a caller-owned HarnessMemory so
+// rebuilding this object (a settings change) does not restart the conversation.
 class ClaudeBackend : public LlmBackend {
  public:
-  // `memory` must outlive the backend; the dialog owns one per conversation and
-  // lends the same one to every backend it builds. A null pointer is treated as
-  // a fresh private memory, so tests can construct without one.
+  // `memory` must outlive the backend; the dialog lends the same one to every backend it
+  // builds. Null means a fresh private memory (tests).
   ClaudeBackend(std::string cli_path, std::string model, std::shared_ptr<HarnessMemory> memory = nullptr);
   // Unlinks the --mcp-config file, if one was written.
   ~ClaudeBackend() override;
@@ -54,61 +43,49 @@ class ClaudeBackend : public LlmBackend {
   void cancel() override;
   [[nodiscard]] std::string name() const override;
 
-  // The instructions passed as --append-system-prompt; assistantInstructions()
-  // (system prompt + product policy) unless replaced. Only the benchmark
-  // runner replaces them, to measure without the policy.
+  // Passed as --append-system-prompt; assistantInstructions() unless replaced (only the
+  // benchmark runner does, to measure without the policy).
   void setInstructions(std::string instructions) {
     instructions_ = std::move(instructions);
   }
 
-  // Probe: `<cli> --version` exits 0.
   [[nodiscard]] BackendTestResult testConnection() const override;
 
-  // A curated list, not a catalog: headless Claude Code writes no model list
-  // to disk and has no "list models" command (`claude --help` names only the
-  // aliases). See claude_backend.cpp for the ordering rationale.
+  // A curated list: headless Claude Code has no on-disk model list or "list models" command.
   [[nodiscard]] std::vector<ModelChoice> availableModels() const override {
     return listModels();
   }
-  // Static twin of availableModels(), so the settings code (assistant_dialog.cpp's
-  // BackendSpec::models) can list this backend's models without constructing one.
+  // Static twin of availableModels() for BackendSpec::models, which has no instance.
   [[nodiscard]] static std::vector<ModelChoice> listModels();
 
-  // The harness's own session store for this CLI's cwd (claude_sessions.hpp).
-  // Resolves the work dir on first use exactly like sendUserMessage does; an
-  // empty list/transcript/false is the honest answer when that fails (no
-  // XDG_STATE_HOME/HOME), not an error the caller has to handle separately.
+  // The harness's own session store for this CLI's cwd (claude_sessions.hpp). Resolves
+  // the work dir like sendUserMessage; empty/false when that fails.
   [[nodiscard]] std::vector<ConversationSummary> listConversations() override;
   [[nodiscard]] std::vector<ChatMessage> loadTranscript(const std::string& id) override;
   bool deleteConversation(const std::string& id) override;
 
-  // Cost and token split of the turn that just finished, as the CLI reported
-  // it. `valid` is false if the turn never produced a result record.
+  // Cost and token split of the last turn as the CLI reported it; `valid` is false if
+  // the turn produced no result record.
   [[nodiscard]] const TurnMetrics& lastTurnMetrics() const {
     return last_metrics_;
   }
-  // Set when the CLI reported a usage window that is no longer "allowed" —
-  // a batch driver should stop rather than keep burning failed turns.
+  // Set when the CLI reported a usage window that is no longer "allowed"; a batch driver
+  // should stop.
   [[nodiscard]] bool rateLimited() const {
     return rate_limited_;
   }
 
  private:
-  // Resolve (once) the private directory the CLI runs in (harness_workdir.hpp).
-  // The CLI reads its cwd's CLAUDE.md and project state as context, so
-  // inheriting the host app's cwd would inject whatever project PlotJuggler
-  // happened to be launched from into the panel's system prompt. Pairs with
-  // --restricted, which covers the user-level side (settings, global
-  // CLAUDE.md). The directory is STABLE (under XDG state), not a fresh temp
-  // dir: the CLI indexes its sessions by cwd, and resuming a persisted
-  // conversation (--resume after a plugin restart) only works when every
-  // instance runs in the same place.
+  // Resolves (once) the private directory the CLI runs in (harness_workdir.hpp). The CLI
+  // reads its cwd's CLAUDE.md and project state, so inheriting the host's cwd would inject
+  // whatever project PlotJuggler was launched from; --restricted covers the user-level
+  // side. STABLE (under XDG state), not a fresh temp dir: the CLI indexes sessions by cwd,
+  // so --resume after a restart only works from the same place.
   bool ensureWorkDir(std::string& error);
-  // The --mcp-config file for `endpoint` (one "pj" http server, the token in
-  // an Authorization header): a private 0600 temp file, since argv is
-  // world-readable via /proc/<pid>/cmdline. Memoized while the endpoint is
-  // unchanged; a new endpoint's file replaces (and unlinks) the old one. ""
-  // when it could not be written.
+  // The --mcp-config file for `endpoint` (one "pj" http server, token in an Authorization
+  // header): a private 0600 temp file, since argv is readable via /proc/<pid>/cmdline.
+  // Memoized while the endpoint is unchanged; a new endpoint's file replaces the old one.
+  // "" when it could not be written.
   std::string mcpConfigFile(const PJ::sdk::McpEndpoint& endpoint);
 
   std::string cli_path_;
@@ -117,8 +94,7 @@ class ClaudeBackend : public LlmBackend {
   std::shared_ptr<HarnessMemory> memory_;  // never null after construction
   TurnMetrics last_metrics_;
   bool rate_limited_ = false;
-  // 0700 stable directory the CLI runs in (see ensureWorkDir). Never removed:
-  // it holds the CLI's session state, which is what --resume comes back to.
+  // Never removed: it holds the session state --resume comes back to.
   std::string work_dir_;
   std::string mcp_config_path_;
   PJ::sdk::McpEndpoint mcp_config_endpoint_;  // what mcp_config_path_ holds

@@ -35,8 +35,6 @@ class CsvDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  // --- Accessors for CsvSource ---
-
   char delimiter() const {
     return delimiter_;
   }
@@ -52,8 +50,6 @@ class CsvDialog : public PJ::DialogPluginTyped {
 
   int timeColumnIndex() const;
   int combinedColumnIndex() const;
-
-  // --- Dialog protocol ---
 
   std::string manifest() const override;
   std::string ui_content() const override;
@@ -72,8 +68,8 @@ class CsvDialog : public PJ::DialogPluginTyped {
   bool loadConfig(std::string_view config_json) override;
 
  private:
-  /// The picked columns by name, empty when none is picked. An empty name falls back to the index, for a config
-  /// saved without names (csv <= 1.0.10).
+  /// The picked columns by name, empty when none is picked. An empty name falls back to the index, for configs
+  /// saved without names.
   struct PickedColumns {
     std::string time;  // "Selected Column"
     int time_index = -1;
@@ -91,19 +87,16 @@ class CsvDialog : public PJ::DialogPluginTyped {
   }
   /// Re-reads the header and preview, then picks `keep` in the new header: a name the header lacks picks nothing.
   void analyzeFile(const PickedColumns& keep);
-  // True when the file has at least one date-only AND one time-only column, so a
-  // combined ("Multiple Columns") timestamp can be built by multi-selecting them.
+  // True when the file has a date-only AND a time-only column, so a combined timestamp can be built.
   bool combinableAvailable() const;
-  // Build the single combined date+time pair from the two picked column indices
-  // (clears it when either is invalid). Populates combined_pairs_/combined_index_.
+  // Sets combined_pairs_/combined_index_ from the two picked indices; clears them when either is invalid.
   void setCombinedColumns(int date_index, int time_index);
   static int delimiterToIndex(char d);
   static char indexToDelimiter(int idx);
 
   std::string filepath_;
   char delimiter_ = ',';
-  // "Detect Automatically" delimiter toggle (default on). Forced off and locked
-  // when the header is ambiguous (delimiter_ambiguous_), so the user picks.
+  // "Detect Automatically" toggle; forced off and locked when the header is ambiguous, so the user picks.
   bool detect_delimiter_ = true;
   bool delimiter_ambiguous_ = false;
   TimeMode time_mode_ = TimeMode::RowNumber;
@@ -118,10 +111,9 @@ class CsvDialog : public PJ::DialogPluginTyped {
   std::string warning_message_;
 
   std::vector<std::string> column_names_;
-  // Per-column detected types (parallel to column_names_); drives which columns
-  // can form a combined timestamp in "Multiple Columns" mode.
+  // Parallel to column_names_.
   std::vector<PJ::CSV::ColumnTypeInfo> column_types_;
-  // Holds 0 or 1 element: the user's picked date+time pair (Multiple Columns).
+  // 0 or 1 element: the picked date+time pair.
   std::vector<PJ::CSV::CombinedColumnPair> combined_pairs_;
   std::vector<std::vector<std::string>> preview_rows_;
   std::string raw_preview_;

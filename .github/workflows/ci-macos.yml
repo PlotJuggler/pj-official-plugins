@@ -36,9 +36,8 @@ jobs:
     # Apple silicon, matching the only macOS leg the release matrix still builds.
     # Intel Macs are not a supported target for the time being.
     runs-on: macos-15
-    # 90, not the 60 this job carried before: it now also builds the plugins the
-    # aggregate leaves out (see the step below). Recent runs land at 27-45 min, so
-    # 60 left no room for the extra legs on a cold Conan cache.
+    # Headroom for a cold Conan cache plus the plugins the aggregate leaves out (see Build &
+    # Test); recent runs take 27-45 min.
     timeout-minutes: 90
 
     steps:
@@ -74,11 +73,10 @@ jobs:
           scripts/ensure_core.sh
 
       - name: Build & Test
-        # build.sh, not an inline conan install: it is the path a release tag takes
-        # and it carries the plugin-scoped Conan confs -- including the liblsl
-        # ASIO_HAS_STD_INVOKE_RESULT define, without which liblsl does not compile
-        # under libc++. The aggregate and/or single plugins, as the scope job decided
-        # (scripts/ci_affected_plugins.py).
+        # build.sh, not an inline conan install: it is the path a release tag takes and carries
+        # the plugin-scoped Conan confs, including the liblsl ASIO_HAS_STD_INVOKE_RESULT define
+        # without which liblsl does not compile under libc++. Builds the aggregate and/or single
+        # plugins, as the scope job decided.
         shell: bash
         env:
           AGGREGATE: ${{ needs.scope.outputs.aggregate }}
@@ -96,10 +94,8 @@ jobs:
           done
 
       - name: Upload built Conan binaries to JFrog
-        # Publish every dependency compiled above (macOS binaries) so the next
-        # push/release run pulls them prebuilt instead of recompiling. Same guard
-        # as the other upload steps: never on pull requests (no secrets there, and
-        # we never publish binaries built from unreviewed code), only on this repo.
+        # Publish every dependency compiled above so later runs pull them prebuilt. Never on
+        # pull requests (no secrets there, and binaries from unreviewed code are never published).
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
         shell: bash
         run: scripts/upload_conan_artifacts.sh

@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Transient-local (latched) topic detection for MCAP replay test servers.
 
-The ONE shared implementation used by both bridge test players
-(data_stream_foxglove_bridge and data_stream_pj_bridge), mirroring how the
-production servers decide it: the best available signal wins, and "unknown"
+Shared by both bridge test players (data_stream_foxglove_bridge and data_stream_pj_bridge),
+mirroring how the production servers decide it: the best available signal wins, and "unknown"
 degrades to a conservative name heuristic rather than a false claim.
 
 Signal precedence:

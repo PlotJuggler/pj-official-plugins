@@ -14,9 +14,8 @@ class DataLoadBlfConan(ConanFile):
     version = "0"
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
-    # lblf (BLF reader) is vendored via CPM and needs zlib. The DBC decoder
-    # (dbc_parser_cpp + fast_float) comes via CPM through the shared pj_can_dbc
-    # common lib, so it is not listed here.
+    # lblf (BLF reader) is vendored via CPM and needs zlib. The DBC decoder comes via CPM through the shared
+    # pj_can_dbc lib.
     requires = (
         f"plotjuggler_sdk/{_SDK_VERSION}",
         "gtest/1.17.0",

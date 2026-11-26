@@ -1,37 +1,18 @@
 /**
  * @file ros_builtin_object_handlers.cpp
- * @brief Per-schema builtin-object decoders. One parse<X>() entry per
- *        schema returns an Expected<BuiltinObject> ready for ObjectStore
- *        ingestion: deserializer setup + body walk + zero-copy variant
- *        wrap, all inline.
+ * @brief Per-schema builtin-object decoders: each parse<X>() sets up the deserializer, walks the
+ *        body and returns the object for ObjectStore ingestion.
  *
- * Wire-format handling:
- *   - Reuses the parser's RosMsgParser::Deserializer (initialised in
- *     bindSchema based on use_ros1_). NanoCDR_Deserializer applies proper
- *     XCDR1 origin-relative alignment and honours the CDR encapsulation
- *     header's endianness flag; ROS_Deserializer reads tightly-packed
- *     little-endian ROS1 messages. The same handler code therefore works
- *     for both protocols — readHeader() already branches on isROS2() to
- *     pick up the ROS1-only seq field.
+ * The parser's RosMsgParser::Deserializer (chosen in bindSchema by use_ros1_) serves both wires:
+ * NanoCDR_Deserializer applies XCDR1 origin-relative alignment and honours the encapsulation
+ * header's endianness flag, ROS_Deserializer reads packed little-endian ROS 1. readHeader()
+ * branches on isROS2() for the ROS 1 seq field.
  *
- * Zero-copy strategy:
- *   - The parser receives a PayloadView (bytes + anchor). The bytes span
- *     points into the host's payload buffer; the anchor is the shared
- *     ownership token that keeps it alive.
- *   - For the bulk byte array of each schema (Image::data, PointCloud2::data,
- *     CompressedImage::data) we use Deserializer::deserializeByteSequence()
- *     which returns a Span<const uint8_t> over the original payload at the
- *     correct offset+length and advances the cursor past the body. We
- *     propagate `payload.anchor` into the result so the bytes outlive the
- *     parse call.
- *   - When the wire format has BGR ordering or per-row padding, that is
- *     reflected in the canonical fields (encoding string, row_step) so the
- *     consumer handles them — no parser-side conversion.
- *
- * The scalar-side companion lives in ros_parser.cpp:
- * parseScalarsDiscardingLargeArrays() reuses flattenGeneric with the bulk
- * array policy forced to DISCARD, so small metadata fields show up as
- * scalar columns while the data[] blob is dropped automatically.
+ * Zero-copy: the bulk byte array of each schema (Image::data, PointCloud2::data,
+ * CompressedImage::data) is read with deserializeByteSequence(), a span over the host's payload
+ * buffer, and `payload.anchor` is propagated into the result to keep it alive. BGR ordering and
+ * per-row padding are left to the consumer through the canonical encoding string and row_step;
+ * nothing is converted here.
  */
 
 #include <algorithm>
@@ -50,11 +31,9 @@ namespace ros_parser_detail {
 
 namespace {
 
-// Bytes per pixel for the raw ROS image encodings parser_ros consumes. Used
-// only to validate that row_step >= width * bpp. Encoding strings are
-// emitted into Image::encoding verbatim — the consumer routes by string.
-// Bayer CFA encodings (bayer_*8) carry one raw mosaic sample per pixel, so they
-// are 1 byte/pixel here; demosaicing to RGB happens downstream in the viewer.
+// Bytes per pixel of the raw encodings, only to validate row_step >= width * bpp; Image::encoding
+// keeps the string verbatim. Bayer CFA encodings (bayer_*8) are one mosaic sample per pixel;
+// demosaicing happens downstream in the viewer.
 const std::unordered_map<std::string, uint32_t>& kRosImageBytesPerPixel() {
   static const std::unordered_map<std::string, uint32_t> kMap = {
       {"rgb8", 3},  {"rgba8", 4}, {"bgr8", 3},        {"bgra8", 4},       {"mono8", 1},       {"mono16", 2},
@@ -99,19 +78,6 @@ void requireAvailable(const RosMsgParser::Deserializer& d, uint64_t count, size_
 }
 
 }  // namespace
-
-// ---------------------------------------------------------------------------
-// sensor_msgs/Image
-//
-// Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
-//   header                  std_msgs/Header  (handled by readHeader())
-//   height                  uint32
-//   width                   uint32
-//   encoding                string (e.g. "rgb8", "bgr8", "mono8", "mono16", "16UC1", "bayer_rggb8", …)
-//   is_bigendian            uint8
-//   step                    uint32
-//   data                    uint8[height*step]
-// ---------------------------------------------------------------------------
 
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
@@ -162,17 +128,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseImage(PJ::Timestamp ts, PJ::
   }
 }
 
-// ---------------------------------------------------------------------------
-// sensor_msgs/CompressedImage
-//
-// Wire layout:
-//   header                  std_msgs/Header
-//   format                  string (e.g. "jpeg", "bgr8; png compressed bgr8",
-//                                   "16UC1; compressedDepth png", or just "16UC1")
-//   data                    uint8[]   ← compressed bytes, plus an optional
-//                                       12-byte compressedDepth mini-header
-// ---------------------------------------------------------------------------
-
+// `format` is e.g. "jpeg", "bgr8; png compressed bgr8", "16UC1; compressedDepth png" or just "16UC1";
+// a compressedDepth data[] may start with a 12-byte mini-header.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
@@ -200,12 +157,10 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
 
     if (format.find("compressedDepth") != std::string::npos) {
       out_encoding = "compressedDepth";  // PNG/RVL payload (+ optional quantization range).
-      // compressedDepth normally prefixes the PNG/RVL blob with a 12-byte
-      // ConfigHeader (uint32 format, float depthQuantA, float depthQuantB). But
-      // some recorders emit a BARE PNG with no ConfigHeader (seen in RealSense
-      // bags); stripping 12 bytes there chops the PNG's 8-byte signature + part
-      // of the IHDR length and corrupts it. A leading PNG signature therefore
-      // means "headerless" — pass the blob through untouched.
+      // compressedDepth normally prefixes the PNG/RVL blob with a 12-byte ConfigHeader (uint32
+      // format, float depthQuantA, float depthQuantB), but some recorders (seen in RealSense bags)
+      // emit a BARE PNG, and stripping 12 bytes there corrupts it. A leading PNG signature
+      // therefore means headerless: pass the blob through untouched.
       if (data_starts_with(kPngSignature)) {
         // No ConfigHeader -> no quantization range. 16UC1 PNG depth is raw
         // millimetres, which the consumer reads directly; depth_min/max stay unset.
@@ -238,8 +193,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
       return PJ::unexpected(std::string("unsupported CompressedImage format: ") + format);
     }
 
-    // Zero-copy: the bytes span is a slice of the payload; stripping the
-    // 12-byte compressedDepth header is a pointer/length adjustment.
     return PJ::sdk::ObjectRecord{
         .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
         .object = PJ::sdk::BuiltinObject{PJ::sdk::Image{
@@ -260,26 +213,10 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedImage(PJ::Timestam
   }
 }
 
-// ---------------------------------------------------------------------------
-// sensor_msgs/CameraInfo
-//
-// Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
-//   header                  std_msgs/Header   (handled by readHeader())
-//   height                  uint32
-//   width                   uint32
-//   distortion_model        string
-//   D                       float64[]    (sequence: uint32 count, then doubles)
-//   K                       float64[9]   (fixed array — no count)
-//   R                       float64[9]   (fixed array)
-//   P                       float64[12]  (fixed array)
-//   binning_x / binning_y / roi follow but are not part of sdk::CameraInfo, so
-//   we stop after P (single-message positional decode; trailing fields are left
-//   unread, like the other object handlers).
-// ---------------------------------------------------------------------------
-
+// binning_x / binning_y / roi follow P but are not part of sdk::CameraInfo; the trailing fields are
+// left unread, like the other object handlers.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCameraInfo(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
-  // A float64[] D longer than this is corrupt — bound the reserve so a bad count
-  // can't request a huge allocation (real distortion models use 4-8 coeffs).
+  // A longer float64[] D is corrupt (real distortion models use 4-8 coeffs); bounds the reserve.
   constexpr uint32_t kMaxDistortionCoeffs = 1024;
   try {
     ensureDeserializer();
@@ -321,31 +258,16 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCameraInfo(PJ::Timestamp ts,
   }
 }
 
-// ---------------------------------------------------------------------------
-// foxglove_msgs/CompressedVideo
-//
-// Wire layout (ROS2 CDR):
-//   timestamp               builtin_interfaces/Time  (sec int32, nanosec uint32)
-//   frame_id                string
-//   data                    uint8[]   ← compressed bitstream for ONE frame
-//                                       (Annex-B for h264/h265), zero-copied
-//   format                  string    ← lowercase codec id: "h264","h265","vp9","av1"
-//
-// Unlike the Image / PointCloud schemas, the first field is a BARE
-// builtin_interfaces/Time, not a std_msgs/Header — so readHeader() must NOT be
-// used (it would also consume a frame_id string that does not exist here, and
-// the ROS1 seq branch). We read the two Time words directly instead.
-// ---------------------------------------------------------------------------
-
+// Leads with a BARE builtin_interfaces/Time, not a std_msgs/Header: readHeader() would also read a
+// frame_id that is not there (and the ROS 1 seq). `data` is one frame's bitstream (Annex-B for
+// h264/h265), `format` a lowercase codec id ("h264", "h265", "vp9", "av1").
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedVideo(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
     current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
 
-    // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
-    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
-    // adoption; reading it unsigned turned negative stamps into ~4.29e9.
+    // readBareTime() reads `sec` as int32 and adopts the embedded stamp.
     (void)readBareTime();
 
     std::string frame_id;
@@ -354,7 +276,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedVideo(PJ::Timestam
     std::string format;
     deserializer_->deserializeString(format);
 
-    // Zero-copy: data_span slices the payload buffer; payload.anchor keeps it alive.
     return PJ::sdk::ObjectRecord{
         .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
         .object = PJ::sdk::BuiltinObject{PJ::sdk::VideoFrame{
@@ -368,27 +289,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedVideo(PJ::Timestam
     return PJ::unexpected(std::string("CompressedVideo: CDR read error: ") + e.what());
   }
 }
-
-// ---------------------------------------------------------------------------
-// sensor_msgs/PointCloud2
-//
-// Wire layout:
-//   header                  std_msgs/Header
-//   height                  uint32
-//   width                   uint32
-//   fields                  PointField[]
-//     each PointField:
-//       name                string
-//       offset              uint32
-//       datatype            uint8     (1=INT8, 2=UINT8, 3=INT16, 4=UINT16,
-//                                      5=INT32, 6=UINT32, 7=FLOAT32, 8=FLOAT64)
-//       count               uint32
-//   is_bigendian            uint8
-//   point_step              uint32
-//   row_step                uint32
-//   data                    uint8[height*row_step]
-//   is_dense                uint8
-// ---------------------------------------------------------------------------
 
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
@@ -426,15 +326,12 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
     const uint32_t row_step = deserializer_->deserializeUInt32();
     const auto data_span = readByteSequence();
 
-    // is_dense follows data[]. deserializeByteSequence advanced the cursor
-    // past the body, so the next byte read is is_dense itself.
+    // is_dense follows data[]: the cursor is already on it.
     bool is_dense = true;
     if (deserializer_->bytesLeft() >= 1) {
       is_dense = (readU8(*deserializer_) != 0);
     }
 
-    // Zero-copy by default: data_span is a slice of the payload. For a PointCloud2 with
-    // a few MB of points this is the win — no per-message alloc/copy on the hot path.
     PJ::sdk::PointCloud cloud{
         .width = width,
         .height = height,
@@ -448,11 +345,11 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
         .anchor = payload.anchor,
         .timestamp_ns = current_timestamp_,
     };
-    // Normalize colour to the canonical packed "rgba" field so the host renders one
-    // per-point colour instead of offering each channel as a separate colormap source.
-    // A PCL packed rgb/rgba (0x00RRGGBB) is repacked into canonical R,G,B,A order in a
-    // fresh owned buffer (zero-copy given up only for colour clouds); separate
-    // red/green/blue/alpha channels collapse zero-copy; plain XYZI clouds are untouched.
+    // Normalizes colour to the canonical packed "rgba" field, so the host renders one per-point
+    // colour instead of offering each channel as a colormap source. A PCL packed rgb/rgba
+    // (0x00RRGGBB) is repacked into R,G,B,A order in a fresh owned buffer (zero-copy is given up
+    // only for colour clouds); separate red/green/blue/alpha channels collapse zero-copy; plain
+    // XYZI clouds are untouched.
     pj::pointcloud_color::normalizeCanonicalColor(cloud);
 
     return PJ::sdk::ObjectRecord{
@@ -463,29 +360,11 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePointCloud(PJ::Timestamp ts,
   }
 }
 
-// ---------------------------------------------------------------------------
-// Slim scalar route for sensor_msgs/PointCloud2.
-//
-// Emits the header series (/header/stamp, /header/frame_id, plus /header/seq on
-// ROS 1) and /num_points — everything else on this wire is layout detail of a
-// payload consumed as a 3D object, not as time series.
-//
-// /num_points is the number of points ACTUALLY present in the message:
-// len(data) / point_step. It is deliberately NOT width * height. Those two agree
-// only for a well-formed dense cloud; a truncated or partially-filled message
-// (and any producer that leaves width/height as the sensor's nominal grid) makes
-// width * height a claim about the cloud rather than a measurement of it — the
-// series is worth plotting precisely because it can reveal dropped points.
-// Reaching data[] means walking past fields[] to point_step, which is a handful
-// of cheap reads; the bulk bytes themselves are never touched (we read only the
-// sequence's length prefix and stop).
-//
-// This replaces the generic DISCARD_LARGE_ARRAYS flatten: that walked the whole
-// message through rosx_introspection on every frame just to yield per-PointField
-// metadata columns, and — being a flatten of the leaf fields — never produced
-// the combined /header/stamp series at all.
-// ---------------------------------------------------------------------------
-
+// Header series plus /num_points = len(data) / point_step, the points ACTUALLY present, deliberately
+// NOT width * height: those agree only for a well-formed dense cloud, and a truncated or partly filled
+// message (or a producer leaving the sensor's nominal grid in width/height) makes width * height a
+// claim rather than a measurement. The series is worth plotting because it reveals dropped points.
+// Only data[]'s length prefix is read; the bulk bytes are never touched.
 PJ::Status RosParser::parsePointCloud2Scalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
@@ -494,7 +373,7 @@ PJ::Status RosParser::parsePointCloud2Scalars(PJ::Timestamp ts, PJ::Span<const u
     (void)deserializer_->deserializeUInt32();  // height
     (void)deserializer_->deserializeUInt32();  // width
 
-    // fields[] — read and discard; we only need the cursor to land on point_step.
+    // fields[]: read and discarded, the cursor only has to reach point_step.
     const uint32_t fields_count = deserializer_->deserializeUInt32();
     if (fields_count > 1024) {
       return PJ::unexpected(std::string("PointCloud2 scalars: too many fields"));
@@ -511,15 +390,13 @@ PJ::Status RosParser::parsePointCloud2Scalars(PJ::Timestamp ts, PJ::Span<const u
     const uint32_t point_step = deserializer_->deserializeUInt32();
     (void)deserializer_->deserializeUInt32();  // row_step
 
-    // data[] length prefix only — the points themselves are never read here.
     const uint32_t data_size = deserializer_->deserializeUInt32();
     if (data_size > deserializer_->bytesLeft()) {
-      // Declared length runs past the payload: truncated or corrupt. Same
-      // verdict readByteSequence() reaches on the object route.
+      // Truncated or corrupt; the same verdict readByteSequence() reaches on the object route.
       return PJ::unexpected(std::string("PointCloud2 scalars: data[] length exceeds message payload"));
     }
-    // point_step == 0 is malformed (no point has zero size). Omit the column for
-    // that message rather than dividing by zero or filing a fabricated count.
+    // point_step == 0 is malformed: omit the column instead of dividing by zero or filing a
+    // fabricated count.
     if (point_step > 0) {
       addField("/num_points", PJ::sdk::ValueRef{static_cast<uint64_t>(data_size) / point_step});
     }
@@ -529,30 +406,10 @@ PJ::Status RosParser::parsePointCloud2Scalars(PJ::Timestamp ts, PJ::Span<const u
   }
 }
 
-// ---------------------------------------------------------------------------
-// sensor_msgs/LaserScan
-//
-// Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
-//   header           std_msgs/Header  (handled by readHeader())
-//   angle_min        float32
-//   angle_max        float32   ← read + discard (derived from min + increment)
-//   angle_increment  float32
-//   time_increment   float32   ← read + discard
-//   scan_time        float32   ← read + discard
-//   range_min        float32
-//   range_max        float32
-//   ranges           float32[]
-//   intensities      float32[]
-//
-// Eagerly projected to a canonical sdk::PointCloud through the shared
-// pj_laser_scan projector: ray i lands at (r*cos(theta), r*sin(theta), 0) with
-// theta = angle_min + i*angle_increment. Rays outside [range_min, range_max]
-// or non-finite are dropped (the ROS contract says to discard them), so the
-// output is unorganized and dense. NOT zero-copy by design: the wire carries
-// polar ranges, so cartesian points are newly generated bytes owned by the
-// cloud's anchor.
-// ---------------------------------------------------------------------------
-
+// Eagerly projected through pj_laser_scan: ray i lands at (r*cos(theta), r*sin(theta), 0) with
+// theta = angle_min + i*angle_increment. Rays outside [range_min, range_max] or non-finite are dropped
+// (the ROS contract says to discard them), so the cloud is unorganized and dense. Not zero-copy: the
+// wire carries polar ranges, so the cartesian points are newly generated bytes owned by the cloud's anchor.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLaserScan(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
@@ -568,8 +425,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLaserScan(PJ::Timestamp ts, 
     const float range_min = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
     const float range_max = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
 
-    // float32[] sequences: validate the count against the remaining payload so
-    // a corrupt length cannot request a huge allocation.
+    // Validates each float32[] count against the remaining payload before allocating.
     const auto read_float_array = [this](std::vector<float>& out, const char* what) -> PJ::Status {
       const uint32_t count = deserializer_->deserializeUInt32();
       if (static_cast<size_t>(count) * sizeof(float) > deserializer_->bytesLeft()) {
@@ -613,25 +469,9 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLaserScan(PJ::Timestamp ts, 
   }
 }
 
-// ---------------------------------------------------------------------------
-// foxglove_msgs/CompressedPointCloud
-//
-// Wire layout (ROS2 CDR):
-//   timestamp               builtin_interfaces/Time  (sec int32, nanosec uint32)
-//   frame_id                string
-//   pose                    geometry_msgs/Pose       (position xyz f64, orientation xyzw f64)
-//   data                    uint8[]   ← compressed blob (draco/cloudini/…), zero-copied
-//   format                  string    ← lowercase codec id
-//
-// Like foxglove_msgs/CompressedVideo, the first field is a BARE
-// builtin_interfaces/Time, not a std_msgs/Header — so readHeader() must NOT be
-// used (it would consume the wrong fields). We read the two Time words directly.
-//
-// The pose's 7 doubles are read only to advance the cursor and then dropped:
-// the canonical CompressedPointCloud has no pose; clouds are placed via TF on
-// frame_id. A non-identity pose is silently ignored (no logger to warn on).
-// ---------------------------------------------------------------------------
-
+// Leads with a BARE builtin_interfaces/Time (see parseCompressedVideo). The pose's 7 doubles are read
+// only to advance the cursor: the canonical CompressedPointCloud has no pose (clouds are placed via TF
+// on frame_id), so a non-identity pose is silently ignored.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud(
     PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
@@ -639,16 +479,13 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud
     current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
 
-    // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
-    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
-    // adoption; reading it unsigned turned negative stamps into ~4.29e9.
+    // readBareTime() reads `sec` as int32 and adopts the embedded stamp.
     (void)readBareTime();
 
     std::string frame_id;
     deserializer_->deserializeString(frame_id);
 
-    // geometry_msgs/Pose — 7 doubles (position xyz, orientation xyzw). Read to
-    // advance the cursor, then drop: the canonical object carries no pose.
+    // geometry_msgs/Pose (7 doubles): read to advance the cursor, then dropped.
     for (int i = 0; i < 7; ++i) {
       (void)deserializer_->deserialize(RosMsgParser::FLOAT64);
     }
@@ -657,7 +494,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud
     std::string format;
     deserializer_->deserializeString(format);
 
-    // Zero-copy: data_span slices the payload buffer; payload.anchor keeps it alive.
     PJ::sdk::CompressedPointCloud cloud;
     cloud.timestamp_ns = current_timestamp_;
     cloud.frame_id = std::move(frame_id);
@@ -672,21 +508,16 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveCompressedPointCloud
   }
 }
 
-// Slim scalar companion for foxglove_msgs/CompressedPointCloud. The head of the
-// wire is a BARE builtin_interfaces/Time followed by frame_id — NOT a
-// std_msgs/Header — so readHeader() must not be used here: its ROS 1 branch
-// would consume `seq` first and shift every subsequent read. We therefore emit
-// the flat "/timestamp" + "/frame_id" pair rather than the /header/* series.
-// There is no point count anywhere in this schema (the cloud is an opaque
-// compressed blob), so nothing else is emitted.
+// Slim scalar companion for foxglove_msgs/CompressedPointCloud. The wire head is a BARE
+// builtin_interfaces/Time then frame_id, not a std_msgs/Header (readHeader()'s ROS 1 branch would
+// consume `seq` first and shift every read), so it emits the flat "/timestamp" + "/frame_id" pair
+// instead of /header/*. The opaque compressed blob has no point count, so nothing else is emitted.
 PJ::Status RosParser::parseFoxgloveCompressedPointCloudScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
 
-    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
-    // adoption under the same contract as readHeader(): the stamp becomes the
-    // record time only when the user asked for it (registerBoundSchemaHandler
-    // reads current_timestamp_ back out).
+    // The embedded stamp becomes the record time only when the user asked for it, as with
+    // readHeader() (registerBoundSchemaHandler reads current_timestamp_ back out).
     const int64_t stamp_ns = readBareTime();
     addField("/timestamp", nanosecondsToSeconds(stamp_ns));
 
@@ -700,25 +531,9 @@ PJ::Status RosParser::parseFoxgloveCompressedPointCloudScalars(PJ::Timestamp ts,
   }
 }
 
-// ---------------------------------------------------------------------------
-// point_cloud_interfaces/CompressedPointCloud2
-//
-// Wire layout (point_cloud_transport canonical message):
-//   header                  std_msgs/Header  (handled by readHeader())
-//   height                  uint32
-//   width                   uint32
-//   fields                  sensor_msgs/PointField[]  (read + discard: the
-//                                                       compressed blob is
-//                                                       self-describing)
-//     each PointField: string name, uint32 offset, uint8 datatype, uint32 count
-//   is_bigendian            uint8
-//   point_step              uint32
-//   row_step                uint32
-//   compressed_data         uint8[]   ← THE BLOB, zero-copied
-//   is_dense                uint8
-//   format                  string    ← LAST field; lowercase codec id
-// ---------------------------------------------------------------------------
-
+// Layout: header, height, width, fields[] (read and discarded: the blob is self-describing),
+// is_bigendian, point_step, row_step, compressed_data (the blob), is_dense, then format (lowercase
+// codec id) LAST.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedPointCloud2(
     PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
@@ -752,7 +567,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedPointCloud2(
     std::string format;
     deserializer_->deserializeString(format);
 
-    // Zero-copy: data_span slices the payload buffer; payload.anchor keeps it alive.
     PJ::sdk::CompressedPointCloud cloud;
     cloud.timestamp_ns = current_timestamp_;
     cloud.frame_id = std::move(header.frame_id);
@@ -767,27 +581,11 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseCompressedPointCloud2(
   }
 }
 
-// ---------------------------------------------------------------------------
-// tf2_msgs/TFMessage
-//
-// Wire layout:
-//   transforms              geometry_msgs/TransformStamped[]  (uint32 count + N)
-//     each TransformStamped:
-//       header              std_msgs/Header  (sec, nanosec, frame_id = parent)
-//       child_frame_id      string
-//       transform           geometry_msgs/Transform
-//         translation       Vector3     (x, y, z   : float64)
-//         rotation          Quaternion  (x, y, z, w: float64)
-//
-// Emitted as a canonical sdk::FrameTransforms (owned — no byte blob). The 3D
-// scene's TF buffer keys each edge by FrameTransform::timestamp and scrubs it
-// with a zero-order hold at the playhead, which lives on the MCAP message clock
-// (log / publish time). readStampedTransform() therefore resolves the per-sample
-// timestamp so it lands on that same clock — see the three cases there. The
-// scalar handler (handleTFMessage) still runs in parallel for users who want to
-// plot the transforms as time series, and it always keeps the raw Header.stamp.
-// ---------------------------------------------------------------------------
-
+// Emitted as an owned sdk::FrameTransforms. The 3D scene's TF buffer keys each edge by
+// FrameTransform::timestamp and scrubs it with a zero-order hold at the playhead, which lives on the
+// MCAP message clock (log / publish time); readStampedTransform() resolves the per-sample timestamp
+// onto that clock (three cases there). handleTFMessage still runs for plotting the transforms as time
+// series and always keeps the raw Header.stamp.
 PJ::sdk::FrameTransform RosParser::readStampedTransform() {
   HeaderData header = readHeader();
   std::string child_frame_id;
@@ -804,19 +602,13 @@ PJ::sdk::FrameTransform RosParser::readStampedTransform() {
   const int64_t header_stamp_ns = static_cast<int64_t>(header.sec) * 1000000000LL + static_cast<int64_t>(header.nsec);
 
   PJ::sdk::FrameTransform tf;
-  // Timestamp resolution, so the TF buffer lands on the same clock the 3D scene
-  // scrubs on (see this section's header comment):
-  //   1. "use embedded timestamp" ON  -> the payload Header.stamp, honoring the
-  //      toggle exactly as every other message type does.
-  //   2. OFF + Header.stamp == 0       -> keep 0: a static transform (/tf_static
-  //      latched with an unset stamp) whose single sample must hold for every
-  //      query time via the buffer's zero-order hold.
-  //   3. OFF + Header.stamp != 0       -> current_timestamp_, the MCAP-resolved
-  //      message time (log / publish). A bag recorded across unsynchronized
-  //      clocks carries a Header.stamp on a different clock — in offset AND rate —
-  //      than the message time the playhead uses; keying the TF buffer by that
-  //      stamp drifts transforms out of sync with point clouds. Overriding onto
-  //      the message clock keeps them moving together.
+  // Timestamp resolution, so the TF buffer lands on the clock the 3D scene scrubs on:
+  //   1. "use embedded timestamp" ON -> the payload Header.stamp, as for every other message type.
+  //   2. OFF + Header.stamp == 0 -> keep 0: a static transform (/tf_static latched with an unset
+  //      stamp) whose single sample must hold for every query time via the zero-order hold.
+  //   3. OFF + Header.stamp != 0 -> current_timestamp_, the MCAP-resolved message time. A bag
+  //      recorded across unsynchronized clocks carries a Header.stamp on another clock (offset AND
+  //      rate) than the playhead; keying by it would drift transforms out of sync with point clouds.
   if (use_embedded_timestamp_ || header_stamp_ns == 0) {
     tf.timestamp_ns = static_cast<PJ::Timestamp>(header_stamp_ns);
   } else {
@@ -829,8 +621,7 @@ PJ::sdk::FrameTransform RosParser::readStampedTransform() {
   return tf;
 }
 
-// geometry_msgs/Pose on the wire: position (Point: x/y/z f64) then orientation
-// (Quaternion: x/y/z/w f64) — 7 doubles, no header.
+// geometry_msgs/Pose: position xyz then orientation xyzw, 7 float64, no header.
 PJ::sdk::Pose RosParser::readPose() {
   const double px = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
   const double py = deserializer_->deserialize(RosMsgParser::FLOAT64).convert<double>();
@@ -865,12 +656,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFrameTransforms(PJ::Timestam
   }
 }
 
-// ---------------------------------------------------------------------------
-// geometry_msgs/TransformStamped — a single stamped transform on its own
-// topic, surfaced as a one-element FrameTransforms so it feeds the same TF
-// buffer as /tf. The scalar handler (handleTransformStamped) still runs.
-// ---------------------------------------------------------------------------
-
+// A single stamped transform as a one-element FrameTransforms, feeding the same TF buffer as /tf;
+// handleTransformStamped still runs.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseTransformStampedObject(
     PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
@@ -888,18 +675,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseTransformStampedObject(
   }
 }
 
-// ---------------------------------------------------------------------------
-// geometry_msgs/PoseArray
-//
-// Wire layout:
-//   header        std_msgs/Header       (sec, nanosec, frame_id — readHeader())
-//   poses         geometry_msgs/Pose[]  (uint32 count + N poses)
-//
-// Emitted as a canonical sdk::PosesInFrame (owned — no byte blob). The
-// canonical type stores ONLY poses: rendering style (arrow vs triad, size,
-// color) is chosen by the viewer at draw time.
-// ---------------------------------------------------------------------------
-
+// Emitted as an owned sdk::PosesInFrame. The canonical type stores ONLY poses: rendering style
+// (arrow vs triad, size, color) is the viewer's choice.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePoseArray(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
@@ -932,19 +709,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePoseArray(PJ::Timestamp ts, 
   }
 }
 
-// ---------------------------------------------------------------------------
-// foxglove_msgs/PosesInFrame
-//
-// Wire layout (ROS2 CDR):
-//   timestamp     builtin_interfaces/Time  (sec int32, nanosec uint32)
-//   frame_id      string
-//   poses         geometry_msgs/Pose[]     (uint32 count + N poses)
-//
-// Like foxglove_msgs/CompressedVideo, the first field is a BARE
-// builtin_interfaces/Time, not a std_msgs/Header — so readHeader() must NOT be
-// used (it would consume the wrong fields). We read the two Time words directly.
-// ---------------------------------------------------------------------------
-
+// Leads with a BARE builtin_interfaces/Time (see parseCompressedVideo).
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxglovePosesInFrame(
     PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
@@ -952,9 +717,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxglovePosesInFrame(
     current_timestamp_ = ts;
     deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
 
-    // builtin_interfaces/Time timestamp — bare, not wrapped in a Header.
-    // readBareTime() reads `sec` SIGNED (int32) and applies the embedded-stamp
-    // adoption; reading it unsigned turned negative stamps into ~4.29e9.
+    // readBareTime() reads `sec` as int32 and adopts the embedded stamp.
     (void)readBareTime();
 
     std::string frame_id;
@@ -981,20 +744,12 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxglovePosesInFrame(
   }
 }
 
-// ---------------------------------------------------------------------------
-// rcl_interfaces/Log (ROS 2) and rosgraph_msgs/Log (ROS 1) -> sdk::Log. The
-// scalar route (generic flatten) still runs in parallel so `level` etc. stay
-// plottable.
+// rcl_interfaces/Log (ROS 2) and rosgraph_msgs/Log (ROS 1) -> sdk::Log; the generic scalar flatten
+// still runs so `level` etc. stay plottable.
 //
-// Wire layout:
-//   ROS 2: builtin_interfaces/Time stamp; uint8 level; string name; string msg;
-//          string file; string function; uint32 line
-//   ROS 1: std_msgs/Header header; byte level; string name; string msg;
-//          string file; string function; uint32 line; string[] topics
-//          (topics is last and not needed, so the read stops after `line`)
-// Level constants differ: ROS 2 10/20/30/40/50, ROS 1 1/2/4/8/16.
-// ---------------------------------------------------------------------------
-
+// ROS 2: Time stamp; uint8 level; string name, msg, file, function; uint32 line.
+// ROS 1: Header; byte level; the same strings; uint32 line; string[] topics (last and unused, so the
+// read stops after `line`). Level constants differ: ROS 2 10/20/30/40/50, ROS 1 1/2/4/8/16.
 namespace {
 
 PJ::sdk::Log::Level mapRosLogLevel(uint8_t level, bool ros2) {
@@ -1067,7 +822,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLogObject(PJ::Timestamp ts, 
   }
 }
 
-// ---------------------------------------------------------------------------
 // Other log-equivalent messages -> sdk::Log (scalar route: generic flatten).
 //
 // Wire layouts:
@@ -1080,8 +834,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseLogObject(PJ::Timestamp ts, 
 // StatusText and the PX4 messages use syslog severities 0..7 (EMERGENCY..DEBUG).
 // The PX4 timestamp is microseconds since boot, not wall time, so the record
 // timestamp is used instead.
-// ---------------------------------------------------------------------------
-
 namespace {
 
 PJ::sdk::Log::Level mapSyslogSeverity(uint8_t severity) {
@@ -1199,16 +951,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePx4Log(
   }
 }
 
-// ---------------------------------------------------------------------------
-// geometry_msgs/PoseStamped — a single stamped pose, surfaced as a one-element
-// PosesInFrame so it feeds the same 3D pose view as PoseArray. The scalar
-// handler (handlePoseStamped) still runs in parallel for per-axis plotting.
-//
-// Wire layout:
-//   header   std_msgs/Header       (sec, nanosec, frame_id — readHeader())
-//   pose     geometry_msgs/Pose    (position xyz + orientation xyzw)
-// ---------------------------------------------------------------------------
-
+// A one-element PosesInFrame feeding the same 3D pose view as PoseArray; handlePoseStamped still runs
+// for per-axis plotting.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePoseStampedObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
@@ -1228,23 +972,10 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePoseStampedObject(PJ::Timest
   }
 }
 
-// ---------------------------------------------------------------------------
-// nav_msgs/Odometry — the pose of child_frame_id expressed in the header frame,
-// surfaced as a one-element PosesInFrame so it feeds the same 3D pose view as
-// PoseStamped. The scalar handler (handleOdometry) still runs in parallel for
-// per-axis plotting of the pose, twist and covariances.
-//
-// Wire layout:
-//   header         std_msgs/Header                   (sec, nanosec, frame_id)
-//   child_frame_id string
-//   pose           geometry_msgs/PoseWithCovariance  (Pose then float64[36])
-//   twist          geometry_msgs/TwistWithCovariance
-//
-// Only the Header + child_frame_id + Pose are consumed: the pose is the last
-// field the object needs, so the covariance and twist are left unread. The
-// object adopts the HEADER frame_id (the reference frame), not child_frame_id.
-// ---------------------------------------------------------------------------
-
+// nav_msgs/Odometry: the pose of child_frame_id in the header frame, as a one-element PosesInFrame;
+// handleOdometry still runs for per-axis plotting of pose, twist and covariances.
+// Only Header + child_frame_id + Pose are consumed (twist and covariance are left unread). The object
+// adopts the HEADER frame_id (the reference frame), not child_frame_id.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOdometryObject(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
@@ -1267,21 +998,10 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOdometryObject(PJ::Timestamp
   }
 }
 
-// ---------------------------------------------------------------------------
-// nav_msgs/Path
-//
-// Wire layout:
-//   header   std_msgs/Header               (path frame_id + stamp)
-//   poses    geometry_msgs/PoseStamped[]    (uint32 count + N)
-//     each PoseStamped: std_msgs/Header header; geometry_msgs/Pose pose
-//
-// A PosesInFrame is an array of poses in ONE frame at ONE instant, so the
-// object adopts the PATH header's frame_id + stamp. Each PoseStamped's own
-// Header is read and dropped (readHeader advances the cursor; its
-// current_timestamp_ side-effect is overwritten by the path stamp captured up
-// front). Per-pose stamps/frames remain available via the generic scalar route.
-// ---------------------------------------------------------------------------
-
+// A PosesInFrame is an array of poses in ONE frame at ONE instant, so the object adopts the PATH
+// header's frame_id + stamp. Each PoseStamped's own Header is read and dropped (readHeader's
+// current_timestamp_ side effect is overwritten by the path stamp captured up front). Per-pose
+// stamps/frames stay available via the generic scalar route.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePath(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
@@ -1317,23 +1037,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePath(PJ::Timestamp ts, PJ::s
   }
 }
 
-// ---------------------------------------------------------------------------
-// nav_msgs/OccupancyGrid
-//
-// Wire layout:
-//   header        std_msgs/Header   (sec, nanosec, frame_id)
-//   info          nav_msgs/MapMetaData
-//     map_load_time  builtin_interfaces/Time  (sec, nanosec)   [read + discard]
-//     resolution     float32
-//     width          uint32
-//     height         uint32
-//     origin         geometry_msgs/Pose  (position xyz f64, orientation xyzw f64)
-//   data          int8[]            (uint32 count + bytes)
-//
-// Byte-backed: the cell bytes are zero-copied as a Span over the payload,
-// pinned by payload.anchor (same pattern as PointCloud2 / Image).
-// ---------------------------------------------------------------------------
-
+// Byte-backed: the cell bytes are a zero-copy span over the payload, pinned by payload.anchor.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();
@@ -1378,23 +1082,10 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGrid(PJ::Timestamp 
   }
 }
 
-// ---------------------------------------------------------------------------
-// map_msgs/OccupancyGridUpdate
-//
-// Wire layout (ROS2 shown; ROS1 prepends a uint32 seq inside the header):
-//   header   std_msgs/Header  (handled by readHeader())
-//   x        int32   ← column offset of the patch top-left into the base grid
-//   y        int32   ← row offset of the patch top-left
-//   width    uint32  ← patch width in cells
-//   height   uint32  ← patch height in cells
-//   data     int8[width*height]   ← row-major patch cells
-//
-// The patch carries no origin/resolution; a stateful consumer places it at the
-// base grid's origin + (x, y) * resolution (see occupancy_grid_update.hpp). The
-// int8[] cells are byte-identical to uint8 on the wire, so the zero-copy span
-// maps straight onto sdk::OccupancyGridUpdate::data.
-// ---------------------------------------------------------------------------
-
+// x, y: offset of the patch's top-left cell into the base grid. The patch carries no origin/resolution;
+// a stateful consumer places it at the base grid's origin + (x, y) * resolution (see
+// occupancy_grid_update.hpp). The int8[] cells are byte-identical to uint8 on the wire, so the
+// zero-copy span maps straight onto sdk::OccupancyGridUpdate::data.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGridUpdate(
     PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
@@ -1422,7 +1113,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGridUpdate(
     update.y = y;
     update.width = width;
     update.height = height;
-    // Zero-copy: data_span slices the payload buffer; the anchor keeps it alive.
     update.data = PJ::Span<const uint8_t>(data_span.data(), expected);
     update.anchor = payload.anchor;
     return PJ::sdk::ObjectRecord{
@@ -1433,7 +1123,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGridUpdate(
   }
 }
 
-// ---------------------------------------------------------------------------
 // grid_map_msgs/GridMap
 //
 // Wire layout (ROS 2 shown; ROS 1 prepends a uint32 seq inside the header):
@@ -1451,14 +1140,11 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseOccupancyGridUpdate(
 //   outer_start_index     uint16
 //   inner_start_index     uint16
 //
-// Each layer's cell window is copied into per-instance scratch and handed to
-// the pj_grid_map transcoder, which owns the axis flip / ring-buffer math and
-// the label/geometry checks (see transcodeGridMap). Counts are validated
-// against the caps and the bytes left BEFORE any allocation so a corrupt
-// length prefix cannot request gigabytes; a genuinely truncated wire throws
-// out of the deserializer and becomes an Expected error.
-// ---------------------------------------------------------------------------
-
+// Each layer's cell window is copied into per-instance scratch for the pj_grid_map transcoder,
+// which owns the axis flip / ring-buffer math and the label/geometry checks (see transcodeGridMap).
+// Counts are validated against the caps and the bytes left BEFORE any allocation, so a corrupt
+// length prefix cannot request gigabytes; a truncated wire throws out of the deserializer and
+// becomes an Expected error.
 RosParser::HeaderData RosParser::readGridMapMessage(
     PJ::grid_map::GridMapMessage& out, PJ::sdk::Pose& center, bool skip_layer_data, bool little_endian_wire) {
   using PJ::grid_map::kMaxCells;
@@ -1517,9 +1203,8 @@ RosParser::HeaderData RosParser::readGridMapMessage(
     if (data_offset + cells > float_count) {
       throw std::runtime_error("GridMap: layer array is shorter than its layout");
     }
-    // Only the cell window is copied; leading padding and trailing elements
-    // are skipped on the wire. The scratch keeps the message borrowable after
-    // the payload.
+    // Only the cell window is copied (leading padding and trailing elements are skipped); the
+    // scratch keeps the message borrowable after the payload.
     auto& floats = gridmap_layer_scratch_[k];
     floats.resize(static_cast<size_t>(cells));
     if (little_endian_wire) {
@@ -1595,25 +1280,9 @@ PJ::Status RosParser::parseGridMapScalars(PJ::Timestamp ts, PJ::Span<const uint8
   }
 }
 
-// ---------------------------------------------------------------------------
-// foxglove_msgs/Grid
-//
-// Wire layout:
-//   timestamp     bare time   (ROS 2: int32 sec, uint32 nanosec; ROS 1: uint32 sec, uint32 nsec)
-//   frame_id      string
-//   pose          geometry_msgs/Pose   (corner of cell (0,0) -> origin, kept as-is)
-//   column_count  uint32
-//   cell_size     foxglove_msgs/Vector2 (float64 x, y)
-//   row_stride    uint32
-//   cell_stride   uint32
-//   fields        foxglove_msgs/PackedElementField[] {string name; uint32 offset; uint8 type}
-//   data          uint8[]   <- row-major packed cells, zero-copied
-//
-// The packed layout is the canonical one, so data[] is a view over the payload
-// pinned by its anchor. There is no row count on the wire; finalizeFoxgloveGrid
-// derives it and validates the layout.
-// ---------------------------------------------------------------------------
-
+// The pose is the corner of cell (0,0) and is kept as the origin. The packed layout is the canonical
+// one, so data[] is a view over the payload pinned by its anchor. The wire has no row count;
+// finalizeFoxgloveGrid derives it and validates the layout.
 PJ::Expected<PJ::sdk::GridMap> RosParser::readFoxgloveGrid(PJ::sdk::BufferAnchor anchor) {
   PJ::sdk::GridMap grid;
   grid.timestamp_ns = readBareTime();
@@ -1670,8 +1339,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseFoxgloveGrid(PJ::Timestamp t
 PJ::Status RosParser::parseFoxgloveGridScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
-    // The full decode is a handful of scalar reads plus a length prefix (data[]
-    // is aliased, never copied), so the scalar route reuses it.
+    // The full decode is a few scalar reads plus a length prefix (data[] is aliased), so the
+    // scalar route reuses it.
     auto grid = readFoxgloveGrid(nullptr);
     if (!grid) {
       return PJ::unexpected(std::move(grid).error());
@@ -1689,15 +1358,9 @@ PJ::Status RosParser::parseFoxgloveGridScalars(PJ::Timestamp ts, PJ::Span<const 
   }
 }
 
-// ---------------------------------------------------------------------------
-// std_msgs/String on a robot_description topic -> sdk::RobotDescription
-//
-// Dispatched in bindSchema by topic name (a generic String stays generic).
-// The body is one string (the URDF/SDF/MJCF source); we carry it verbatim
-// plus a best-effort format hint sniffed from the root element. Downstream
-// consumers do the format-specific parsing.
-// ---------------------------------------------------------------------------
-
+// std_msgs/String on a robot_description topic (dispatched in bindSchema by topic name; a generic
+// String stays generic). The body is the URDF/SDF/MJCF source, carried verbatim plus a best-effort
+// format hint sniffed from the root element; consumers do the format-specific parsing.
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseRobotDescription(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   try {
     ensureDeserializer();

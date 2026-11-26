@@ -29,8 +29,7 @@ TABLE = {
 
 @contextlib.contextmanager
 def _environ_without(*names: str):
-    """Run a block with the given environment variables guaranteed unset,
-    restoring the original environment afterwards."""
+    """Run a block with the given environment variables unset, restoring the environment afterwards."""
     with mock.patch.dict(os.environ, {}, clear=False):
         for name in names:
             os.environ.pop(name, None)
@@ -273,7 +272,7 @@ class FloorContractTests(unittest.TestCase):
 
 
 class ReviewRegressionTests(unittest.TestCase):
-    """Regressions for the Codex #296 correctness round."""
+    """Source-scanning, CMake-closure and floor_test-detection edge cases."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -281,7 +280,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def test_abi_member_spelling_counts_as_usage(self):
-        # 2: host.vtable->new_call is a supported call spelling of newCall.
+        # host.vtable->new_call is a supported call spelling of newCall.
         self.repo.write_plugin(source="void f(H* h) { h->vtable->new_call(h->ctx); }\n")
         ok, _, err = self.repo.run()
         self.assertFalse(ok)
@@ -289,7 +288,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertIn("newCall", err)
 
     def test_string_literal_mention_is_not_usage(self):
-        # 5: a help string naming an identifier is not a call.
+        # a help string naming an identifier is not a call.
         self.repo.write_plugin(
             source='const char* help = "newCall is optional";\nauto raw = R"(newCall)";\n'
         )
@@ -297,7 +296,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_list_append_feeds_the_closure(self):
-        # 3a: set(LIBS "") + list(APPEND LIBS helper) must reach the helper.
+        # set(LIBS "") + list(APPEND LIBS helper) must reach the helper.
         self.repo.write_common("shared_helper", "void helper() { newCall(); }\n")
         plugin_dir = self.repo.write_plugin()
         (plugin_dir / "CMakeLists.txt").write_text(
@@ -312,7 +311,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertIn("newCall", err)
 
     def test_unresolvable_variable_add_library_fails_closed(self):
-        # 3b: a variable-named library target the model cannot resolve fails.
+        # a variable-named library target the model cannot resolve fails.
         common_dir = self.repo.root / "common" / "mystery"
         common_dir.mkdir(parents=True)
         (common_dir / "mystery.cpp").write_text("void helper() { newCall(); }\n")
@@ -325,7 +324,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertIn("cannot be resolved", err)
 
     def test_spliced_comment_test_does_not_satisfy_floor_test(self):
-        # 6: a backslash-continued comment hides the TEST from the compiler.
+        # a backslash-continued comment hides the TEST from the compiler.
         self.repo.write_plugin(
             source="void f() { newCall(); }\n",
             suggested="0.32.0",
@@ -348,7 +347,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertIn("not found in the plugin's tests", err)
 
     def test_cutover_fires_even_with_explicit_table(self):
-        # 8: --sdk-floors must not bypass the post-0.33 interim hard failure.
+        # --sdk-floors must not bypass the interim-table hard failure at SDK_VERSION >= 0.33.0.
         (self.repo.root / "SDK_VERSION").write_text("0.33.0\n")
         self.repo.write_plugin()
         sdk_table = self.repo.write_table(TABLE, name="feature_floors.json")
@@ -367,7 +366,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertIn("SDK_VERSION file", err)
 
     def test_sdk_tree_layout_core_is_byte_compared(self):
-        # 9: table at pj_base/, core at tools/feature_floors/ — found and diffed.
+        # table at pj_base/, core at tools/feature_floors/ — found and diffed.
         self.repo.write_plugin(source="void f() { oldCall(); }\n")
         vendor_dir = self.repo.root / "scripts" / "vendor"
         vendor_dir.mkdir(parents=True)
@@ -464,7 +463,7 @@ class PostCutoverTableResolutionTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.repo.write_plugin(source="void f() { oldCall(); }\n")
         (self.repo.root / "SDK_VERSION").write_text("0.34.1\n")
-        # Post-cutover resolution only kicks in once the interim table is gone.
+        # Automatic resolution only applies once the interim table is gone.
         self.repo.table_path.unlink()
 
     def test_pj_sdk_root_installed_layout(self):
@@ -561,10 +560,8 @@ class RealRepoAcceptanceTests(unittest.TestCase):
 
     @staticmethod
     def _real_sdk_table_path() -> Path | None:
-        """Locate the pinned SDK_VERSION's feature_floors.json the way the
-        checker does: PJ_SDK_ROOT first (CI's SDK checkout), then the Conan
-        cache's export_source. None when neither is available — the test then
-        skips rather than depending on a repo-local copy."""
+        """The pinned SDK_VERSION's feature_floors.json, resolved like the checker does (PJ_SDK_ROOT, then
+        the Conan cache's export_source); None when neither is available, so the test skips."""
         pj_sdk_root = os.environ.get("PJ_SDK_ROOT")
         if pj_sdk_root:
             try:
@@ -598,9 +595,8 @@ class RealRepoAcceptanceTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp:
-            # Mirror the repo root with the real common/ and toolbox_mosaico
-            # sources, but a lowered manifest floor, checked against the real
-            # SDK table (no repo-local interim copy exists post-cutover).
+            # Real common/ and toolbox_mosaico sources with a lowered manifest floor, checked
+            # against the real SDK table.
             root = Path(tmp)
             import shutil
 
@@ -611,8 +607,7 @@ class RealRepoAcceptanceTests(unittest.TestCase):
 
             ok = checker.check_sdk_feature_floors(root, sdk_floors_path=sdk_table_path, out=out, err=err)
         self.assertFalse(ok)
-        # Without a declared degraded range the lowered floor must fail: a
-        # 0.30 surface is matched, and no suggested_sdk_version covers it.
+        # A 0.30 surface is matched and no suggested_sdk_version covers it.
         self.assertIn("exceeds floor 0.28.0", err.getvalue())
         self.assertIn("suggested_sdk_version is missing", err.getvalue())
         self.assertIn("since 0.30.0", err.getvalue())

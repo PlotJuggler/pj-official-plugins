@@ -37,19 +37,14 @@ std::string buildOnDemandChunk(const std::string& body) {
   return src;
 }
 
-// Dataset name for each topic INDEX, or empty when the host reports no data
-// sources (the SDK's test store is one such host, so every unit test exercises
-// the degraded path). Topics are laid out contiguously per source, so this is a
-// table build rather than a search.
-//
-// It matters because PJ4 can hold several datasets at once — two runs of the
-// same robot is the ordinary case — and a flat topic list makes them
-// indistinguishable. Without it the model can neither offer to compare two runs
-// nor avoid mixing them, for the same reason: it does not know there are two.
+// Dataset name for each topic INDEX, or empty when the host reports no data sources (the SDK's
+// test store is one such host). Topics are laid out contiguously per source. Several datasets can
+// be loaded at once (two runs of one robot) and a flat topic list makes them indistinguishable,
+// so the assistant could neither compare nor avoid mixing them.
 std::map<std::uint32_t, std::string> datasetByTopicIndex(std::span<const PJ_data_source_info_t> sources) {
   std::map<std::uint32_t, std::string> out;
   if (sources.size() < 2) {
-    return out;  // one source (or none) adds no information worth the tokens
+    return out;  // one source (or none) adds no information
   }
   for (const auto& src : sources) {
     const std::string name(PJ::sdk::toStringView(src.name));
@@ -64,16 +59,14 @@ std::map<std::uint32_t, std::string> datasetByTopicIndex(const PJ::sdk::CatalogS
   return datasetByTopicIndex(catalog.dataSources());
 }
 
-// True for a marker set's own object topic ("__markers__/<series>" or
-// "__markers__/__global__") -- excluded everywhere a model would otherwise
-// see it as a readable object.
+// True for a marker set's own object topic ("__markers__/<series>" or "__markers__/__global__"),
+// excluded wherever objects are offered as readable inputs.
 bool isMarkerObjectTopic(std::string_view name) {
   return name.substr(0, PJ::sdk::kMarkerObjectTopicPrefix.size()) == PJ::sdk::kMarkerObjectTopicPrefix;
 }
 
-// The dataset an object topic's `source` handle belongs to, or empty when it
-// matches none (a host reporting no sources, same degraded case
-// datasetByTopicIndex documents for scalar topics).
+// The dataset an object topic's `source` handle belongs to, or empty when it matches none (a host
+// reporting no sources).
 std::string objectTopicDatasetName(std::span<const PJ_data_source_info_t> sources, PJ_data_source_handle_t source) {
   for (const auto& src : sources) {
     if (src.handle.id == source.id) {
@@ -83,9 +76,8 @@ std::string objectTopicDatasetName(std::span<const PJ_data_source_info_t> source
   return {};
 }
 
-// "dataset:name" when `dataset` is non-empty, else `name` unchanged — the
-// host's qualifier convention, applied everywhere a catalog-derived name is
-// handed back to the model.
+// "dataset:name" when `dataset` is non-empty, else `name` unchanged (the host's qualifier
+// convention).
 std::string qualifyWithDataset(const std::string& dataset, const std::string& name) {
   return dataset.empty() ? name : dataset + ":" + name;
 }
@@ -111,10 +103,9 @@ QualifierMatch matchDatasetQualifier(const PJ::sdk::CatalogSnapshot& catalog, st
   return out;
 }
 
-// Join a topic name and a field path into the canonical curve path. Hosts
-// differ on whether leaf field names carry a leading '/' (the plot-markers
-// host does, main does not), so tolerate both — a naive '+ "/" +' join emits
-// "topic//field", which the marker engine's series() lookup rejects.
+// Hosts differ on whether leaf field names carry a leading '/' (the plot-markers host does, main
+// does not), so tolerate both: a naive '+ "/" +' join emits "topic//field", which the marker
+// engine's series() lookup rejects.
 std::string joinSeriesPath(std::string_view topic, std::string_view field) {
   std::string path(topic);
   if (field.empty()) {
@@ -127,9 +118,7 @@ std::string joinSeriesPath(std::string_view topic, std::string_view field) {
   return path;
 }
 
-// Collapse '/' runs in a model-supplied series path. The model echoes paths
-// verbatim from earlier tool output (possibly from an older, doubling build),
-// so accept "topic//field" as "topic/field" everywhere a path comes in.
+// Collapses '/' runs, so a model-supplied "topic//field" is accepted as "topic/field".
 std::string canonicalSeriesPath(std::string_view s) {
   std::string out;
   out.reserve(s.size());
@@ -144,8 +133,7 @@ std::string canonicalSeriesPath(std::string_view s) {
 
 namespace {
 
-// Split a curve path into its '/'-separated segments, ignoring empty ones so
-// leading or doubled slashes don't produce phantom segments.
+// Splits a curve path on '/', ignoring empty segments (leading or doubled slashes).
 std::vector<std::string_view> pathSegments(std::string_view path) {
   std::vector<std::string_view> out;
   std::size_t i = 0;
@@ -164,10 +152,9 @@ std::vector<std::string_view> pathSegments(std::string_view path) {
   return out;
 }
 
-// True when `want`'s segments appear as a contiguous run inside `have`'s. This
-// is what makes an abbreviated path resolvable: "test/sin" and "sin/value" and
-// bare "sin" all match "test/sin/value". Matching whole segments (rather than
-// substrings) is deliberate — "test/si" must not resolve to "test/sin/value".
+// True when `want`'s segments appear as a contiguous run inside `have`'s, so "test/sin",
+// "sin/value" and bare "sin" all match "test/sin/value". Whole segments, not substrings:
+// "test/si" must not resolve to "test/sin/value".
 bool segmentsContain(const std::vector<std::string_view>& have, const std::vector<std::string_view>& want) {
   if (want.empty() || want.size() > have.size()) {
     return false;
@@ -189,24 +176,19 @@ bool segmentsContain(const std::vector<std::string_view>& have, const std::vecto
 
 }  // namespace
 
-// Resolve one "topic/field" curve path (joinSeriesPath convention, the same the
-// rest of PJ4 uses) by scanning the catalog — models call read_series
-// repeatedly per turn, so avoid materializing a full path index.
+// Scans the catalog directly (no full path index): the assistant calls read_series repeatedly
+// per turn.
 //
-// An exact match wins over abbreviations. An abbreviated path resolves only
-// when exactly one series matches: with several the answer is the candidate
-// list, never a guess, because silently picking one would attach a transform to
-// the wrong signal and look like it worked.
+// An exact match wins over abbreviations. An abbreviated path resolves only when exactly one
+// series matches: with several the answer is the candidate list, never a guess, because silently
+// picking one would attach a transform to the wrong signal and look like it worked.
 //
-// Datasets: the path may carry the host's qualifier convention,
-// "dataset:topic/field". The qualifier is matched against the KNOWN source
-// names (longest match wins) rather than parsed at ':', so a name like
-// "[stream] UDP Server" needs no escaping. An unqualified path whose exact
-// topic/field exists in SEVERAL datasets is refused as ambiguous — two runs of
-// the same robot share every topic name, and silently taking the first-loaded
-// one reads (or worse, installs onto) whichever file happened to load first.
-// With several sources loaded, every path this returns is in qualified form, so
-// results disclose which dataset they came from and candidates can be copied
+// Datasets: the path may carry the host's "dataset:topic/field" qualifier. It is matched against
+// the KNOWN source names (longest match wins) rather than parsed at ':', so a name like
+// "[stream] UDP Server" needs no escaping. An unqualified path whose exact topic/field exists in
+// SEVERAL datasets is refused as ambiguous: two runs of one robot share every topic name, and
+// taking the first-loaded one would read (or install onto) whichever file loaded first. With
+// several sources loaded, every returned path is in qualified form, so candidates can be copied
 // back verbatim.
 SeriesLookup resolveSeriesPath(
     const PJ::sdk::CatalogSnapshot& catalog, const std::string& series, const TopicDatasetMap& topic_dataset) {
@@ -297,11 +279,9 @@ std::string seriesLookupError(const std::string& series, const SeriesLookup& loo
   return "unknown series '" + series + "'; pick a series or object topic from the list.";
 }
 
-// The DataSourceHandle a resolved series' dataset qualifies to, for
-// toDisplayTimeForSource — which needs a handle, while ResolvedSeries only
-// carries the dataset's NAME (empty when at most one dataset is loaded).
-// Matches the name against the catalog's data sources; an
-// empty name with exactly one loaded source is that source, unambiguously.
+// toDisplayTimeForSource needs a handle, while ResolvedSeries only carries the dataset's NAME
+// (empty when at most one dataset is loaded). An empty name with exactly one loaded source is
+// that source.
 std::optional<PJ::sdk::DataSourceHandle> dataSourceHandleFor(
     const PJ::sdk::CatalogSnapshot& catalog, const std::string& dataset_name) {
   const auto sources = catalog.dataSources();
@@ -319,12 +299,6 @@ std::optional<PJ::sdk::DataSourceHandle> dataSourceHandleFor(
   return std::nullopt;
 }
 
-// Resolve one input against the object half of the v2 catalog: an optional
-// "dataset:" qualifier (matched against known source names, longest match
-// wins, same convention matchDatasetQualifier uses for scalar paths) narrows
-// the search; the bare remainder is matched by exact name against
-// objectTopics(), excluding marker topics (drawn, not read). Ambiguous only
-// when an UNQUALIFIED bare name matches object topics on several datasets.
 std::vector<ObjectTopicEntry> listObjectTopics(const PJ::sdk::CatalogSnapshotV2& v2) {
   std::vector<ObjectTopicEntry> out;
   const auto sources = v2.dataSources();
@@ -344,6 +318,10 @@ std::vector<ObjectTopicEntry> listObjectTopics(const PJ::sdk::CatalogSnapshotV2&
   return out;
 }
 
+// An optional "dataset:" qualifier (same longest-known-source-name rule as matchDatasetQualifier)
+// narrows the search; the bare remainder is matched by exact name against objectTopics(),
+// excluding marker topics. Ambiguous only when an UNQUALIFIED name matches object topics on
+// several datasets.
 ObjectLookup resolveObjectTopic(const PJ::sdk::CatalogSnapshotV2& v2, const std::string& want) {
   ObjectLookup out;
   const auto sources = v2.dataSources();
@@ -499,10 +477,10 @@ int physicalLines(const std::string& text) {
 
 namespace {
 
-// The table that rebuilds `inputs` under every alias a script may use, so a dataset-qualified key and
-// the historical bare one both work without textual substitution in user code. Building a fresh table
-// also avoids overwriting another input key. Luau always gets the table; Python only when there are
-// aliases.
+// The table that rebuilds `inputs` under every alias a script may use, so a dataset-qualified key
+// and the bare one both work without textual substitution in user code. Building a fresh table
+// also avoids overwriting another input key. Luau always gets the table; Python only when there
+// are aliases.
 std::string buildAliasTable(const ResolvedEvalInputs& resolved, bool python) {
   if (python && resolved.aliases.empty()) {
     return {};
@@ -577,19 +555,17 @@ std::string transformParams(std::size_t num_extra) {
 
 }  // namespace
 
-// Build a complete self-describing Luau FILTER CLASS the host can compile and run
-// live as a DerivedEngine node (via createTransform). The user's global code runs
-// once per instance inside a factory closure, so its locals persist across calls
-// (PJ3 global-variable semantics); the body becomes the per-sample function with
-// `time`/`value` (and `v1..vN` for the additional sources) in scope.
+// Builds a self-describing Luau FILTER CLASS the host compiles and runs live as a DerivedEngine
+// node (via createTransform). The user's global code runs once per instance inside a factory
+// closure, so its locals persist across calls (PJ3 global-variable semantics); the body becomes
+// the per-sample function with `time`/`value` (and `v1..vN` for the additional sources) in scope.
 //
 // `num_extra` is the count of additional sources: the body function takes
 // `(time, value, v1, …, v<num_extra>)`, matching the host's MIMO calculate contract
-// (calculate(self, t, v, v1..vN-1) — see pj_scripting FILTER_CLASS.md). `:calculate`
-// forwards its args with `...`, so any arity works; the named params just give the
-// body the v1..vN identifiers. Output count is decided host-side by the `outputs`
-// passed to createTransform — `:calculate` returns the body's results unchanged
-// (MULTRET), so a body that `return`s M values feeds M output topics.
+// (calculate(self, t, v, v1..vN-1), see pj_scripting FILTER_CLASS.md). `:calculate` forwards its
+// args with `...`, so any arity works. The output count is decided host-side by the `outputs`
+// passed to createTransform; `:calculate` returns the body's results unchanged (MULTRET), so a
+// body that `return`s M values feeds M output topics.
 BuiltScript buildTransformScript(
     const std::string& raw_id, const std::string& raw_name, const std::string& global_code, const std::string& body,
     std::size_t num_extra, std::string_view language, bool text_output) {
@@ -725,14 +701,10 @@ std::optional<ParsedTransformScript> parseTransformScript(std::string_view scrip
   return parsed;
 }
 
-// Inverse of toDisplaySeconds: DISPLAY seconds -> raw dataset ns. The SDK
-// exposes only the forward direction (toDisplayTimeForSource); this derives
-// the same per-source AFFINE offset applyDisplayWindow computes
-// (display(raw) = raw*1e-9 + offset, a per-DATASET constant, never a
-// per-sample fact) from one forward conversion of a known raw instant — raw
-// 0 always qualifies, so no sample lookup is needed — then inverts it.
-// Empty when no playback view is bound or the source-scoped conversion is
-// not supported by this host.
+// The SDK exposes only the forward direction (toDisplayTimeForSource). This derives the
+// per-source AFFINE offset (display(raw) = raw*1e-9 + offset, a per-DATASET constant) from one
+// forward conversion of raw 0, then inverts it. Empty when no playback view is bound or the host
+// does not support the source-scoped conversion.
 std::optional<std::int64_t> toRawNs(
     PJ::sdk::PlaybackHostView& playback, PJ::sdk::DataSourceHandle source, double display_s) {
   if (!playback.valid()) {

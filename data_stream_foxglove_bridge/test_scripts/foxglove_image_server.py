@@ -63,7 +63,6 @@ WIDTH, HEIGHT = 320, 240
 
 def make_frame(t: float) -> bytes:
     """Generate a 320x240 JPEG with an animated gradient and bouncing ball."""
-    # Background: colour gradient that shifts over time
     img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
 
     r_shift = int(127 + 127 * math.sin(t * 0.5))
@@ -78,13 +77,11 @@ def make_frame(t: float) -> bytes:
 
     pil_img = Image.fromarray(img, "RGB")
 
-    # Bouncing ball
     bx = int(WIDTH  * 0.5 + (WIDTH  * 0.4) * math.sin(t * 1.2))
     by = int(HEIGHT * 0.5 + (HEIGHT * 0.4) * math.cos(t * 0.9))
     draw = ImageDraw.Draw(pil_img)
     draw.ellipse([bx - 15, by - 15, bx + 15, by + 15], fill=(255, 255, 255))
 
-    # Timestamp text
     draw.rectangle([0, 0, 160, 20], fill=(0, 0, 0))
     draw.text((4, 4), f"t={t:.2f}s", fill=(255, 255, 0))
 

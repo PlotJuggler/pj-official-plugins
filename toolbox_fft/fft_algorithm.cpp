@@ -25,8 +25,7 @@ double windowWeight(WindowFunction window, std::size_t index, std::size_t count)
   if (window == WindowFunction::kRectangular) {
     return 1.0;
   }
-  // Periodic Hann: the endpoint is intentionally not repeated. This is the
-  // form appropriate for spectral analysis and has coherent gain exactly 0.5.
+  // Periodic Hann (endpoint not repeated): the spectral-analysis form, coherent gain exactly 0.5.
   const double phase = 2.0 * std::numbers::pi_v<double> * static_cast<double>(index) / static_cast<double>(count);
   return 0.5 * (1.0 - std::cos(phase));
 }
@@ -103,8 +102,8 @@ FftComputation computeFft(
     average /= static_cast<long double>(n);
   }
 
-  // Float, like the kissfft build this replaces: ~1e-7 relative to the peak, and half the
-  // memory of double on pocketfft's Bluestein path (~76 vs ~152 bytes per sample).
+  // Float: ~1e-7 relative to the peak, and half the memory of double on pocketfft's Bluestein path
+  // (~76 vs ~152 bytes per sample).
   std::vector<float> input(n);
   long double coherent_sum = 0.0L;
   for (std::size_t i = 0; i < n; ++i) {

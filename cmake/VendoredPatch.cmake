@@ -1,10 +1,5 @@
-# VendoredPatch.cmake — apply a source-text patch to a vendored (CPM-downloaded)
-# tarball at configure time, without needing a `patch` executable (Windows CI).
-#
-# We patch pinned third-party sources for two reasons: to fix upstream bugs
-# (dbc_parser_cpp's out-of-range shift) and to add hardening guards (lblf's
-# allocation-DoS checks). Doing it via string(REPLACE) keeps the fix as readable
-# C++ in the CMakeLists and needs no external tool.
+# Applies a source-text patch to a vendored (CPM-downloaded) tarball at configure time,
+# without a `patch` executable (Windows CI). Used for upstream bug fixes and hardening guards.
 #
 # pj_apply_vendored_patch(<content_var> <anchor_var> <fixed_var> <label>)
 #   - content_var, anchor_var, fixed_var are passed BY NAME (not value): the

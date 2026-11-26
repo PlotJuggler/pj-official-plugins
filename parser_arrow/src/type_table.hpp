@@ -41,20 +41,16 @@ struct TypeRow {
 // clang-format off
 inline constexpr std::array kTypeTable = std::to_array<TypeRow>({
     // type                                  , copy                  , host_ingestible, axis_cast                            , timestamp_storage, is_unsigned_integer, is_list_type
-    // --- null and boolean ---
     {NANOARROW_TYPE_NA                    , CopyKind::kNull       , false          , std::nullopt                         , TimestampStorage::kOther           , false              , false},
     {NANOARROW_TYPE_BOOL                  , CopyKind::kInt        , true           , std::nullopt                         , TimestampStorage::kOther           , false              , false},
-    // --- signed integers ---
     {NANOARROW_TYPE_INT8                  , CopyKind::kInt        , true           , ValueCast::kWidenToInt64             , TimestampStorage::kNarrowInt       , false              , false},
     {NANOARROW_TYPE_INT16                 , CopyKind::kInt        , true           , ValueCast::kWidenToInt64             , TimestampStorage::kNarrowInt       , false              , false},
     {NANOARROW_TYPE_INT32                 , CopyKind::kInt        , true           , ValueCast::kWidenToInt64             , TimestampStorage::kInt32           , false              , false},
     {NANOARROW_TYPE_INT64                 , CopyKind::kInt        , true           , ValueCast::kWidenToInt64             , TimestampStorage::kInt64           , false              , false},
-    // --- unsigned integers ---
     {NANOARROW_TYPE_UINT8                 , CopyKind::kUInt       , true           , ValueCast::kWidenToInt64             , TimestampStorage::kNarrowInt       , true               , false},
     {NANOARROW_TYPE_UINT16                , CopyKind::kUInt       , true           , ValueCast::kWidenToInt64             , TimestampStorage::kNarrowInt       , true               , false},
     {NANOARROW_TYPE_UINT32                , CopyKind::kUInt       , true           , ValueCast::kWidenToInt64             , TimestampStorage::kUInt32          , true               , false},
     {NANOARROW_TYPE_UINT64                , CopyKind::kUInt       , true           , ValueCast::kWidenToInt64             , TimestampStorage::kUInt64          , true               , false},
-    // --- floating point ---
     {NANOARROW_TYPE_HALF_FLOAT            , CopyKind::kDouble     , false          , std::nullopt                         , TimestampStorage::kOther           , false              , false},
     {NANOARROW_TYPE_FLOAT                 , CopyKind::kDouble     , true           , ValueCast::kFloatSecondsToNanoseconds, TimestampStorage::kFloat32         , false              , false},
     {NANOARROW_TYPE_DOUBLE                , CopyKind::kDouble     , true           , ValueCast::kFloatSecondsToNanoseconds, TimestampStorage::kFloat64         , false              , false},
@@ -62,7 +58,7 @@ inline constexpr std::array kTypeTable = std::to_array<TypeRow>({
     {NANOARROW_TYPE_STRING                , CopyKind::kBytes      , true           , std::nullopt                         , TimestampStorage::kOther           , false              , false},
     // host_ingestible is advisory on this row and the view/large rows below it: hostFormat normalizes them to "u"/"z"
     // and answers from the normalized format, never reading the flag. False records why the un-normalized form would
-    // be unsafe — PJ4/pj_datastore/src/arrow_import.cpp:210-214 reads int32 offsets after recognizing LARGE_STRING.
+    // be unsafe: the host's arrow_import reads int32 offsets after recognizing LARGE_STRING.
     {NANOARROW_TYPE_LARGE_STRING          , CopyKind::kBytes      , false          , std::nullopt                         , TimestampStorage::kOther           , false              , false},
     {NANOARROW_TYPE_STRING_VIEW           , CopyKind::kBytes      , false          , std::nullopt                         , TimestampStorage::kOther           , false              , false},
     {NANOARROW_TYPE_BINARY                , CopyKind::kBytes      , false          , std::nullopt                         , TimestampStorage::kOther           , false              , false},

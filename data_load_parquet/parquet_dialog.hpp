@@ -23,8 +23,6 @@ class ParquetDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  // --- Accessors for ParquetSource ---
-
   /// Returns the selected time column index, or -1 if using row number.
   int timeColumnIndex() const {
     if (time_mode_ == "column" && selected_column_index_ >= 0) {
@@ -40,8 +38,6 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     return custom_date_format_;
   }
 
-  // --- Dialog protocol ---
-
   std::string manifest() const override {
     return kParquetManifest;
   }
@@ -53,23 +49,19 @@ class ParquetDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Time axis radios
     wd.setChecked("radioButtonIndex", time_mode_ == "row_number");
     wd.setChecked("radioButtonSelect", time_mode_ == "column");
 
-    // Column list
     wd.setListItems("listWidgetSeries", column_names_);
     wd.setEnabled("listWidgetSeries", time_mode_ == "column");
     if (selected_column_index_ >= 0 && selected_column_index_ < static_cast<int>(column_names_.size())) {
       wd.setSelectedItems("listWidgetSeries", {column_names_[static_cast<size_t>(selected_column_index_)]});
     }
 
-    // Custom date format
     wd.setChecked("checkBoxDateFormat", use_custom_date_format_);
     wd.setText("lineEditDateFormat", custom_date_format_);
     wd.setEnabled("lineEditDateFormat", use_custom_date_format_);
 
-    // OK enabled?
     bool ok = (time_mode_ == "row_number") || (time_mode_ == "column" && selected_column_index_ >= 0);
     wd.setOkEnabled("buttonBox", ok);
 
@@ -138,8 +130,8 @@ class ParquetDialog : public PJ::DialogPluginTyped {
     nlohmann::json cfg;
     cfg["filepath"] = filepath_;
     cfg["time_mode"] = time_mode_;
-    // The column is restored by name: PlotJuggler pre-fills the next file's dialog with this config. The index is for
-    // older plugin versions reading it.
+    // The column is restored by name: PlotJuggler pre-fills the next file's dialog with this config. The index is
+    // also written so a plugin build that reads only the index can still load the config.
     cfg["time_column_name"] =
         selected_column_index_ >= 0 && selected_column_index_ < static_cast<int>(column_names_.size())
             ? column_names_[static_cast<size_t>(selected_column_index_)]
@@ -165,8 +157,8 @@ class ParquetDialog : public PJ::DialogPluginTyped {
 
  private:
   /// Reads the schema and picks the time column named `time_column` in it. The schema may not be the one the name
-  /// was saved for: a name it lacks picks the detected timestamp column. An empty name (a config saved by
-  /// parquet <= 1.0.4) falls back to `time_column_index`.
+  /// was saved for: a name it lacks picks the detected timestamp column. An empty name falls back to
+  /// `time_column_index` (configs that carry only the index).
   void analyzeFile(const std::string& time_column, int time_column_index) {
     column_names_.clear();
     selected_column_index_ = -1;

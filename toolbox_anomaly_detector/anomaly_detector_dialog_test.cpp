@@ -1,13 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// Dialog-level tests for the Source section: no auto-selection on open, the drop
-// target, the text filter, Apply gating, and a layout-restored source the catalog no
-// longer offers.
-//
-// Driven through the loaded .so like toolbox_fft's plugin test, because
-// AnomalyDetectorDialog lives in an anonymous namespace inside the .cpp and cannot be
-// constructed directly.
+// Dialog-level tests for the Source section: no auto-selection on open, the drop target, the text filter,
+// Apply gating, and a layout-restored source the catalog no longer offers. Driven through the loaded .so
+// because AnomalyDetectorDialog is in an anonymous namespace and cannot be constructed directly.
 
 #include <gtest/gtest.h>
 
@@ -54,12 +50,10 @@ std::vector<double> ramp(std::size_t count) {
 }
 
 struct PluginFixture {
-  // Declaration order is load-bearing. Members are destroyed in reverse, and this
-  // plugin's destructor talks to the host services (it tears down its ephemeral preview
-  // topic), so the handle MUST die before the store and registry it points at. The plugin
-  // is entitled to that: its destructor documents that the host outlives the plugin
-  // instance during teardown. Getting this backwards leaves the destructor reading freed
-  // memory — harmless-looking on Linux, an access violation on Windows and macOS.
+  // Declaration order is load-bearing: members are destroyed in reverse, and this plugin's destructor
+  // talks to the host services (it tears down its ephemeral preview topic), so the handle MUST die before
+  // the store and registry it points at. Getting this backwards reads freed memory: harmless-looking on
+  // Linux, an access violation on Windows and macOS.
   PJ::ToolboxLibrary library;
   PJ::testing::ToolboxTestStore store;
   PJ::ServiceRegistryBuilder registry;
@@ -72,12 +66,10 @@ struct PluginFixture {
     store.addTopic(topic).addField(topic, field, timestamps(16), ramp(16));
   }
 
-  // These throw rather than ASSERT because DialogHandle dereferences its vtable
-  // unconditionally (widget_data is `vt_->get_widget_data(ctx_)`), so handing it an
-  // unbound handle or an absent dialog is an access violation, not a test failure — and a
-  // crash reports nothing about which step went wrong. ASSERT_* would not help either: in
-  // a void member it only returns from the member, and the test would carry on into the
-  // same crash.
+  // These throw rather than ASSERT because DialogHandle dereferences its vtable unconditionally, so an
+  // unbound handle or an absent dialog is an access violation, not a test failure, and a crash names no
+  // step. ASSERT_* in a void member would only return from the member and the test would carry on into
+  // the same crash.
   void bind() {
     if (!handle.valid()) {
       throw std::runtime_error("toolbox handle is invalid — createHandle() failed");
@@ -126,14 +118,9 @@ std::string statusText(const PJ::WidgetDataView& wd) {
   return wd.text("status_label").value_or(std::string{});
 }
 
-// ---------------------------------------------------------------------------
-// Bring-up, one step per test.
-//
-// Split this finely on purpose: the fixture below reaches the plugin through fat
-// pointers that the SDK dereferences unconditionally, so a failure anywhere in the
-// sequence lands as one indistinguishable access violation. One assertion per step means
-// the first test that fails names the step, on platforms we cannot run locally.
-// ---------------------------------------------------------------------------
+// Bring-up is split into one step per test: the fixture reaches the plugin through fat pointers the SDK
+// dereferences unconditionally, so a failure anywhere in the sequence lands as one indistinguishable
+// access violation. One assertion per step means the first failing test names the step.
 
 TEST(AnomalyPluginBringUp, LibraryLoads) {
   auto library = PJ::ToolboxLibrary::load(PJ_ANOMALY_PLUGIN_PATH);
@@ -186,13 +173,8 @@ TEST(AnomalyPluginBringUp, GetDialogReturnsANonNullFatPointer) {
   EXPECT_NE(borrowed.vtable, nullptr);
 }
 
-// ---------------------------------------------------------------------------
-// Opening state
-// ---------------------------------------------------------------------------
-
 TEST(AnomalyDialogSource, OpensWithNoSourceSelected) {
-  // The regression this whole change exists for: the panel used to auto-select
-  // series_names_.front(), which on a real recording was a text field — unusable source,
+  // Auto-selecting series_names_.front() would pick a text field on a real recording: unusable source,
   // blank preview, no explanation.
   auto fixture = makeFixture();
   fixture.addSeries("alpha", "x");
@@ -224,10 +206,6 @@ TEST(AnomalyDialogSource, DeclaresTheDropTargetInTheFirstDelivery) {
   const auto wd = widgetData(dialog);
   EXPECT_TRUE(wd.isDropTarget("sourceGroup"));
 }
-
-// ---------------------------------------------------------------------------
-// Drag & drop
-// ---------------------------------------------------------------------------
 
 TEST(AnomalyDialogSource, DropSelectsTheSeriesAndEnablesApply) {
   auto fixture = makeFixture();
@@ -271,10 +249,6 @@ TEST(AnomalyDialogSource, DroppingSeveralSeriesTakesTheFirstAndSaysSo) {
   EXPECT_EQ(selectedItems(wd), (std::vector<std::string>{"alpha/x"}));
   EXPECT_NE(statusText(wd).find("one source series at a time"), std::string::npos) << statusText(wd);
 }
-
-// ---------------------------------------------------------------------------
-// Text filter
-// ---------------------------------------------------------------------------
 
 TEST(AnomalyDialogSource, FilterNarrowsTheListWithoutTouchingTheSelection) {
   // The filter is a view, full stop. If narrowing the list could change what Apply runs,
@@ -323,14 +297,9 @@ TEST(AnomalyDialogSource, NoMatchesShowsAFilterAwarePlaceholder) {
   EXPECT_NE(placeholder.find("zzz"), std::string::npos) << placeholder;
 }
 
-// ---------------------------------------------------------------------------
-// Apply gating and scope
-// ---------------------------------------------------------------------------
-
 TEST(AnomalyDialogSource, WiderScopeEnablesApplyWithNoSource) {
-  // runScript already allows an empty source when the markers are global; with nothing
-  // auto-selected that path is now the normal one, so the UI has to say so up front
-  // instead of failing on the click.
+  // runScript allows an empty source when the markers are global, so the UI says so up front instead of
+  // failing on the click.
   auto fixture = makeFixture();
   fixture.addSeries("alpha", "x");
   fixture.bind();
@@ -340,10 +309,6 @@ TEST(AnomalyDialogSource, WiderScopeEnablesApplyWithNoSource) {
   ASSERT_TRUE(dialog.sendEvent("scope_dataset", PJ::WidgetEventBuilder::toggled(true)));
   EXPECT_EQ(widgetData(dialog).enabled("apply_button"), std::optional<bool>{true});
 }
-
-// ---------------------------------------------------------------------------
-// Restored state
-// ---------------------------------------------------------------------------
 
 TEST(AnomalyDialogSource, RestoredSourceMissingFromTheCatalogIsKeptAndFlagged) {
   // The dataset may just not have loaded yet, and a layout written before the type filter
@@ -368,10 +333,6 @@ TEST(AnomalyDialogSource, RestoredSourceMissingFromTheCatalogIsKeptAndFlagged) {
   EXPECT_EQ(widgetData(dialog).enabled("apply_button"), std::optional<bool>{true});
 }
 
-// ---------------------------------------------------------------------------
-// Template retargeting — the behaviour auto-selection used to exercise
-// ---------------------------------------------------------------------------
-
 TEST(AnomalyDialogSource, PickingASourceRetargetsTheChosenBuiltinTemplate) {
   auto fixture = makeFixture();
   fixture.addSeries("alpha", "x");
@@ -388,11 +349,9 @@ TEST(AnomalyDialogSource, PickingASourceRetargetsTheChosenBuiltinTemplate) {
 }
 
 TEST(AnomalyDialogSource, AnEchoedCodeEventDoesNotPinTheTemplate) {
-  // The host echoes the editor's content back as a code event on the panel's first paint
-  // (the syntax highlighter's deferred rehighlight fires textChanged after the signals are
-  // wired). Taking that echo as a user edit left the pristine template on "--SOURCE--" when
-  // the source was picked before any function: reproduced in the app, invisible to a
-  // fixture that never echoes.
+  // The host echoes the editor's content back as a code event on the panel's first paint (the syntax
+  // highlighter's deferred rehighlight). Taking that echo as a user edit left the pristine template on
+  // "--SOURCE--" when the source was picked before any function; a fixture that never echoes cannot see it.
   auto fixture = makeFixture();
   fixture.addSeries("alpha", "x");
   fixture.bind();
@@ -425,9 +384,8 @@ TEST(AnomalyDialogSource, ARealCodeEditSurvivesALaterSourceClick) {
 }
 
 TEST(AnomalyDialogSource, ALoadedRuleSurvivesALaterSourceClick) {
-  // Adjacent regression: "load a rule, then pick a source" is the natural flow now that
-  // nothing is pre-selected, and the source click used to overwrite the loaded rule with
-  // the active builtin template.
+  // Loading a rule and then picking a source must not overwrite the loaded rule with the active builtin
+  // template.
   auto fixture = makeFixture();
   fixture.addSeries("alpha", "x");
   fixture.bind();

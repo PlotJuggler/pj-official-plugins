@@ -159,9 +159,8 @@ TEST(CanDecoder, ExtendedFrameDoesNotFallBackToStandardRangeId) {
 TEST(CanDecoder, DecodesUnsigned32BitSignal) {
   CanDecoder dec;
   ASSERT_TRUE(dec.loadDbcString(kDbc).has_value());
-  // Raw 0x12345678 (LE) -> 305419896. The upstream dbc_parser_cpp masks
-  // unsigned values with a 32-bit `1 << size`, which is UB at size >= 32 and
-  // decodes every frame as 0 — this guards our vendored fix.
+  // Raw 0x12345678 (LE) -> 305419896. Upstream masks unsigned values with a 32-bit `1 << size`,
+  // UB at size >= 32, which decodes every frame as 0; the patch in cmake/dbc_parser.cmake fixes it.
   const std::vector<std::uint8_t> data{0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0};
   DecodeResult result = DecodeResult::kNoMatch;
   const auto sigs = dec.decode(512, false, data, result);
@@ -199,8 +198,8 @@ TEST(CanDecoder, TruncatedFrameIsUndecodable) {
 TEST(CanDecoder, LongerFrameOnClassicMessageDecodes) {
   CanDecoder dec;
   ASSERT_TRUE(dec.loadDbcString(kDbc).has_value());
-  // A 12-byte CAN FD frame on the 8-byte EngineData: its signals lie in the
-  // first 8 bytes and decode as from a classic frame; the extra bytes are ignored.
+  // A 12-byte frame on the 8-byte EngineData: its signals lie in the first 8 bytes and decode as from a classic
+  // frame; the extra bytes are ignored.
   const std::vector<std::uint8_t> data{0xE8, 0x03, 0xB8, 0x0B, 0xFF, 0, 0, 0, 0xAA, 0xBB, 0xCC, 0xDD};
   DecodeResult result = DecodeResult::kNoMatch;
   const auto sigs = dec.decode(256, false, data, result);
@@ -216,13 +215,12 @@ TEST(CanDecoder, LongerFrameOnClassicMessageDecodes) {
   EXPECT_DOUBLE_EQ(temp->value, -1.0);
 }
 
-// Messages longer than 8 bytes (CAN FD, or an NMEA2000 fast-packet payload
-// reassembled from several frames). dbc_parser_cpp refuses payloads over 8
-// bytes; CanDecoder reads them itself with the same bit numbering.
-//  - LongMsg (32 bytes): signals entirely past byte 7 -- Intel, Motorola,
-//    signed, a 64-bit one starting mid-byte, and the last byte.
-//  - ShortLayout (8 bytes) / LongLayout (16 bytes): the same signals in the
-//    first 8 bytes, to compare the two decode paths bit for bit.
+// Messages longer than 8 bytes (CAN FD, or an NMEA 2000 fast-packet payload). dbc_parser_cpp refuses payloads
+// over 8 bytes; CanDecoder reads them itself with the same bit numbering.
+//  - LongMsg (32 bytes): signals entirely past byte 7 -- Intel, Motorola, signed, a 64-bit one starting
+//    mid-byte, and the last byte.
+//  - ShortLayout (8 bytes) / LongLayout (16 bytes): the same signals in the first 8 bytes, to compare the two
+//    decode paths bit for bit.
 //  - PastEnd (16 bytes): a signal declared past the message's last byte.
 //  - TooFar (8 bytes): a start bit past 64 in a classic message, still dropped.
 const char* const kLongDbc = R"DBC(VERSION "1.0.0"
@@ -294,12 +292,12 @@ TEST(CanDecoderLongPayload, DecodesSignalsPastByteSeven) {
   data[11] = 0xCD;
   data[12] = 0xFE;  // SignedHigh = 12-bit 0xFFE = -2 -> * 0.5 = -1.0 (byte 12 + low nibble of byte 13)
   data[13] = 0x0F;
-  // Wide = 0x0123456789ABCDEF from bit 124: its low nibble is byte 15's high
-  // nibble, the rest (0x00123456789ABCDE) runs little-endian through bytes 16..23.
+  // Wide = 0x0123456789ABCDEF from bit 124: its low nibble is byte 15's high nibble, the rest
+  // (0x00123456789ABCDE) runs little-endian through bytes 16..23.
   data[15] = 0xF0;
   const std::uint8_t wide_rest[] = {0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12, 0x00};
   std::copy(std::begin(wide_rest), std::end(wide_rest), data.begin() + 16);
-  data[31] = 0x5A;  // Tail
+  data[31] = 0x5A;
 
   DecodeResult result = DecodeResult::kNoMatch;
   const auto sigs = dec.decode(768, false, data, result);
@@ -362,10 +360,9 @@ TEST(CanDecoderLongPayload, FrameShorterThanLongMessageIsUndecodable) {
   EXPECT_TRUE(sigs.empty());
 }
 
-// The sizes where the two decode paths could disagree: 64-bit signed (Intel and
-// Motorola), 63- and 32-bit signed, a 1-bit signed signal, a 64-bit unsigned
-// Motorola one. ShortWide (8 bytes) goes through dbc_parser_cpp, LongWide (16
-// bytes, same layout) through CanDecoder's own reader.
+// The sizes where the two decode paths could disagree: 64-bit signed (Intel and Motorola), 63- and 32-bit signed,
+// a 1-bit signed signal, a 64-bit unsigned Motorola one. ShortWide (8 bytes) goes through dbc_parser_cpp,
+// LongWide (16 bytes, same layout) through CanDecoder's own reader.
 //  - PastEndBe (16 bytes): a Motorola signal whose last bits lie past the message.
 const char* const kWideDbc = R"DBC(VERSION "1.0.0"
 
@@ -501,16 +498,14 @@ TEST(CanDecoder, GarbageDbcYieldsNoMessages) {
   EXPECT_EQ(dec.messageCount(), 0u);
 }
 
-// --- Vendored dbc.cpp regex fix (common/can_dbc, not dbc_parser_cpp upstream):
-// factor/offset/min/max share one signed, optional-exponent number pattern,
-// and BO_/SG_ token separators tolerate tabs and repeated spaces. Before the
-// fix, any of these signals failed signal_re and were dropped SILENTLY (the
-// message would still load, just with fewer signals) -- so every test below
-// also pins messageCount()/signal presence, not just the decoded value.
+// The dbc.cpp patch (cmake/dbc_parser.cmake): factor/offset/min/max share one signed,
+// optional-exponent number pattern, and BO_/SG_ token separators tolerate tabs and repeated
+// spaces. Upstream drops such a signal SILENTLY (the message still loads, with fewer signals), so
+// every test below also pins messageCount()/signal presence, not just the decoded value.
 
 TEST(CanDecoderDbcFix, DecodesNegativeFactorAndOffset) {
-  // Upstream scalePattern was "Non negative float" -- a negative factor could
-  // not match SG_ at all, so this whole signal used to be dropped.
+  // Upstream scalePattern is "Non negative float": a negative factor cannot match SG_ at all, so
+  // upstream drops the whole signal.
   const char* const kFixDbc = R"DBC(VERSION "1.0.0"
 
 NS_ :
@@ -537,9 +532,8 @@ BO_ 300 NegMsg: 8 ECU
 }
 
 TEST(CanDecoderDbcFix, DecodesExponentialFactorOffsetMinMax) {
-  // Upstream floatPattern had no exponent support at all -- Vector DBCs
-  // routinely emit float signals as "[-3.4E+38|3.4E+38]"; every one of these
-  // used to be dropped.
+  // Upstream floatPattern has no exponent support, and Vector DBCs routinely emit float signals
+  // as "[-3.4E+38|3.4E+38]": upstream drops every one of them.
   const char* const kFixDbc = R"DBC(VERSION "1.0.0"
 
 NS_ :
@@ -594,11 +588,9 @@ BO_ 302 PlusDotMsg: 8 ECU
 }
 
 TEST(CanDecoderDbcFix, TabsAndDoubleSpacesDoNotDropTheSignal) {
-  // Upstream whiteSpace was exactly one "\\s" -- a tab or a doubled space
-  // between BO_/SG_ tokens (both legal DBC whitespace) failed signal_re, so
-  // the signal was silently dropped even though the message line itself is
-  // untouched by this fix (message_re's own whitespace is separately fixed
-  // and covered below).
+  // Upstream whiteSpace is exactly one "\\s": a tab or a doubled space between SG_ tokens (both
+  // legal DBC whitespace) fails signal_re and the signal is silently dropped. message_re's own
+  // whitespace is patched separately and covered below.
   const char* const kFixDbc = R"DBC(VERSION "1.0.0"
 
 NS_ :
@@ -1051,9 +1043,7 @@ TEST(CanTopic, NamesTopicsByChannelAndMessage) {
   EXPECT_EQ(pj_can_dbc::canTopicName(0, "", 0x7FFu), "CAN/0x7FF");
 }
 
-// data_load_candump's bus is a name (candump interface, e.g. "can0"), not a
-// number -- this overload is additive, keeping data_load_mf4/data_load_blf's
-// numeric-channel overload above untouched.
+// data_load_candump's bus is a name (candump interface, e.g. "can0"), not a number.
 TEST(CanTopic, NamesTopicsByInterfaceNameAndMessage) {
   EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view("can0"), "EngineData", 0x100u), "CAN/can0/EngineData");
   EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view("vcan0.1"), "", 0x1ABu), "CAN/vcan0.1/0x1AB");
@@ -1061,8 +1051,8 @@ TEST(CanTopic, NamesTopicsByInterfaceNameAndMessage) {
   EXPECT_EQ(pj_can_dbc::canTopicName(std::string_view(""), "", 0x7FFu), "CAN/0x7FF");
 }
 
-// A missing file used to surface as "DBC parse error ... Missing the required
-// version header" (the parser throws when its ifstream fails to open).
+// The parser throws "Missing the required version header" when its ifstream fails to open; a
+// missing file must report "not found" instead.
 TEST(CanDecoder, LoadDbcFileReportsMissingFileAsNotFound) {
   CanDecoder decoder;
   const auto status = decoder.loadDbcFile("/nonexistent_pj_can_dbc_dir/missing.dbc");

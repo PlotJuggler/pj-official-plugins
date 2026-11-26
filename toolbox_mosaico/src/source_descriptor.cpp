@@ -29,7 +29,6 @@ bool validateOrigin(const std::string& origin, std::string* error) {
   return true;
 }
 
-// Require `field` to be a string no longer than kMaxStringBytes; copy it out.
 bool takeString(const nlohmann::json& obj, const char* field, std::string* out, std::string* error) {
   const auto it = obj.find(field);
   if (it == obj.end()) {
@@ -118,10 +117,8 @@ std::optional<SourceDescriptor> parseSourceDescriptor(std::string_view json, std
     fail(error, "field \"v\" must be an integer");
     return std::nullopt;
   }
-  // Exact-value comparison, never get<int>() — nlohmann's get<> is an
-  // unchecked narrowing cast, so e.g. v=4294967297 (2^32+1) would narrow to 1
-  // and alias a genuine v1 descriptor (fail-closed versioning).
-  // json::operator== compares integer values exactly across int/uint width.
+  // Exact-value comparison, never get<int>(): its unchecked narrowing would alias v=4294967297 (2^32+1) to a
+  // genuine v1 descriptor (fail-closed versioning). json::operator== compares integers exactly across widths.
   if (*v_it != 1) {
     fail(error, "unsupported descriptor version " + v_it->dump() + " (expected 1)");
     return std::nullopt;
@@ -184,10 +181,8 @@ std::optional<SourceDescriptor> parseSourceDescriptor(std::string_view json, std
     fail(error, "topics must contain at least one topic");
     return std::nullopt;
   }
-  // Canonical bytes must be UNIQUE per request: production sorts, so the wire
-  // format is strictly-ascending by contract and anything else is rejected
-  // rather than re-sorted (a re-sort would let two byte streams share one
-  // identity).
+  // Canonical bytes must be UNIQUE per request: the wire format is strictly ascending and anything else is
+  // rejected, not re-sorted (a re-sort would let two byte streams share one identity).
   for (std::size_t i = 0; i < descriptor.topics.size(); ++i) {
     if (descriptor.topics[i].empty()) {
       fail(error, "topics must not contain empty names");
@@ -238,20 +233,16 @@ std::optional<SourceDescriptor> makePullDescriptor(
   descriptor.origin = std::move(origin);
   descriptor.sequence = std::move(sequence);
   descriptor.topics = std::move(topics);
-  // The identity is a property of the topic SET: sort + dedup so two
-  // selections of the same topics hash to one cache entry. (A recorded
-  // descriptor replays its serialized order verbatim, so existing identities
-  // keep matching.)
+  // The identity is a property of the topic SET: sort + dedup so two selections of the same topics hash to one
+  // cache entry. A recorded descriptor replays its serialized order verbatim, so existing identities keep matching.
   std::sort(descriptor.topics.begin(), descriptor.topics.end());
   descriptor.topics.erase(std::unique(descriptor.topics.begin(), descriptor.topics.end()), descriptor.topics.end());
   descriptor.start_ns = start_ns;
   descriptor.end_ns = end_ns;
-  // Validate through the one parser (allowlist, limits, origin hygiene, time
-  // ordering) so every producer meets the same bar as a layout consumer.
-  // STRICT dump here: a name that is not valid UTF-8 cannot be represented
-  // without altering it, and a U+FFFD-substituted descriptor would name a
-  // DIFFERENT request (and collide with a genuine replacement-char name) —
-  // so it is rejected and the download simply stays uncacheable.
+  // Validate through the one parser (allowlist, limits, origin hygiene, time ordering) so every producer meets the
+  // same bar as a layout consumer. STRICT dump: a name that is not valid UTF-8 cannot be represented without
+  // altering it, and a U+FFFD-substituted descriptor would name a DIFFERENT request (colliding with a genuine
+  // replacement-char name), so it is rejected and the download stays uncacheable.
   std::string json;
   try {
     json = descriptorJson(descriptor, true).dump();

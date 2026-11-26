@@ -1,14 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// locateCli()/childEnvFor() against real temp directories and a real HOME/PATH
-// (via ScopedEnv) — the fallback order, the nvm semver comparison, and the
-// one case that demonstrates why resolving a path is not enough on its own:
-// an `#!/usr/bin/env` shebang whose interpreter lives next to the script but
-// is not on this process's PATH. Below that: shared tests that run on every
-// platform (detail::splitPath, cannotFindCliMessage's npm_shim wording), then
-// a POSIX-only block and a Windows-only block, each covering that platform's
-// own search order and quoting/refusal rules.
+// locateCli()/childEnvFor() against real temp directories and a real HOME/PATH (via ScopedEnv):
+// the fallback order, the nvm semver comparison, and an `#!/usr/bin/env` shebang whose interpreter
+// is next to the script but not on this process's PATH. Shared tests run everywhere; then a
+// POSIX-only and a Windows-only block cover each platform's search order and quoting/refusal rules.
 #include "cli_locator.hpp"
 
 #include <gtest/gtest.h>
@@ -28,8 +24,6 @@
 #include "cli_probe.hpp"  // cannotFindCliMessage
 #include "subprocess.hpp"
 #include "test_support/scoped_env.hpp"
-
-// --- Shared: platform-neutral pieces, exercised on every platform ---------
 
 namespace {
 
@@ -55,9 +49,8 @@ TEST(CliLocatorSplitPath, EmptyStringYieldsOneEmptyEntry) {
   EXPECT_EQ(parts[0], "");
 }
 
-// cannotFindCliMessage only reads CliLocation fields, so its npm_shim
-// wording is testable here even though locateCli() itself only ever fills
-// npm_shim on Windows.
+// cannotFindCliMessage only reads CliLocation fields, so its npm_shim wording is testable here
+// although locateCli() fills npm_shim on Windows only.
 TEST(CannotFindCliMessage, PlainMessageWhenNoShimWasFound) {
   assistant_agent::CliLocation loc;
   loc.searched = {"/a/b", "/c/d"};
@@ -104,7 +97,6 @@ bool contains(const std::vector<std::string>& haystack, const std::string& needl
   return std::find(haystack.begin(), haystack.end(), needle) != haystack.end();
 }
 
-// Writes an executable text file at `dir/name` with `contents`.
 void writeExecutable(const fs::path& dir, const std::string& name, const std::string& contents) {
   const fs::path path = dir / name;
   {
@@ -196,7 +188,7 @@ TEST_F(CliLocatorTest, NvmHighestVersionWithoutAlias) {
   fs::create_directories(v22);
   writeExecutable(v9, "codex", "#!/bin/sh\necho v9\n");
   writeExecutable(v22, "codex", "#!/bin/sh\necho v22\n");
-  // No alias/default at all.
+  // No alias/default.
 
   ScopedEnv home_env("HOME", home_);
   ScopedEnv path_env("PATH", empty_path_dir_);
@@ -240,10 +232,9 @@ TEST_F(CliLocatorTest, NotFoundListsEverySearchedDir) {
   EXPECT_TRUE(contains(loc.searched, std::string("/home/linuxbrew/.linuxbrew/bin")));
 }
 
-// The case that demonstrates why resolving a path is not enough on its own:
-// `codex` here is `#!/usr/bin/env fakenode`, and `fakenode` lives right next
-// to it but nowhere on this process's own PATH. Only childEnvFor(loc), which
-// prepends that directory to the CHILD's PATH, lets `env` find it.
+// Resolving a path is not enough: `codex` here is `#!/usr/bin/env fakenode`, and `fakenode` is next
+// to it but not on this process's PATH. Only childEnvFor(loc), which prepends that directory to
+// the CHILD's PATH, lets `env` find it.
 TEST_F(CliLocatorTest, ChildPathLetsAnEnvShebangResolve) {
   const fs::path bin_dir = home_ / ".local" / "bin";
   fs::create_directories(bin_dir);
@@ -287,10 +278,8 @@ using toolbox_testing::ScopedEnv;
 
 namespace fs = std::filesystem;
 
-// isExecutableFile() on Windows only checks the extension and that the path
-// is a regular file (there is no POSIX execute bit to set), so an empty file
-// with the right name and extension is enough of a fixture — see
-// cli_locator.hpp's detail::isExecutableFile.
+// On Windows isExecutableFile() checks only the extension and regular-file-ness (no execute bit),
+// so an empty file with the right name is a sufficient fixture.
 void writeEmptyFile(const fs::path& path) {
   std::ofstream(path).close();
 }

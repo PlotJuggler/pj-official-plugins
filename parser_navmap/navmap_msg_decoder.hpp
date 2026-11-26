@@ -1,16 +1,11 @@
 /**
- * @file navmap_msg_decoder.hpp
- * @brief Schema-driven decoding of ROS 2 messages into a small value tree.
+ * Schema-driven decoding of ROS 2 messages into a small value tree.
  *
- * The NavMap messages changed layout across releases (layers gained metadata,
- * int16 data and sparse indices; the map gained geometry_id and links). Rather
- * than hardcode one revision, the parser compiles the `.msg` bundle that ships
- * with each topic (MCAP schema / ROS 2 type description) and decodes by it, so
- * every revision decodes and unknown future fields are skipped by type.
+ * The `.msg` bundle each topic carries is compiled and decoded by, so every
+ * NavMap layout decodes and unknown fields are skipped by type.
  *
- * Only what a NavMap needs is supported: primitives, strings, nested messages,
- * fixed arrays and (bounded) sequences. wstring and ROS 1 time/duration are
- * rejected at bind time.
+ * Supported: primitives, strings, nested messages, fixed arrays and (bounded)
+ * sequences. wstring and ROS 1 time/duration are rejected at bind time.
  */
 #pragma once
 
@@ -28,7 +23,6 @@
 
 namespace navmap_parser {
 
-/// One field of a compiled message definition.
 struct MsgField {
   /// Primitive name ("uint32", "string", ...) or a resolved "pkg/Type".
   std::string type;
@@ -49,7 +43,7 @@ struct MsgSchema {
   std::unordered_map<std::string, size_t> min_wire_size;
 };
 
-/// Normalizes "pkg/msg/Type" and "pkg/Type" to "pkg/Type".
+/// "pkg/msg/Type" and "pkg/Type" both become "pkg/Type".
 [[nodiscard]] std::string normalizeRosTypeName(std::string_view type_name);
 
 /// Compiles a ROS 2 concatenated `.msg` bundle (root definition first, then
@@ -65,7 +59,7 @@ using NumberArray = std::variant<
 
 struct Value;
 
-/// A decoded message: its fields in declaration order.
+/// A decoded message; fields in declaration order.
 struct Node {
   std::vector<std::pair<std::string, Value>> fields;
 
@@ -92,7 +86,7 @@ struct Value {
 /// Throws CdrError on malformed data.
 [[nodiscard]] Node decodeMessage(const MsgSchema& schema, CdrReader& reader, bool keep_primitive_arrays);
 
-/// The number field @p name of @p node; nullopt when it is missing or not a number.
+/// Nullopt when the field is missing or not a number.
 [[nodiscard]] std::optional<double> numberOf(const Node& node, std::string_view name);
 
 }  // namespace navmap_parser

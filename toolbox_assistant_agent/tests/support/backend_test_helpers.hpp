@@ -16,7 +16,7 @@
 
 #include "llm_backend.hpp"    // BackendEvent, LlmBackend, TurnTools
 #include "platform_util.hpp"  // pathToUtf8, utf8ToPath
-#include "test_endpoint.hpp"  // kTestEndpoint, toolsFor (same directory)
+#include "test_endpoint.hpp"  // kTestEndpoint, toolsFor
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>  // mkstemp/close/chmod for the fake CLI script
@@ -31,8 +31,7 @@
 
 namespace assistant_agent::testing {
 
-// The first Error event, or nullptr — every fake-CLI resume/translation test
-// (claude_smoke_test.cpp, codex_backend_test.cpp) asks this same question.
+// The first Error event, or nullptr.
 inline const BackendEvent* firstError(const std::vector<BackendEvent>& events) {
   for (const auto& e : events) {
     if (e.kind == BackendEvent::Kind::Error) {
@@ -44,11 +43,8 @@ inline const BackendEvent* firstError(const std::vector<BackendEvent>& events) {
 
 #if defined(__unix__) || defined(__APPLE__)
 
-// A stand-in for a headless CLI: drains stdin (so a payload writer never
-// SIGPIPEs), prints `stdout_lines` as NDJSON, then exits `exit_code`. The
-// general form both claude_smoke_test.cpp and codex_backend_test.cpp used to
-// write independently — Claude's own `writeFakeCli(result_line)` is now a
-// thin wrapper over this passing `{init_record, result_line}` and exit 1.
+// A stand-in for a headless CLI: drains stdin (so a payload writer never SIGPIPEs), prints
+// `stdout_lines` as NDJSON, then exits `exit_code`.
 inline std::string writeFakeCliScript(const std::vector<std::string>& stdout_lines, int exit_code) {
   char tmpl[] = "/tmp/pj_assistant_fake_cli_XXXXXX";
   const int fd = mkstemp(tmpl);
@@ -85,12 +81,9 @@ inline std::string makeRecordPrefix(const char* tag) {
   return tmpl;
 }
 
-// writeFakeCliScript's twin that also RECORDS what the backend handed it:
-// stdin goes to `<record_prefix>.stdin`, and each argv entry to
-// `<record_prefix>.argv`, one per line. POSIX only -- the offline tests that
-// pin what a turn sends (the composed payload, the instructions) need no
-// Windows twin, because composePayload and the instruction strings are
-// platform-independent.
+// writeFakeCliScript's twin that also RECORDS what the backend handed it: stdin to
+// `<record_prefix>.stdin`, each argv entry to `<record_prefix>.argv`, one per line. POSIX only: the
+// payload and instruction strings are platform-independent, so no Windows twin is needed.
 inline std::string writeRecordingCliScript(
     const std::vector<std::string>& stdout_lines, int exit_code, const std::string& record_prefix) {
   char tmpl[] = "/tmp/pj_assistant_fake_cli_XXXXXX";
@@ -117,17 +110,15 @@ inline std::string writeRecordingCliScript(
   return tmpl;
 }
 
-// Removes a fake CLI writeFakeCliScript created. POSIX's is a single file;
-// kept for parity with the Windows overload below so call sites never need
-// an #ifdef of their own.
+// Removes a fake CLI writeFakeCliScript created; parity with the Windows overload below keeps call
+// sites free of #ifdefs.
 inline void removeFakeCli(const std::string& cli_path) {
   if (!cli_path.empty()) {
     unlink(cli_path.c_str());
   }
 }
 
-// The listings every backend-payload test (claude_smoke_test.cpp,
-// codex_backend_test.cpp) hands its turns.
+// The listings every backend-payload test hands its turns.
 inline constexpr const char* kTestFeatures = "PlotJuggler features (test):\n- one";
 inline constexpr const char* kTestCatalog = "Loaded data: nothing is loaded yet.";
 
@@ -139,8 +130,8 @@ inline TurnTools payloadTestTools() {
   return tools;
 }
 
-// Removes the fake CLIs and writeRecordingCliScript's record files when the
-// test leaves scope, including through an early ASSERT_* return.
+// Removes the fake CLIs and record files when the test leaves scope, including through an early
+// ASSERT_* return.
 class RecordingCliCleanup {
  public:
   RecordingCliCleanup(std::vector<std::string> clis, std::string record_prefix)
@@ -164,15 +155,10 @@ class RecordingCliCleanup {
 
 #elif defined(_WIN32)
 
-// Windows has no shell-script CLI stand-in (subprocess.hpp's runProcess
-// refuses anything but a native .exe — see its Windows contract), so the
-// fake CLI here is a COPY of tests/support/child_helper.cpp's own binary
-// (ASSISTANT_CHILD_HELPER, built as its own CMake target) under a fresh
-// name, paired with a `<copy>.exe.script` sidecar file: child_helper checks
-// for that file before any normal mode dispatch (see its own header
-// comment) and, when present, drains stdin then replays the script's first
-// line as its exit code and every later line as an stdout line — exactly
-// the behavior the POSIX shell-script version above gives.
+// Windows has no shell-script CLI stand-in (runProcess refuses anything but a native .exe), so the
+// fake CLI is a COPY of child_helper.exe (ASSISTANT_CHILD_HELPER) under a fresh name, paired with a
+// `<copy>.exe.script` sidecar: child_helper checks for it before mode dispatch and, when present,
+// drains stdin then replays line 1 as the exit code and later lines as stdout, like the POSIX script.
 inline std::string writeFakeCliScript(const std::vector<std::string>& stdout_lines, int exit_code) {
   namespace fs = std::filesystem;
   std::error_code ec;
@@ -216,11 +202,8 @@ inline std::string writeFakeCliScript(const std::vector<std::string>& stdout_lin
   return pathToUtf8(exe_path);
 }
 
-// Removes the copy of child_helper.exe AND its `.script` sidecar — a bare
-// `remove(exe)` would leave the sidecar behind for another fake CLI's random
-// name to never collide with, but there is no reason to keep it around.
-// Failures are ignored, like POSIX's unlink() above: this only ever runs in
-// a temp directory that gets cleaned up by the OS regardless.
+// Removes the copy of child_helper.exe AND its `.script` sidecar. Failures are ignored, like
+// POSIX's unlink(): this runs in a temp directory the OS cleans anyway.
 inline void removeFakeCli(const std::string& cli_path) {
   if (cli_path.empty()) {
     return;
@@ -235,15 +218,11 @@ inline void removeFakeCli(const std::string& cli_path) {
 
 #endif  // POSIX / Windows
 
-// The shared body of ClaudeSmoke.ListTopicsThroughMcp and
-// CodexSmoke.ListTopicsThroughMcp: drive one live turn asking the model to
-// call list_topics on the PlotJuggler `endpoint` points at, and check the
-// call ran and PlotJuggler answered it without an error (a ToolResult that is
-// not tool_failed; the ToolActivity row is emitted before the call executes).
-// Each call site keeps its own ASSISTANT_*_SMOKE env-var gate and backend
-// construction (the CLI path override differs per backend) and hands the
-// already-built backend here. `label` names the backend in the failure
-// message only ("Claude"/"Codex").
+// Shared body of ClaudeSmoke/CodexSmoke.ListTopicsThroughMcp: drives one live turn asking the model
+// to call list_topics on the PlotJuggler `endpoint` points at, and checks the call ran and was
+// answered without error (a ToolResult that is not tool_failed; ToolActivity is emitted before the
+// call executes). Call sites keep their own env-var gate and backend construction. `label` names the
+// backend in the failure message only.
 inline void runListTopicsSmoke(LlmBackend& backend, const PJ::sdk::McpEndpoint& endpoint, const char* label) {
   std::vector<BackendEvent> events;
   std::mutex mu;

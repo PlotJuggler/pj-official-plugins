@@ -1,14 +1,5 @@
-/**
- * @file mcap_dataset_metadata_test.cpp
- * @brief Tests for the dataset-metadata extraction (mcap_dataset_metadata.hpp).
- *
- * Fixtures are real MCAP files written to a temp path with mcap::McapWriter,
- * then read back through McapReader — the same reader machinery importData()
- * uses. Covers: PJ capture+recording records present (descriptor recovered
- * from the pj.source.v1 identity framing), repeated generic metadata names,
- * files with no metadata at all, and a malformed pj.capture manifest
- * (diagnostic, extraction still succeeds).
- */
+// Fixtures are real MCAP files written to a temp path with mcap::McapWriter and read back through McapReader, the
+// machinery importData() uses.
 
 #define MCAP_IMPLEMENTATION
 #include "../mcap_dataset_metadata.hpp"
@@ -30,8 +21,7 @@ using PJ::McapMetadata::FileFacts;
 using PJ::McapMetadata::mergeFileFacts;
 using PJ::McapMetadata::parseIdentityFraming;
 
-// RAII temp MCAP path; the writer needs a real file for the reader's
-// positioned-read data source.
+// RAII temp MCAP path; the reader's positioned-read data source needs a real file.
 struct TempMcap {
   std::string path;
 
@@ -62,7 +52,7 @@ mcap::Metadata makeRecord(std::string name, std::initializer_list<std::pair<std:
   return record;
 }
 
-// Writes one message on one channel plus the given metadata records.
+// One message on one channel plus the given metadata records.
 void writeFixture(const std::string& path, const std::vector<mcap::Metadata>& records) {
   mcap::McapWriter writer;
   mcap::McapWriterOptions options("");
@@ -137,7 +127,6 @@ TEST(McapDatasetMetadata, CaptureAndRecordingParsed) {
   const nlohmann::json document = extractFrom(fixture.path, &diagnostics);
   EXPECT_TRUE(diagnostics.empty()) << diagnostics.front();
 
-  // File facts from the summary statistics.
   EXPECT_EQ(document["file"]["message_count"], 1);
   EXPECT_EQ(document["file"]["channel_count"], 1);
   EXPECT_EQ(document["file"]["message_start_time_ns"], 1000);

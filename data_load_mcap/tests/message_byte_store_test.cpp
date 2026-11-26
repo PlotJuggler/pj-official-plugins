@@ -1,30 +1,5 @@
-/**
- * @file message_byte_store_test.cpp
- * @brief Tests for mcap::MessageByteStore — the hot/cold lazy message-byte layer
- *        on top of the vendored ParallelReader.
- *
- * The cold path opens the file by path, so these tests write a real temporary
- * MCAP file rather than using an in-memory buffer.
- *
- * Coverage:
- *   - hot hit  : fetcher invoked during iteration returns a message-sized copy
- *                with equal bytes (no re-decompress) whose anchor pins only the
- *                message, never the source chunk.
- *   - cold hit : fetcher invoked after the reader is destroyed re-decompresses
- *                and returns equal bytes (covers every message, uncompressed,
- *                lz4 and zstd chunks, and duplicate-(channel,logTime) messages
- *                in one chunk, told apart by their record offset).
- *   - wrong offset: a within-chunk offset that is not the fetcher's own Message
- *                record (mid-record, another message, past the chunk) is empty.
- *   - message-sized copy: two cold reads of the same message yield independent
- *                buffers (not a shared chunk buffer).
- *   - tiny LRU : cold reads stay correct under heavy eviction.
- *   - removed file: cold open fails -> empty, no retry storm.
- *   - source teardown: a fetcher still works after its MessageByteStore owner
- *                is destroyed, matching PJ4's DataSourceHandle lifetime.
- *   - concurrency: many cold reads from several threads stay correct.
- *   - init early-warning: a non-readable path reports once via the callback.
- */
+// mcap::MessageByteStore: the hot/cold lazy message-byte layer on top of the vendored ParallelReader. The cold path
+// opens the file by path, so these tests write a real temporary MCAP file instead of using an in-memory buffer.
 
 #define MCAP_IMPLEMENTATION
 #include <gtest/gtest.h>
@@ -54,7 +29,7 @@
 
 namespace {
 
-// One message's ground truth + the fetcher bound to it during iteration.
+// One message's ground truth and the fetcher bound to it during iteration.
 struct Item {
   mcap::ChannelId channel_id = 0;
   mcap::Timestamp log_time = 0;
@@ -71,11 +46,9 @@ std::vector<uint8_t> makePayload(unsigned channel, unsigned seq) {
   return std::vector<uint8_t>(s.begin(), s.end());
 }
 
-// Writes a many-chunk fixture for the residency test: `count` messages of
-// `payload_bytes` each on one channel, with a small chunkSize so each chunk
-// holds only a few messages. The whole decompressed size deliberately dwarfs the
-// in-flight byte budget, so a retention regression shows up as inflated peak
-// residency. Returns void (uses gtest ASSERTs) like writeFixture().
+// Many-chunk fixture for the residency test: `count` messages of `payload_bytes` each on one channel, a small chunkSize
+// so each chunk holds few messages. The decompressed size deliberately dwarfs the in-flight byte budget, so a retention
+// regression shows up as inflated peak residency.
 void writeManyChunkFixture(const std::string& path, size_t count, size_t payload_bytes) {
   mcap::McapWriter writer;
   mcap::McapWriterOptions options("");
@@ -163,11 +136,9 @@ class MessageByteStoreTest : public ::testing::Test {
     writer.close();
   }
 
-  // Iterate via the parallel reader, building a fetcher per message. If
-  // `invoke_hot` is true, also invokes each fetcher immediately (hot path) and
-  // checks it returns a distinct buffer with equal bytes. Returns the items (fetchers valid for cold use
-  // after the reader is destroyed). The reader/source live only for the
-  // duration of this call.
+  // Iterates via the parallel reader, building a fetcher per message. With `invoke_hot`, also invokes each fetcher
+  // immediately (hot path) and checks it returns a distinct buffer with equal bytes. The returned fetchers stay valid
+  // for cold use after the reader, which lives only for this call, is destroyed.
   std::vector<Item> collect(mcap::MessageByteStore& store, bool invoke_hot) {
     std::vector<Item> items;
     mcap::ConcurrentFileReader source;
@@ -441,12 +412,10 @@ TEST_F(OversizedUncompressedChunkTest, IndexedReaderRejectsTheChunk) {
   EXPECT_EQ(problems.front().code, mcap::StatusCode::InvalidRecord) << problems.front().message;
 }
 
-// Regression: a retained hot ByteView must NOT keep its source chunk resident.
-// One MCAP chunk backs ~100 messages, so if the hot anchor pinned the chunk, a
-// per-message object topic present in every chunk (e.g. /tf) would pin the whole
-// decompressed file. We hold the first message's hot view to the end of
-// iteration and assert its source chunk has been freed (weak handle expired)
-// while the copied bytes stay valid.
+// A retained hot ByteView must NOT keep its source chunk resident. One MCAP chunk backs ~100 messages, so if the hot
+// anchor pinned the chunk, a per-message object topic present in every chunk (e.g. /tf) would pin the whole
+// decompressed file. The first message's hot view is held to the end of iteration; its source chunk must have been
+// freed (weak handle expired) while the copied bytes stay valid.
 TEST_F(MessageByteStoreTest, HotViewDoesNotPinSourceChunk) {
   mcap::MessageByteStore store;
   mcap::ConcurrentFileReader source;
@@ -488,13 +457,10 @@ TEST_F(MessageByteStoreTest, HotViewDoesNotPinSourceChunk) {
   EXPECT_EQ(0, std::memcmp(held.data, expected.data(), held.size)) << "the copy outlives its source chunk";
 }
 
-// Resource invariant — the scaled regression guard for the chunk-pinning bug.
-// Retaining EVERY message's bytes (as the host does for object topics) must not
-// grow resident decompressed memory toward the whole file. With the bug each
-// retained hot view pinned its chunk, so peak residency equalled the entire
-// decompressed dataset; with the fix it tracks the in-flight byte budget. We
-// assert on the reader's own peak-residency stat — which nothing else does — and
-// that no retained view keeps a chunk alive.
+// Scaled guard for the chunk-pinning invariant: retaining EVERY message's bytes (as the host does for object topics)
+// must not grow resident decompressed memory toward the whole file. If each retained hot view pinned its chunk, peak
+// residency would equal the entire decompressed dataset; it must track the in-flight byte budget. Asserts on the
+// reader's own peak-residency stat and that no retained view keeps a chunk alive.
 TEST_F(MessageByteStoreTest, RetainingEveryMessageKeepsResidencyBounded) {
   const std::string big = path_ + ".big";
   writeManyChunkFixture(big, /*count=*/200, /*payload_bytes=*/4096);
@@ -783,8 +749,8 @@ TEST_F(MessageByteStoreTest, FetcherSurvivesStoreDestroyed) {
   ASSERT_EQ(before.size, expected.size());
   EXPECT_EQ(0, std::memcmp(before.data, expected.data(), before.size));
 
-  // PJ4 destroys the source plugin handle after import, but ObjectStore lazy
-  // closures can be pulled later. The fetcher must keep the cold state alive.
+  // The host destroys the source plugin handle after import, but ObjectStore lazy closures can be pulled later: the
+  // fetcher must keep the cold state alive.
   store.reset();
   mcap::ByteView after = fetcher();
   ASSERT_NE(after.data, nullptr) << "fetcher must survive source teardown";

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Transform Editor toolbox plugin for PlotJuggler 4.
-// One editor for derived series and 2D/3D objects (the PJ3 "Custom Series" editor, extended): the user
-// drops series or object topics as inputs, writes a Luau or Python function, previews it and creates it.
-// A recipe over series installs a per-sample transform; one with object inputs installs an on-demand
-// recipe whose outputs a trial run infers. Both go through pj.data_processors.v1, so the plugin carries no
-// script runtime; previews are EPHEMERAL recipes the host removes with the panel. Series need SDK >= 0.28,
-// object inputs the 0.37 and 0.38 surfaces (typed requests, catalog snapshot v2).
+// Transform Editor toolbox: one editor for derived series and 2D/3D objects. The user drops series or object
+// topics as inputs, writes a Luau or Python function, previews it and creates it. A recipe over series
+// installs a per-sample transform; one with object inputs installs an on-demand recipe whose outputs a trial
+// run infers. Both go through pj.data_processors.v1, so the plugin carries no script runtime; previews are
+// EPHEMERAL recipes the host removes with the panel. Series need SDK >= 0.28, object inputs the 0.37 and 0.38
+// surfaces (typed requests, catalog snapshot v2).
 
 #include <algorithm>
 #include <cctype>
@@ -52,10 +51,6 @@
 #include "transform_editor_help_ui.hpp"
 
 namespace {
-
-// ---------------------------------------------------------------------------
-// Snippet
-// ---------------------------------------------------------------------------
 
 // One input a library function expects: the variable its body reads and the builtin object type
 // ("kPointCloud", ...) that variable holds.
@@ -123,10 +118,9 @@ Snippet snippetFromJson(const nlohmann::json& item) {
   return s;
 }
 
-// Write the snippet library as a JSON array to `path`, creating parent dirs.
-// Returns false if the directory can't be created or the file can't be written
-// (callers that surface Export feedback rely on this; autosave ignores it).
-// Shared by the fixed-location persistence and the user-chosen Export target.
+// Write the snippet library as a JSON array to `path`, creating parent dirs. False if the directory can't be
+// created or the file can't be written (Export feedback relies on this; autosave ignores it). Shared by the
+// fixed-location persistence and the Export target.
 bool saveSnippetsToPath(const std::vector<Snippet>& snippets, const std::filesystem::path& path) {
   try {
     std::filesystem::create_directories(path.parent_path());
@@ -260,7 +254,7 @@ return depth:to_point_cloud(camera_info, {step = step, max_depth = max_depth}))l
   };
 }
 
-// Default snippets ported from PJ3's default.snippets.xml, then the object ones.
+// Default snippets (PJ3's default.snippets.xml), then the object ones.
 std::vector<Snippet> defaultSnippets() {
   std::vector<Snippet> snippets = {
       {"backward_difference_derivative", "prevX = 0\nprevY = 0\nis_first = true",
@@ -293,11 +287,9 @@ std::vector<Snippet> defaultSnippets() {
   return snippets;
 }
 
-// Read a snippet library (JSON array) from `path`. Returns the parsed snippets
-// (possibly empty, for a "[]" library), or nullopt when the file cannot be
-// opened or does not hold a JSON array. The nullopt vs empty distinction lets
-// callers tell "no readable library" apart from "an explicitly empty one".
-// Shared by the fixed-location load and the user-chosen Import source.
+// Read a snippet library (JSON array) from `path`: the parsed snippets (empty for "[]"), or nullopt when the
+// file cannot be opened or does not hold a JSON array, so callers can tell "no readable library" from "an
+// explicitly empty one". Shared by the fixed-location load and the Import source.
 std::optional<std::vector<Snippet>> loadSnippetsFromPath(const std::filesystem::path& path) {
   std::ifstream in(path);
   if (!in) {
@@ -319,10 +311,9 @@ std::optional<std::vector<Snippet>> loadSnippetsFromPath(const std::filesystem::
   return result;
 }
 
-// The persisted library, or the built-in defaults when none can be read yet —
-// a missing, unreadable, or corrupt file all fall back to the defaults (so a
-// transient read failure never silently presents an empty library). A persisted library
-// written before the object functions existed gets the ones it lacks appended by name.
+// The persisted library, or the built-in defaults when none can be read yet (a missing, unreadable or corrupt
+// file all fall back, so a transient read failure never presents an empty library). Object functions missing
+// from a persisted library are appended by name.
 std::vector<Snippet> loadSnippetsFromDisk() {
   if (auto loaded = loadSnippetsFromPath(snippetLibraryPath())) {
     for (auto& builtin : objectDefaultSnippets()) {
@@ -444,10 +435,6 @@ std::string paramsError(const std::string& text) {
   }
   return {};
 }
-
-// ---------------------------------------------------------------------------
-// Readable summary of an on-demand evaluation report
-// ---------------------------------------------------------------------------
 
 std::string groupDigits(std::uint64_t value) {
   std::string digits = std::to_string(value);
@@ -618,10 +605,6 @@ std::string snippetInputsText(const std::vector<SnippetInput>& inputs) {
   return text;
 }
 
-// ---------------------------------------------------------------------------
-// Preview chart
-// ---------------------------------------------------------------------------
-
 // (absolute ns, value) samples of one preview curve.
 using RawSamples = std::vector<std::pair<std::int64_t, double>>;
 
@@ -739,10 +722,6 @@ std::vector<PJ::ChartSeries> toChartSeries(
   return series;
 }
 
-// ---------------------------------------------------------------------------
-// TransformEditorDialog
-// ---------------------------------------------------------------------------
-
 class TransformEditorDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
@@ -837,8 +816,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     wd.setChecked("textOutputCheck", text_output_);
     wd.setEnabled("textOutputCheck", !edit_mode_);
 
-    // Function Library sub-panel (cloned from PJ3's buttonLibraryBox dialog).
-    // One-shot open/close commands, then live population while it is open.
+    // Function Library sub-panel: one-shot open/close commands, then live population while it is open.
     if (emit_open_library_) {
       wd.requestSubPanel(kFunctionLibraryUi);
       emit_open_library_ = false;
@@ -847,8 +825,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.closeSubPanel();
       emit_close_library_ = false;
     }
-    // Save-current-function dialogs (PJ3 parity). Name prompt is prefilled with the
-    // current name; the overwrite warning only appears for an existing name.
+    // Save-current-function dialogs: the name prompt is prefilled with the current name; the overwrite
+    // warning only appears for an existing name.
     if (emit_save_name_dialog_) {
       wd.setText("saveFunctionName", pending_save_name_);
       wd.requestSubDialog(kSaveNameUi);
@@ -892,9 +870,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       wd.setCodeContent("previewPlainText", combinedSnippetText(library_selected_))
           .setCodeLanguage("previewPlainText", "lua");
     }
-    // Import / Export library buttons: the host drives the native file choosers.
-    // Import opens an "open" dialog and Export a "save as"; both report back via
-    // onFileSelected, routed by widget name. Complements the library browser above.
+    // Import / Export library buttons: the host drives the native file choosers and reports back via
+    // onFileSelected, routed by widget name.
     wd.setFilePicker("buttonLoadFunctions", "", "Snippet library (*.json)", "Import snippet library");
     wd.setSaveFilePicker("buttonSaveFunctions", "", "Snippet library (*.json)", "Export snippet library", "json");
 
@@ -1003,9 +980,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     // Missing affix and empty inputs gate via the disabled button, not the overlay.
     wd.setEnabled("pushButtonCreateBatch", batch_term.empty() && !batch_sources_.empty() && !batch_suffix_.empty());
     wd.setButtonText("pushButtonCreateBatch", edit_mode_ ? "Modify Time Series" : "Create New Time Series");
-    // Lock the identity while editing so a rename can't fork a new series (PJ3
-    // parity). Batch: the sources + prefix/suffix that form the name. setEnabled(false) is
-    // cosmetic for drops — see onItemsDropped.
+    // Lock the identity while editing so a rename can't fork a new series. Batch: the sources + prefix/suffix
+    // that form the name. setEnabled(false) is cosmetic for drops, see onItemsDropped.
     wd.setEnabled("tableBatchSources", !edit_mode_);
     // Each Clear tracks its own list: nothing to clear, nothing to press. Batch
     // also follows the edit lock, matching its per-row trash.
@@ -1133,7 +1109,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       batch_dirty_ = true;
       return true;
     }
-    // Function library box (PJ3's buttonLibraryBox): open the interactive sub-panel.
+    // Function library box: open the interactive sub-panel.
     if (name == "buttonLibraryBox") {
       library_open_ = true;
       emit_open_library_ = true;
@@ -1154,9 +1130,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       library_open_ = false;
       return true;
     }
-    // Save current function (PJ3 parity): prompt for a name (prefilled with the
-    // current one), then warn before overwriting an existing entry. Opens the
-    // name-prompt modal; the actual save happens on subDialogAccepted.
+    // Save current function: prompt for a name (prefilled with the current one), then warn before overwriting
+    // an existing entry. The actual save happens on subDialogAccepted.
     if (name == "buttonSaveCurrent") {
       pending_save_name_ = output_name_;
       prompt_ = Prompt::SaveName;
@@ -1251,11 +1226,10 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (action != PendingCreate::None && pending_close_) {
       return true;
     }
-    // Rebuild immediately after an editor change. Browser builds sample an
-    // otherwise-live source at 1 Hz instead of replaying the complete Luau
-    // transform on every 20 Hz panel tick; native builds retain their existing
-    // every-tick live preview. Streaming output still advances in the host on
-    // every source commit—this cadence only rebuilds the preview snapshot.
+    // Rebuild immediately after an editor change. Browser builds sample an otherwise-live source at 1 Hz
+    // instead of replaying the complete Luau transform on every 20 Hz panel tick; native builds rebuild every
+    // tick. Streaming output still advances in the host on every source commit: this cadence only rebuilds
+    // the preview snapshot.
     ++preview_refresh_ticks_;
     if (preview_dirty_ || preview_refresh_ticks_ >= kPreviewRefreshTickInterval) {
       preview_dirty_ = false;
@@ -1465,7 +1439,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       return true;
     }
     if (widget_name == "buttonSaveFunctions") {
-      // Export: write the current library to the chosen file.
       const bool ok = saveSnippetsToPath(snippets_, PJ::utf8_path::pathFromUtf8(path));
       io_status_ =
           ok ? "Exported " + std::to_string(snippets_.size()) + " function(s)." : "Could not write the selected file.";
@@ -1487,7 +1460,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     cfg["sources"] = sources_;
     cfg["primary_index"] = primaryIndex();
     cfg["language"] = language_;  // restore the Lua/Python radio on Modify
-    cfg["mode"] = "single";       // reopen on the Single tab when modified (PJ3 parity)
+    cfg["mode"] = "single";       // reopen on the Single tab when modified
     // Back-compat mirror: an older editor reads source_series + extra_sources, so
     // expose the primary as the source and the rest as extras in order.
     cfg["source_series"] = primarySource();
@@ -1495,8 +1468,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (textOutput()) {
       cfg["text_output"] = true;  // absent = numbers
     }
-    // The on-demand form fields ride along only for that kind, so a transform's saved state
-    // keeps exactly today's shape.
+    // The on-demand form fields ride along only for that kind, so a transform's saved state keeps the shape
+    // older editors read.
     if (isOnDemand()) {
       cfg["kind"] = "on_demand";
       cfg["vars"] = variableNames();
@@ -1506,9 +1479,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     return cfg.dump();
   }
 
-  // Build the editor config for ONE batch-created series so that editing it later
-  // reopens the BATCH tab (PJ3 parity), repopulated with this series' source,
-  // prefix/suffix, global, body and language.
+  // Build the editor config for ONE batch-created series so that editing it later reopens the BATCH tab,
+  // repopulated with this series' source, prefix/suffix, global, body and language.
   static std::string makeBatchConfig(
       const std::string& name, const std::string& global, const std::string& body, const std::string& source,
       const std::string& language, const std::string& suffix, bool use_prefix) {
@@ -1546,8 +1518,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
       nlohmann::json state = cfg[kEditorParamsKey];
       cfg = std::move(state);
     }
-    // A batch-created series reopens the BATCH tab (PJ3 parity), repopulated with
-    // its source, prefix/suffix, global, body and language.
+    // A batch-created series reopens the BATCH tab, repopulated with its source, prefix/suffix, global, body
+    // and language.
     if (cfg.value("mode", std::string{}) == "batch") {
       batch_global_code_ = cfg.value("global_code", std::string{});
       batch_function_body_ = cfg.value("function_body", std::string{});
@@ -1603,9 +1575,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
         }
       }
     }
-    // Loading a populated config = editing an existing series → MODIFY mode: the
-    // button reads "Modify" and the name is locked so the user can't accidentally
-    // fork a new series (PJ3 parity: editExistingPlot disables nameLineEdit).
+    // Loading a populated config means editing an existing series: MODIFY mode, where the button reads
+    // "Modify" and the name is locked so the user can't accidentally fork a new series.
     edit_mode_ = !output_name_.empty();
     ++form_revision_;  // the sources, Vars, body and params were all replaced
     return true;
@@ -1680,10 +1651,9 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     return std::any_of(snippets_.begin(), snippets_.end(), [&](const Snippet& s) { return s.name == snippet_name; });
   }
 
-  // Save the current editor contents under `snippet_name` (insert or overwrite),
-  // then persist the library to disk. The name prompt + overwrite warning are
-  // handled by the caller (the save state machine), mirroring PJ3. A function that reads objects
-  // is saved as an object function with the Var and type of each object input.
+  // Save the current editor contents under `snippet_name` (insert or overwrite), then persist the library to
+  // disk. The name prompt and overwrite warning are the caller's (the save state machine). A function that
+  // reads objects is saved as an object function with the Var and type of each object input.
   Snippet currentAsSnippet(const std::string& snippet_name) const {
     Snippet sn;
     sn.name = snippet_name;
@@ -1736,9 +1706,8 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     return out;
   }
 
-  // Render the combined code of the given library functions (globals first, then
-  // the function body) — used both for the box preview and for what Use loads.
-  // Multiple selections are concatenated in order, mirroring PJ3's combine.
+  // Render the combined code of the given library functions (globals first, then the function body), used
+  // both for the box preview and for what Use loads. Multiple selections are concatenated in order.
   std::string combinedSnippetText(const std::vector<std::string>& names) const {
     std::string globals;
     std::string body;
@@ -1780,11 +1749,10 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     return {};
   }
 
-  // Load the selected library function(s) into the Single-tab editor (combined
-  // globals + body), then re-validate. Mirrors PJ3's "Use" / double-click. For a function that
-  // reads objects, each input it declares is matched with the first input of that type not yet bound and the
-  // function's text is rewritten to read that input's Var (the Vars stay as they are); an input with no match is
-  // named on the status line.
+  // Load the selected library function(s) into the Single-tab editor (combined globals + body), then
+  // re-validate. For a function that reads objects, each input it declares is matched with the first input of
+  // that type not yet bound and the function's text is rewritten to read that input's Var (the Vars stay as
+  // they are); an input with no match is named on the status line.
   void loadSnippetsIntoEditor(const std::vector<std::string>& names) {
     if (names.empty()) {
       return;
@@ -2047,8 +2015,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   void setCreateError(std::string error) {
     create_error_ = std::move(error);
   }
-  /// Ask the host to close this panel (e.g. after a successful Create — matches PJ3,
-  /// where creating the series closes the editor). Honoured on the next widget_data().
+  /// Ask the host to close this panel (e.g. after a successful Create). Honoured on the next widget_data().
   void requestClose() {
     pending_close_ = true;
   }
@@ -2085,7 +2052,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   bool batchUsePrefix() const {
     return batch_use_prefix_;
   }
-  // --- on-demand form ---
   RecipeKind kind() const {
     return derived().kind;
   }
@@ -2628,7 +2594,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::string library_search_;                 // current search-filter text
   std::vector<std::string> library_selected_;  // names of the rows selected in the box
 
-  // "Save current function" flow (PJ3 parity): name prompt -> overwrite warning.
+  // "Save current function" flow: name prompt, then overwrite warning.
   std::string pending_save_name_;          // name being saved (from the prompt)
   bool emit_save_name_dialog_ = false;     // one-shot: open the name prompt
   bool emit_save_confirm_dialog_ = false;  // one-shot: open the overwrite warning
@@ -2652,10 +2618,6 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
   std::function<void()> on_validate_batch_;
   std::vector<PJ::ChartSeries> preview_series_;
 };
-
-// ---------------------------------------------------------------------------
-// TransformEditorToolbox
-// ---------------------------------------------------------------------------
 
 class TransformEditorToolbox : public PJ::ToolboxPluginBase {
  public:
@@ -2792,7 +2754,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (runtimeHostBound()) {
       runtimeHost().notifyDataChanged();
     }
-    dialog_.requestClose();  // PJ3 parity: creating the series closes the editor.
+    dialog_.requestClose();  // creating the series closes the editor.
   }
 
   // True when `name` is already one of the editor's OWN recipes (installed with its state in the
@@ -3135,9 +3097,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     return targets;
   }
 
-  // Batch create: apply the batch function to EVERY input series, naming each
-  // output with the prefix/suffix (mirrors the native panel's batch path). One
-  // transform per source; each output is surfaced in Custom Series via on_data_changed.
+  // Batch create: apply the batch function to EVERY input series, naming each output with the prefix/suffix.
+  // One transform per source; each output is surfaced in Custom Series via on_data_changed.
   void onSaveBatch() {
     const std::string& body = dialog_.batchFunctionBody();
     const std::string& global = dialog_.batchGlobalCode();
@@ -3172,8 +3133,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
           derived_recipes::buildTransformScript(name, name, global, body, 0, dialog_.batchLanguage()).script;
       std::vector<std::string_view> ins{source_display};
       std::vector<std::string_view> outs{name};
-      // Persist this series' editor state (single-tab shape) so the Edit (pencil)
-      // button can Modify it just like a single-created series — PJ3 parity.
+      // Persist this series' editor state (single-tab shape) so the Edit (pencil) button can Modify it just
+      // like a single-created series.
       const std::string editor_params = TransformEditorDialog::makeBatchConfig(
           name, global, body, source_display, dialog_.batchLanguage(), suffix, use_prefix);
       auto status = dp_view_.createTransform(
@@ -3191,7 +3152,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     if (runtimeHostBound()) {
       runtimeHost().notifyDataChanged();
     }
-    dialog_.requestClose();  // PJ3 parity: creating the series closes the editor.
+    dialog_.requestClose();  // creating the series closes the editor.
   }
 
   // The preview recipe of a trial that inferred its outputs: an EPHEMERAL on_demand recipe (it evaluates at
@@ -3253,8 +3214,8 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     showSeriesOrReadout(preview_recipe_outputs_, build);
   }
 
-  // The object outputs of the installed preview recipe in the scene view embedded in the editor. One view
-  // for now, of the kind collectSceneTargets picks.
+  // The object outputs of the installed preview recipe in the scene view embedded in the editor. One view, of
+  // the kind collectSceneTargets picks.
   void showEmbeddedScene(
       const PJ::sdk::DataProcessorRequest& request, const std::vector<std::string>& created,
       std::optional<PJ::sdk::DataSourceHandle> anchor) {
@@ -3981,8 +3942,7 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
       dialog_.setValidationError(msg);
     }
 
-    // Ghost (original): faded blue + dashed, distinct from the solid result curves
-    // — same styling as the native TransformEditorPanel. Color hex is #AARRGGBB.
+    // Ghost (original): faded blue + dashed, distinct from the solid result curves. Color hex is #AARRGGBB.
     std::vector<PJ::ChartSeries> series;
     series.push_back({source, toChartPoints(ghost_raw, t0), "#5A4488ff", /*dashed=*/true});
     // One solid curve per declared output, cycling the palette so parallel MIMO outputs stay visually
@@ -3993,11 +3953,10 @@ class TransformEditorToolbox : public PJ::ToolboxPluginBase {
     dialog_.setPreviewSeries(std::move(series));
   }
 
-  // Check the BATCH function via the SDK's checkScript — the host compiles
-  // it and runs a synthetic test point, with NO node/topic created (unlike the old
-  // throwaway-transform approach). Drives the source-list error overlay; called
-  // only when the batch fields changed, not every tick. An unchecked function is
-  // only noted: Create compiles it again and reports a refusal.
+  // Check the BATCH function via the SDK's checkScript: the host compiles it and runs a synthetic test point,
+  // with NO node/topic created. Drives the source-list error overlay; called only when the batch fields
+  // changed, not every tick. An unchecked function is only noted: Create compiles it again and reports a
+  // refusal.
   void validateBatch() {
     if (!dp_view_.valid()) {
       return;

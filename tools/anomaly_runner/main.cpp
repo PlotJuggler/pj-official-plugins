@@ -1,21 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// anomaly_runner — headless CLI for the Anomaly Detection pipeline (Task F).
-//
-// Loads a data file through a PlotJuggler DataSource plugin (no GUI, no
-// pj_datastore: a hand-rolled in-memory capture write-host receives the decoded
-// series), runs the SAME Lua detection rule the GUI editor uses (anomaly_core),
-// and emits a structured JSON report (pass/fail + anomalies + severities). The
-// process exit code is 0 on pass and 1 on fail, so it drops straight into CI /
-// data pipelines.
-//
-//   anomaly_runner --data run.csv --script "Spike (point)" --source anomaly_demo/value
-//   anomaly_runner --data run.csv --script my_rule.lua --source topic/field --out report.json
-//   anomaly_runner --list-functions
-//
-// Phase 3a handles DIRECT_INGEST sources (CSV); MCAP (DELEGATED_INGEST) is the
-// next step (it additionally wires a MessageParser plugin into push_message).
+// anomaly_runner: headless CLI. Loads a data file through a PlotJuggler DataSource plugin (an in-memory
+// capture write-host receives the decoded series), runs the same Lua rule the GUI uses (anomaly_core) and
+// emits a JSON report. Exit code: 0 pass, 1 fail (see the README for the rest).
 
 #include <cstdint>
 #include <cstring>
@@ -76,11 +64,8 @@ std::optional<double> scalarToDouble(const PJ_scalar_value_t& v) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// CaptureHost — an in-memory DataSource write-host. It implements the C-ABI the
-// datasource plugin pushes into, buffering each (topic/field) into an
-// anomaly_core::SeriesAccessor. SDK-only: no pj_datastore.
-// ---------------------------------------------------------------------------
+// CaptureHost: an in-memory DataSource write-host implementing the C ABI the plugin pushes into. Buffers
+// each topic/field into an anomaly_core::SeriesAccessor.
 
 class CaptureHost {
  public:
@@ -129,7 +114,6 @@ class CaptureHost {
   std::map<std::uint32_t, std::string> topic_names_;
   std::uint32_t next_topic_id_ = 1;
 
-  // --- Delegated ingest (MCAP): parser registry ---
   struct Binding {
     std::unique_ptr<PJ::MessageParserHandle> handle;
     std::unique_ptr<PJ::sdk::testing::ParserWriteRecorder> recorder;
@@ -154,8 +138,7 @@ class CaptureHost {
     return "";
   }
 
-  // Load (cached) the parser for an encoding, create a handle bound to a fresh
-  // recorder, bind the schema/config, and remember it under a new binding id.
+  // Loads (cached) the parser for an encoding and binds a handle to a fresh recorder under a new binding id.
   bool doEnsureParserBinding(const PJ_parser_binding_request_t* req, PJ_parser_binding_handle_t* out, PJ_error_t*) {
     const std::string encoding = viewToString(req->parser_encoding);
     const std::string so = parserSoForEncoding(encoding);
@@ -195,8 +178,6 @@ class CaptureHost {
     return true;
   }
 
-  // Fetch the message bytes, parse them into the binding's recorder, and drain the
-  // decoded numeric fields into our (topic/field) series buffers.
   bool doPushMessage(PJ_parser_binding_handle_t binding, int64_t ts, PJ_message_data_fetcher_t fetch) {
     auto it = bindings_.find(binding.id);
     if (it == bindings_.end()) {
@@ -216,10 +197,9 @@ class CaptureHost {
       return false;
     }
     b.recorder->rows().clear();
-    // Forward the real per-message host timestamp (MCAP log-time, etc.). Parsers
-    // with their own embedded stamp override it; stampless parsers (json/protobuf)
-    // use it verbatim, so hardcoding 0 here collapsed every headless sample to
-    // t=0 and diverged from the GUI (which forwards the same timestamp).
+    // Forward the real per-message host timestamp (MCAP log-time, etc.): stampless parsers (json/protobuf)
+    // use it verbatim, parsers with their own embedded stamp override it. Passing 0 would put every sample
+    // at t=0.
     const auto st = b.handle->parse(PJ::Timestamp{ts}, PJ::Span<const uint8_t>(payload.data, payload.size));
     if (payload.anchor.release != nullptr) {
       payload.anchor.release(payload.anchor.ctx);
@@ -257,7 +237,6 @@ class CaptureHost {
     return it->second;
   }
 
-  // --- source write-host vtable ---
   static bool ensureTopic(void* ctx, PJ_string_view_t name, PJ_topic_handle_t* out, PJ_error_t*) noexcept {
     auto* self = static_cast<CaptureHost*>(ctx);
     const std::uint32_t id = self->next_topic_id_++;
@@ -309,7 +288,6 @@ class CaptureHost {
     return true;
   }
 
-  // --- runtime host vtable (minimal stubs) ---
   static void reportMessage(void*, PJ_data_source_message_level_t, PJ_string_view_t) noexcept {}
   static bool progressStart(void*, PJ_string_view_t, uint64_t, bool, PJ_error_t*) noexcept {
     return true;
@@ -343,10 +321,6 @@ class CaptureHost {
     return true;
   }
 };
-
-// ---------------------------------------------------------------------------
-// CLI plumbing
-// ---------------------------------------------------------------------------
 
 struct Args {
   std::string data;
@@ -503,7 +477,6 @@ int main(int argc, char* argv[]) {
     args.plugin = (dir / soname).string();
   }
 
-  // 1) Resolve the detection code: from the rule, else from --script (name|file).
   std::optional<std::string> code;
   if (rule) {
     code = anomaly_core::substituteSource(rule->code, source);
@@ -515,7 +488,6 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // 2) Load the datasource plugin + drive it to read the file into our capture host.
   auto library = PJ::DataSourceLibrary::load(args.plugin);
   if (!library) {
     std::cerr << "Error: load datasource plugin '" << args.plugin << "': " << library.error() << "\n";
@@ -557,7 +529,6 @@ int main(int argc, char* argv[]) {
     return 2;
   }
 
-  // Helpful diagnostic if the requested source isn't present.
   if (!source.empty() && capture.series.find(source) == capture.series.end()) {
     std::cerr << "Error: source '" << source << "' not found. Available series:\n";
     for (const auto& n : capture.order) {
@@ -566,7 +537,6 @@ int main(int argc, char* argv[]) {
     return 2;
   }
 
-  // 3) Run the detection rule through the shared engine.
   anomaly_core::SeriesProvider provider;
   provider.names = capture.order;
   provider.get = [&capture](const std::string& name) -> const anomaly_core::SeriesAccessor* {
@@ -581,7 +551,6 @@ int main(int argc, char* argv[]) {
     return 2;
   }
 
-  // 4) Serialize the JSON report; exit code reflects pass/fail.
   anomaly_core::ReportMeta meta;
   meta.file = args.data;
   meta.script = rule ? (rule->name.empty() ? args.rule_file : rule->name) : args.script;
@@ -601,9 +570,8 @@ int main(int argc, char* argv[]) {
     std::cout << report.json << "\n";
   }
 
-  // 5) Notifications (opt-in). The detection verdict (exit 0/1) is unchanged; a
-  // delivery failure is only fatal under --notify-strict, where it maps to exit 3
-  // (overriding 0/1) so a pipeline can detect that an alert never went out.
+  // Notifications (opt-in). The detection verdict (exit 0/1) is unchanged; a delivery failure is only
+  // fatal under --notify-strict, where it maps to exit 3 (overriding 0/1).
   bool notify_delivery_failed = false;
   if (notify_cfg) {
     const nlohmann::json report_doc = nlohmann::json::parse(report.json, nullptr, /*allow_exceptions=*/false);

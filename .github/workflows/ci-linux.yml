@@ -14,10 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Acquire plotjuggler_sdk ONCE per run and hand it to every build leg as a Conan
-  # cache artifact. Every job tries the shared JFrog remote first; if the exact
-  # prebuilt SDK is absent, ensure_core.sh builds it from the pinned git tag
-  # (v<SDK_VERSION>). The matrix still receives one local artifact.
+  # Acquire plotjuggler_sdk once per run (JFrog first, else ensure_core.sh builds the
+  # v<SDK_VERSION> tag) and hand it to every build leg as a Conan cache artifact.
   acquire-core:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
@@ -50,9 +48,8 @@ jobs:
         run: scripts/ensure_core.sh
 
       - name: Upload plotjuggler_sdk to JFrog
-        # When ensure_core.sh built the SDK from source (JFrog had no
-        # matching binary), publish it so the next run fetches it prebuilt. Scoped
-        # to the pinned ref, mirroring the Save step. No-op if it came from JFrog.
+        # When ensure_core.sh built the SDK from source (no JFrog binary), publish it so the
+        # next run fetches it prebuilt. No-op if it came from JFrog.
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
         shell: bash
         run: scripts/upload_conan_artifacts.sh "plotjuggler_sdk/$(cat SDK_VERSION)"
@@ -71,24 +68,17 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Acquire every Arrow variant the repo needs ONCE per run and hand them to the
-  # arrow-consuming plugins as a Conan cache artifact, instead of compiling Arrow
-  # (and its heavy boost / grpc / protobuf deps) independently in each plugin leg.
-  # JFrog is the preferred binary source; missing exact package IDs are built once.
+  # Build every Arrow variant once per run (JFrog first) and hand them to the arrow-consuming
+  # plugins as one Conan cache artifact, instead of compiling Arrow (+ boost/grpc/protobuf)
+  # in each plugin leg. Arrow's package_id depends on its options, so three variants are primed:
+  #   * parquet/snappy: data_load_parquet, data_load_lerobot (~14 min)
+  #   * + lz4/zstd: parser_arrow (compressed IPC)
+  #   * + Flight/grpc/protobuf: toolbox_mosaico (~50 min)
+  # Each leg restores the "*:*" artifact and Conan picks the matching package_id.
   #
-  # Three variants are primed, because Arrow's package_id depends on its options:
-  #   * parquet/snappy  — shared by data_load_parquet + data_load_lerobot (~14 min)
-  #   * +lz4/zstd — used by parser_arrow for compressed IPC
-  #   * +Flight/grpc/protobuf — used by toolbox_mosaico's Arrow Flight client (~50 min)
-  # All land in the one "*:*" artifact below; each build leg restores it and Conan picks
-  # the matching package_id. Adding the Flight variant here (vs letting mosaico rebuild
-  # it every run) costs nothing on warm runs and no extra wall-clock on cold runs —
-  # mosaico already had to wait for this job, then built Flight in-leg anyway.
-  #
-  # The builds run in an ISOLATED CONAN_HOME so the saved closure is exactly Arrow + its
-  # from-source deps and can never fold in a stale plotjuggler_sdk from the shared
-  # setup-conan cache. A precisely-keyed actions/cache skips even these builds on warm
-  # runs (GitHub cache keys are immutable, so the key encodes the exact Arrow config).
+  # Builds run in an ISOLATED CONAN_HOME so the saved closure is exactly Arrow + its
+  # from-source deps and never a stale plotjuggler_sdk from the shared setup-conan cache.
+  # The actions/cache key encodes the exact Arrow config (cache keys are immutable).
   acquire-arrow:
     needs: discover-plugins
     if: needs.discover-plugins.outputs.arrow_plugins != '[]'
@@ -103,8 +93,8 @@ jobs:
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
         with:
-          # We manage our own precisely-keyed cache below; the coarse shared
-          # setup-conan key would only pollute the isolated home.
+          # Own precisely-keyed cache below; the shared setup-conan key would pollute the
+          # isolated home.
           cache_packages: false
 
       - name: Install cmake and ninja
@@ -132,9 +122,8 @@ jobs:
       - name: Build the Arrow variants (no-op on a cache hit)
         shell: bash
         # Each variant's options MUST match the consuming recipe's default_options so the
-        # resulting package_id is identical and the build legs reuse the binary (verified
-        # with `conan graph info`: parquet/lerobot share one id, mosaico's Flight build
-        # another).
+        # package_id is identical and the build legs reuse the binary (check with
+        # `conan graph info`).
         run: |
           conan profile detect --force
           # Variant 1 — parquet/snappy (data_load_parquet, data_load_lerobot).
@@ -154,8 +143,8 @@ jobs:
             -s build_type=Release -s compiler.cppstd=20 \
             -c tools.cmake.cmaketoolchain:generator=Ninja \
             --build=missing -of "$(mktemp -d)"
-          # Variant 3 — Arrow Flight (toolbox_mosaico). Pulls grpc + protobuf + re2 +
-          # thrift; lz4/zstd are needed because the Mosaico server sends LZ4/ZSTD batches.
+          # Variant 3 — Arrow Flight (toolbox_mosaico); lz4/zstd because the Mosaico server
+          # sends LZ4/ZSTD batches.
           conan install --requires=arrow/26.0.1 \
             -o "arrow/*:parquet=True" -o "arrow/*:with_snappy=True" -o "arrow/*:with_mimalloc=False" \
             -o "arrow/*:with_flight_rpc=True" -o "arrow/*:with_grpc=True" \
@@ -169,17 +158,15 @@ jobs:
             --build=missing -of "$(mktemp -d)"
 
       - name: Upload the Arrow closure to JFrog
-        # The isolated CONAN_HOME holds only Arrow + its from-source deps, so "*"
-        # publishes exactly that closure — priming JFrog so future runs skip the
-        # ~50 min Flight build. Idempotent: already-present revisions are skipped.
+        # The isolated CONAN_HOME holds only the Arrow closure, so "*" publishes exactly that,
+        # priming JFrog so future runs skip the ~50 min Flight build. Idempotent.
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
         shell: bash
         run: scripts/upload_conan_artifacts.sh
 
       - name: Pack the Arrow closure for the build legs
         shell: bash
-        # The isolated home holds only Arrow's closure (incl. boost), never
-        # plotjuggler_sdk, so saving everything is both safe and complete.
+        # The isolated home never holds plotjuggler_sdk, so saving everything is safe.
         run: conan cache save "*:*" --file "$GITHUB_WORKSPACE/arrow-cache.tgz"
 
       - name: Upload Arrow cache artifact
@@ -190,11 +177,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Emit the matrix list of plugins to build in isolation. On a pull request that is
-  # only the plugins the change can affect (scripts/ci_affected_plugins.py: the changed
-  # plugin dirs, plus the consumers of a changed common/ library; any other path
-  # selects everything). Pushes to main and manual runs build every plugin, which
-  # keeps badges, JFrog uploads and the post-merge safety net complete.
+  # Matrix of plugins to build in isolation. On a pull request: only those the change can
+  # affect (scripts/ci_affected_plugins.py: changed plugin dirs plus consumers of a changed
+  # common/ library; any other path selects everything). Pushes to main and manual runs
+  # build every plugin, keeping badges, JFrog uploads and the post-merge safety net complete.
   discover-plugins:
     runs-on: ubuntu-22.04
     outputs:
@@ -210,19 +196,17 @@ jobs:
 
       - name: List plugins
         id: list
-        # Arrow consumers build in a dedicated job (arrow-plugin-build) that reuses a
-        # once-built Arrow binary from acquire-arrow; everyone else builds right after
-        # acquire-core. The script splits them by recipe content ("arrow/"), so a new
-        # Arrow plugin is routed with no workflow edit. A plugin requesting an Arrow
-        # variant acquire-arrow does not prime still works; it rebuilds it in-leg.
+        # Arrow consumers build in arrow-plugin-build, reusing the Arrow binary from
+        # acquire-arrow. The script splits them by recipe content ("arrow/"), so a new Arrow
+        # plugin needs no workflow edit. A variant acquire-arrow does not prime still works:
+        # it is rebuilt in-leg.
         # Explicit bash = -o pipefail, so a script failure is not hidden behind tee.
         shell: bash
         run: python3 scripts/ci_affected_plugins.py | tee -a "$GITHUB_OUTPUT"
 
-  # Build each plugin in isolation against its own conanfile.py, matching the
-  # path the release workflow takes. Catches per-plugin recipe gaps. Each leg
-  # restores plotjuggler_sdk from the acquire-core artifact, then every job uses
-  # JFrog before ConanCenter for each plugin's third-party dependencies.
+  # Build each plugin in isolation against its own conanfile.py (the path the release
+  # workflow takes) to catch per-plugin recipe gaps. plotjuggler_sdk comes from the
+  # acquire-core artifact.
   per-plugin-build:
     needs: [discover-plugins, acquire-core]
     if: needs.discover-plugins.outputs.plugins != '[]'
@@ -263,8 +247,7 @@ jobs:
           name: conan-core-cache
 
       - name: Restore plotjuggler_sdk into the Conan cache
-        # Core normally comes from the artifact primed by acquire-core. If the
-        # restore somehow misses, ensure_core.sh retries JFrog before building from source.
+        # On a restore miss, ensure_core.sh retries JFrog before building from source.
         shell: bash
         run: conan cache restore core-cache.tgz || scripts/ensure_core.sh
 
@@ -277,16 +260,14 @@ jobs:
         run: ctest --test-dir "build/${{ matrix.plugin }}/Release" --output-on-failure -V
 
       - name: Upload built Conan binaries to JFrog
-        # Publish this plugin's third-party dependency binaries so later legs and
-        # future runs fetch them prebuilt. Parallel legs may upload overlapping
-        # deps; that is safe — Conan skips revisions already on the remote.
+        # Publish this plugin's dependency binaries so later runs fetch them prebuilt.
+        # Overlapping uploads from parallel legs are safe: Conan skips present revisions.
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
         shell: bash
         run: scripts/upload_conan_artifacts.sh
 
-      # Emit this plugin's status badge JSON (version from manifest, color from
-      # this leg's outcome) and hand it to the update-badges job as an artifact.
-      # `always()` so a failed build still reports red instead of going stale.
+      # Badge JSON for the update-badges job; `always()` so a failed build reports red
+      # instead of going stale.
       - name: Write status badge JSON
         if: always()
         shell: bash
@@ -305,12 +286,9 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Build the Arrow-consuming plugins (data_load_parquet, data_load_lerobot, …) as
-  # parallel matrix legs that restore the once-built Arrow closure from acquire-arrow,
-  # so Arrow + boost are compiled exactly once per run instead of once per arrow plugin.
-  # Identical to per-plugin-build apart from the extra acquire-arrow dependency and the
-  # arrow-cache restore; each plugin is still `conan install`ed against its own recipe,
-  # so per-plugin recipe-gap detection is preserved (only built binaries are shared).
+  # Same as per-plugin-build for the Arrow consumers, plus the restore of the acquire-arrow
+  # closure, so Arrow + boost compile once per run instead of once per plugin. Each plugin is
+  # still installed against its own recipe (only built binaries are shared).
   arrow-plugin-build:
     needs: [discover-plugins, acquire-core, acquire-arrow]
     if: needs.discover-plugins.outputs.arrow_plugins != '[]'
@@ -356,10 +334,9 @@ jobs:
           name: conan-arrow-cache
 
       - name: Restore plotjuggler_sdk and Arrow into the Conan cache
-        # Core comes from acquire-core, Arrow (+ boost) from acquire-arrow. With the
-        # Arrow binary present at a matching package_id, build.sh's `--build=missing`
-        # reuses it instead of recompiling. ensure_core.sh covers a rare core-restore
-        # miss; an Arrow-restore miss simply falls back to building Arrow in this leg.
+        # With the Arrow binary present at a matching package_id, build.sh's `--build=missing`
+        # reuses it; an Arrow-restore miss falls back to building Arrow in this leg.
+        # ensure_core.sh covers a core-restore miss.
         shell: bash
         run: |
           conan cache restore core-cache.tgz || scripts/ensure_core.sh
@@ -374,8 +351,7 @@ jobs:
         run: ctest --test-dir "build/${{ matrix.plugin }}/Release" --output-on-failure -V
 
       - name: Upload built Conan binaries to JFrog
-        # Publish this plugin's dependency binaries (Arrow closure was already
-        # primed by acquire-arrow; re-uploads of present revisions are skipped).
+        # Publish this plugin's dependency binaries (Arrow was primed by acquire-arrow).
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
         shell: bash
         run: scripts/upload_conan_artifacts.sh
@@ -398,12 +374,9 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Publish per-plugin status badges (version + green/red) to the orphan
-  # `badges` branch that the README's shields.io endpoint badges read. Funnels
-  # every matrix leg's artifact into a single committer so the parallel legs
-  # never race on `git push`. Runs only on pushes to main, so badges track
-  # main's health rather than in-flight PRs; `always()` so red builds still
-  # publish a red badge.
+  # Publish per-plugin status badges to the orphan `badges` branch read by the README's
+  # shields.io badges. A single committer, so parallel legs never race on `git push`. Pushes
+  # to main only, so badges track main's health; `always()` so red builds publish a red badge.
   update-badges:
     name: update status badges
     needs: [discover-plugins, per-plugin-build, arrow-plugin-build]

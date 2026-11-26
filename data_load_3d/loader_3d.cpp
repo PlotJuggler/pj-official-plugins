@@ -90,9 +90,8 @@ class Load3dSource : public PJ::FileSourceBase {
   }
 
  private:
-  // Register <stem> as an object topic of `type` and push the serialized bytes
-  // at t=0. When no object-write host is bound, warn and no-op (the caller still
-  // emits the scalar summary). Returns an error only if a bound host rejects.
+  // With no object-write host bound, warns and no-ops (the caller still emits the summary); errors only if a
+  // bound host rejects.
   PJ::Status pushObject(const std::string& stem, PJ::sdk::BuiltinObjectType type, PJ::Span<const uint8_t> payload) {
     const auto* owh = objectWriteHost();
     if (owh == nullptr) {
@@ -106,16 +105,14 @@ class Load3dSource : public PJ::FileSourceBase {
     return owh->pushOwned(*handle, PJ::Timestamp{0}, payload);
   }
 
-  // `origin` is what the reader subtracted from the file coordinates (LAS only);
-  // it is published in the summary so the user can recover them.
+  // `origin` (LAS only) is what the reader subtracted from the file coordinates; the summary publishes it.
   PJ::Status emitCloud(
       const std::string& stem, const PJ::sdk::PointCloud& cloud,
       const std::optional<std::array<double, 3>>& origin = std::nullopt) {
     const uint64_t num_points = static_cast<uint64_t>(cloud.width) * static_cast<uint64_t>(cloud.height);
     auto payload = PJ::serializePointCloud(cloud);
-    // Note: object push and summary emit are not transactional; on a summary
-    // failure after a successful object push, importData returns an error and
-    // the partial entry is abandoned (the user retries the load).
+    // Not transactional: a summary failure after a successful object push errors out and abandons the partial
+    // entry (the user retries).
     if (auto st = pushObject(
             stem, PJ::sdk::BuiltinObjectType::kPointCloud, PJ::Span<const uint8_t>(payload.data(), payload.size()));
         !st) {
@@ -143,13 +140,12 @@ class Load3dSource : public PJ::FileSourceBase {
       return PJ::unexpected(topic.error());
     }
     std::vector<PJ::sdk::NamedFieldValue> fields;
-    // num_points is a cloud metric; a mesh reports num_faces instead. Clouds
-    // always have num_faces == 0 (a positive face count routes to the mesh path).
+    // num_points is a cloud metric; a mesh reports num_faces instead (a positive face count routes to the mesh path).
     if (num_faces == 0) {
-      fields.push_back({"num_points", PJ::sdk::ValueRef{num_points}});  // num_points is uint64_t
+      fields.push_back({"num_points", PJ::sdk::ValueRef{num_points}});
     }
     if (num_faces > 0) {
-      fields.push_back({"num_faces", PJ::sdk::ValueRef{num_faces}});  // uint64_t
+      fields.push_back({"num_faces", PJ::sdk::ValueRef{num_faces}});
     }
     if (centroid.has_value()) {
       fields.push_back({"centroid/x", PJ::sdk::ValueRef{(*centroid)[0]}});

@@ -42,11 +42,9 @@
 | [toolbox_assistant_agent](toolbox_assistant_agent/) | Toolbox | LLM assistant driving PlotJuggler's own MCP tools through your Claude Code / Codex CLI (Linux/macOS runtime; PlotJuggler 4.2+) |
 | [widget_basic](widget_basic/) | Widget | Gauge, numeric indicator, traffic light and value table dock widgets (links Qt; Linux x86_64 and Windows x64 only) |
 
-In addition to the plugins above, [`tools/anomaly_runner`](tools/anomaly_runner/) is a
-standalone **headless CLI** that runs the same anomaly-detection rules without a GUI (CSV/MCAP
-in, JSON report + exit code out) for CI and data pipelines. It can also **notify** on a bad log
-(webhook / email / command via `--notify`), and a bundled watcher screens every upload
-automatically — see its [README](tools/anomaly_runner/README.md).
+[`tools/anomaly_runner`](tools/anomaly_runner/) is a standalone headless CLI that runs the same
+anomaly-detection rules without a GUI (CSV/MCAP in, JSON report + exit code out), with optional
+webhook/email/command notification; see its [README](tools/anomaly_runner/README.md).
 
 ## Building
 
@@ -104,56 +102,35 @@ cd /path/to/plotjuggler_sdk
 ### Per-plugin status badges
 
 Each plugin badge is a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge)
-backed by a small JSON file on the orphan `badges` branch — one
-`<plugin>.json` per plugin holding `{ label, message: version, color }`. A
-native GitHub Actions badge can only report pass/fail for a whole workflow, so
-this scheme is what lets a single badge carry both the version and the build
-color.
+backed by `<plugin>.json` (`{ label, message: version, color }`) on the orphan `badges` branch, so one
+badge carries both the version and the build color. CI publishes them on pushes to `main`:
 
-CI publishes them on pushes to `main`:
+- The CI Linux `per-plugin-build` matrix emits one badge JSON per leg (version from `manifest.json`,
+  color from the leg's outcome); the `update-badges` job commits them to `badges` in one push.
+- `data_stream_ros2` is built only by CI ROS2, which writes its own badge from its `update-badge` job.
 
-- The CI Linux `per-plugin-build` matrix builds each plugin in isolation;
-  every leg emits its badge JSON (version from `manifest.json`, color from that
-  leg's outcome) as an artifact, and the `update-badges` job commits all of
-  them to the `badges` branch in one push.
-- `data_stream_ros2` is built only by CI ROS2, so that workflow owns its badge
-  and writes it from its own `update-badge` job (color aggregated from the
-  distro matrix and the proxy build).
-
-Both writers share a `badges-branch` concurrency group and resync-on-conflict
-(see `scripts/publish_badges.sh`), so their pushes never clobber each other.
-Badges first appear after the feature's initial run on `main`; until then
-shields renders them as `invalid` because the `badges` branch does not yet
-exist.
+Both writers share a `badges-branch` concurrency group and resync on conflict
+(`scripts/publish_badges.sh`).
 
 ## Plugin architecture
 
-Both plugin families in this repo follow a **declarative** style on top of
-the `plotjuggler_sdk` SDK: a DataSource hands the host a deferred byte
-fetcher per message, and a MessageParser declares a table of schema
-handlers that produce **canonical objects** (`sdk::Image`,
-`sdk::PointCloud`, and related builtin types) plus scalar columns. The host
-chooses eager vs lazy materialization per message without either plugin
-caring.
+Plugins are **declarative** on top of the `plotjuggler_sdk` SDK: a DataSource hands the host a
+deferred byte fetcher per message, and a MessageParser declares a table of schema handlers that
+produce canonical objects (`sdk::Image`, `sdk::PointCloud`, ...) plus scalar columns. The host
+chooses eager vs lazy materialization per message.
 
-See [`PLUGIN_DEVELOPMENT.md`](PLUGIN_DEVELOPMENT.md) for the full
-developer guide: the canonical-object vocabulary, the DataSource and
-MessageParser shapes, end-to-end dispatch flow, authoring checklists,
-and pointers to `data_load_mcap` and `parser_ros` as reference
-implementations.
+See [`PLUGIN_DEVELOPMENT.md`](PLUGIN_DEVELOPMENT.md) for the developer guide.
 
 ## WebAssembly build
 
-PlotJuggler's browser build cannot load plugins at run time, so it compiles the
-plugins it ships into its own module, from a pinned commit of this repository. Each
-such plugin carries a `wasm.cmake` that declares that build with one
-`pj_wasm_official_plugin()` call (sources, manifest, `.ui` files, the exported plugin
-and dialog symbols, links) plus any browser-only quirk; the shared `common/` libraries
-it links come from their native CMakeLists through `pj_wasm_common_library()`. The native
-and Conan builds never read these files.
-[`cmake/PjWasmPlugin.cmake`](cmake/PjWasmPlugin.cmake) defines the function and states
-the contract with the host build: the dependency targets it provides (under the names the
-plugins' native CMakeLists use) and how the registrations reach it.
+PlotJuggler's browser build cannot load plugins at run time, so it compiles the plugins it ships
+into its own module, from a pinned commit of this repository. Each such plugin carries a
+`wasm.cmake` that declares that build with one `pj_wasm_official_plugin()` call (sources,
+manifest, `.ui` files, exported plugin and dialog symbols, links) plus any browser-only quirk;
+shared `common/` libraries come from their native CMakeLists through `pj_wasm_common_library()`.
+The native and Conan builds never read these files.
+[`cmake/PjWasmPlugin.cmake`](cmake/PjWasmPlugin.cmake) states the contract with the host build:
+the dependency targets it provides and how registrations reach it.
 
 To make a plugin available in the browser:
 
@@ -184,32 +161,17 @@ When adding or changing a plugin:
 
 ## Releasing Extensions
 
-Each plugin is independently versioned and released. The release pipeline builds the tagged plugin on **6 platforms** (Linux x86_64/aarch64, macOS Intel/ARM, Windows x64/ARM64), creates plugin-scoped release notes, and can automatically submit to the extension registry.
-
-### Quick Start (Recommended)
+Each plugin is independently versioned and released. Pushing a tag builds that plugin on 6 platforms
+(Linux x86_64/aarch64, macOS Intel/ARM, Windows x64/ARM64), creates a GitHub Release with the
+plugin's notes, and can open a `pj-plugin-registry` PR for the tagged version.
 
 ```bash
-# One command: bump version, commit, tag, push, build, submit to registry
+# Bump manifest.json, commit, push, tag; CI builds and submits to the registry
 python3 scripts/release_extension.py foxglove-bridge --bump minor --submit-to-registry
-```
 
-This will:
-1. Update `manifest.json` with new version
-2. Commit and push the change
-3. Create annotated tag → triggers CI
-4. CI installs that plugin's Conan recipe, builds it on all 6 platforms, and creates a GitHub Release with notes from that plugin's directory
-5. Automatically creates a `pj-plugin-registry` PR for the exact version in the triggering tag
-
-### Tag-Only (Manifest Already Updated)
-
-When manifest already has the correct version (e.g., bumped in a previous commit):
-
-```bash
-# No --bump or --version: reads version from manifest, creates tag only
+# Manifest already at the target version: tag only
 python3 scripts/release_extension.py foxglove-bridge --submit-to-registry
 ```
-
-Useful for batch releases or re-creating tags after cleanup.
 
 ### Tag Convention
 
@@ -219,11 +181,9 @@ Useful for batch releases or re-creating tags after cleanup.
 
 Examples: `data_load_csv/v1.0.6`, `parser_ros/v2.1.0`
 
-The source directory before `/v` controls the CI build scope. A
-`data_load_csv/v1.0.6` tag installs `data_load_csv/conanfile.py` and configures
-CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`; it does not install or compile
-dependencies for unrelated plugins. CI uses the same `build.sh` entry point as
-local standalone builds.
+The directory before `/v` sets the CI build scope: a `data_load_csv/v1.0.6` tag installs
+`data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, through the
+same `build.sh` entry point as local builds.
 
 ### Available Scripts
 
@@ -239,19 +199,10 @@ local standalone builds.
 
 ### Via Conan
 
-`plotjuggler_sdk` is consumed as a Conan package from the plotjuggler
-cloudsmith remote — no CPM source clone, no SSH deploy key, no
-subdirectory-mode fallback for standalone builds. Every per-plugin
-`conanfile.py` also lists it so single-plugin builds resolve it the same way.
-The version is pinned in one place — the top-level `SDK_VERSION` file — and CI
-clones and builds the matching `v<SDK_VERSION>` tag when no prebuilt package
-is available (`scripts/ensure_core.sh`).
-
-> **Repository & package rename:** the SDK source now lives in the
-> [**plotjuggler_sdk**](https://github.com/PlotJuggler/plotjuggler_sdk)
-> repository (formerly `plotjuggler_core`), and the Conan package and CMake
-> targets are renamed to match — recipes require `plotjuggler_sdk/<version>` and
-> link `plotjuggler_sdk::plugin_sdk` / `::plugin_host`.
+[`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) is consumed as a Conan package;
+every per-plugin `conanfile.py` lists it too. The version is pinned in the top-level `SDK_VERSION`
+file, and CI clones and builds the matching `v<SDK_VERSION>` tag when no prebuilt package is
+available (`scripts/ensure_core.sh`).
 
 | Package | Version | Used by |
 |---------|---------|---------|

@@ -35,10 +35,6 @@ Send metrics to the UDP streaming source:
 
 Then start the UDP source on port 8094 with the `influx` encoding.
 
-## Encoding
-
-Registered as parser for `"influx"` encoding.
-
 ## Known limitations
 
 - Timestamps must be nanoseconds, Telegraf's default precision for `socket_writer`.

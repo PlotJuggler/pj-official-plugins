@@ -1,31 +1,18 @@
 #!/usr/bin/env python3
 """
-UDP timestamp demo — espejo exacto del mqtt_ts_demo, adaptado a UDP.
+UDP embedded-timestamp demo.
 
-En MQTT los dos sensores son dos TOPICS distintos (pj/sensor_A, pj/sensor_B).
-UDP no lleva el topic en el payload: cada puerto ES un topic. Por eso cada
-sensor necesita su propio puerto, y así sus timestamps quedan monótonos
-(sin intercalar, que es lo que rompía el caso de un solo puerto).
+UDP carries no topic in the payload: each port is one topic. Two sensors on two ports keep each
+stream's timestamps monotonic (interleaving them on one port does not).
 
-  Puerto 9870 (sensor_A)  →  "timestamp": t          (empieza en 0 s)
-  Puerto 9871 (sensor_B)  →  "timestamp": t + 5.0    (5 s por delante)
+  Port 9870 (sensor_A)  ->  "timestamp": t        (starts at 0 s)
+  Port 9871 (sensor_B)  ->  "timestamp": t + 5.0  (5 s ahead)
 
-Resultado en PJ4 con ☑ Use embedded timestamp en AMBOS streams:
-  udp/data/sin (stream 9870)  →  X =  0 ..  N s
-  udp/data/sin (stream 9871)  →  X =  5 .. N+5 s   ← 5 s de diferencia visible
+In PlotJuggler, add two UDP streams (ports 9870 and 9871, json, "use embedded timestamp" on,
+field: timestamp) and drag udp/data/sin of both to the same plot. With the option on, the curves
+are 5 s apart (X = 0..N and 5..N+5); off, both use the arrival time (~Unix epoch) and overlap.
 
-Resultado SIN embedded timestamp:
-  ambos  →  X = ~1.78e9 s (Unix epoch)             ← la diferencia desaparece
-
-CÓMO USAR EN PJ4:
-  Stream 1 → puerto 9870  json  ☑ Use embedded timestamp  field: timestamp
-  Stream 2 → puerto 9871  json  ☑ Use embedded timestamp  field: timestamp
-  Arrastra udp/data/sin de AMBOS streams al MISMO plot.
-
-  ☑ ts ON  → dos curvas separadas 5 s
-  ☐ ts OFF → dos curvas superpuestas (mismo epoch)
-
-Arrancar:  python3 udp_ts_demo.py
+Run: python3 udp_ts_demo.py
 """
 
 import json

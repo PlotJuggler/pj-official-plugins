@@ -1,14 +1,9 @@
 #pragma once
 
 /// @file ros2_qos_adapter.hpp
-/// @brief Pick a QoS profile that is compatible with the publishers currently
-/// advertising a topic.
-///
-/// Without this, sensor streams (BEST_EFFORT) and latched maps
-/// (TRANSIENT_LOCAL) silently fail to deliver messages — the subscription is
-/// created but no data flows because the requested QoS is incompatible with
-/// the publisher's offer. The logic below mirrors `rosbag2_transport`'s
-/// `Recorder::serialized_offered_qos_profiles_for_topic` strategy.
+/// Picks a QoS profile compatible with the publishers currently advertising a topic. A QoS incompatible with the
+/// publisher's offer creates the subscription but delivers no data (BEST_EFFORT sensor streams, TRANSIENT_LOCAL latched
+/// maps). Mirrors `rosbag2_transport`'s `Recorder::serialized_offered_qos_profiles_for_topic`.
 
 #include <rmw/qos_profiles.h>
 
@@ -54,13 +49,10 @@ inline rclcpp::QoS adaptQosFromOffers(const std::vector<rclcpp::TopicEndpointInf
   return qos;
 }
 
-/// Wait (briefly) until DDS discovery exposes at least one publisher for
-/// `topic`, then sample its QoS. The streamer creates a fresh rclcpp::Context
-/// in onStart(), so on the first call discovery has not yet propagated and
-/// `get_publishers_info_by_topic` returns empty — leading us to default
-/// RELIABLE+VOLATILE, which silently breaks BEST_EFFORT/TRANSIENT_LOCAL
-/// publishers (no data flows). Polling count_publishers gates on a positive
-/// signal that the endpoint info is populated.
+/// Waits until DDS discovery exposes a publisher for `topic`, then samples its QoS. onStart() creates a fresh
+/// rclcpp::Context, so on the first call discovery has not propagated and `get_publishers_info_by_topic` is empty,
+/// which would default to RELIABLE+VOLATILE and break BEST_EFFORT/TRANSIENT_LOCAL publishers. count_publishers is the
+/// positive signal that the endpoint info is populated.
 inline rclcpp::QoS adaptQosWaitingForPublishers(
     rclcpp::Node& node, const std::string& topic, std::chrono::milliseconds timeout = std::chrono::milliseconds(2000),
     std::chrono::milliseconds poll_interval = std::chrono::milliseconds(50)) {

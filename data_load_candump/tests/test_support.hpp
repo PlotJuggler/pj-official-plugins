@@ -1,8 +1,6 @@
 #pragma once
 
-// Tiny bit of scaffolding shared by every candump test file that reads a
-// fixture from test_data/ -- CANDUMP_TEST_DATA_DIR is set per test binary by
-// CMakeLists.txt's target_compile_definitions().
+// CANDUMP_TEST_DATA_DIR is set per test binary by CMakeLists.txt.
 
 #include <filesystem>
 #include <string>

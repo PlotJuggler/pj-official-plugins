@@ -1,6 +1,5 @@
-# pj_transfer_rate — the rolling transfer-rate display helper shared by the
-# cloud-browser dialogs (a monotonic five-second cumulative-byte window).
-# Deliberately NOT SDK surface: a pure UI readout with no host contract.
+# pj_transfer_rate — rolling transfer-rate display helper shared by the cloud-browser dialogs
+# (a monotonic five-second cumulative-byte window). Not SDK surface: a pure UI readout.
 
 add_library(pj_transfer_rate INTERFACE)
 target_include_directories(pj_transfer_rate INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)

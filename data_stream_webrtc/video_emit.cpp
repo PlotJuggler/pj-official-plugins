@@ -170,9 +170,8 @@ void primeNormalizerFromSprop(H264AnnexBNormalizer& norm, std::string_view sprop
 Status pushVideoFrame(
     const PJ::DataSourceRuntimeHostView& runtime_host, PJ::ParserBindingHandle binding, const EncodedFrame& frame,
     std::string_view frame_id) {
-  // Build the canonical PJ.VideoFrame and serialize it once. The serialized
-  // bytes are owned by a shared_ptr so the pushMessage fetcher remains valid
-  // after onPoll() returns (ObjectIngestPolicy may defer/repeat the fetch).
+  // The serialized bytes are shared_ptr-owned so the fetcher stays valid after onPoll() returns (ObjectIngestPolicy may
+  // defer or repeat the fetch).
   sdk::VideoFrame vf;
   vf.timestamp_ns = frame.ts_ns;
   vf.frame_id = std::string(frame_id);

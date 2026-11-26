@@ -59,8 +59,7 @@ TEST(ArusCsvToDbc, SimpleSingleSignalMessageExactText) {
 }
 
 TEST(ArusCsvToDbc, GroupsFourHexDigitIdsByBaseAndMatchesArusWorkedExample) {
-  // Real rows from https://github.com/ARUSfs/log_plotter/blob/main/can_conversions.csv
-  // (fetched 2026-09-21): 0x1a31/0x1a32 share base 0x1a3.
+  // Real rows from https://github.com/ARUSfs/log_plotter/blob/main/can_conversions.csv: 0x1a31/0x1a32 share base 0x1a3.
   const std::string csv =
       "ID,bitIn,bitFin,Signed,Power,Scale,Offset,Name\n"
       "0x1a31,0,1,True,1,0.02,0,IMU_ax\n"
@@ -88,9 +87,8 @@ TEST(ArusCsvToDbc, GroupsFourHexDigitIdsByBaseAndMatchesArusWorkedExample) {
 }
 
 TEST(ArusCsvToDbc, NegativeScaleRowMatchesArusWorkedExample) {
-  // Real row (extensometer): negative Scale -- exercises the common/can_dbc
-  // vendored regex fix end to end (a negative factor used to be silently
-  // dropped by the unpatched dbc_parser_cpp).
+  // Real row (extensometer): a negative Scale must survive the vendored dbc parser (unpatched dbc_parser_cpp
+  // silently drops negative factors).
   const std::string csv =
       "ID,bitIn,bitFin,Signed,Power,Scale,Offset,Name\n"
       "0x134,0,1,True,1,-0.000031688042484,0.476959989071,extensometer\n";

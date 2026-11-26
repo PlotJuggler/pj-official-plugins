@@ -41,7 +41,7 @@ TEST(TlsUtils, ApiKeyBadFingerprint) {
   EXPECT_FALSE(isValidApiKey("msco_" + kBody + "_" + std::string(8, 'z')));
 }
 
-// --- isPrintableAscii (connect-path control-byte gate, gap #1) ---
+// --- isPrintableAscii (connect-path control-byte gate) ---
 
 TEST(TlsUtils, PrintableAsciiAcceptsTypicalUri) {
   EXPECT_TRUE(isPrintableAscii("grpc+tls://demo.mosaico.dev:6726"));

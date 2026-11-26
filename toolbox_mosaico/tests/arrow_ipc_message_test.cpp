@@ -149,10 +149,9 @@ TEST(FirstRowTimestampNs, ByTypeAndInvalidRoutes) {
   auto double_batch = arrow::RecordBatch::Make(double_schema, 1, {arrayOf<arrow::DoubleBuilder, double>({1.5})});
   EXPECT_EQ(mosaico::firstRowTimestampNs(*double_batch, {0}), 1'500'000'000LL);
 
-  // Epoch-scale witnesses: a `long double` product at 1e18 carries a 0.125 ns
-  // ulp, so ~6% of real timestamps round a whole nanosecond away from the split
-  // conversion parser_arrow does. Each expectation below is the SPLIT result;
-  // the old long-double form returns one nanosecond further from zero.
+  // Epoch-scale witnesses: a `long double` product at 1e18 carries a 0.125 ns ulp, so ~6% of real timestamps round
+  // a whole nanosecond away from the split conversion parser_arrow does. Each expectation below is the SPLIT
+  // result; a long-double form returns one nanosecond further from zero.
   auto stamped = [&](double seconds) {
     return mosaico::firstRowTimestampNs(
         *arrow::RecordBatch::Make(double_schema, 1, {arrayOf<arrow::DoubleBuilder, double>({seconds})}), {0});
@@ -389,7 +388,7 @@ TEST(NormalizeViewColumns, RejectsMalformedViewsBeforeCasting) {
   ASSERT_TRUE(writer->Close().ok());
   auto incoming = decodeSingleBatch(sink->Finish().ValueOrDie());
   ASSERT_FALSE(incoming->ValidateFull().ok());
-  // Isolate an unchecked cast's SIGSEGV so the remaining regressions still run.
+  // Isolate an unchecked cast's SIGSEGV so the remaining checks still run.
   EXPECT_EXIT(
       {
         auto result = mosaico::normalizeViewColumns(*incoming);

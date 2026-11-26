@@ -19,19 +19,15 @@
 
 namespace {
 
-/// Dialog plugin for the MQTT Subscriber.
-/// Uses the original .ui layout with Connection + Security tabs.
-/// Widget names match the original DataStreamMQTT .ui file.
+/// Widget names match the PlotJuggler 3 DataStreamMQTT .ui file.
 class MqttDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  /// Called by the DataSource after loadConfig() to populate available encodings.
+  /// Called by the data source after loadConfig().
   void setAvailableEncodings(std::vector<std::string> encodings) {
     available_encodings_ = std::move(encodings);
   }
-
-  // --- Dialog protocol ---
 
   std::string manifest() const override {
     return kMqttManifest;
@@ -50,7 +46,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Connection tab widgets
     wd.setText("lineEditHost", broker_address_);
     wd.setText("lineEditPort", std::to_string(port_));
     wd.setText("lineEditUsername", username_);
@@ -58,8 +53,7 @@ class MqttDialog : public PJ::DialogPluginTyped {
     wd.setEnabled("lineEditHost", !connected_ && !connecting());
     wd.setEnabled("lineEditPort", !connected_ && !connecting());
 
-    // Connect button state + feedback (label_12 stays empty while idle). While
-    // connecting, the button is Cancel.
+    // label_12 stays empty while idle; while connecting the button is Cancel.
     if (connected_) {
       wd.setButtonText("buttonConnect", "Disconnect");
     } else {
@@ -67,22 +61,16 @@ class MqttDialog : public PJ::DialogPluginTyped {
     }
     wd.setText("label_12", connectionStatusText());
 
-    // Protocol version combo
     wd.setCurrentIndex("comboBoxVersion", protocol_version_index_);
-
-    // QoS combo
     wd.setCurrentIndex("comboBoxQoS", qos_);
-
-    // SSL checkbox
     wd.setChecked("checkBoxSecurity", use_ssl_);
 
-    // MQTT subscription pattern (broker-side discovery filter, applied on connect)
+    // Broker-side discovery filter, applied on connect.
     wd.setText("lineEditTopicFilter", topic_filter_);
 
-    // Discovered topic list (from live MQTT subscription), narrowed by the
-    // view filter. Selection is text-keyed with the FULL selected set: the
-    // host ignores names not currently listed, and onSelectionChanged merges
-    // them back, so filtered-out selections survive.
+    // Selection is text-keyed with the FULL selected set: the host ignores
+    // names not currently listed, and onSelectionChanged merges them back, so
+    // filtered-out selections survive.
     {
       std::lock_guard<std::mutex> lock(topics_mutex_);
       std::vector<std::string> topic_list;
@@ -96,12 +84,9 @@ class MqttDialog : public PJ::DialogPluginTyped {
       wd.setSelectedItems("listWidget", selected_topics_);
     }
 
-    // Protocol combo — dynamically populated from available parsers
     const bool has_encodings = PJ::sdk::writeEncodingSelector(wd, "comboBoxProtocol", available_encodings_, encoding_);
 
-    // TLS certificate file pickers. Icon-only browse buttons (empty label, the
-    // shared "contract" certificate glyph); the editable path fields double as
-    // the file-picked display and a manual-entry field.
+    // Icon-only browse buttons; the editable path fields double as the picked-file display and manual entry.
     wd.setFilePicker("buttonLoadServerCertificate", "", "*.pem *.crt *.cer", "Select Server CA Certificate");
     wd.setFilePicker("buttonLoadClientCertificate", "", "*.pem *.crt *.cer", "Select Client Certificate");
     wd.setFilePicker("buttonLoadPrivateKey", "", "*.pem *.key", "Select Private Key");
@@ -112,16 +97,13 @@ class MqttDialog : public PJ::DialogPluginTyped {
     wd.setText("lineEditClientCertificate", client_cert_path_);
     wd.setText("lineEditPrivateKey", private_key_path_);
 
-    // OK gating: connected-only, like every discovery-capable streamer
-    // (foxglove/pj_bridge/webrtc gate on connected_, ros2 on discovery).
-    // Encoding availability still matters: no parsers -> nothing can decode.
+    // OK needs a connection and at least one parser encoding (no parsers, nothing can decode).
     wd.setOkEnabled(connected_ && has_encodings);
 
     return wd.toJson();
   }
 
   bool onTick() override {
-    // Check if new topics have arrived from the MQTT callback
     bool changed = false;
     {
       std::lock_guard<std::mutex> lock(topics_mutex_);
@@ -131,14 +113,12 @@ class MqttDialog : public PJ::DialogPluginTyped {
       }
     }
 
-    // try_wait() never blocks: false while pending, true on success, throws on
-    // failure (the same error the old blocking connect()->wait() reported).
+    // try_wait() never blocks: false while pending, true on success, throws on failure.
     if (connecting()) {
       try {
         if (connect_token_->try_wait()) {
           connect_token_.reset();
-          // The discovered topics arrive through the message callback, so the
-          // subscribe ack is not awaited.
+          // Topics arrive through the message callback; the subscribe ack is not awaited.
           discovery_client_->subscribe(topic_filter_.empty() ? "#" : topic_filter_, 0);
           connected_ = true;
           last_connect_error_.clear();
@@ -182,7 +162,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
       view_filter_lower_ = PJ::sdk::lowerAscii(std::string(text));
       return true;  // re-render: the topic list narrows/expands live
     }
-    // Certificate paths are editable: typing a path is equivalent to picking one.
     if (widget_name == "lineEditServerCertificate") {
       ca_cert_path_ = std::string(text);
       return false;
@@ -241,9 +220,8 @@ class MqttDialog : public PJ::DialogPluginTyped {
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "listWidget") {
       // The host reports only the VISIBLE selection under the active view
-      // filter. Preserve selections the filter currently hides; otherwise
-      // selecting while a filter hides a previously selected topic would
-      // silently drop the hidden one (same contract as the foxglove picker).
+      // filter; selections the filter hides must be preserved or they are
+      // silently dropped.
       {
         std::lock_guard<std::mutex> lock(topics_mutex_);
         selected_topics_ = PJ::sdk::mergeVisibleSelection(
@@ -326,11 +304,9 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
  private:
-  /// Case-insensitive substring match of the active view filter against the
-  /// topic name. An empty filter matches everything. This is the band's
-  /// client-side list filter — unrelated to topic_filter_, the broker-side
-  /// MQTT subscription pattern. The filter is stored pre-lowercased, so only
-  /// the topic pays a lowercase pass here.
+  /// Case-insensitive substring match of the list filter against the topic;
+  /// unrelated to topic_filter_, the broker-side subscription pattern. The
+  /// filter is stored pre-lowercased.
   bool matchesViewFilter(const std::string& topic) const {
     return view_filter_lower_.empty() || PJ::sdk::lowerAscii(topic).find(view_filter_lower_) != std::string::npos;
   }
@@ -352,7 +328,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
       discovery_client_ = std::make_unique<mqtt::async_client>(
           pj::mqtt_support::brokerUri(settings), pj::mqtt_support::randomClientId("pj_mqtt_discovery_"));
 
-      // Collect discovered topic names from incoming messages
       discovery_client_->set_message_callback([this](mqtt::const_message_ptr msg) {
         std::lock_guard<std::mutex> lock(topics_mutex_);
         if (discovered_topics_.insert(msg->get_topic()).second) {
@@ -373,22 +348,20 @@ class MqttDialog : public PJ::DialogPluginTyped {
   }
 
   void disconnectBroker() {
-    // Cancel (connect in flight) and Disconnect are the same: destroy the
-    // client. That is what ends a connect in flight; paho serializes the
-    // destroy with the delivery of its callbacks under its own mutex, so once
-    // ~async_client returns none of them runs again. It also closes the
-    // session itself (DISCONNECT when connected), so nothing waits on an
-    // unresponsive broker. It blocks ~100 ms when this is the last paho
-    // client (paho stops its threads), and for as long as paho is still
-    // resolving the broker's hostname, which it does holding that mutex.
+    // Cancel and Disconnect are the same: destroy the client. That ends a
+    // connect in flight; paho serializes the destroy with its callbacks under
+    // its own mutex, so none runs after ~async_client returns. It also closes
+    // the session itself, so nothing waits on an unresponsive broker. It blocks
+    // ~100 ms when this is the last paho client (paho stops its threads), and
+    // for as long as paho is still resolving the broker's hostname, which it
+    // does holding that mutex.
     connect_token_.reset();
     discovery_client_.reset();
     connected_ = false;
-    // Drop the discovered catalog: it belongs to the broker we just left, and
-    // stale entries would show phantom topics (and count as "visible" for the
-    // selection merge) after reconnecting to a different broker. The user's
-    // selected_topics_ survive — they are restored/merged against whatever the
-    // next connection actually delivers (same policy as the foxglove picker).
+    // The catalog belongs to the broker just left: stale entries would show
+    // phantom topics (and count as "visible" for the selection merge) after
+    // reconnecting elsewhere. selected_topics_ survive and are merged against
+    // what the next connection delivers.
     {
       std::lock_guard<std::mutex> lock(topics_mutex_);
       discovered_topics_.clear();
@@ -425,7 +398,6 @@ class MqttDialog : public PJ::DialogPluginTyped {
   std::string client_cert_path_;
   std::string private_key_path_;
 
-  // Dialog-time discovery state
   bool connected_ = false;
   mqtt::token_ptr connect_token_;  // set while a connect is in flight; polled from onTick
   std::string last_connect_error_;

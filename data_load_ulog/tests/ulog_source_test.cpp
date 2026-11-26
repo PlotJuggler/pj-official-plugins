@@ -27,7 +27,6 @@
 
 namespace {
 
-// Helper to build a binary ULog stream in memory.
 class ULogBuilder {
  public:
   void writeHeader(uint64_t timestamp_us = 1000000) {
@@ -150,7 +149,6 @@ class ULogBuilder {
   }
 };
 
-// Helper to build field data for a data message.
 class FieldDataBuilder {
  public:
   template <typename T>
@@ -169,7 +167,6 @@ class FieldDataBuilder {
   std::vector<uint8_t> data_;
 };
 
-// Parse a ULogBuilder into a DataContainer.
 std::shared_ptr<ulog_cpp::DataContainer> parseBuilder(const ULogBuilder& builder) {
   auto container = std::make_shared<ulog_cpp::DataContainer>(ulog_cpp::DataContainer::StorageConfig::FullLog);
   ulog_cpp::Reader reader{container};
@@ -408,14 +405,10 @@ TEST(ULogSourceTest, AllNumericTypes) {
   EXPECT_EQ(sample["flag"].as<bool>(), true);
 }
 
-// --- Tests for the plugin's own flatten/extract path (ulog_flatten.hpp) ---
-//
-// The tests above validate ulog_cpp's typed accessors. The importer does NOT use
-// those at runtime: it flattens the format and reads raw bytes at resolved
-// offsets. These tests drive that production path directly.
+// The tests above exercise ulog_cpp's typed accessors, which the importer does not use at runtime: it flattens the
+// format and reads raw bytes at resolved offsets (ulog_flatten.hpp). The tests below drive that path.
 
-// Decode a scalar leaf from raw bytes the same way the plugin does, returning a
-// double for comparison against known inputs.
+// Decodes a scalar leaf from raw bytes the way the plugin does, as a double.
 double decodeLeaf(const std::vector<uint8_t>& raw, size_t offset, ulog_cpp::Field::BasicType type) {
   const uint8_t* p = raw.data() + offset;
   switch (type) {
@@ -471,9 +464,8 @@ double decodeLeaf(const std::vector<uint8_t>& raw, size_t offset, ulog_cpp::Fiel
   }
 }
 
-// Build a message that exercises nesting + arrays + a scalar tail, then verify the
-// flattened names and the values decoded at the offsets forEachFlatLeaf reports.
-// This locks in the nested base-offset accumulation the importer relies on.
+// Nesting + arrays + a scalar tail: checks the flattened names and the values decoded at the offsets forEachFlatLeaf
+// reports, which locks in the nested base-offset accumulation.
 TEST(ULogFlattenTest, NamesAndOffsetsMatchKnownRecord) {
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -524,13 +516,12 @@ TEST(ULogFlattenTest, NamesAndOffsetsMatchKnownRecord) {
     EXPECT_DOUBLE_EQ(values[i], expected_values[i]) << "leaf " << i << " (" << names[i] << ")";
   }
 
-  // The furthest byte any leaf reads must equal the record size, so a caller can
-  // bound-check with `offset + size <= raw_size` and a truncated record trips it.
+  // The furthest byte any leaf reads equals the record size, so `offset + size <= raw_size` catches a truncated record.
   EXPECT_EQ(max_end, raw.size());
   EXPECT_EQ(max_end, static_cast<size_t>(sub->format()->sizeBytes()));
 }
 
-// Names and leaf count must stay in lockstep so the importer can zip them.
+// Names and leaf count stay in lockstep so the importer can zip them.
 TEST(ULogFlattenTest, NameAndLeafCountsAgree) {
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -553,12 +544,7 @@ TEST(ULogFlattenTest, NameAndLeafCountsAgree) {
   EXPECT_EQ(names.size(), leaf_count);
 }
 
-// --- Timestamp field lookup ---
-//
-// The ULog spec requires every subscribed format to carry a `uint64_t timestamp`
-// field but does NOT require it to be the first field. The importer must locate
-// it by name rather than assume byte offset 0.
-
+// The spec requires a `uint64_t timestamp` field but not that it comes first: the importer locates it by name.
 TEST(ULogFlattenTest, TimestampOffsetIsFoundByNameNotPosition) {
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -608,11 +594,7 @@ TEST(ULogFlattenTest, TimestampFieldOfWrongTypeIsIgnored) {
   EXPECT_FALSE(ulog_flatten::findTimestampOffset(*sub->format()).has_value());
 }
 
-// --- char[N] as strings (PlotJuggler#1387) ---
-//
-// A `char[N]` field is a fixed-width string per the ULog spec, not N numeric
-// samples. It flattens to ONE leaf whose size spans the whole array.
-
+// A `char[N]` field flattens to ONE string leaf whose size spans the whole array.
 TEST(ULogFlattenTest, CharArrayFlattensToSingleStringLeaf) {
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -662,32 +644,25 @@ TEST(ULogFlattenTest, ScalarCharStaysNumericLeaf) {
 }
 
 TEST(ULogFlattenTest, StringLeafViewStopsAtFirstNul) {
-  // PX4 zero-pads short strings; the spec says no terminator is REQUIRED, so a
-  // full-width string has none. Both must decode correctly.
+  // PX4 zero-pads short strings; a full-width string has no terminator.
   const std::vector<uint8_t> raw = {0, 0, 'a', 'b', 'c', 0, 0, 0, 0, 0, 'f', 'u', 'l', 'l'};
   EXPECT_EQ(ulog_flatten::stringLeafView(raw.data(), 2, 8), "abc");
   EXPECT_EQ(ulog_flatten::stringLeafView(raw.data(), 10, 4), "full");
   EXPECT_EQ(ulog_flatten::stringLeafView(raw.data(), 5, 3), "");
 }
 
-// --- Padding (ULog spec, "Padding"): "If the padding field is the last
-// field, then this field may not be logged, to avoid writing unnecessary
-// data. This means the message_data_s.data will be shorter by the size of
-// the padding. However the padding is still needed when the message is used
-// in a nested definition." ---
-
+// ULog spec, "Padding": a padding field that is the last field may be omitted from the logged data, but is still
+// needed when the message is nested.
 TEST(ULogFlattenTest, TrailingPaddingIsNotRequiredInLoggedData) {
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
-  // uint64 timestamp(8) + float value(4) + uint8[4] _padding0(4) = 16 bytes on
-  // the wire, but the trailing padding is optional in the data.
+  // uint64 timestamp(8) + float value(4) + uint8[4] _padding0(4) = 16 bytes, but the trailing padding is optional.
   builder.writeFormat("padded:uint64_t timestamp;float value;uint8_t[4] _padding0");
   builder.writeSubscription(1, 0, "padded");
 
   {
-    // Record omits the 4 trailing padding bytes entirely, exactly as a real
-    // ULog writer does.
+    // Omits the 4 trailing padding bytes, as a real ULog writer does.
     FieldDataBuilder fields;
     fields.append<uint64_t>(1000000);
     fields.append<float>(3.5f);
@@ -800,12 +775,7 @@ TEST(ULogFlattenTest, NestedArrayPaddingStillCountsTowardLoggedSize) {
   EXPECT_EQ(offsets, (std::vector<size_t>{8, 16, 24}));
 }
 
-// --- Parameter changes over time (PlotJuggler#1245) ---
-//
-// PARAMETER messages in the data section carry no timestamp of their own. The
-// container stamps each one with the timestamp of the most recent data message,
-// which is the best approximation the file format allows.
-
+// Data-section PARAMETER messages carry no timestamp: the container stamps each with the most recent data message.
 TEST(ULogContainerTest, ChangedParameterIsStampedWithLastDataTimestamp) {
   ULogBuilder builder;
   builder.writeHeader(500000);
@@ -835,7 +805,6 @@ TEST(ULogContainerTest, ChangedParameterIsStampedWithLastDataTimestamp) {
   reader.readChunk(buf.data(), static_cast<int>(buf.size()));
   ASSERT_FALSE(container->hadFatalError());
 
-  // Initial snapshot is untouched.
   ASSERT_EQ(container->initialParameters().count("SYS_AUTOSTART"), 1u);
   EXPECT_EQ(container->initialParameters().at("SYS_AUTOSTART").value().as<int32_t>(), 4001);
 
@@ -869,7 +838,7 @@ TEST(ULogContainerTest, ChangeBeforeAnyDataFallsBackToFileStartTimestamp) {
 }
 
 TEST(ULogContainerTest, ClockTracksTimestampFieldWhereverItSits) {
-  // Timestamp is NOT the first field here; the clock must still follow it.
+  // The timestamp is not the first field; the clock must still follow it.
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
@@ -895,10 +864,8 @@ TEST(ULogContainerTest, ClockTracksTimestampFieldWhereverItSits) {
 }
 
 TEST(ULogContainerTest, ClockNeverRunsBackwardsAcrossSubscriptions) {
-  // Data messages are in LOG order, but timestamps are only monotonic per
-  // subscription: a low-rate topic can be flushed after a high-rate one with an
-  // OLDER timestamp. Parameter stamps must still never go backwards, or the
-  // change history of a `_parameters` field is inverted.
+  // Timestamps are only monotonic per subscription: a low-rate topic can be flushed after a high-rate one with an
+  // OLDER timestamp. Parameter stamps must still never go backwards, or a `_parameters` field's history inverts.
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
@@ -935,9 +902,8 @@ TEST(ULogContainerTest, ClockNeverRunsBackwardsAcrossSubscriptions) {
 }
 
 TEST(ULogContainerTest, ClockIgnoresTimestampsBelowFileStart) {
-  // Real logs contain zero / pre-boot timestamps (the committed fixture has a
-  // zero one). Those must not drag a parameter change before the file start,
-  // where the initial snapshot lives.
+  // Real logs contain zero / pre-boot timestamps (the committed fixture has one). They must not drag a parameter
+  // change before the file start, where the initial snapshot lives.
   ULogBuilder builder;
   builder.writeHeader(500000);
   builder.writeFlagBits();
@@ -963,8 +929,7 @@ TEST(ULogContainerTest, ClockIgnoresTimestampsBelowFileStart) {
 }
 
 TEST(ULogContainerTest, FutureOutlierDoesNotPoisonLaterChanges) {
-  // A single absurd timestamp must not pin every later parameter change to it
-  // (which a global running maximum would do).
+  // A single absurd timestamp must not pin every later parameter change to it (as a running maximum would).
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
@@ -999,8 +964,7 @@ TEST(ULogContainerTest, FutureOutlierDoesNotPoisonLaterChanges) {
 }
 
 TEST(ULogContainerTest, FinalParametersOverlayChangesInFileOrder) {
-  // The dataset metadata lists the LAST value of each parameter, as the
-  // original plugin did (it overwrote on every data-section PARAMETER).
+  // The dataset metadata lists the LAST value of each parameter, as in PlotJuggler 3.
   ULogBuilder builder;
   builder.writeHeader(0);
   builder.writeFlagBits();
@@ -1025,12 +989,8 @@ TEST(ULogContainerTest, FinalParametersOverlayChangesInFileOrder) {
   EXPECT_EQ(final_params.at("B").value().as<int32_t>(), 2);
 }
 
-// --- Truncated files (PlotJuggler#1370 / #1419) ---
-//
-// A file cut mid-message must neither crash nor be reported as fatal: every
-// message decoded before the cut is kept, and the reader flags nothing at all
-// for a clean tail cut (it simply waits for more bytes that never come).
-
+// A file cut mid-message must neither crash nor be reported as fatal: every message decoded before the cut is kept, and
+// the reader flags nothing for a clean tail cut (it waits for bytes that never come).
 TEST(ULogContainerTest, TruncatedTailKeepsEverythingBeforeTheCut) {
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -1093,12 +1053,8 @@ TEST(ULogLogSourceTest, PX4ModulePrefixBecomesTheSource) {
   }
 }
 
-// --- Whole import, through the BUILT plugin ---
-//
-// The loader decodes and writes each record as the reader hands it over. These
-// tests load the plugin .so and give it a host that records every call, so they
-// cover what the unit tests above cannot: topic naming, the row handed to the
-// host, and the stop and error paths.
+// Whole-import tests: load the built plugin .so into a host that records every call, covering what the unit tests above
+// cannot: topic naming, the row handed to the host, and the stop and error paths.
 
 struct Cell {
   std::string name;  // set for named records
@@ -1669,8 +1625,8 @@ TEST(ULogImportTest, InfoAndParametersBecomeTopicsAndDatasetMetadata) {
   EXPECT_EQ(version[0].second.number, static_cast<double>(0x010E00FF));
 }
 
-// PX4 logs carry empty string info (`char[0] perf_top_preflight-23`, no value bytes): ulog_cpp 1.0.1 read the empty
-// value through a null pointer and crashed the import (PlotJuggler#1748).
+// PX4 logs carry empty string info (`char[0] perf_top_preflight-23`, no value bytes); reading the empty value must not
+// dereference a null pointer (ulog_cpp < 1.1.0 did).
 TEST(ULogImportTest, EmptyStringInfoImportsAsAnEmptyString) {
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -1811,8 +1767,8 @@ TEST(ULogImportTest, StopKeepsTheRecordsAlreadyWritten) {
   EXPECT_EQ(fieldSamples(host.rows["_parameters"], "P").size(), 1u);  // the cheap tail is still written
 }
 
-// The scan for topic names comes first and writes nothing. A stop that lands
-// there must still keep the part of the file read so far, as it always did.
+// The scan for topic names comes first and writes nothing. A stop that lands there must still keep the part of the
+// file read so far.
 TEST(ULogImportTest, StopDuringTheNameScanKeepsThePrefix) {
   RecordingHost host;
   host.stop_after_records = 0;  // stop is already requested at the first poll
@@ -1825,8 +1781,8 @@ TEST(ULogImportTest, StopDuringTheNameScanKeepsThePrefix) {
   EXPECT_EQ(host.rows["dummy"].back().cells.at(0).number, static_cast<double>(written));
 }
 
-// ulog_cpp keeps only the first subscription for a (name, multi_id) pair in its
-// by-name table; the second one's records were never imported and still aren't.
+// ulog_cpp keeps only the first subscription for a (name, multi_id) pair in its by-name table; the second one's
+// records are not imported.
 TEST(ULogImportTest, DuplicateSubscriptionDoesNotMergeIntoTheFirst) {
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -1848,9 +1804,8 @@ TEST(ULogImportTest, DuplicateSubscriptionDoesNotMergeIntoTheFirst) {
   EXPECT_EQ(host.fields["dummy"].size(), 1u);
 }
 
-// A format whose nested type is never defined stops ulog_cpp resolving every
-// format after it. Records of such a subscription cannot be decoded: the
-// import fails, it does not pass them off as file corruption.
+// A format whose nested type is never defined stops ulog_cpp resolving every format after it. Records of such a
+// subscription cannot be decoded: the import fails instead of passing them off as file corruption.
 TEST(ULogImportTest, UnresolvedFormatFailsTheImport) {
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -1871,8 +1826,8 @@ TEST(ULogImportTest, UnresolvedFormatFailsTheImport) {
   EXPECT_TRUE(host.rows["c_ok"].empty());
 }
 
-// MessageFormat::sizeBytes() under-counts a format with duplicate field names,
-// so a record can pass the size gate and still end before its timestamp.
+// MessageFormat::sizeBytes() under-counts a format with duplicate field names, so a record can pass the size gate and
+// still end before its timestamp.
 TEST(ULogImportTest, RecordEndingBeforeItsTimestampIsSkipped) {
   ULogBuilder builder;
   builder.writeHeader(0);
@@ -1902,11 +1857,7 @@ TEST(ULogImportTest, HostWriteErrorFailsTheImport) {
   EXPECT_NE(outcome.error.find("disk full"), std::string::npos) << outcome.error;
 }
 
-// --- Real PX4 log (committed fixture) ---
-//
-// Drives the new code paths over a genuine flight log, fed in 64 KiB chunks
-// exactly as the importer does, so chunk-boundary handling is covered too.
-
+// A genuine flight log fed in 64 KiB chunks, as the importer does, so chunk-boundary handling is covered too.
 TEST(ULogContainerTest, SampleLogExercisesAllNewPaths) {
   std::ifstream file(ULOG_TEST_DATA_DIR "/sample_log_small.ulg", std::ios::binary);
   ASSERT_TRUE(file.is_open());
@@ -1925,8 +1876,7 @@ TEST(ULogContainerTest, SampleLogExercisesAllNewPaths) {
   ASSERT_FALSE(container->hadFatalError());
   EXPECT_TRUE(container->parsingErrors().empty());
 
-  // Every subscribed format carries a locatable timestamp, and PX4 puts it
-  // first — the by-name lookup must agree with the old fixed-offset read here.
+  // Every subscribed format carries a locatable timestamp, and PX4 puts it first: the by-name lookup must say offset 0.
   size_t sub_count = 0;
   for (const auto& [key, sub] : container->subscriptionsByNameAndMultiId()) {
     ++sub_count;
@@ -1936,7 +1886,6 @@ TEST(ULogContainerTest, SampleLogExercisesAllNewPaths) {
   }
   EXPECT_EQ(sub_count, 72u);
 
-  // Names and leaves stay zipped for every format, strings included.
   for (const auto& [name, fmt] : container->messageFormats()) {
     std::vector<std::string> names;
     ulog_flatten::collectFlatFieldNames(*fmt, {}, names);
@@ -1945,17 +1894,13 @@ TEST(ULogContainerTest, SampleLogExercisesAllNewPaths) {
     EXPECT_EQ(names.size(), leaf_count) << name;
   }
 
-  // This particular log never changes a parameter in flight: the snapshot is
-  // large and the change list is empty (the synthetic tests cover changes).
+  // This log never changes a parameter in flight (the synthetic tests cover changes).
   EXPECT_EQ(container->initialParameters().size(), 980u);
   EXPECT_TRUE(container->timedChangedParameters().empty());
 
-  // `vehicle_local_position`'s format ends in a trailing `uint8_t[4]
-  // _padding0`: every one of its 636 real PX4 records is logged 4 bytes
-  // shorter than sizeBytes() (156 vs. 160). Before the padding fix, the
-  // importer's `raw.size() < format_size` gate rejected all of them, so the
-  // topic came out completely empty; loggedSizeBytes() must recognize every
-  // record as valid.
+  // `vehicle_local_position`'s format ends in a trailing `uint8_t[4] _padding0`: every one of its 636 real PX4 records
+  // is logged 4 bytes shorter than sizeBytes() (156 vs. 160), so a `raw.size() < sizeBytes()` gate would reject all of
+  // them; loggedSizeBytes() must accept every record.
   auto local_pos = container->subscription("vehicle_local_position");
   ASSERT_NE(local_pos, nullptr);
   EXPECT_EQ(local_pos->format()->sizeBytes(), 160);

@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Locks in the PJ3-parity fetch-completion policy. The bug this guards against:
-// the panel used to close on the FIRST topic's pullFinished, tearing down the
-// worker mid-stream and dropping the rest of a multi-topic batch. The decision
-// now happens once, in buildFetchSummary, after the whole batch lands.
+// Locks in the fetch-completion policy: the panel closes once, in buildFetchSummary, after the whole batch lands,
+// never on the first topic's pullFinished (which would tear down the worker mid-stream and drop the rest of a
+// multi-topic batch).
 
 #include "../src/fetch_summary.h"
 

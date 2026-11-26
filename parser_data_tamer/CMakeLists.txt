@@ -1,8 +1,7 @@
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# data_tamer_parser — header-only library for DataTamer schema/snapshot parsing.
-# data_tamer 2.0.0 (tag 2.0.0, commit 0c48ed0). parser_ros declares the same CPM package: CPM
+# Header-only DataTamer schema/snapshot parsing library. parser_ros declares the same CPM package: CPM
 # reuses the first package of a name, so keep the name, URL and hash identical in both.
 CPMAddPackage(
   NAME data_tamer_2
@@ -14,7 +13,6 @@ add_library(parser_data_tamer_headers INTERFACE)
 target_include_directories(parser_data_tamer_headers SYSTEM INTERFACE
   "${data_tamer_2_SOURCE_DIR}/data_tamer_cpp/include")
 
-# --- Plugin shared library ---
 add_library(parser_data_tamer_plugin SHARED data_tamer_parser.cpp)
 target_compile_features(parser_data_tamer_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_data_tamer_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -25,14 +23,12 @@ pj_embed_manifest(parser_data_tamer_plugin
   VAR_NAME kDataTamerManifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+# Sidecar .pjmanifest.json the host scans before dlopen.
 pj_emit_plugin_manifest(parser_data_tamer_plugin
   FAMILY        message_parser
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Integration test ---
 add_executable(data_tamer_parser_test tests/data_tamer_parser_test.cpp)
 target_compile_features(data_tamer_parser_test PRIVATE cxx_std_20)
 target_compile_options(data_tamer_parser_test PRIVATE ${PJ_WARNING_FLAGS})

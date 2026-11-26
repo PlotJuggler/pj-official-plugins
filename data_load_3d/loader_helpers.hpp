@@ -8,13 +8,12 @@
 
 namespace pj3d {
 
-// {"builtin_object_type":"kPointCloud"} / {"builtin_object_type":"kMesh3D"} —
-// PJ4 classifies an ObjectStore topic for rendering by this key (NOT media_class).
+// PJ4 classifies an ObjectStore topic for rendering by the `builtin_object_type` key (NOT media_class).
 inline std::string builtinObjectMetadata(PJ::sdk::BuiltinObjectType type) {
   return std::string(R"({"builtin_object_type":")") + std::string(PJ::sdk::name(type)) + R"("})";
 }
 
-// Lowercased extension including the dot, e.g. ".pcd". Empty if none.
+// Lowercased, with the dot (".pcd"); empty if none.
 inline std::string lowerExtension(const std::string& path) {
   const size_t slash = path.find_last_of("/\\");
   const size_t dot = path.find_last_of('.');
@@ -27,7 +26,6 @@ inline std::string lowerExtension(const std::string& path) {
   return ext;
 }
 
-// File stem: base name without directory or extension.
 inline std::string fileStem(const std::string& path) {
   const size_t slash = path.find_last_of("/\\");
   const size_t start = (slash == std::string::npos) ? 0 : slash + 1;

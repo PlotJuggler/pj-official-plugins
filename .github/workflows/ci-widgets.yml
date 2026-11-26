@@ -1,12 +1,11 @@
 name: CI Widgets
 
-# Widget-family libraries (widget_basic) are the only plugins that link Qt. They get their own
-# lane, with the official Qt named in QT_VERSION installed, so that every other CI lane stays
-# Qt-free; the Qt-free lanes skip them (see "List plugins" in ci-linux.yml). The host loads a widget
-# library only when it was built against the same Qt major.minor, which is why Qt comes from the
-# official installer and not from Conan or the distribution.
+# Widget-family libraries (widget_basic) are the only plugins that link Qt, so they get their own
+# lane with the official Qt from QT_VERSION; every other lane stays Qt-free and skips them (see
+# "List plugins" in ci-linux.yml). The host loads a widget library only if it was built against
+# the same Qt major.minor, hence the official installer rather than Conan or the distribution.
 #
-# Two legs only: Ubuntu 22.04 (the host needs GLIBCXX_3.4.30 and no newer) and Windows with MSVC
+# Two legs: Ubuntu 22.04 (the host needs GLIBCXX_3.4.30 and no newer) and Windows with MSVC
 # 14.44 (windows-2022, as in ci-windows.yml).
 
 on:

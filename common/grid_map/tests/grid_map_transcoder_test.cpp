@@ -356,9 +356,7 @@ TEST(GridMapTranscoderTest, CapsRejectedBeforeAllocation) {
   EXPECT_NE(res.error().find("layers"), std::string::npos) << res.error();
 }
 
-// ---------------------------------------------------------------------------
 // Foxglove Grid helpers
-// ---------------------------------------------------------------------------
 
 TEST(FoxgloveGridTest, PackedElementTypeMapping) {
   using D = PJ::sdk::PointField::Datatype;

@@ -1,14 +1,8 @@
-// v3.0 episode-shard reader — Arrow + Parquet implementation.
+// Reads each row of the `meta/episodes/chunk-XXX/file-NNN.parquet` shards into one `EpisodeShard` (data parquet
+// path, row range, per-camera video paths and windows) and one `EpisodeInfo`.
 //
-// Reads `meta/episodes/chunk-XXX/file-NNN.parquet` shards and, for each row,
-// populates one `EpisodeShard` (data parquet path + row range + per-camera
-// video paths and timestamp windows) and one `EpisodeInfo` (for the dialog
-// list) on the `DatasetModel`.
-//
-// Column names in the v3.0 episodes parquet use slash as separator
-// (`data/chunk_index`, `videos/{camera}/from_timestamp`, …) — verified
-// against `lerobot/example_hil_serl_dataset` on the Hub. The reader looks up
-// each column by exact name; missing required columns surface as an error.
+// Column names use a slash separator (`data/chunk_index`, `videos/{camera}/from_timestamp`, ...) and are looked up
+// by exact name; a missing required column is an error.
 
 #include "dataset_shards_v3.hpp"
 
@@ -37,7 +31,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-/// Locate a column by exact name. Returns nullptr if not found.
+/// nullptr if not found.
 std::shared_ptr<arrow::ChunkedArray> column(const arrow::Table& t, const std::string& name) {
   const int idx = t.schema()->GetFieldIndex(name);
   if (idx < 0) {
@@ -46,7 +40,6 @@ std::shared_ptr<arrow::ChunkedArray> column(const arrow::Table& t, const std::st
   return t.column(idx);
 }
 
-/// Required column: error if missing.
 PJ::Expected<std::shared_ptr<arrow::ChunkedArray>> requireColumn(const arrow::Table& t, const std::string& name) {
   auto c = column(t, name);
   if (c == nullptr) {
@@ -55,10 +48,8 @@ PJ::Expected<std::shared_ptr<arrow::ChunkedArray>> requireColumn(const arrow::Ta
   return c;
 }
 
-/// Required column with a declared Arrow type. Surfaces a clear error if the
-/// shard ever emits the column with a different physical type (e.g. int32
-/// instead of int64) — otherwise `static_pointer_cast` below would return 0
-/// silently and the importer would skip the episode without diagnostic.
+/// Errors on a different physical type (e.g. int32 instead of int64); otherwise `static_pointer_cast` below would
+/// read zeros and the importer would skip the episode silently.
 PJ::Expected<std::shared_ptr<arrow::ChunkedArray>> requireTypedColumn(
     const arrow::Table& t, const std::string& name, arrow::Type::type expected) {
   auto c_or = requireColumn(t, name);
@@ -73,7 +64,6 @@ PJ::Expected<std::shared_ptr<arrow::ChunkedArray>> requireTypedColumn(
   return c_or;
 }
 
-/// Extract one int64 value at row `i` from a chunked int64 column.
 int64_t int64At(const arrow::ChunkedArray& col, int64_t i) {
   for (const auto& chunk : col.chunks()) {
     const int64_t n = chunk->length();
@@ -85,7 +75,6 @@ int64_t int64At(const arrow::ChunkedArray& col, int64_t i) {
   return 0;
 }
 
-/// Extract one double value at row `i` from a chunked double column.
 double doubleAt(const arrow::ChunkedArray& col, int64_t i) {
   for (const auto& chunk : col.chunks()) {
     const int64_t n = chunk->length();
@@ -97,7 +86,6 @@ double doubleAt(const arrow::ChunkedArray& col, int64_t i) {
   return 0.0;
 }
 
-/// Extract one list<string> value at row `i` from a chunked list column.
 std::vector<std::string> stringListAt(const arrow::ChunkedArray& col, int64_t i) {
   std::vector<std::string> out;
   for (const auto& chunk : col.chunks()) {
@@ -121,7 +109,6 @@ std::vector<std::string> stringListAt(const arrow::ChunkedArray& col, int64_t i)
   return out;
 }
 
-/// Read a single `meta/episodes/.../*.parquet` shard into an Arrow table.
 PJ::Expected<std::shared_ptr<arrow::Table>> readShardTable(const fs::path& shard_path) {
   auto fs_or = arrow::io::ReadableFile::Open(pathToUtf8(shard_path));
   if (!fs_or.ok()) {
@@ -139,8 +126,7 @@ PJ::Expected<std::shared_ptr<arrow::Table>> readShardTable(const fs::path& shard
   return std::move(table_or).ValueUnsafe();
 }
 
-/// Walk `root/meta/episodes/` and return the shard parquets in (chunk, file)
-/// order. Empty list means there is no `meta/episodes/` directory.
+/// Shard parquets in (chunk, file) order; empty when there is no `meta/episodes/` directory.
 std::vector<fs::path> findEpisodeShards(const fs::path& root) {
   std::vector<fs::path> out;
   const fs::path episodes_dir = root / "meta" / "episodes";
@@ -206,11 +192,8 @@ PJ::Status loadV3EpisodeShards(const fs::path& root, DatasetModel& model) {
     }
     const auto tasks_col = column(table, "tasks");  // optional
 
-    // Pre-resolve per-camera column tuples once per shard. All four columns
-    // must be present for the camera to be usable; if any is missing the
-    // shard is malformed and we surface a clear error rather than silently
-    // dropping a declared camera (which would leave the user wondering why
-    // their feature does not appear in the catalog).
+    // Per-camera column tuples, resolved once per shard. All four columns must be present: a missing one is an
+    // error rather than a silently dropped camera.
     struct CamCols {
       std::shared_ptr<arrow::ChunkedArray> chunk_index;
       std::shared_ptr<arrow::ChunkedArray> file_index;

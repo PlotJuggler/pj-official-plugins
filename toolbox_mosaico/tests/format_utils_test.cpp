@@ -1,8 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Unit tests for formatBytes. PJ3 parity (format_utils.h): 1024-based units
-// (gap #3), 1 decimal for KB/MB/GB, integer for raw bytes, empty for
+// Unit tests for formatBytes: 1024-based units, 1 decimal for KB/MB/GB, integer for raw bytes, empty for
 // non-positive.
 
 #include "../src/format_utils.h"

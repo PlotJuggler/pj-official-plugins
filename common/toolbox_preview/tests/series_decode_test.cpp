@@ -1,8 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// Unit tests for the type gate and the Arrow value-column decoder. Both are pure, so
-// these run against stack arrays with no toolbox host involved.
+// The type gate and the Arrow value-column decoder are pure: these tests run against stack arrays,
+// with no toolbox host.
 
 #include <gtest/gtest.h>
 
@@ -26,10 +26,6 @@ std::vector<std::int64_t> ramp(std::size_t n) {
   }
   return ts;
 }
-
-// ---------------------------------------------------------------------------
-// isPlottableType — the gate that decides what the source list may offer
-// ---------------------------------------------------------------------------
 
 TEST(IsPlottableType, EveryNumericTypeIsPlottable) {
   EXPECT_TRUE(isPlottableType(PrimitiveType::kFloat32));
@@ -63,10 +59,6 @@ TEST(IsPlottableType, IsUsableInAConstantExpression) {
   static_assert(!isPlottableType(PrimitiveType::kString));
   SUCCEED();
 }
-
-// ---------------------------------------------------------------------------
-// decodeSeriesAsDouble — numeric columns
-// ---------------------------------------------------------------------------
 
 TEST(DecodeSeries, Float64RoundTripsExactly) {
   const std::vector<double> values{-1.5, 0.0, 2.25};
@@ -138,10 +130,6 @@ TEST(DecodeSeries, Int64NegativeExtremeSurvives) {
   EXPECT_DOUBLE_EQ(out_values[0], static_cast<double>(-(1LL << 62)));
 }
 
-// ---------------------------------------------------------------------------
-// decodeSeriesAsDouble — bool, the packed-bitmap column
-// ---------------------------------------------------------------------------
-
 TEST(DecodeSeries, BoolReadsAcrossAByteBoundary) {
   // 10 samples => the read must continue into byte 1. A decoder that casts the buffer to
   // `const bool*` passes any test of <= 8 samples and fails here.
@@ -192,10 +180,6 @@ TEST(DecodeSeries, NumericHonoursAnElementOffset) {
   ASSERT_TRUE(decodeSeriesAsDouble(PrimitiveType::kInt32, values.data(), nullptr, 2, ts.data(), 3, out_ts, out_values));
   EXPECT_EQ(out_values, (std::vector<double>{30.0, 40.0, 50.0}));
 }
-
-// ---------------------------------------------------------------------------
-// decodeSeriesAsDouble — the validity bitmap
-// ---------------------------------------------------------------------------
 
 TEST(DecodeSeries, NullSampleIsDroppedTogetherWithItsTimestamp) {
   const std::vector<double> values{1.0, 999.0, 3.0};
@@ -251,10 +235,6 @@ TEST(DecodeSeries, NullValidityPointerMeansEverySampleIsValid) {
       decodeSeriesAsDouble(PrimitiveType::kFloat64, values.data(), nullptr, 0, ts.data(), 2, out_ts, out_values));
   EXPECT_EQ(out_values.size(), 2U);
 }
-
-// ---------------------------------------------------------------------------
-// decodeSeriesAsDouble — rejections
-// ---------------------------------------------------------------------------
 
 TEST(DecodeSeries, NonNumericTypesAreRejectedWithoutWriting) {
   const std::vector<double> values{1.0};

@@ -1,10 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// featuresDigest / featuresBlock (features_digest.hpp) and the built-in
-// reference (fallback_features.hpp), rendered against the benchmark fixtures
-// in docs/benchmarks/features/fixtures/ -- the same documents the eval runner
-// (features_eval_test.cpp) hands the model.
+// Renders against the benchmark fixtures in docs/benchmarks/features/fixtures/, the same documents
+// the eval runner (features_eval_test.cpp) hands the model.
 #include "features_digest.hpp"
 
 #include <gtest/gtest.h>
@@ -48,7 +46,6 @@ std::vector<std::string> lines(const std::string& text) {
   return out;
 }
 
-// The one line naming `name` as a plugin ("- <name> ..."), or "".
 std::string pluginLine(const std::string& text, const std::string& name) {
   for (const auto& line : lines(text)) {
     if (line.rfind("- " + name + " ", 0) == 0) {
@@ -58,8 +55,7 @@ std::string pluginLine(const std::string& text, const std::string& name) {
   return {};
 }
 
-// The heading a plugin line sits under: the nearest line above it that does
-// not start with "- ".
+// The nearest line above `line` that does not start with "- ".
 std::string sectionOf(const std::string& text, const std::string& name) {
   std::string heading;
   for (const auto& line : lines(text)) {
@@ -83,8 +79,6 @@ std::size_t count(const std::string& hay, const std::string& needle) {
 constexpr const char* kFooter =
     "Plugins are installed from File → Extensions Marketplace…; a plugin not listed here may still be distributed "
     "outside the Marketplace.";
-
-// --- Every fixture: shape and section order --------------------------------
 
 TEST(FeaturesDigest, EveryFixtureRendersItsSectionsInOrderWithNoBlankLine) {
   for (const char* name : {"host_bundled", "host_offline", "host_disabled"}) {
@@ -133,8 +127,8 @@ TEST(FeaturesDigest, LoadedPluginsStartWhereTheyAreAndAreNeverOfferedForInstall)
     const std::string line = pluginLine(text, name);
     ASSERT_FALSE(line.empty());
     EXPECT_EQ(sectionOf(text, name), "Plugins loaded (installed and ready to use):");
-    // "Install:" is this renderer's wording; a host summary may still
-    // mention installing a companion (Mosaico names the Arrow parser).
+    // "Install:" is this renderer's wording; a host summary may still mention installing a
+    // companion (Mosaico names the Arrow parser).
     EXPECT_EQ(line.find("Install:"), std::string::npos) << line;
     EXPECT_EQ(line.find("Extensions Marketplace"), std::string::npos) << line;
     EXPECT_NE(line.find(e["version"].get<std::string>()), std::string::npos) << line;
@@ -153,7 +147,7 @@ TEST(FeaturesDigest, AParserGetsItsNoPanelSentenceInsteadOfAStartRoute) {
       "panel of its own: chosen as the message format inside the data source that uses it (for example a stream's "
       "message serialization selector).");
 
-  // And without any entry point from the host, the same sentence.
+  // Without an entry point from the host, the same sentence.
   json doc = fixture("host_bundled");
   for (auto& e : doc["loaded"]) {
     if (e["id"] == "json-parser") {
@@ -182,8 +176,6 @@ TEST(FeaturesDigest, InstallWordingAppearsOnlyForMarketplaceEntries) {
       "and visualize live data. Install: File → Extensions Marketplace… → search \"MQTT Subscriber\" → Install; after "
       "installing: Sources panel → Stream → MQTT Subscriber → + (Start streaming)");
 }
-
-// --- installed_not_loaded ---------------------------------------------------
 
 TEST(FeaturesDigest, ADisabledPluginIsInstalledNotInstallable) {
   const std::string text = featuresDigest(readFixture("host_disabled"));
@@ -219,8 +211,6 @@ TEST(FeaturesDigest, EveryInactiveReasonIsWordedForTheUser) {
   EXPECT_EQ(pluginLine(text, "Beta"), "- Beta (toolbox): Not active: not compatible with this PlotJuggler version.");
   EXPECT_EQ(pluginLine(text, "Gamma"), "- Gamma (toolbox): Not active (reason not reported).");
 }
-
-// --- Registry footer --------------------------------------------------------
 
 std::string registryLine(const json& registry) {
   json doc = fixture("host_bundled");
@@ -268,8 +258,6 @@ TEST(FeaturesDigest, TheRegistryLineAppearsOnlyWhenTheMarketplaceWasNotChecked) 
   EXPECT_NE(offline.find("(the Marketplace server could not be reached: network error)"), std::string::npos);
   EXPECT_EQ(offline.find("Install:"), std::string::npos);
 }
-
-// --- Extensibility rules ----------------------------------------------------
 
 TEST(FeaturesDigest, UnknownFieldsAreIgnored) {
   json doc = fixture("host_bundled");
@@ -332,8 +320,6 @@ TEST(FeaturesDigest, AnUnreadableDocumentFallsBackToTheReferenceWithANote) {
   EXPECT_EQ(featuresDigest(R"({"schema": 0})"), unreadable);
 }
 
-// --- Precedence and determinism ---------------------------------------------
-
 TEST(FeaturesDigest, AnIdRepeatedAcrossListsIsShownOnlyInTheHighestOne) {
   json doc = fixture("host_bundled");
   json dup = doc["loaded"][0];  // CSV Loader
@@ -354,8 +340,6 @@ TEST(FeaturesDigest, TheSameDocumentAlwaysRendersTheSameTextWhateverItsPluginOrd
   }
   EXPECT_EQ(featuresDigest(doc.dump()), first);
 }
-
-// --- Budget -----------------------------------------------------------------
 
 TEST(FeaturesDigest, OverBudgetMarketplaceSummariesGoFirst) {
   const std::string doc = readFixture("host_bundled");
@@ -395,8 +379,8 @@ TEST(FeaturesDigest, ThenMarketplaceEntriesAreDroppedFromTheEndAndCounted) {
       << none_left;
   EXPECT_EQ(none_left.find("Install:"), std::string::npos);
   EXPECT_EQ(none_left.find("(list truncated)"), std::string::npos);
-  // Not fixture(...)["loaded"]: a range-for keeps only the subscript's result
-  // alive, so it would iterate the destroyed fixture.
+  // Not fixture(...)["loaded"]: a range-for keeps only the subscript's result alive, so it would
+  // iterate the destroyed fixture.
   for (const auto& e : no_available["loaded"]) {
     EXPECT_FALSE(pluginLine(none_left, e["name"].get<std::string>()).empty()) << e["name"];
   }
@@ -411,11 +395,8 @@ TEST(FeaturesDigest, WhatIsNeverDroppedIsCutVisiblyWhenItAloneExceedsTheBudget) 
   EXPECT_EQ(text.find("Install:"), std::string::npos);
 }
 
-// --- featuresBlock: which source the turn uses ------------------------------
-
-// A host that omits pj.feature_catalog.v1 leaves the view unbound, and the
-// turn carries the built-in reference with no note (the dialog-level twin is
-// in assistant_dialog_test.cpp).
+// A host that omits pj.feature_catalog.v1 leaves the view unbound, and the turn carries the built-in
+// reference with no note (the dialog-level twin is in assistant_dialog_test.cpp).
 TEST(FeaturesBlock, AnUnboundServiceUsesTheBuiltInReference) {
   EXPECT_EQ(
       featuresBlock(PJ::sdk::FeatureCatalogView{}, assistant_agent::kDefaultFeaturesBudgetChars), fallbackFeatures());
@@ -436,8 +417,6 @@ TEST(FeaturesBlock, ABoundServiceRendersTheHostDocument) {
   PJ::sdk::FeatureCatalogHost host([&doc]() { return doc; });
   EXPECT_EQ(featuresBlock(PJ::sdk::FeatureCatalogView(host.view()), 20000), featuresDigest(doc, 20000));
 }
-
-// --- The built-in reference -------------------------------------------------
 
 TEST(FallbackFeatures, ReadsLikeAHostListingAndNeverClaimsWhatIsInstalled) {
   const std::string text = fallbackFeatures();
@@ -473,8 +452,7 @@ TEST(FallbackFeatures, ReadsLikeAHostListingAndNeverClaimsWhatIsInstalled) {
         "Fast Fourier Transform", "Quaternion to RPY", "CSV/Parquet Exporter", "Transform Editor"}) {
     EXPECT_NE(text.find(plugin), std::string::npos) << plugin;
   }
-  // The live labels: three ASCII dots on menu actions, the ellipsis only on
-  // the Marketplace.
+  // The live labels: three ASCII dots on menu actions, the ellipsis only on the Marketplace.
   EXPECT_NE(text.find("File → Open Data File..."), std::string::npos);
   EXPECT_EQ(text.find("Open Data File…"), std::string::npos);
   EXPECT_EQ(text.find("Extensions Marketplace..."), std::string::npos);
@@ -487,9 +465,8 @@ TEST(FallbackFeatures, ANoteGoesRightAfterTheReferenceSentence) {
   EXPECT_EQ(all[3], "Built in:");
 }
 
-// The reference is never trimmed, so the smallest budget the setting allows
-// (resolveFeaturesBudgetChars) must hold it with either note featuresDigest
-// can attach.
+// The reference is never trimmed, so the smallest budget resolveFeaturesBudgetChars allows must hold
+// it with either note featuresDigest can attach.
 TEST(FeaturesBudget, TheMinimumHoldsTheBuiltInReference) {
   const std::size_t min = assistant_agent::kMinFeaturesBudgetChars;
   EXPECT_LE(fallbackFeatures().size(), min);

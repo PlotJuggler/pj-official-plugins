@@ -20,10 +20,6 @@
 #include "fft_dialog_ui.hpp"
 #include "fft_manifest.hpp"
 
-// ---------------------------------------------------------------------------
-// FFT dialog and datastore integration
-// ---------------------------------------------------------------------------
-
 namespace {
 
 using PJ::fft::FftResult;
@@ -75,11 +71,6 @@ bool visitNumericValues(const PJ::sdk::MaterializedSeriesView& series, Callback&
   return false;
 }
 
-// ---------------------------------------------------------------------------
-// FFTDialog — owns the UI state: preview chart, FFT chart, selected field,
-// controls, last FFT result (so "Save" can materialise it into the datastore).
-// ---------------------------------------------------------------------------
-
 /// A data source carrying a series: its catalog handle id and name.
 struct SeriesSource {
   uint32_t id = 0;
@@ -99,9 +90,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // The inputFrame wraps the label + chart area and is the drop target.
-    // Same pattern as the quaternion plugin — a plain QFrame that the
-    // DropEventFilter can find without QGraphicsView interference.
+    // inputFrame is a plain QFrame so the DropEventFilter finds it without QGraphicsView interference.
     wd.setDropTarget("inputFrame")
         .setChecked("check_dc_removal", remove_dc_)
         .setChecked("radio_all", !range_zoomed_)
@@ -116,8 +105,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
         .setEnabled("suffix_edit", !selected_fields_.empty())
         .setText("status_label", status_msg_);
 
-    // Input preview chart — interactive zoom enabled so the user can select a
-    // time range for "Only data in zoomed area" mode (mirrors PJ 3.x behavior).
+    // Zoom selects the time range for "Only data in zoomed area".
     wd.setChartZoomEnabled("chart_input");
     wd.setChartPlaceholder("chart_input", "Drag and drop one numeric time series here\n(from the left panel)");
     wd.setChartPlaceholder("chart_fft", "Calculate the spectrum to preview it here");
@@ -127,9 +115,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
       wd.clearChart("chart_input");
     }
 
-    // FFT output chart — single series (Hz vs amplitude). Pin it to orange
-    // (matplotlib tab10 color 1) so the frequency spectrum is visually
-    // distinct from the input preview above, matching PJ 3.x convention.
+    // Pinned to orange (matplotlib tab10 color 1), as in PJ 3.x, to tell the spectrum from the input preview.
     if (!last_result_.frequencies_hz.empty()) {
       std::vector<PJ::ChartPoint> pts;
       pts.reserve(last_result_.frequencies_hz.size());
@@ -147,8 +133,6 @@ class FFTDialog : public PJ::DialogPluginTyped {
 
     return wd.toJson();
   }
-
-  // --- Event handlers -------------------------------------------------------
 
   bool onDroppedItems(std::string_view widget_name, const std::vector<DroppedItem>& items) override {
     if (widget_name != "inputFrame") {
@@ -176,9 +160,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
       status_msg_ = "The dropped field is unavailable or is not numeric";
       return true;
     }
-    // This tool computes one spectrum at a time. A multi-selection drop chooses
-    // the first item explicitly instead of previewing several curves while
-    // silently computing only one of them.
+    // One spectrum at a time: a multi-item drop selects the first item instead of previewing several curves.
     const std::vector<std::string> replacement{name};
     if (selected_fields_ == replacement && selected_source_ == data_source) {
       return false;
@@ -223,7 +205,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
       range_zoomed_ = false;
       invalidateResult("Input range changed — calculate again");
       invokeRefreshPreview();
-      return true;  // range changed → refresh preview
+      return true;
     }
     if (name == "radio_zoomed" && checked) {
       if (range_zoomed_) {
@@ -258,8 +240,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
-  /// Called periodically by the dialog engine tick timer. Refresh the input
-  /// preview so the chart stays up to date while the non-modal dialog is open.
+  /// Tick timer: keeps the input preview current while the non-modal dialog is open.
   bool onTick() override {
     const auto now = std::chrono::steady_clock::now();
     if (now - last_preview_refresh_ < std::chrono::milliseconds(500)) {
@@ -296,8 +277,6 @@ class FFTDialog : public PJ::DialogPluginTyped {
     }
     return false;
   }
-
-  // --- Persistence ----------------------------------------------------------
 
   std::string saveConfig() const override {
     nlohmann::json j;
@@ -358,16 +337,13 @@ class FFTDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
-  // --- Public accessors used by FFTToolbox ----------------------------------
-
   /// `fields`: each numeric series name with the data sources carrying it.
   void setAvailableFields(std::map<std::string, std::vector<SeriesSource>> fields) {
     const auto previous_selection = selected_fields_;
     available_fields_ = std::move(fields);
 
-    // Keep the desired field pending while a layout's data source is absent.
-    // A late catalog update can then restore it instead of silently losing the
-    // selection during the first empty/partial snapshot.
+    // Keep the desired field pending while its data source is absent, so a late catalog update restores it
+    // instead of losing the selection on the first empty/partial snapshot.
     std::optional<std::string> desired_field;
     if (!selected_fields_.empty()) {
       desired_field = selected_fields_.front();
@@ -421,10 +397,7 @@ class FFTDialog : public PJ::DialogPluginTyped {
     status_msg_ = message;
   }
 
-  // Callbacks into the owning FFTToolbox — set once during dialogContext().
-  // The dialog holds them as std::function so the host-specific data-plane
-  // logic (readSeries, visibleRange, and spectrum export) stays in the
-  // toolbox, not in this UI-only class.
+  // Callbacks into FFTToolbox keep the data-plane calls (readSeries, spectrum export) out of this UI-only class.
   void setOnRefreshPreview(std::function<void()> cb) {
     on_refresh_preview_ = std::move(cb);
   }
@@ -532,9 +505,8 @@ class FFTDialog : public PJ::DialogPluginTyped {
   bool remove_dc_ = false;
   bool range_zoomed_ = false;
   WindowFunction window_ = WindowFunction::kHann;
-  // Zoom range in seconds relative to t0_common (set by onChartViewChanged).
-  // An empty range is distinct from "all data" and cannot overflow when
-  // converted back to nanoseconds.
+  // Zoom range in seconds relative to t0_common_ns_. An empty optional means "no zoom yet", distinct from "all data";
+  // seconds cannot overflow when converted back to nanoseconds.
   std::optional<std::pair<double, double>> zoom_range_;
   std::string suffix_ = "_FFT";
   std::string status_msg_;
@@ -547,11 +519,6 @@ class FFTDialog : public PJ::DialogPluginTyped {
   std::function<void()> on_save_;
 };
 
-// ---------------------------------------------------------------------------
-// FFTToolbox — wires the dialog to the datastore: reads fields, computes FFT,
-// optionally exports the result as frequency/amplitude columns in a new source.
-// ---------------------------------------------------------------------------
-
 class FFTToolbox : public PJ::ToolboxPluginBase {
  public:
   uint64_t capabilities() const override {
@@ -559,10 +526,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
   }
 
   PJ_borrowed_dialog_t getDialog() override {
-    // Wire the dialog's callbacks to this toolbox the first time getDialog
-    // is queried. The dialog invokes these on selection/drop/radio/button events
-    // so the host-side data plane (readSeries, visibleRange, spectrum export)
-    // runs in reaction to user input — not just at dialog-open time.
+    // Wired on first query so drop/radio/button events drive the data plane, not just dialog open.
     if (!callbacks_wired_) {
       dialog_.setOnRefreshPreview([this]() { refreshInputPreview(); });
       dialog_.setOnCompute([this]() {
@@ -648,10 +612,8 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     dialog_.setAvailableFields(std::move(fields));
   }
 
-  /// Rebuild the input preview chart for each selected field. Time is plotted
-  /// in seconds relative to the first sample of the first series.
-  /// Stores t0_common_ns_ so readField() can convert the zoom range back to
-  /// absolute nanoseconds when "Only data in zoomed area" is active.
+  /// Time is plotted in seconds relative to the first sample; sets t0_common_ns_ so readField() can map the zoom
+  /// range back to absolute nanoseconds.
   void refreshInputPreview() {
     std::vector<PJ::ChartSeries> series;
     if (!toolboxHostBound()) {
@@ -704,8 +666,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     dialog_.setInputPreview(std::move(series));
   }
 
-  /// Read one field's samples in the current range (all/zoomed) into vectors.
-  /// Returns false if the field is missing, non-numeric, or has no samples in range.
+  /// False if the field is missing, non-numeric, or has no samples in the current range (all/zoomed).
   bool readField(const std::string& field_path, std::vector<int64_t>& out_ts, std::vector<double>& out_vals) {
     auto host = toolboxHost();
     auto it = field_index_.find({dialog_.selectedSource(), field_path});
@@ -730,8 +691,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
       if (!dialog_.zoomRange()) {
         return false;
       }
-      // The chart x-axis shows time in seconds relative to t0_common_ns_.
-      // Convert the zoom range back to absolute nanoseconds for filtering.
+      // The chart x-axis is seconds relative to t0_common_ns_.
       const auto [zoom_min, zoom_max] = *dialog_.zoomRange();
       const long double range_min = static_cast<long double>(t0_common_ns_) + zoom_min * 1.0e9L;
       const long double range_max = static_cast<long double>(t0_common_ns_) + zoom_max * 1.0e9L;
@@ -778,7 +738,6 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
       return;
     }
 
-    // Compute the spectrum for the tool's single selected field.
     const std::string& field_path = selected.front();
     std::vector<int64_t> ts;
     std::vector<double> vals;
@@ -815,7 +774,6 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
     dialog_.setStatus(status.str());
   }
 
-  /// Export the last FFT result as paired frequency_hz and amplitude columns.
   void saveLastResult() {
     if (!toolboxHostBound()) {
       return;
@@ -847,10 +805,8 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
       return;
     }
 
-    // Write FFT output as (frequency_hz, amplitude) pairs using the generic
-    // record API with a synthetic row-index timestamp.
-    // The generic record API currently has no ScatterXY primitive, so preserve
-    // both axes as explicit columns and label the UI action as an export.
+    // (frequency_hz, amplitude) rows with a row-index timestamp: the record API has no ScatterXY primitive, so
+    // both axes are explicit columns.
     for (size_t i = 0; i < result.frequencies_hz.size(); ++i) {
       auto ts = PJ::Timestamp{static_cast<int64_t>(i)};
       const PJ::sdk::NamedFieldValue fields[] = {
@@ -875,8 +831,7 @@ class FFTToolbox : public PJ::ToolboxPluginBase {
   // By data source and name: two recordings carry the same names.
   std::map<std::pair<uint32_t, std::string>, PJ::sdk::FieldHandle> field_index_;
   bool callbacks_wired_ = false;
-  // First timestamp (ns) of the first series in the last preview refresh.
-  // Used to convert chart zoom range (seconds relative to t0) back to absolute ns.
+  // First timestamp (ns) of the last preview refresh; origin of the chart's seconds axis.
   int64_t t0_common_ns_ = 0;
 };
 

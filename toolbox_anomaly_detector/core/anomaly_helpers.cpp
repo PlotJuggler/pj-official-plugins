@@ -10,10 +10,6 @@
 
 namespace anomaly_core {
 
-// ---------------------------------------------------------------------------
-// Predefined function library
-// ---------------------------------------------------------------------------
-
 const std::vector<NamedFunction>& builtinFunctions() {
   static const std::vector<NamedFunction> kFunctions = {
       {"-- No function --",
@@ -268,10 +264,6 @@ std::vector<std::string> parseSeriesRefs(const std::string& code) {
   return refs;
 }
 
-// ---------------------------------------------------------------------------
-// JSON report
-// ---------------------------------------------------------------------------
-
 namespace {
 
 const char* severityName(PJ::sdk::MarkerSeverity s) {
@@ -375,10 +367,6 @@ Report markersToReport(const std::vector<PJ::sdk::PlotMarker>& markers, const Re
   report.total = static_cast<int>(markers.size());
   return report;
 }
-
-// ---------------------------------------------------------------------------
-// Portable rule file
-// ---------------------------------------------------------------------------
 
 std::optional<PJ::sdk::MarkerSeverity> severityFromString(const std::string& name) {
   if (name == "info") {

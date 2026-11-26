@@ -36,7 +36,6 @@ bool parseBinaryFrame(
   const uint8_t* compressed = data + 16;
   size_t compressed_size = size - 16;
 
-  // Decompress with ZSTD
   const auto checked_size = checkedDecompressedSize(ZSTD_getFrameContentSize(compressed, compressed_size));
   if (!checked_size) {
     return false;
@@ -49,7 +48,6 @@ bool parseBinaryFrame(
     return false;
   }
 
-  // Parse individual messages from decompressed payload
   const uint8_t* ptr = decompress_buffer.data();
   const uint8_t* end = ptr + result;
 

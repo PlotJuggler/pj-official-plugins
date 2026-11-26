@@ -77,9 +77,8 @@ DelimiterDetection DetectDelimiterEx(const std::string& first_line) {
     }
   }
 
-  // Ambiguous when >=2 hard delimiters are present. Space is deliberately
-  // excluded: it is only the delimiter when no hard delimiter appears, so a
-  // header like "time, value" (comma + trailing spaces) stays unambiguous.
+  // Space is deliberately not a hard delimiter: it is only the delimiter when none appears, so "time, value" stays
+  // unambiguous.
   const int hard_present = (comma_count >= 1 ? 1 : 0) + (semicolon_count >= 1 ? 1 : 0) + (tab_count >= 1 ? 1 : 0);
   const char delim = best != nullptr ? best->delim : ',';
   return {delim, hard_present >= 2};
@@ -91,11 +90,7 @@ char DetectDelimiter(const std::string& first_line) {
 
 void SplitLine(const std::string& line, char separator, std::vector<std::string>& parts) {
   parts.clear();
-  // Accumulate each field character by character so a doubled quote ("") inside
-  // a quoted field collapses to a single literal quote (RFC 4180). The previous
-  // scalar quote_start/quote_end were reset on every quote toggle, so an escaped
-  // "" emitted only the last quoted segment — or an empty string for a field
-  // that ends on the escape.
+  // A doubled quote ("") inside a quoted field collapses to one literal quote (RFC 4180).
   std::string field;
   bool inside_quotes = false;
 
@@ -378,12 +373,9 @@ CsvParseResult ParseCsvData(std::istream& input, const CsvParseConfig& config, s
       }
 
       if (col_type.type != ColumnType::STRING) {
-        // Epoch auto-detection/scaling is meaningful only for the column chosen
-        // as the time axis (parsed separately above). A DATA column of large
-        // integers that merely falls in an epoch range — a byte counter, an id,
-        // a fixed-point sensor value — must keep its raw value, not be silently
-        // divided by 1e3/1e6/1e9. So parse epoch-typed data columns as plain
-        // numbers here.
+        // Epoch scaling applies only to the time-axis column (parsed above). A data column of large integers that
+        // merely falls in an epoch range (byte counter, id, fixed-point value) must keep its raw value, not be
+        // divided by 1e3/1e6/1e9, so epoch-typed data columns parse as plain numbers.
         ColumnTypeInfo value_type = col_type;
         if (value_type.type == ColumnType::EPOCH_SECONDS || value_type.type == ColumnType::EPOCH_MILLIS ||
             value_type.type == ColumnType::EPOCH_MICROS || value_type.type == ColumnType::EPOCH_NANOS) {

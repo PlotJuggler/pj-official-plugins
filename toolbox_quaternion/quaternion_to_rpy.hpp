@@ -42,7 +42,6 @@ class QuaternionToRPYConverter {
     double qz = quat[2];
     double qw = quat[3];
 
-    // Normalize if needed.
     double norm2 = (qw * qw) + (qx * qx) + (qy * qy) + (qz * qz);
     if (std::abs(norm2 - 1.0) > std::numeric_limits<double>::epsilon()) {
       double inv = 1.0 / std::sqrt(norm2);
@@ -52,21 +51,17 @@ class QuaternionToRPYConverter {
       qw *= inv;
     }
 
-    // Roll (x-axis rotation).
     double sinr_cosp = 2.0 * (qw * qx + qy * qz);
     double cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy);
     double roll = std::atan2(sinr_cosp, cosr_cosp);
 
-    // Pitch (y-axis rotation).
     double sinp = 2.0 * (qw * qy - qz * qx);
     double pitch = (std::abs(sinp) >= 1.0) ? std::copysign(kHalfPi, sinp) : std::asin(sinp);
 
-    // Yaw (z-axis rotation).
     double siny_cosp = 2.0 * (qw * qz + qx * qy);
     double cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz);
     double yaw = std::atan2(siny_cosp, cosy_cosp);
 
-    // Unwrap.
     if (index != 0 && unwrap_) {
       applyUnwrap(roll, prev_roll_, roll_offset_);
       applyUnwrap(pitch, prev_pitch_, pitch_offset_);

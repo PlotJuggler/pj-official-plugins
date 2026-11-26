@@ -1,18 +1,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// notify — the runner's configurable notification layer (Task F, deliverable #6).
+// The runner's opt-in notification layer (`--notify <config.json>`): after the analysis, the report is
+// delivered to one or more sinks (webhook / email / command) when the configured policy fires. Kept OUT of
+// the portable rule JSON so a rule stays shareable and webhook secrets live only on the server.
 //
-// Opt-in via `--notify <config.json>`: after the analysis, the report is delivered
-// to one or more SINKS (webhook / email / command) when the configured policy
-// fires. Notifications are a DEPLOYMENT concern, kept OUT of the portable rule JSON
-// so a rule stays clean/shareable and webhook secrets live only on the server.
-//
-// The module is deliberately decoupled from anomaly_core: it operates on the
-// report's JSON text (the contract), not on the marker types, so the pure parts
-// (config parse, ${ENV} expansion, the fire predicate, payload building) unit-test
-// with no SDK/network. Only dispatch() touches libcurl (HTTP POST + SMTP) and
-// fork/exec (the command sink).
+// Decoupled from anomaly_core: it works on the report's JSON text, so the pure parts (config parse, ${ENV}
+// expansion, the fire predicate, payload building) unit-test with no SDK or network. Only dispatch() touches
+// libcurl (HTTP POST + SMTP) and fork/exec (the command sink).
 
 #pragma once
 
@@ -67,10 +62,6 @@ struct DispatchResult {
   }
 };
 
-// ---------------------------------------------------------------------------
-// Pure helpers (no network, no libcurl) — directly unit-testable.
-// ---------------------------------------------------------------------------
-
 /// Expand every `${VAR}` in `s` from the environment (unset -> empty string). A
 /// literal `$$` yields a single `$`. Used so secrets come from the env, not the file.
 [[nodiscard]] std::string expandEnv(const std::string& s);
@@ -92,10 +83,6 @@ struct DispatchResult {
 /// Build the RFC 5322 message text (From/To/Subject headers + body) an SMTP sink
 /// uploads. `body` is appended after the headers (typically the report JSON).
 [[nodiscard]] std::string buildEmailMessage(const Sink& sink, const std::string& subject, const std::string& body);
-
-// ---------------------------------------------------------------------------
-// Dispatch (touches libcurl + fork/exec).
-// ---------------------------------------------------------------------------
 
 /// Deliver `report_json` to every sink in `cfg`, IF `cfg.notify_on` fires for
 /// `report` (the parsed form of `report_json`). Never throws; per-sink failures are

@@ -21,10 +21,6 @@ namespace {
 namespace gpio = google::protobuf::io;
 using namespace pj_protobuf::wire;
 
-// foxglove.PointCloud / PackedElementField / LaserScan field numbers now come
-// from the descriptor-driven PointCloudFieldNumbers / LaserScanFieldNumbers
-// structs (defaults = official numbering), so the hardcoded constants are gone.
-
 /// Parse a foxglove.Pose submessage to decide whether it deviates from
 /// identity. Defaults are identity (zero translation, unit quaternion), so an
 /// omitted/empty pose reads as identity.
@@ -230,10 +226,8 @@ PJ::Expected<FoxglovePointCloudDecode> deserializeFoxglovePointCloudView(
         return PJ::unexpected(std::string("foxglove.PointCloud: failed to read data length"));
       }
       if (len > 0) {
-        // Zero-copy: alias the packed-point bytes in place instead of copying
-        // (a lidar scan is multi-MB). GetDirectBufferPointer hands back a
-        // pointer into the original `data` buffer; the BufferAnchor keeps it
-        // alive past this call.
+        // Zero-copy (a lidar scan is multi-MB): alias the packed-point bytes in place; the BufferAnchor keeps the
+        // original `data` buffer alive past this call.
         const void* ptr = nullptr;
         int avail = 0;
         if (!in.GetDirectBufferPointer(&ptr, &avail) || avail < static_cast<int>(len)) {

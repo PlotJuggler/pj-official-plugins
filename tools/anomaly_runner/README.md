@@ -1,19 +1,13 @@
-# anomaly_runner — headless Anomaly Detection pipeline (Task F)
+# anomaly_runner — headless anomaly detection
 
-A standalone CLI that runs the **same** Lua anomaly-detection rules you author and
-test in the PlotJuggler GUI (the *Marker Editor* toolbox), but with **no GUI** —
-against a data file on a server / in CI. It loads the file through a PlotJuggler
-DataSource plugin, runs the rule **in-process** via the `anomaly_core` engine, and
-prints a **structured JSON report** (pass/fail + anomalies + severities). The process
-**exit code is `0` on pass and `1` on fail**, so it slots straight into pipelines.
+A standalone CLI that runs the **same** Lua rules you author in the PlotJuggler GUI (the *Marker
+Editor* toolbox) against a data file on a server / in CI. It loads the file through a PlotJuggler
+DataSource plugin, runs the rule **in-process** via the `anomaly_core` engine, and prints a
+**JSON report**. The **exit code is `0` on pass and `1` on fail**, so it slots into pipelines.
 
-> **GUI vs. runner.** The GUI plugin is host-driven and Luau-free — it submits rules
-> to the PlotJuggler host, which runs them. This runner is **standalone**: it links
-> the `anomaly_core` engine and runs rules itself, so it needs no PlotJuggler host.
-> Both run the rule through the **same `runMarkerScript` core**, so a rule authored
-> in the GUI produces identical markers here. Author rules in the GUI; run them here
-> in CI. For the full picture (GUI + headless), see
-> [`toolbox_anomaly_detector/README.md`](../../toolbox_anomaly_detector/README.md).
+It needs no PlotJuggler host. Both it and the GUI run the rule through the same `runMarkerScript`
+core, so a rule authored in the GUI produces identical markers here. For the GUI side, see
+[`toolbox_anomaly_detector/README.md`](../../toolbox_anomaly_detector/README.md).
 
 ## Build
 
@@ -24,26 +18,15 @@ Built with the rest of the repo (`./build.sh`) or on its own:
 # binary: build/tools/anomaly_runner/Release/bin/anomaly_runner
 ```
 
-It links only the SDK plugin host (`plotjuggler_sdk::plugin_host`) + `anomaly_core`
-— no `pj_datastore`, no Qt. Data is captured by an in-memory write-host that
-implements the DataSource write ABI directly.
+It links only the SDK plugin host (`plotjuggler_sdk::plugin_host`) and `anomaly_core`: no Qt. Data is
+captured by an in-memory write-host that implements the DataSource write ABI directly.
 
-> **Known limitation — the runner is not yet reproducible from a clean checkout.**
-> Unlike the GUI plugin (which is Luau-free and builds from public packages alone),
-> the runner needs two Conan packages that are **not on any enabled remote** today:
->
-> - **`luau/0.700` with an `fPIC` option.** ConanCenter publishes `luau/0.700`, but its
->   recipe has no `fPIC` option, and the engine is linked into a shared library — so the
->   stock recipe either rejects `luau/*:fPIC=True` or yields a non-PIC static lib that
->   fails at link time. The recipe in use here is a locally patched export.
-> - **`pj_scripting_core/0.2.0`.** Built and exported from the PlotJuggler host repo
->   (`PJ4/pj_scripting/`); not published to a remote.
->
-> Until both are published (`plotjuggler-cloudsmith`), you must export them into your
-> local Conan cache yourself. This is also why the runner — and its `notify_test` — are
-> absent from CI: the plugin discovery in `.github/workflows/ci-linux.yml` only walks
-> `*/conanfile.py` entries that carry a `manifest.json`, and CI could not resolve these
-> two packages anyway. Publishing them is the prerequisite for putting the runner under CI.
+> **Not reproducible from a clean checkout.** The runner needs two Conan packages that are not on
+> any enabled remote: `luau/0.700` with an `fPIC` option (ConanCenter's recipe has none, and the
+> engine is linked into a shared library, so the stock recipe fails at link time; a locally patched
+> export is used) and `pj_scripting_core/0.2.0` (built from the PlotJuggler host repo,
+> `PJ4/pj_scripting/`). Export both into your local Conan cache yourself. For the same reason the
+> runner and its `notify_test` are not in CI.
 
 ## Usage
 
@@ -68,8 +51,7 @@ anomaly_runner --list-functions
                summary goes to stderr.
 - `--fail-on`  severity at/above which the run is a **fail** (default `error`).
 - `--notify <config.json>`  deliver the report to webhook / email / command sinks (see
-               *Configuring notifications*). Off by default — without it the runner behaves
-               exactly as before.
+               *Configuring notifications*). Off by default.
 - `--notify-strict`  treat a failed notification delivery as fatal: **exit `3`** (overriding
                the pass/fail verdict) so a pipeline can detect that an alert never went out.
 - `--csv-time-column <i>`  use CSV column `i` as the time axis (else row number).
@@ -198,8 +180,7 @@ and run unchanged here with `--rule`:
 }
 ```
 
-Version-control these alongside your data pipelines; the GUI and the runner are guaranteed
-to interpret them identically (both use the same `anomaly_core` engine).
+Version-control these alongside your data pipelines.
 
 ## Formats
 
@@ -223,18 +204,12 @@ to interpret them identically (both use the same `anomaly_core` engine).
   field `/data` under topic `/sensor/value` is `/sensor/value/data`, not `…//data`). If a
   `--source` isn't found, the runner prints the available series names to help you correct it.
 
-## Pipeline integration (stdout / exit code)
-
-The JSON-to-stdout-or-file + the exit code are the "stdout for CI/data pipelines"
-integration path: a CI step or pipeline gates on the exit code and consumes the JSON.
-This needs no configuration — it is how the runner behaves by default.
-
 ## Configuring notifications
 
-For "tell someone when a log is bad" (rather than gating a pipeline), pass
-`--notify <config.json>`. After the analysis the report is delivered to one or more
-**sinks**. Notifications are a **deployment** concern, kept **out of the rule file** — so a
-rule stays portable/shareable and the webhook token / SMTP password live only on the server.
+To tell someone when a log is bad (rather than gating a pipeline on the exit code), pass
+`--notify <config.json>`: after the analysis the report is delivered to one or more **sinks**.
+Notifications are kept **out of the rule file**, so a rule stays portable and the webhook token /
+SMTP password live only on the server.
 
 ```jsonc
 {

@@ -2,16 +2,12 @@
 #
 # Publish per-plugin status badge JSON to the orphan `badges` branch.
 #
-# Each CI workflow funnels its plugins' badge JSON (produced by
-# write_badge_json.py) into a single directory, then calls this script. The
-# script commits those files onto a dedicated, source-free `badges` branch that
-# shields.io reads via raw.githubusercontent.com.
+# Each CI workflow funnels its plugins' badge JSON (from write_badge_json.py) into one directory and
+# calls this script, which commits the files onto a source-free `badges` branch that shields.io
+# reads via raw.githubusercontent.com.
 #
-# Two workflows write here (CI Linux owns 20 plugins, CI ROS2 owns
-# data_stream_ros2). They touch disjoint files, but can still race on `git
-# push`. The retry loop below resyncs to the remote tip and reapplies our JSON,
-# so concurrent writers converge without losing each other's updates. A shared
-# job-level concurrency group makes simultaneous writes rare in the first place.
+# Several workflows write disjoint files but can still race on `git push`; the retry loop resyncs
+# to the remote tip and reapplies our JSON so concurrent writers converge.
 #
 # Required environment:
 #   GITHUB_REPOSITORY  owner/repo (provided by Actions)
@@ -30,9 +26,7 @@ SRC_DIR="$(cd "${SRC_DIR}" && pwd)"
 BRANCH="badges"
 COMMIT_MSG="chore(badges): update plugin status [skip ci]"
 
-# Remote to push to. Defaults to the authenticated GitHub URL built from the
-# Actions environment; BADGES_REMOTE_URL overrides it (used by local tests to
-# point at a scratch bare repo).
+# BADGES_REMOTE_URL overrides the authenticated GitHub URL (local tests point it at a scratch bare repo).
 if [[ -n "${BADGES_REMOTE_URL:-}" ]]; then
   REMOTE_URL="${BADGES_REMOTE_URL}"
 else

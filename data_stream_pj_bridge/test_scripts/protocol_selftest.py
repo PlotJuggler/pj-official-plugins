@@ -139,9 +139,7 @@ class Conn:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Individual checks (return a detail string, or raise AssertionError / SkipCheck)
-# ---------------------------------------------------------------------------
+# Checks return a detail string, or raise AssertionError / SkipCheck.
 
 def assert_response_envelope(resp: dict, expect_id):
     need(resp.get("protocol_version") == 1,

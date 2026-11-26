@@ -56,7 +56,7 @@ std::vector<std::string> splitCsvLine(const std::string& line) {
 std::vector<std::string> splitLines(const std::string& text) {
   std::vector<std::string> lines;
   std::string cur;
-  // Strip a UTF-8 BOM if present.
+  // Skip a UTF-8 BOM.
   std::size_t pos = 0;
   if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF && static_cast<unsigned char>(text[1]) == 0xBB &&
       static_cast<unsigned char>(text[2]) == 0xBF) {
@@ -68,7 +68,7 @@ std::vector<std::string> splitLines(const std::string& text) {
       lines.push_back(cur);
       cur.clear();
     } else if (c == '\r') {
-      // Handled by CRLF's following '\n', or a lone CR line ending.
+      // CRLF is ended by its '\n'; only a lone CR ends a line here.
       if (pos + 1 >= text.size() || text[pos + 1] != '\n') {
         lines.push_back(cur);
         cur.clear();
@@ -83,9 +83,7 @@ std::vector<std::string> splitLines(const std::string& text) {
   return lines;
 }
 
-/// ARUS-CSV "ID" column: an optional "0x"/"0X" prefix, then plain hex
-/// digits, parsed by the same hex-digit-run parser candump_parser.cpp uses
-/// for the frame id/data tokens.
+/// ARUS-CSV "ID" column: optional "0x" prefix, then hex digits.
 bool parseHexId(const std::string& text, std::uint32_t& value, std::size_t& hex_digit_count) {
   std::string_view s = text;
   if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
@@ -148,7 +146,7 @@ std::string formatDbcNumber(double value) {
       return text;
     }
   }
-  return text;  // precision 17 (the loop's last pass) always round-trips a double
+  return text;  // precision 17 always round-trips a double
 }
 
 PJ::Status arusCsvToDbc(const std::string& csv_text, std::string& out_dbc_text, std::string& warnings) {
@@ -191,10 +189,7 @@ PJ::Status arusCsvToDbc(const std::string& csv_text, std::string& out_dbc_text, 
   const std::size_t idx_name = static_cast<std::size_t>(col_name);
   const std::size_t max_col = std::max({idx_id, idx_bit_in, idx_bit_fin, idx_signed, idx_scale, idx_offset, idx_name});
 
-  // base_id -> its rows, in file order (so message/signal order is stable).
-  // A base id above 0x7FF (11-bit standard range) is extended -- derived
-  // from the key itself, not stored per-row: every row sharing a base id
-  // shares the same extended-ness by construction.
+  // base_id -> its rows in file order, keeping message/signal order stable.
   std::map<std::uint32_t, std::vector<CsvRow>> messages;
   int skipped = 0;
 
@@ -219,9 +214,7 @@ PJ::Status arusCsvToDbc(const std::string& csv_text, std::string& out_dbc_text, 
       skip("invalid hex ID '" + fields[idx_id] + "', skipped");
       continue;
     }
-    // Exactly 4 hex digits: base = first 3, the 4th digit is a per-row
-    // signal-index suffix (its value doesn't matter -- rows are grouped by
-    // base and re-numbered from bitIn/bitFin, not from this suffix).
+    // Exactly 4 hex digits: base = first 3; the 4th is a per-row signal-index suffix whose value is unused.
     const std::uint32_t base_id = (hex_digits == 4) ? (id_value >> 4) : id_value;
 
     const auto bit_in_opt = PJ::parseNumber<int>(fields[idx_bit_in]);
@@ -272,8 +265,7 @@ PJ::Status arusCsvToDbc(const std::string& csv_text, std::string& out_dbc_text, 
     const int dlc = max_bit_fin + 1;
     const bool extended = base_id > 0x7FFu;
     const std::uint32_t dbc_id = extended ? (base_id | 0x8000'0000u) : base_id;
-    // pj_can_dbc::hexId() renders "0xNN"; the message-name convention here
-    // has no "0x" prefix, so drop it.
+    // hexId() renders "0xNN"; the message name has no prefix.
     dbc << "BO_ " << dbc_id << " MSG_" << pj_can_dbc::hexId(base_id).substr(2) << ": " << dlc << " PJ\n";
     for (const auto& row : rows) {
       const std::string signal_name = sanitizeSignalName(row.name, used_names);

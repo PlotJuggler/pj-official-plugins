@@ -10,7 +10,6 @@ endif()
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# --- Plugin shared library ---
 add_library(parquet_source_plugin SHARED parquet_source.cpp)
 target_compile_features(parquet_source_plugin PRIVATE cxx_std_20)
 target_compile_options(parquet_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -30,14 +29,12 @@ pj_embed_manifest(parquet_source_plugin
   VAR_NAME kParquetManifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+# Sidecar .pjmanifest.json (manifest.json + abi_major + family) the host scans before dlopen.
 pj_emit_plugin_manifest(parquet_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Unit test for Parquet helpers ---
 add_executable(parquet_helpers_test tests/parquet_helpers_test.cpp)
 target_compile_features(parquet_helpers_test PRIVATE cxx_std_20)
 target_compile_options(parquet_helpers_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -48,7 +45,6 @@ target_link_libraries(parquet_helpers_test PRIVATE
 )
 add_test(NAME parquet_helpers_test COMMAND parquet_helpers_test)
 
-# --- End-to-end test: the built plugin imports a Parquet file through a recording host ---
 add_executable(parquet_source_test tests/parquet_source_test.cpp)
 target_compile_features(parquet_source_test PRIVATE cxx_std_20)
 target_compile_options(parquet_source_test PRIVATE ${PJ_WARNING_FLAGS})

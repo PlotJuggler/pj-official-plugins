@@ -17,19 +17,11 @@ namespace {
 
 using nlohmann::json;
 
-// Compares a rollout's recorded `cwd` against this run's `work_dir`. POSIX:
-// an exact match, like before -- the two are already in the same form.
-// Windows: normalizes both sides first, because the same directory can
-// legitimately be spelled several ways there and a rollout written by one
-// spelling must still be found by another:
-//   - a `\\?\`-prefixed path (the "long path" form some Windows APIs return)
-//     is not what `ensureWorkDir` hands out, so that prefix is stripped;
-//   - '/' and '\\' are both valid separators on Windows; normalized to '\\';
-//   - a single trailing separator is dropped (at most one -- this plugin
-//     never produces a doubled one, so trimming more would silently accept
-//     a path that is not actually the same directory);
-//   - the comparison itself is ASCII case-insensitive, matching the NTFS
-//     default of a case-insensitive (though case-preserving) filesystem.
+// Compares a rollout's recorded `cwd` against `work_dir`. POSIX: exact match. Windows
+// normalizes both sides, since one directory has several spellings: the `\\?\` long-path
+// prefix is stripped, '/' becomes '\\', one trailing separator is dropped (never more:
+// this plugin never produces a doubled one, and trimming more could accept a different
+// directory), and the comparison is ASCII case-insensitive like NTFS.
 bool sameCwd(const std::string& a, const std::string& b) {
 #if defined(_WIN32)
   const auto normalize = [](const std::string& raw) {
@@ -56,18 +48,14 @@ bool sameCwd(const std::string& a, const std::string& b) {
 #endif
 }
 
-// See codex_sessions.hpp's file comment: codex prepends these harness-injected
-// "user"-role messages before the real prompt (including the user's global
-// ~/.codex/AGENTS.md since 0.158), and nothing in the JSON marks them as
-// synthetic — the opening text is the only signal.
+// The opening text is the only signal; see codex_sessions.hpp.
 bool isHarnessInjectedUserText(const std::string& text) {
   return text.rfind("<environment_context>", 0) == 0 || text.rfind("<recommended_plugins>", 0) == 0 ||
          text.rfind("# AGENTS.md instructions", 0) == 0;
 }
 
-// The first block carrying a "text" field in a response_item message's
-// `content` array (Codex always shapes it as an array of typed blocks --
-// {"type":"input_text"/"output_text","text":...} -- never a bare string).
+// The first block with a "text" field in a response_item message's `content`, always
+// an array of typed blocks ({"type":"input_text"/"output_text","text":...}).
 std::optional<std::string> firstTextBlock(const json& content) {
   if (!content.is_array()) {
     return std::nullopt;
@@ -82,8 +70,6 @@ std::optional<std::string> firstTextBlock(const json& content) {
   return std::nullopt;
 }
 
-// Every `*.jsonl` under `dir`, recursing the YYYY/MM/DD layout Codex writes
-// its rollouts into.
 std::vector<std::filesystem::path> allRolloutFiles(const std::filesystem::path& dir) {
   std::vector<std::filesystem::path> out;
   std::error_code ec;
@@ -102,9 +88,8 @@ std::vector<std::filesystem::path> allRolloutFiles(const std::filesystem::path& 
   return out;
 }
 
-// Line 1's session id (payload.id) when it is a session_meta record whose cwd
-// matches `work_dir`; nullopt otherwise (the cheap reject for a file that
-// isn't even this cwd's, before the caller scans the rest of it).
+// Line 1's session id (payload.id) when it is a session_meta record whose cwd matches
+// `work_dir`; nullopt is the cheap reject before scanning the rest of the file.
 std::optional<std::string> sessionIdIfOurs(const std::string& first_line, const std::string& work_dir) {
   if (first_line.empty()) {
     return std::nullopt;
@@ -121,9 +106,8 @@ std::optional<std::string> sessionIdIfOurs(const std::string& first_line, const 
   return id.empty() ? std::nullopt : std::make_optional(id);
 }
 
-// The file whose name ends with `-<id>.jsonl`, or an empty path. Walks the
-// directory directly (unlike the listing path) so it can return on the first
-// match instead of building the full file list first.
+// The file whose name ends with `-<id>.jsonl`, or an empty path. Returns on the first
+// match instead of building the full file list.
 std::filesystem::path findRolloutFileById(const std::filesystem::path& sessions_dir, const std::string& id) {
   const std::string suffix = "-" + id + ".jsonl";
   std::error_code ec;
@@ -184,30 +168,29 @@ std::vector<ConversationSummary> listCodexConversations(
     summary.id = *id;
     std::optional<std::string> first_user_text;
 
-    // Same timestamp/type treatment for every record, including line 1
-    // (already read above to resolve `id`) -- so the file is opened and
-    // each line parsed exactly once.
+    // Line 1 (already read to resolve `id`) goes through here too, so each line is
+    // parsed once.
     const auto scanLine = [&](const std::string& record_line) {
       if (record_line.empty()) {
         return;
       }
       const json rec = json::parse(record_line, nullptr, /*allow_exceptions=*/false);
       if (!rec.is_object()) {
-        return;  // corrupt line: skip it, keep reading the rest of the file
+        return;
       }
       if (const auto ts = rec.find("timestamp"); ts != rec.end() && ts->is_string()) {
         const std::string& t = ts->get_ref<const std::string&>();
         if (summary.first_ts.empty()) {
           summary.first_ts = t;
         }
-        summary.last_ts = t;  // records are appended in order; last write wins
+        summary.last_ts = t;
       }
       if (rec.value("type", std::string{}) != "response_item") {
-        return;  // session_meta / event_msg / world_state / ...: not a message
+        return;
       }
       const auto& payload = rec.value("payload", json::object());
       if (!payload.is_object() || payload.value("type", std::string{}) != "message") {
-        return;  // reasoning / function_call / ...: not a message either
+        return;
       }
       const std::string role = payload.value("role", std::string{});
       if (role == "assistant") {
@@ -219,7 +202,7 @@ std::vector<ConversationSummary> listCodexConversations(
           }
         }
       }
-      // "developer": harness-injected, SKIP (never a title/transcript source).
+      // "developer" records are harness-injected: never a title/transcript source.
     };
 
     scanLine(line);
@@ -228,7 +211,7 @@ std::vector<ConversationSummary> listCodexConversations(
     }
 
     if (summary.assistant_messages == 0) {
-      continue;  // a cancelled turn or a probe run against this cwd, not a real conversation
+      continue;  // a cancelled turn or probe run, not a real conversation
     }
     if (first_user_text.has_value()) {
       summary.title = truncateTitle(stripCatalogPrefix(*first_user_text));
@@ -240,7 +223,7 @@ std::vector<ConversationSummary> listCodexConversations(
   }
 
   std::sort(out.begin(), out.end(), [](const ConversationSummary& a, const ConversationSummary& b) {
-    return a.last_ts > b.last_ts;  // ISO 8601 sorts lexicographically -- newest first
+    return a.last_ts > b.last_ts;  // ISO 8601 sorts lexicographically
   });
   return out;
 }
@@ -280,10 +263,10 @@ std::vector<ChatMessage> loadCodexTranscript(const std::filesystem::path& sessio
       if (const auto text = firstTextBlock(content); text.has_value() && !isHarnessInjectedUserText(*text)) {
         out.push_back({ChatMessage::Role::User, stripCatalogPrefix(*text)});
       }
-      continue;  // an injected context message carries no row of its own
+      continue;
     }
     if (role != "assistant" || !content.is_array()) {
-      continue;  // "developer": harness-injected, SKIP
+      continue;
     }
     for (const json& block : content) {
       if (!block.is_object() || block.value("type", std::string{}) != "output_text") {
@@ -301,7 +284,7 @@ std::vector<ChatMessage> loadCodexTranscript(const std::filesystem::path& sessio
 bool deleteCodexConversation(const std::filesystem::path& sessions_dir, const std::string& id) {
   const std::filesystem::path found = findRolloutFileById(sessions_dir, id);
   if (found.empty()) {
-    return true;  // already gone: a no-op success, like claude_sessions' deleteConversation
+    return true;  // already gone counts as success
   }
   std::error_code ec;
   std::filesystem::remove(found, ec);

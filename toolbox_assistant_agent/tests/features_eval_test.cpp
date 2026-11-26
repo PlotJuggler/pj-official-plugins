@@ -1,15 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Feature-awareness benchmark runner. Asks the real CLI the product questions
-// in docs/benchmarks/features/questions.json, once per fixture the question
-// names, and writes one JSONL line per reply for score.py in the same
-// directory. Opt-in, like ClaudeSmoke/CodexSmoke: it needs a logged-in CLI,
-// spends the user's subscription, and needs a running scratch PlotJuggler
-// with nothing loaded to serve the tools (the public endpoint, see
-// support/test_endpoint.hpp), so it is skipped unless
-// ASSISTANT_FEATURES_EVAL and the endpoint variables are set, and CI never
-// runs it.
+// Feature-awareness benchmark runner. Asks the real CLI the questions in
+// docs/benchmarks/features/questions.json, once per fixture the question names, and writes one JSONL
+// line per reply for score.py. Opt-in like ClaudeSmoke/CodexSmoke: it needs a logged-in CLI, spends
+// the user's subscription and needs a scratch PlotJuggler with nothing loaded to serve the tools
+// (the public endpoint, see support/test_endpoint.hpp). Skipped unless ASSISTANT_FEATURES_EVAL and
+// the endpoint variables are set; CI never runs it.
 //
 //   ASSISTANT_FEATURES_EVAL=claude|codex   backend to drive (required)
 //   ASSISTANT_FEATURES_EVAL_MODEL=<model>  default: sonnet for Claude, the CLI's own for Codex
@@ -22,11 +19,10 @@
 //                                                PlotJuggler started with --mcp writes both to
 //                                                <AppLocalData>/mcp-instances/<pid>.json)
 //
-// Each conversation is what the panel would send: the real backend (same
-// argv, so the same built-in tools withheld), the fixture rendered by the
-// real featuresDigest, an empty catalog, and composePayload inside the
-// backend. A question with a follow-up ("follows" in questions.json) is a
-// two-turn conversation. Run the binary directly to see progress:
+// Each conversation is what the panel would send: the real backend (same argv), the fixture rendered
+// by the real featuresDigest, an empty catalog, and composePayload inside the backend. A question
+// with a follow-up ("follows" in questions.json) is a two-turn conversation. Run the binary directly
+// to see progress:
 //   ASSISTANT_FEATURES_EVAL=claude ASSISTANT_FEATURES_EVAL_OUT=/tmp/claude.jsonl \
 //     build/toolbox_assistant_agent/Release/toolbox_assistant_agent/toolbox_assistant_agent_features_eval_test
 //   python3 -I docs/benchmarks/features/score.py /tmp/claude.jsonl
@@ -65,8 +61,7 @@ using assistant_agent::HarnessMemory;
 using assistant_agent::TurnTools;
 using nlohmann::json;
 
-// What catalogDigest says with nothing loaded: product questions are asked
-// before any data is opened.
+// What catalogDigest says with nothing loaded; product questions come before any data is opened.
 constexpr const char* kEmptyCatalog = "Loaded data: nothing is loaded yet.";
 
 std::set<std::string> splitIds(const std::string& csv) {
@@ -100,8 +95,7 @@ Turn runTurn(Backend& backend, const std::string& text, const TurnTools& tools) 
         turn.reply += e.text;
         break;
       case BackendEvent::Kind::ToolActivity:
-        // "name: error" is Codex reporting a call already counted when it
-        // started (codex_backend.cpp), not a second call.
+        // "name: error" is Codex reporting a call already counted at its start, not a second call.
         if (e.text.find(": ") == std::string::npos) {
           turn.tool_calls.push_back(e.text);
         }
@@ -184,8 +178,7 @@ void runEval(const Settings& settings, const PJ::sdk::McpEndpoint& endpoint) {
     };
     for (const auto& fixture_name : q["fixtures"]) {
       const std::string fixture = fixture_name.get<std::string>();
-      // The parent turn runs when it is selected itself, or as the setup of
-      // a selected follow-up asked against this fixture.
+      // The parent turn runs when selected itself, or as the setup of a selected follow-up.
       bool wanted = selected(q);
       for (const auto& child : children) {
         wanted = wanted || (selected(child) && asks(child, fixture));
@@ -254,7 +247,7 @@ TEST(FeaturesEval, AnswersTheProductQuestions) {
 
   if (settings.backend == "claude") {
     settings.cli = PJ::sdk::getEnv("ASSISTANT_CLAUDE_CLI").value_or("claude");
-    settings.model = model.value_or("sonnet");  // the panel's own default (assistant_dialog.cpp)
+    settings.model = model.value_or("sonnet");  // the panel's default (assistant_dialog.cpp)
     runEval<assistant_agent::ClaudeBackend>(settings, *endpoint);
   } else if (settings.backend == "codex") {
     settings.cli = PJ::sdk::getEnv("ASSISTANT_CODEX_CLI").value_or("codex");

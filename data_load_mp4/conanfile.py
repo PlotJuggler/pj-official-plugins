@@ -23,11 +23,9 @@ class DataLoadMp4Conan(ConanFile):
     )
     default_options = {
         "*:shared": False,
-        # FFmpeg: this plugin only OPENS the container to read metadata
-        # (creation_time, duration, codec name). It does not decode any frame
-        # — decoding happens later in the host via FileVideoSource. Keep the
-        # build lean and LGPL-clean: no encoders/muxers/devices/audio/codecs,
-        # only the mov demuxer + file protocol + codec-id-to-name table.
+        # FFmpeg only opens the container to read metadata and index access units; the host decodes.
+        # Keep the build lean and LGPL-clean: no encoders/muxers/devices/audio/codecs, only the mov
+        # demuxer + file protocol + codec-id-to-name table.
         "ffmpeg/*:avcodec": True,
         "ffmpeg/*:avformat": True,
         "ffmpeg/*:swscale": False,

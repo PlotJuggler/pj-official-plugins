@@ -24,26 +24,21 @@ namespace {
 
 constexpr size_t kMaxDatagramSize = 65507;  // max UDP payload (IPv4)
 
-// A datagram captured by the shared receiver and fanned out to each subscriber.
 struct PendingDatagram {
   std::vector<uint8_t> data;
   int64_t timestamp_ns;
 };
 
-// Per-stream inbox. Each UdpSource owns one; the shared endpoint copies every
-// received datagram into every inbox so concurrent streams all see all data.
+// Per-stream inbox: the shared endpoint copies every datagram into every inbox.
 struct UdpSubscriber {
   PJ::sdk::DrainQueue<PendingDatagram> queue;
 };
 
-// One real UDP socket per "address:port", shared by every UdpSource bound to
-// that endpoint. Linux delivers each unicast datagram to a single socket, so
-// two independent sockets on the same port would starve each other — the older
-// stream silently stops receiving (it "freezes"). Instead we keep a single
-// socket and fan each datagram out to all registered subscribers. This lets two
-// streams on the same port coexist, e.g. one parsing with embedded timestamps
-// and one without, both seeing the full data — the UDP analogue of giving each
-// MQTT stream a distinct client ID.
+// One UDP socket per "address:port", shared by every UdpSource bound to it.
+// Linux delivers each unicast datagram to a single socket, so two sockets on
+// the same port would starve each other (the older stream silently stops
+// receiving). One socket fans each datagram out to all subscribers instead, so
+// e.g. one stream with embedded timestamps and one without can share a port.
 class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint> {
  public:
   ~SharedUdpEndpoint() {
@@ -60,9 +55,8 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
     }
   }
 
-  // Create-or-get the shared endpoint for address:port. The first caller opens
-  // and binds the socket and starts the background io thread; later callers for
-  // the same endpoint reuse it.
+  // The first caller opens and binds the socket and starts the io thread; later
+  // callers for the same endpoint reuse it.
   static PJ::Expected<std::shared_ptr<SharedUdpEndpoint>> acquire(const std::string& address, uint16_t port) {
     const std::string key = PJ::sdk::composeHostPort(address, port);
     // A failed open destroys the endpoint under this lock, so ~SharedUdpEndpoint must never take registryMutex()
@@ -151,8 +145,7 @@ class SharedUdpEndpoint : public std::enable_shared_from_this<SharedUdpEndpoint>
     return PJ::okStatus();
   }
 
-  // Async receive chain on io_thread_. Each completion handler fans the datagram
-  // out to every subscriber's queue and immediately rearms.
+  // Runs on io_thread_: each completion fans the datagram out and rearms.
   void startAsyncReceive() {
     if (stopped_) {
       return;
@@ -230,7 +223,7 @@ class UdpSource : public PJ::StreamSourceBase {
     return PJ::okStatus();
   }
 
-  // onPoll() drains this stream's own inbox — never touches the network.
+  // Drains this stream's own inbox; never touches the network.
   PJ::Status onPoll() override {
     auto batch = subscriber_->queue.drain();
 

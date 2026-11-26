@@ -1,15 +1,14 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// Wiring tests for SeriesCatalog: that the type filter actually reaches names(), and that
-// the structure signature notices a field changing TYPE.
+// Wiring tests for SeriesCatalog: the type filter reaches names(), and the structure signature
+// notices a field changing TYPE.
 //
-// These cannot use PJ::testing::ToolboxTestStore: it hardcodes every field's catalog type
-// to FLOAT64 (toolbox_test_store.hpp, trampolineAcquireCatalogSnapshot) and has no typed
-// addField overload, so it can express neither a string nor a bool field — precisely the
-// two cases under test. Hence the hand-rolled host below, which implements only
-// acquire_catalog_snapshot; series reads are left failing on purpose, since what is being
-// asserted here is catalog classification, not decoding (that is series_decode_test).
+// PJ::testing::ToolboxTestStore cannot be used: it hardcodes every field's catalog type to
+// FLOAT64 (toolbox_test_store.hpp, trampolineAcquireCatalogSnapshot) and has no typed addField
+// overload, so it cannot express a string or bool field. The hand-rolled host below implements
+// only acquire_catalog_snapshot; series reads fail on purpose, since these tests assert catalog
+// classification, not decoding (series_decode_test).
 
 #include <gtest/gtest.h>
 #include <pj_base/plugin_data_api.h>
@@ -36,8 +35,8 @@ class FakeCatalogHost {
     topics_.push_back(Topic{std::move(topic_name), std::move(fields)});
   }
 
-  /// Retype one field in place, leaving every name and count untouched — the exact shape
-  /// that a signature blind to types would fail to notice.
+  /// Retypes one field in place, leaving every name and count untouched: the shape a signature
+  /// blind to types would miss.
   void retypeField(std::size_t topic_index, std::size_t field_index, PJ_primitive_type_t type) {
     topics_[topic_index].fields[field_index].type = type;
   }
@@ -119,8 +118,6 @@ class FakeCatalogHost {
   std::vector<PJ_field_info_t> field_infos_;
 };
 
-// ---------------------------------------------------------------------------
-
 TEST(SeriesCatalogFilter, OnlyPlottableFieldsAreOffered) {
   FakeCatalogHost host;
   host.addTopic(
@@ -147,8 +144,7 @@ TEST(SeriesCatalogFilter, UnspecifiedIsRejectedToo) {
 }
 
 TEST(SeriesCatalogFilter, ListedButUnreadableSeriesHasNoSamples) {
-  // "In names() but not in has()" must mean the host read failed — not that the type was
-  // unsupported, which is the ambiguity the filter removed.
+  // "In names() but not in has()" means the host read failed, not that the type was unsupported.
   FakeCatalogHost host;
   host.addTopic("t", {{"good", PJ_PRIMITIVE_TYPE_FLOAT64}});
 
@@ -157,10 +153,6 @@ TEST(SeriesCatalogFilter, ListedButUnreadableSeriesHasNoSamples) {
   EXPECT_EQ(catalog.names(), (std::vector<std::string>{"t/good"}));
   EXPECT_FALSE(catalog.has("t/good"));  // this fake never serves series data
 }
-
-// ---------------------------------------------------------------------------
-// Structure signature
-// ---------------------------------------------------------------------------
 
 TEST(SeriesCatalogSignature, RetypingAFieldTriggersARefresh) {
   // Regression test for a signature built only from source ids and per-topic field

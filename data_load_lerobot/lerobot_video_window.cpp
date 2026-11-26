@@ -12,7 +12,7 @@ EmitSlice resolveEmitSlice(
   slice.last_idx = units.empty() ? 0 : units.size() - 1;
   slice.origin_ns = units.empty() ? 0 : units.front().dts_ns;
   if (units.empty() || !start_ns.has_value()) {
-    return slice;  // v2.x: whole file, rebase to first DTS.
+    return slice;  // whole file (v2.x), rebased to the first DTS
   }
 
   const int64_t start = *start_ns;

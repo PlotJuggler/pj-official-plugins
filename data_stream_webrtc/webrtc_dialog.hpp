@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Discovery dialog for the WHEP multi-camera client. Polls the mediamtx
-// Control API (/v3/paths/list) on a worker thread while open (~1 Hz + manual
-// Refresh); manual path entry covers servers without the API. Selection is
-// restored by TEXT (path name) so the sortable table stays consistent. The
-// plugin model is the single source of truth via saveConfig/loadConfig.
+// Discovery dialog for the WHEP multi-camera client. Polls the mediamtx Control API (/v3/paths/list) on a worker
+// thread while open (~1 Hz + manual Refresh); manual path entry covers servers without the API. Selection is restored
+// by text (path name) so the sortable table stays consistent.
 #pragma once
 
 #include <atomic>
@@ -66,17 +64,14 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
   std::string serverUrl() const;
   std::string apiUrl() const;
 
-  // Whitespace-trimmed copy of a user-typed path.
   static std::string trimmedPath(std::string s);
-  // True if the path still carries whitespace/control bytes that could only
-  // fail later as an opaque URL error — reject at input time instead.
+  // Whitespace/control bytes would only fail later as an opaque URL error: reject at input time.
   static bool hasSpaceOrControl(const std::string& s);
 
   bool passesFilter(const std::string& path) const;
   bool isSelected(const std::string& path) const;
-  // True iff `path` is currently a visible row (catalog entry passing the
-  // filter, or a manual path not in the catalog passing the filter) — i.e. a
-  // row the host could report in onSelectionChanged. Caller holds catalog_mutex_.
+  // True iff `path` is a visible row (a catalog or manual entry passing the filter), i.e. one the host could report in
+  // onSelectionChanged. Caller holds catalog_mutex_.
   bool isRenderedLocked(const std::string& path) const;
   void startFetch();    // spawn the worker if none in flight
   void harvestFetch();  // join a finished worker, publish results
@@ -90,17 +85,15 @@ class WebrtcDialog : public PJ::DialogPluginTyped {
   std::string filter_;
   std::string filter_lower_;
 
-  // Catalog fetched from the Control API + fetch machinery. The worker thread
-  // writes fetch_* under catalog_mutex_ and sets fetch_done_; onTick harvests.
+  // The worker thread writes fetch_* under catalog_mutex_ and sets fetch_done_; onTick harvests.
   mutable std::mutex catalog_mutex_;
   std::vector<PJ::webrtc::WhepPathInfo> catalog_;
   std::string api_status_;
   std::vector<PJ::webrtc::WhepPathInfo> fetch_result_;
   std::string fetch_status_;
   std::thread fetch_thread_;
-  // Abort handle for the fetch in flight (fresh per startFetch): flipping it
-  // on reject/destroy bounds the fetch_thread_ join to milliseconds instead
-  // of the remaining pages' HTTP timeouts.
+  // Fresh per startFetch: aborting it on reject/destroy bounds the fetch_thread_ join to milliseconds instead of the
+  // remaining pages' HTTP timeouts.
   PJ::webrtc::HttpAbortPtr fetch_abort_;
   std::atomic<bool> fetch_done_{false};
   bool fetch_in_flight_ = false;

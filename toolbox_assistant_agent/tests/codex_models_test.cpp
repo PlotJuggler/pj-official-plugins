@@ -1,9 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// tests/fixtures/codex_models_cache.json is a synthetic file shaped like a real
-// ~/.codex/models_cache.json (the catalog Codex itself downloads and caches)
-// -- nothing here reads or writes the real file.
+// tests/fixtures/codex_models_cache.json is a synthetic file shaped like ~/.codex/models_cache.json;
+// nothing here reads or writes the real file.
 #include "codex_models.hpp"
 
 #include <gtest/gtest.h>
@@ -31,9 +30,8 @@ using toolbox_testing::ScopedEnv;
 TEST(ListCodexModels, KeepsOnlyListVisibilitySortedByPriorityWithComposedLabels) {
   const std::vector<ModelChoice> models = listCodexModels(ASSISTANT_CODEX_MODELS_FIXTURE);
 
-  // test-model-reserve (priority 3, "hide") and test-model-auto-review
-  // (priority 43, "hide") must both be absent -- neither is meant for a human
-  // to pick.
+  // test-model-reserve (priority 3, "hide") and test-model-auto-review (priority 43, "hide") must
+  // be absent: neither is meant for a human to pick.
   std::vector<std::string> ids;
   ids.reserve(models.size());
   for (const auto& m : models) {
@@ -101,9 +99,8 @@ TEST(CodexModelsCacheFile, ResolvesUnderCodexHomeThenHome) {
   }
 }
 
-// Windows only: HOME is not always set there, so this resolves through
-// codexHomeDir()'s USERPROFILE fallback the same as CodexSessionsDir's own
-// pin (codex_sessions_test.cpp).
+// Windows only: HOME is not always set there, so this resolves through codexHomeDir()'s USERPROFILE
+// fallback, as in codex_sessions_test.cpp.
 #if defined(_WIN32)
 TEST(CodexModelsCacheFile, FallsBackToUserProfileWhenHomeIsUnset) {
   ScopedEnv codex_home("CODEX_HOME", nullptr);

@@ -15,19 +15,17 @@
 
 namespace {
 
-/// mdf::BusType::CAN as an int (matches Mf4Reader::GroupInfo::bus_type).
+/// mdf::BusType::CAN as an int, as in GroupInfo::bus_type.
 constexpr int kCanBusType = 2;
 
-/// Deterministic, collision-free topic name for a measurement group.
 std::string uniqueTopicName(
     const mf4_detail::GroupInfo& group, std::size_t index, std::unordered_set<std::string>& used) {
   const std::string base = group.name.empty() ? (std::string("Group_") + std::to_string(index)) : group.name;
   return mf4_detail::dedupeName(base, used);
 }
 
-// The MF4 / MDF data source. Imports measurement channel groups as timeseries
-// (one topic per group, one field per channel) and, when DBC databases are
-// supplied, decodes CAN bus-logging groups into named physical signals.
+// One topic per measurement group, one field per channel; with DBC databases, CAN bus-logging groups are decoded
+// into named physical signals.
 class Mf4Source : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
@@ -38,9 +36,8 @@ class Mf4Source : public PJ::FileSourceBase {
     return PJ::borrowDialog(dialog_);
   }
 
-  // The dialog owns the config JSON round-trip; the host replaces the source
-  // config with the dialog's saveConfig() after accept, so delegating keeps a
-  // single source of truth (matches data_load_mcap/csv/parquet).
+  // The host replaces the source config with the dialog's saveConfig() after accept, so the dialog is the single
+  // source of truth.
   std::string saveConfig() const override {
     return dialog_.saveConfig();
   }
@@ -67,7 +64,6 @@ class Mf4Source : public PJ::FileSourceBase {
           PJ::DataSourceMessageLevel::kWarning, "MF4 file is not finalized; some data may be missing");
     }
 
-    // Load DBC database(s) for CAN decoding.
     pj_can_dbc::CanDecoder decoder;
     for (const auto& dbc : dialog_.dbcPaths()) {
       if (auto status = decoder.loadDbcFile(dbc); !status) {
@@ -78,9 +74,8 @@ class Mf4Source : public PJ::FileSourceBase {
 
     const auto& groups = reader.groups();
     std::unordered_set<std::string> used_topics;
-    // Keyed by (bus_channel, id, extended) packed numerically — same-id frames
-    // from different buses must stay in separate topics, and the hot per-frame
-    // lookup avoids building a string key.
+    // Keyed by (bus_channel, id, extended) packed numerically: same-id frames from different buses must stay in
+    // separate topics, and the per-frame lookup avoids building a string key.
     std::unordered_map<std::uint64_t, PJ::sdk::TopicHandle> can_topics;
     pj_can_dbc::SignalRowBuilder can_row_builder;
     std::vector<PJ::sdk::NamedFieldValue> row_fields;
@@ -91,8 +86,8 @@ class Mf4Source : public PJ::FileSourceBase {
     std::uint64_t undecodable_frames = 0;
     std::uint64_t skipped_invalid_time = 0;
 
-    // Progress in units of non-empty channel groups (per-group byte sizes are
-    // not known up front). Cancel is polled inside each group as well.
+    // Progress counts non-empty channel groups (per-group byte sizes are unknown up front); cancel is also polled
+    // inside each group.
     std::uint64_t total_groups = 0;
     for (const auto& group : groups) {
       total_groups += group.sample_count > 0 ? 1 : 0;
@@ -101,7 +96,6 @@ class Mf4Source : public PJ::FileSourceBase {
     std::uint64_t groups_done = 0;
     std::uint64_t rows_seen = 0;
     bool cancelled = false;
-    // Poll cadence for isStopRequested inside a group's row/frame stream.
     constexpr std::uint64_t kCancelPollMask = 4095;
 
     for (std::size_t gi = 0; gi < groups.size(); ++gi) {
@@ -167,7 +161,6 @@ class Mf4Source : public PJ::FileSourceBase {
         continue;
       }
 
-      // Measurement group.
       if (!group.has_master) {
         ++skipped_no_master;
         continue;
@@ -180,7 +173,7 @@ class Mf4Source : public PJ::FileSourceBase {
       const PJ::sdk::TopicHandle topic_handle = *topic;
 
       const auto field_names = reader.valueChannelNames(gi);
-      // Pre-register fields with their column types (parallel to field_names).
+      // Register fields with their column types, parallel to field_names.
       std::size_t fi = 0;
       for (const auto& channel : group.channels) {
         if (channel.is_master || channel.type == PJ::PrimitiveType::kUnspecified) {

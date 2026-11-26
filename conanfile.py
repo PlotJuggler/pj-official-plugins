@@ -2,8 +2,7 @@ import os
 
 from conan import ConanFile
 
-# Single source of truth for the plotjuggler_sdk version: the SDK_VERSION file at the
-# repo root, read live so the pin lives in exactly one place. Edit it with
+# The only plotjuggler_sdk pin: the SDK_VERSION file at the repo root. Edit it with
 # scripts/bump_core_version.py.
 _SDK_VERSION = (
     open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "SDK_VERSION"))
@@ -13,12 +12,9 @@ _SDK_VERSION = (
 
 
 class PjOfficialPluginsConan(ConanFile):
-    """Full-repository dependency superset (every plugin's third-party deps).
+    """Full-repository dependency superset, used by `build.sh` with no argument and by full CI builds.
 
-    Used by `build.sh` with no argument and by the scheduled/manual full builds.
-    Per-plugin builds use each plugin's own conanfile.py instead.
-    On Linux the aggregate builds Arrow with the full Flight stack (see configure())
-    so toolbox_mosaico builds there too, not only via its own per-plugin recipe.
+    Per-plugin builds use each plugin's own conanfile.py.
     """
 
     settings = "os", "compiler", "build_type", "arch"
@@ -31,14 +27,9 @@ class PjOfficialPluginsConan(ConanFile):
         "paho-mqtt-cpp/1.6.0",
         "cppzmq/4.11.0",
         "protobuf/6.33.5",
-        # Pinned to lz4/1.9.4 to match arrow/26.0.1's exact lz4 dependency: arrow's
-        # recipe hard-requires lz4/1.9.4 once with_lz4=True, which configure() turns
-        # on for the Linux Flight build. They MUST stay equal there — a newer lz4
-        # collides with arrow's pin (Conan version conflict) and re-splits Arrow into
-        # a second build. On non-Linux (Flight off) arrow pulls no lz4, so this pin is
-        # standalone for the lean plugins (e.g. data_load_mcap). data_load_mcap's OWN
-        # per-plugin recipe still pins lz4/1.10.0; that artifact is built separately
-        # and is unaffected. Bump only in lockstep with arrow's lz4 pin.
+        # Must equal arrow/26.0.1's own lz4 pin (it hard-requires lz4/1.9.4 once with_lz4=True, which
+        # the Linux Flight build enables); a newer lz4 conflicts and re-splits Arrow into a second
+        # build. Bump only in lockstep with arrow. data_load_mcap's own recipe pins lz4/1.10.0.
         "lz4/1.9.4",
         "zstd/1.5.7",
         "date/3.0.4",
@@ -52,24 +43,20 @@ class PjOfficialPluginsConan(ConanFile):
         "pocketfft/0.0.0.cci.20240801",
         "lua/5.4.6",
         "sol2/3.5.0",
-        # libcurl powers anomaly_runner's notification sinks. (pj_scripting_core — the
-        # Luau engine — is NOT required here: the GUI Marker Editor is host-driven /
-        # Luau-free, and the headless runner is built separately via its own recipe with
-        # -DPJ_BUILD_ANOMALY_RUNNER=ON.)
+        # anomaly_runner's notification sinks. pj_scripting_core is not required here: the runner
+        # builds via its own recipe.
         "libcurl/8.23.0",
         # Not 1.0.21: its ARM NEON code fails with GCC on aarch64 (fixed in 1.0.22).
         "libsodium/1.0.22",
-        # data_load_mf4: mdflib (vendored via CPM) links zlib + expat, provided
-        # here from Conan. zlib/1.3.2 is inside arrow/26.0.1's zlib range (no conflict).
+        # data_load_mf4: mdflib (via CPM) links zlib + expat from Conan; zlib/1.3.2 is inside
+        # arrow/26.0.1's zlib range.
         "zlib/1.3.2",
         "expat/2.10.0",
         f"plotjuggler_sdk/{_SDK_VERSION}",
     )
 
-    # Build-context protobuf so the Conan protoc (6.33.5) lands on the build
-    # PATH and protobuf_generate()'s find_program(protoc) in parser_protobuf
-    # resolves to it, NOT the system /usr/bin/protoc (3.21) — whose generated C++
-    # is ABI-incompatible with the libprotobuf 6.x headers we link against.
+    # Puts the Conan protoc on PATH so parser_protobuf's protobuf_generate() does not pick the system
+    # /usr/bin/protoc (3.21), whose generated C++ is ABI-incompatible with the libprotobuf 6.x headers.
     tool_requires = ("protobuf/6.33.5",)
 
     default_options = {
@@ -90,11 +77,9 @@ class PjOfficialPluginsConan(ConanFile):
         "libdatachannel/*:with_websocket": True,
         "libdatachannel/*:with_nice": False,
         "libdatachannel/*:with_ssl": "openssl",
-        # FFmpeg (data_load_mp4 / data_load_lerobot): those plugins only OPEN the container to read metadata
-        # (creation_time, duration, codec name). It does not decode any frame
-        # — decoding happens later in the host via FileVideoSource. Keep the
-        # build lean and LGPL-clean: no encoders/muxers/devices/audio/codecs,
-        # only the mov demuxer + file protocol + codec-id-to-name table.
+        # FFmpeg (data_load_mp4 / data_load_lerobot) only opens the container to read metadata
+        # (creation_time, duration, codec name); the host decodes frames. Kept lean and LGPL-clean:
+        # only the mov demuxer, file protocol and codec-id-to-name table.
         "ffmpeg/*:avcodec": True,
         "ffmpeg/*:avformat": True,
         "ffmpeg/*:swscale": False,
@@ -124,9 +109,8 @@ class PjOfficialPluginsConan(ConanFile):
         "ffmpeg/*:with_vaapi": False,
         "ffmpeg/*:with_vdpau": False,
         "ffmpeg/*:with_xcb": False,
-        # The conan recipe rejects display/extra deps unless avdevice is on
-        # (e.g. with_xlib requires avdevice). We have avdevice=False, so all
-        # of these must be explicitly disabled.
+        # The recipe rejects display/extra deps unless avdevice is on (e.g. with_xlib), so with
+        # avdevice=False all of these must be disabled explicitly.
         "ffmpeg/*:with_xlib": False,
         "ffmpeg/*:with_libdrm": False,
         "ffmpeg/*:with_libxml2": False,
@@ -166,18 +150,10 @@ class PjOfficialPluginsConan(ConanFile):
         self.requires("boost/1.90.0", override=True)
 
     def configure(self):
-        # Enable Arrow's Flight stack on Linux AND Windows. toolbox_mosaico's Arrow
-        # Flight client (the Mosaico server connection) needs a real Flight target or
-        # its CMakeLists self-skips. Turning Flight on for the single shared
-        # arrow/26.0.1 here is what lets toolbox_mosaico build inside the AGGREGATE
-        # (./build.sh with no arg) in ONE pass, instead of needing a second,
-        # standalone Arrow-with-Flight build. These options are a strict superset of
-        # the lean parquet/snappy options, so the other Arrow consumers
-        # (data_load_parquet/lerobot) are unaffected.
-        #
-        # Windows was validated to build the whole Flight/gRPC stack under MSVC
-        # (VS2022 / msvc194), so it now builds mosaico too rather than self-skipping.
-        # macOS stays lean (Flight off) until it is likewise validated.
+        # toolbox_mosaico's Flight client needs a real Arrow Flight target or its CMakeLists
+        # self-skips; enabling Flight on the shared arrow lets it build inside the aggregate in one
+        # pass. A strict superset of the lean options, so other Arrow consumers are unaffected.
+        # macOS stays lean (Flight off): the Flight/gRPC stack is not validated there.
         if self.settings.os in ("Linux", "Windows"):
             self.options["arrow"].with_flight_rpc = True
             self.options["arrow"].with_grpc = True

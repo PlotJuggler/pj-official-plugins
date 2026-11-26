@@ -13,29 +13,17 @@
 
 namespace PJ::FoxgloveProtocol {
 
-/// Mutex-protected "latest wins" slot for the host's desired active-topic set
-/// (the payload of pj.topic_subscription.v1's set_active_topics).
-///
-/// set_active_topics() is entered on the HOST GUI thread; this is NOT a command
-/// queue — every call is a full, declarative replacement of the desired set, so
-/// only the MOST RECENT write matters. The poll thread drains it with take(),
-/// which atomically hands over whatever is pending and resets the slot to empty
-/// (nullopt), so a poll pass that finds nothing new is a cheap no-op.
+/// "Latest wins" slot for the host's desired active-topic set (set_active_topics, entered on the host GUI thread).
+/// Not a command queue: every write is a full replacement, so only the most recent matters. The poll thread drains it
+/// with take(), which hands over what is pending and resets the slot to nullopt.
 using DesiredTopicsSlot = PJ::sdk::LatestValueSlot<std::set<std::string>>;
 
-/// Result of computeSubscriptionDiff: which live subscriptions to drop and which
-/// advertised channels to newly subscribe, to reconcile the source's current
-/// subscriptions with a desired active-topic set.
 struct SubscriptionDiff {
   std::vector<uint32_t> to_unsubscribe;            ///< subscription ids to drop.
   std::vector<uint64_t> to_subscribe_channel_ids;  ///< advertised channel ids to newly subscribe.
 };
 
-/// Diff the source's live subscriptions against a desired active-topic set —
-/// declarative and complete, exactly as delivered by pj.topic_subscription.v1.
-/// Pure function (no I/O, no side effects): the demand-subscription apply logic
-/// in FoxgloveSource::onPoll is unit-testable through this without a live
-/// WebSocket.
+/// Pure diff of live subscriptions against the desired active-topic set (declarative and complete).
 ///
 /// @param current_subscriptions      sub_id -> channel_id, the source's live subscriptions.
 /// @param advertised_channel_topics  channel_id -> topic name, restricted to channels the
@@ -67,30 +55,22 @@ struct SubscriptionDiff {
   return diff;
 }
 
-/// Whether a channel's (schemaName, encoding) is a transform type (see
-/// common/always_included): its dialog row is locked and the advertise filter
-/// never hides it.
+/// A transform type (see common/always_included): its dialog row is locked and the advertise filter never hides it.
 [[nodiscard]] inline bool isTransform(const ChannelInfo& ch) {
   return PJ::AlwaysIncluded::matches(ch.schema_name, ch.encoding);
 }
 
-/// Whether `ch` should be advertised under an (optional) advertise filter —
-/// the dialog's saved channel selection, repurposed in demand mode as an
-/// allow-list rather than a subscribe list. An EMPTY selection means "no
-/// filter, advertise everything" (the default when nothing is selected). A
-/// transform channel always passes.
+/// The dialog's saved channel selection acts in demand mode as an allow-list; an empty selection means no filter.
+/// A transform channel always passes.
 [[nodiscard]] inline bool passesAdvertiseFilter(const ChannelInfo& ch, const std::vector<ChannelInfo>& selection) {
   return isTransform(ch) ||
          PJ::sdk::passesSelectionFilter(
              ch.topic, selection, [](const ChannelInfo& sel) -> const std::string& { return sel.topic; });
 }
 
-/// The channel_id -> topic map computeSubscriptionDiff() reconciles against:
-/// supported channels only, restricted by the SAME advertise filter
-/// buildAvailableTopics applies. Advertise and subscribe stay symmetric — a
-/// topic the filter hides from the host is never subscribed either, even if a
-/// (stale) desired set names it: the filter is explicit user configuration and
-/// outranks a leftover layout reference.
+/// Supported channels restricted by the same filter buildAvailableTopics applies. Advertise and subscribe stay
+/// symmetric: a topic the filter hides is never subscribed, even if a stale desired set names it (the filter is
+/// explicit user configuration and outranks a leftover layout reference).
 [[nodiscard]] inline std::map<uint64_t, std::string> filteredAdvertisedTopics(
     const std::map<uint64_t, ChannelInfo>& advertised_channels, const std::vector<ChannelInfo>& selection) {
   std::map<uint64_t, std::string> out;

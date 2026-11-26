@@ -15,14 +15,13 @@ portable JSON file that both sides consume.
               same Lua rule  ·  same PlotMarkers  ·  same result
 ```
 
-### How it runs (one paragraph)
+### How it runs
 
-The **GUI toolbox is host-driven and carries no script engine**: it submits the rule to
-PlotJuggler via the unified `pj.data_processors.v1` SDK service (`kind="markers"`), and the host runs it, publishes the markers,
+The **GUI toolbox carries no script engine**: it submits the rule to PlotJuggler via the
+`pj.data_processors.v1` SDK service (`kind="markers"`), and the host runs it, publishes the markers
 and re-runs them as data changes (the live preview is host-driven too). The **headless
-`anomaly_runner` is standalone**: it links the engine and runs the rule itself, so it needs no
-GUI. Both run the rule through the **same `runMarkerScript` core**, so a rule authored in the
-GUI produces identical markers in CI — only *who invokes the engine* differs.
+`anomaly_runner` is standalone**: it links the engine and runs the rule itself. Both go through the
+same `runMarkerScript` core, so a rule authored in the GUI produces identical markers in CI.
 
 ---
 
@@ -34,11 +33,8 @@ GUI produces identical markers in CI — only *who invokes the engine* differs.
    the left, or pick it from the source list (with the **Filter** box to narrow a long
    catalog). The preview chart fills with it.
 
-   Only series a rule can actually read are listed: numeric and boolean ones. **Text series
-   are not offered** — the detection engine works in doubles, and the host rejects a
-   non-plottable field as a rule input, so a text source could only ever fail. Markers are
-   drawn on the time-series plot overlay, and text series are not shown there either (they
-   render in the State Transitions strip).
+   Only numeric and boolean series are listed: the engine works in doubles and the host rejects
+   a non-plottable field as a rule input, so **text series are not offered**.
 3. Pick a **builtin function** (loads its Lua, targeting the selected series) or write your own
    rule in the editor. The preview overlays the rule's **detected markers live** (computed by
    the host). A rule error shows in the status line as `Rule error: …` so a blank overlay is
@@ -102,7 +98,7 @@ echo $?        # 0 = clean, 1 = anomalies → block the upload
 > exit, not the runner's. To gate on the runner, redirect (`> report.json`) and then
 > `echo $?`, or use `echo ${PIPESTATUS[0]}`.
 
-**Notifications & batch screening (Task F):** on a server the runner can deliver the report to
+**Notifications & batch screening:** on a server the runner can deliver the report to
 a webhook / email / command on a bad log via `--notify config.json`, and
 `tools/anomaly_runner/deploy/watch.sh` screens every uploaded MCAP automatically. Full CLI
 reference (report JSON schema, notify config, watcher): **[`tools/anomaly_runner/README.md`](../tools/anomaly_runner/README.md)**.
@@ -252,9 +248,8 @@ any other config.
 
 ```bash
 # from the repository root
-./build.sh toolbox_anomaly_detector   # the GUI plugin (Luau-free; host-driven)
-./build.sh tools/anomaly_runner       # the headless CLI (standalone engine)
+./build.sh toolbox_anomaly_detector   # the GUI plugin
+./build.sh tools/anomaly_runner       # the headless CLI
 ```
 
-The two-layer core (`core/anomaly_helpers`, Luau-free, linked by the plugin; `core/anomaly_core`,
-the engine, linked by the runner) is what lets the GUI plugin ship without a script engine.
+`core/anomaly_helpers` (Luau-free) is linked by the plugin; `core/anomaly_core` (the engine) only by the runner.

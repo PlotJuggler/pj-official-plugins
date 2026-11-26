@@ -79,12 +79,6 @@ TOPICS = [
 WIDTH, HEIGHT = 320, 240
 
 
-
-
-# ---------------------------------------------------------------------------
-# Encoding helpers
-# ---------------------------------------------------------------------------
-
 def make_jpeg(t: float) -> bytes:
     img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
     r = int(127 + 127 * math.sin(t * 0.5))
@@ -136,10 +130,6 @@ def build_binary_frame(messages: list) -> bytes:
     compressed = zstd.ZstdCompressor().compress(bytes(payload))
     return struct.pack("<IIII", MAGIC, len(messages), len(payload), 0) + compressed
 
-
-# ---------------------------------------------------------------------------
-# Server
-# ---------------------------------------------------------------------------
 
 class PjBridgeMixedServer:
     def __init__(self):

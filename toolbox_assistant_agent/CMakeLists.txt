@@ -4,21 +4,15 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 if(MSVC)
-  # Conformant preprocessor for the SDK's variadic plugin macros; keep windows.h
-  # from defining min/max. Directory scope = this
-  # plugin and its tests only (add_subdirectory). subprocess.hpp, private_file.hpp
-  # and cli_locator.hpp each carry a real Windows implementation (kernel32 only,
-  # no bcrypt/shell32), so this is a functional Windows build, not a
-  # compile-only one.
+  # Conformant preprocessor for the SDK's variadic plugin macros; keep windows.h from defining
+  # min/max. Directory scope: this plugin and its tests only.
   add_compile_options(/Zc:preprocessor)
   add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
-# Shared across the plugin target and every test executable that links a
-# real backend (assistant_dialog_test, claude_smoke_test, codex_backend_test)
-# — NOT an OBJECT library: the plugin target compiles with
-# ${PJ_WARNING_FLAGS} and the tests do not, so each target must still compile
-# its own copies of these translation units under its own flags.
+# Shared by the plugin and every test executable that links a real backend. Deliberately not an
+# OBJECT library: the plugin compiles with ${PJ_WARNING_FLAGS} and the tests do not, so each
+# target must compile its own copies under its own flags.
 set(ASSISTANT_AGENT_COMMON_SOURCES
   src/harness_workdir.cpp
   src/features_digest.cpp
@@ -81,11 +75,8 @@ pj_emit_plugin_manifest(toolbox_assistant_agent_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# ----------------------------------------------------------------------------
 # Tests
-# ----------------------------------------------------------------------------
 if(TARGET GTest::gtest_main)
-  # ChatSession: transcript rendering + turn-state machine. Pure, std-only.
   add_executable(toolbox_assistant_agent_chat_session_test
     tests/chat_session_test.cpp
   )
@@ -96,7 +87,6 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_chat_session_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentChatSessionTest COMMAND toolbox_assistant_agent_chat_session_test)
 
-  # UsageLedger: last turn's token counts + the status-label text. Pure.
   add_executable(toolbox_assistant_agent_usage_ledger_test
     tests/usage_ledger_test.cpp
   )
@@ -107,7 +97,6 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_usage_ledger_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentUsageLedgerTest COMMAND toolbox_assistant_agent_usage_ledger_test)
 
-  # SettingsStore adapter over pj.settings.v1 (fake in-memory settings host).
   add_executable(toolbox_assistant_agent_settings_store_test
     tests/settings_store_test.cpp
     src/settings_store.cpp
@@ -121,8 +110,6 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_settings_store_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentSettingsStoreTest COMMAND toolbox_assistant_agent_settings_store_test)
 
-  # ConversationState: the persisted conversation (settings-store round-trip,
-  # caps, defensive parsing) plus the fnv1a hash it shares with ClaudeMemory.
   add_executable(toolbox_assistant_agent_conversation_state_test
     tests/conversation_state_test.cpp
     src/conversation_state.cpp
@@ -137,13 +124,8 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_conversation_state_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentConversationStateTest COMMAND toolbox_assistant_agent_conversation_state_test)
 
-  # ClaudeSessions: the harness's own ~/.claude/projects/<slug>/*.jsonl store —
-  # listing/ordering/titles, transcript replay, the catalog-prefix strip, and
-  # tolerance of corrupt lines / unknown record types. Fixtures under
-  # tests/fixtures/sessions/ are copied to a temp dir per test (see
-  # ClaudeSessionsTest in the test file); nothing here reads or writes the real
-  # ~/.claude store. std + nlohmann, plus plotjuggler_sdk::base for
-  # PJ::sdk::getEnv (pj_base/sdk/platform.hpp) -- portable env-var reads.
+  # Fixtures under tests/fixtures/sessions/ are copied to a temp dir per test; nothing reads or
+  # writes the real ~/.claude store. plotjuggler_sdk::base is for PJ::sdk::getEnv.
   add_executable(toolbox_assistant_agent_claude_sessions_test
     tests/claude_sessions_test.cpp
     src/claude_sessions.cpp
@@ -160,8 +142,6 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_claude_sessions_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentClaudeSessionsTest COMMAND toolbox_assistant_agent_claude_sessions_test)
 
-  # ModelPicker: the settings combo's index<->value mapping (CLI default /
-  # Custom.../listed choices), both directions. Pure, std-only.
   add_executable(toolbox_assistant_agent_model_picker_test
     tests/model_picker_test.cpp
   )
@@ -172,8 +152,6 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_model_picker_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentModelPickerTest COMMAND toolbox_assistant_agent_model_picker_test)
 
-  # catalogDigest: the listing of loaded data every turn carries, against the
-  # SDK test store and the fake catalog hosts.
   add_executable(toolbox_assistant_agent_catalog_digest_test
     tests/catalog_digest_test.cpp
     src/catalog_digest.cpp
@@ -187,8 +165,7 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_catalog_digest_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentCatalogDigestTest COMMAND toolbox_assistant_agent_catalog_digest_test)
 
-  # featuresDigest / featuresBlock and the built-in reference, rendered
-  # against the feature-catalog benchmark fixtures.
+  # Renders against the feature-catalog benchmark fixtures.
   add_executable(toolbox_assistant_agent_features_digest_test
     tests/features_digest_test.cpp
     src/features_digest.cpp
@@ -205,7 +182,6 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_features_digest_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentFeaturesDigestTest COMMAND toolbox_assistant_agent_features_digest_test)
 
-  # Claude stream-json parser + NDJSON splitter. Pure, std + nlohmann only.
   add_executable(toolbox_assistant_agent_stream_json_test
     tests/stream_json_test.cpp
   )
@@ -218,12 +194,8 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_stream_json_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentStreamJsonTest COMMAND toolbox_assistant_agent_stream_json_test)
 
-  # AssistantDialog end-to-end: the conversations drawer against a REAL
-  # ClaudeBackend pointed at a throwaway HOME (fixtures copied into its
-  # ~/.claude/projects/<slug>/ store) — opening the drawer, switching to a
-  # resumed conversation, and deleting the active one — plus turns with and
-  # without pj.mcp_endpoint.v1. No `claude` CLI is spawned: a turn ends before
-  # the CLI lookup (no endpoint) or at it (a CLI name that does not resolve).
+  # End to end against a REAL ClaudeBackend pointed at a throwaway HOME. No `claude` CLI is
+  # spawned: a turn ends before the CLI lookup (no endpoint) or at it (a name that does not resolve).
   add_executable(toolbox_assistant_agent_assistant_dialog_test
     tests/assistant_dialog_test.cpp
     src/assistant_dialog.cpp
@@ -248,29 +220,21 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_assistant_dialog_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentAssistantDialogTest COMMAND toolbox_assistant_agent_assistant_dialog_test)
 
-  # A tiny standalone helper process (cat/exit/argv/cwd/env/sleep, plus a
-  # couple of Windows-only modes, plus a "fake CLI" mode of its own) spawned
-  # by subprocess_test.cpp AND by writeFakeCliScript
-  # (tests/support/backend_test_helpers.hpp) on Windows, where there is no
-  # shell-script stand-in for a CLI — see child_helper.cpp's own header
-  # comment. Not linked into any of this plugin's own targets, so it takes
-  # neither gtest nor plotjuggler_sdk as a dependency. Declared here, ahead
-  # of every target below that references it via ASSISTANT_CHILD_HELPER.
+  # Standalone helper process spawned by subprocess_test.cpp and, on Windows (no shell-script CLI
+  # stand-in), by writeFakeCliScript (tests/support/backend_test_helpers.hpp). Linked into no other
+  # target, so it needs neither gtest nor the SDK. Declared before the targets that reference it
+  # via ASSISTANT_CHILD_HELPER.
   add_executable(toolbox_assistant_agent_child_helper
     tests/support/child_helper.cpp
   )
-  # Windows only: reuses platform_util.hpp's utf8ToWide/wideToUtf8 instead of
-  # duplicating them (see child_helper.cpp's own include comment); harmless to
-  # add on every platform since platform_util.hpp is header-only.
+  # Windows reuses platform_util.hpp's utf8ToWide/wideToUtf8; harmless elsewhere (header-only).
   target_include_directories(toolbox_assistant_agent_child_helper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_features(toolbox_assistant_agent_child_helper PRIVATE cxx_std_20)
 
-  # Live Claude Code smoke — spawns the real `claude` CLI against a running
-  # PlotJuggler's MCP server. Opt-in (ASSISTANT_CLAUDE_SMOKE=1 plus
-  # ASSISTANT_MCP_URL/ASSISTANT_MCP_TOKEN); skips otherwise so CI stays offline. Also
-  # carries the offline fake-CLI resume/translation tests, whose Windows half
-  # needs ASSISTANT_CHILD_HELPER (see backend_test_helpers.hpp's
-  # writeFakeCliScript).
+  # Live smoke test: spawns the real `claude` CLI against a running PlotJuggler's MCP server.
+  # Opt-in (ASSISTANT_CLAUDE_SMOKE=1 plus ASSISTANT_MCP_URL/ASSISTANT_MCP_TOKEN), skipped otherwise
+  # so CI stays offline. Also holds the offline fake-CLI tests, which need ASSISTANT_CHILD_HELPER
+  # on Windows.
   add_executable(toolbox_assistant_agent_claude_smoke_test
     tests/claude_smoke_test.cpp
     src/claude_backend.cpp
@@ -289,12 +253,9 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_claude_smoke_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentClaudeSmokeTest COMMAND toolbox_assistant_agent_claude_smoke_test)
 
-  # Codex backend: command-line lock (the "no --tools """ spine), the fake-CLI
-  # resume/translation tests, and the parser (codex_stream.hpp) — mirrors
-  # claude_smoke_test.cpp's offline half plus stream_json_test.cpp, folded into
-  # one target per the brief. The live opt-in half (ASSISTANT_CODEX_SMOKE=1)
-  # lives in the same file, guarded the same way ClaudeSmoke.* is. Also needs
-  # ASSISTANT_CHILD_HELPER, for the same reason claude_smoke_test does above.
+  # Command-line lock, fake-CLI resume/translation tests and the codex_stream.hpp parser, plus the
+  # live opt-in half (ASSISTANT_CODEX_SMOKE=1), guarded like ClaudeSmoke.*. Needs
+  # ASSISTANT_CHILD_HELPER like claude_smoke_test.
   add_executable(toolbox_assistant_agent_codex_backend_test
     tests/codex_backend_test.cpp
     src/codex_backend.cpp
@@ -313,11 +274,9 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_codex_backend_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentCodexBackendTest COMMAND toolbox_assistant_agent_codex_backend_test)
 
-  # Feature-awareness benchmark runner: asks the real CLI the product
-  # questions in docs/benchmarks/features/questions.json against each fixture
-  # and writes the replies as JSONL for score.py. Opt-in
-  # (ASSISTANT_FEATURES_EVAL=claude|codex); skips otherwise, so CI stays
-  # offline and spends nothing.
+  # Feature-awareness benchmark runner: asks the real CLI the questions in
+  # docs/benchmarks/features/questions.json against each fixture and writes JSONL for score.py.
+  # Opt-in (ASSISTANT_FEATURES_EVAL=claude|codex); skipped otherwise, so CI stays offline and free.
   add_executable(toolbox_assistant_agent_features_eval_test
     tests/features_eval_test.cpp
     src/claude_backend.cpp
@@ -336,12 +295,8 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_features_eval_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentFeaturesEvalTest COMMAND toolbox_assistant_agent_features_eval_test)
 
-  # CodexSessions: the CLI's own ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
-  # store — listing/ordering/titles, transcript replay, the cwd filter, and
-  # tolerance of corrupt lines, exactly like claude_sessions_test.cpp. Fixtures under
-  # tests/fixtures/codex_sessions/ are copied to a temp dir per test; nothing
-  # here reads or writes the real ~/.codex store. plotjuggler_sdk::base is for
-  # PJ::sdk::getEnv (pj_base/sdk/platform.hpp), used by both sources here.
+  # Fixtures under tests/fixtures/codex_sessions/ are copied to a temp dir per test; nothing reads
+  # or writes the real ~/.codex store. plotjuggler_sdk::base is for PJ::sdk::getEnv.
   add_executable(toolbox_assistant_agent_codex_sessions_test
     tests/codex_sessions_test.cpp
     src/codex_sessions.cpp
@@ -359,11 +314,7 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_codex_sessions_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentCodexSessionsTest COMMAND toolbox_assistant_agent_codex_sessions_test)
 
-  # CliLocator: resolving a configured CLI name/path off this process's own
-  # PATH (nvm, ~/.local/bin, the other fallbacks), the child-PATH prepend an
-  # `#!/usr/bin/env node` shebang needs to find its own interpreter, and
-  # cannotFindCliMessage's npm_shim wording (cli_probe.hpp). cli_locator.hpp
-  # itself is header-only, so there is no extra source to list here.
+  # cli_locator.hpp is header-only, so no source is listed.
   add_executable(toolbox_assistant_agent_cli_locator_test
     tests/cli_locator_test.cpp
   )
@@ -376,12 +327,8 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_cli_locator_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentCliLocatorTest COMMAND toolbox_assistant_agent_cli_locator_test)
 
-  # CodexModels: the settings-combo catalog read from the CLI's own
-  # models_cache.json -- visibility filtering, priority ordering, label
-  # composition, and tolerance of a missing/corrupt file. Fixture is a
-  # synthetic cache (tests/fixtures/codex_models_cache.json).
-  # plotjuggler_sdk::base is for PJ::sdk::getEnv, pulled in transitively via
-  # codex_sessions.cpp.
+  # Fixture is a synthetic cache (tests/fixtures/codex_models_cache.json). plotjuggler_sdk::base is
+  # for PJ::sdk::getEnv, used by codex_sessions.cpp.
   add_executable(toolbox_assistant_agent_codex_models_test
     tests/codex_models_test.cpp
     src/codex_models.cpp
@@ -399,9 +346,7 @@ if(TARGET GTest::gtest_main)
   target_compile_features(toolbox_assistant_agent_codex_models_test PRIVATE cxx_std_20)
   add_test(NAME ToolboxAssistantAgentCodexModelsTest COMMAND toolbox_assistant_agent_codex_models_test)
 
-  # Platform layer: subprocess.hpp (runProcess) and private_file.hpp
-  # (writePrivateTempFile/removePrivateTempFile) against the real OS, on
-  # every platform this plugin now supports.
+  # subprocess.hpp and private_file.hpp against the real OS.
   add_executable(toolbox_assistant_agent_platform_test
     tests/subprocess_test.cpp
     tests/private_file_test.cpp

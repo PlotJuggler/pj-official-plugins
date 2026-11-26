@@ -20,12 +20,9 @@ server and streams real-time data via delegated ingest.
     channels) plot as one series per label
 - Configurable array size limits and embedded timestamp usage
 
-> **Note:** protobuf and json routing are intentional, additive enhancements
-> beyond the upstream PlotJuggler plugin, which handled only CDR/ros2msg. The
-> Foxglove WebSocket protocol is multi-encoding, so each channel is classified
-> and routed to the matching parser (`classifyChannel` in
-> `foxglove_protocol.hpp`). Encodings with no parser yet (`flatbuffer`) are
-> reported as a visible warning instead of being silently dropped.
+Each channel is classified and routed to its parser by `classifyChannel` in
+`foxglove_protocol.hpp`. Encodings with no parser (`flatbuffer`) are reported
+as a warning instead of being silently dropped.
 
 ## Configuration
 
@@ -72,8 +69,8 @@ the dialog's connection fields, retry and status line come from
 - Every transport event (open, text and binary frames, close, error) is copied into one
   bounded FIFO and applied in arrival order on the poll thread (on the dialog's tick while
   the dialog owns the connection), so no transport thread ever touches a parser binding.
-  (A connection adopted from the dialog is opened, and the selection subscribed, on the
-  first poll.)
+  A connection adopted from the dialog is opened, and the selection subscribed, on the
+  first poll.
 - The queue holds at most 512 MiB of unprocessed binary frames on the desktop and 64 MiB
   in the browser. When the poll thread falls behind, the OLDEST are dropped and a warning
   reports the running count, at most every 5 s; text frames (advertise, unadvertise,

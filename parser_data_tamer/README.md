@@ -17,7 +17,3 @@ are not supported. Enabled fields with opaque custom encodings cannot be decoded
 ## Encoding
 
 Registered as parser for `"data_tamer"` encoding.
-
-## Status
-
-Fully ported with no significant gaps.

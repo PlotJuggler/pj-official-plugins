@@ -16,12 +16,9 @@ constexpr std::uint32_t kErrFlag = 0x2000'0000u;
 constexpr std::uint32_t kExtIdMask = 0x1FFF'FFFFu;
 constexpr int kMaxClassicBytes = 8;
 
-/// "DROPCOUNT:" recognized both by parseLine()'s dispatch and by
-/// parseDropCount() itself (which re-derives its own start position from it).
 constexpr std::string_view kDropCountPrefix = "DROPCOUNT:";
 
-/// Hex digit lookup: -1 for non-hex bytes. Avoids isxdigit()'s
-/// locale-dependent behavior and the associated branch-per-call overhead.
+/// -1 for non-hex bytes; avoids isxdigit()'s locale dependence and per-call branching.
 constexpr std::array<std::int8_t, 256> makeHexTable() {
   std::array<std::int8_t, 256> table{};
   for (auto& v : table) {
@@ -44,8 +41,7 @@ bool isHexChar(char c) {
   return kHexTable[static_cast<unsigned char>(c)] >= 0;
 }
 
-/// Parses a run of hex-digit PAIRS ("DEADBEEF") into bytes. Returns false on
-/// an odd digit count or a non-hex character.
+/// Parses hex-digit PAIRS ("DEADBEEF"); false on an odd digit count or a non-hex character.
 bool parseHexBytes(std::string_view text, std::vector<std::uint8_t>& out) {
   if (text.size() % 2 != 0) {
     return false;
@@ -63,8 +59,7 @@ bool parseHexBytes(std::string_view text, std::vector<std::uint8_t>& out) {
   return true;
 }
 
-/// Parses one 2-hex-digit byte token ("A5"). Shared by parseScreenBody's two
-/// classic-data loops (bracket-DLC-counted and brace-until-non-byte).
+/// One 2-hex-digit byte token ("A5").
 std::optional<std::uint8_t> parseByteToken(std::string_view tok) {
   if (tok.size() != 2 || !isHexChar(tok[0]) || !isHexChar(tok[1])) {
     return std::nullopt;
@@ -81,8 +76,7 @@ std::size_t skipSpaces(std::string_view s, std::size_t pos) {
   return pos;
 }
 
-/// Next run of non-space characters starting at `pos`. Advances `pos` past
-/// it (and any trailing spaces). Empty token if `pos` is already at the end.
+/// Next run of non-space characters; advances `pos` past it and any trailing spaces.
 std::string_view nextToken(std::string_view s, std::size_t& pos) {
   pos = skipSpaces(s, pos);
   const std::size_t start = pos;
@@ -94,8 +88,7 @@ std::string_view nextToken(std::string_view s, std::size_t& pos) {
   return tok;
 }
 
-/// Parses the leading "(...)" timestamp token. `pos` lands just after the
-/// closing paren (and any trailing spaces) on success.
+/// Result of parsing the leading "(...)" token; parseTsToken() leaves `pos` after the closing paren and any spaces.
 struct TsToken {
   bool present = false;
   bool numeric = false;
@@ -153,8 +146,7 @@ TsToken parseTsToken(std::string_view s, std::size_t& pos) {
     for (std::size_t k = frac_start; k < i; ++k) {
       frac_val = frac_val * 10 + (inner[k] - '0');
     }
-    // Scale to nanoseconds by structure (candump prints 6 digits by default,
-    // 9 with -tN): pad on the right if narrower, truncate if wider.
+    // candump prints 6 digits (9 with -tN): pad on the right if narrower, truncate if wider.
     if (digits <= 9) {
       for (std::size_t k = digits; k < 9; ++k) {
         frac_val *= 10;
@@ -173,12 +165,9 @@ TsToken parseTsToken(std::string_view s, std::size_t& pos) {
   return t;
 }
 
-/// Classifies an already-hex-parsed id (log format's fixed-width id, or
-/// screen format's id token) as error/extended/standard, matching candump's
-/// own field widths: exactly 3 hex digits -> standard; exactly 8 -> extended
-/// or (if CAN_ERR_FLAG is set) an error frame. Other widths are accepted
-/// defensively (some producers don't zero-pad) and classified by value.
-/// Returns nullopt when `hex` is not a valid (<=8-digit) hex token.
+/// Classifies an id token as error/extended/standard like candump's field widths: 3 hex digits -> standard; 8 ->
+/// extended, or an error frame if CAN_ERR_FLAG is set. Other widths are accepted (some producers don't zero-pad)
+/// and classified by value. nullopt when `hex` is not a valid (<=8-digit) hex token.
 struct IdClass {
   bool is_error = false;
   bool extended = false;
@@ -201,15 +190,9 @@ std::optional<IdClass> classifyId(std::string_view hex) {
   return c;
 }
 
-/// Common prefix shared by both grammars: an optional leading space (screen
-/// format's " (ts) ..." always has one, via candump.c's
-/// `sprintf(afrbuf, " %s", ...)`; log format's never does -- tolerating it
-/// either way costs nothing), the timestamp, then the interface. Returns
-/// true and advances `pos` past the interface when the line should continue
-/// into the format-specific frame-body parse; returns false when `out` is
-/// already fully decided (kMalformed / kWallClockTs / no timestamp at all).
-/// DROPCOUNT/error-detail lines never reach here -- they carry no timestamp
-/// or leading-interface token at all (see parseLine()).
+/// Prefix shared by both grammars: optional leading space (screen format always has one, log format never; both
+/// are tolerated), timestamp, interface. Returns true with `pos` past the interface when the body parse should
+/// continue; false when `out` is already decided (kMalformed / kWallClockTs / no timestamp).
 bool parseCommonPrefix(std::string_view line, ParsedLine& out, std::size_t& pos) {
   pos = skipSpaces(line, 0);
   const TsToken ts = parseTsToken(line, pos);
@@ -234,9 +217,7 @@ bool parseCommonPrefix(std::string_view line, ParsedLine& out, std::size_t& pos)
   return true;
 }
 
-/// Finishes a log-format line (candump -l) whose shared prefix (timestamp +
-/// interface) has already been parsed into `out`; `pos` is just past the
-/// interface token.
+/// Log-format body; the prefix is already in `out` and `pos` is just past the interface.
 void parseLogBody(std::string_view line, ParsedLine& out, std::size_t pos) {
   const std::string_view body = nextToken(line, pos);
   const std::size_t hash = body.find('#');
@@ -262,13 +243,10 @@ void parseLogBody(std::string_view line, ParsedLine& out, std::size_t pos) {
   } else if (!rest.empty() && (rest.front() == 'R' || rest.front() == 'r')) {
     out.kind = LineKind::kRtr;  // "R", "R<requested-dlc-hex-digit>", or with a "_<hex>" len8_dlc suffix
   } else if (rest.find(':') != std::string_view::npos) {
-    // CAN XL: id_hex is actually "%02X%03X" (vcid+prio, 5 hex digits), and
-    // `rest` is "%02X:%02X:%08X#<data>" (flags:sdt:af#data) --
-    // lib.c snprintf_canframe ~L343-346.
+    // CAN XL: id_hex is "%02X%03X" (vcid+prio, 5 hex digits), `rest` is "%02X:%02X:%08X#<data>" (flags:sdt:af#data).
     out.kind = LineKind::kXl;
   } else {
-    // A classic 8-byte frame may carry an optional raw len8_dlc suffix
-    // "_<hex-digit>" after the data (lib.c ~L428-435, CC_DLC_DELIM='_').
+    // A classic 8-byte frame may carry a raw len8_dlc suffix "_<hex-digit>" after the data (CC_DLC_DELIM).
     std::string_view data_hex = rest;
     const std::size_t underscore = rest.find('_');
     if (underscore != std::string_view::npos) {
@@ -287,8 +265,7 @@ void parseLogBody(std::string_view line, ParsedLine& out, std::size_t pos) {
     out.data = std::move(data);
   }
 
-  // `-x` direction suffix: a trailing " R" or " T" token (RX/TX), distinct
-  // from RTR's un-spaced "#R" handled above.
+  // `-x` direction suffix: a trailing " R" or " T" token, distinct from RTR's un-spaced "#R".
   const std::string_view dir = nextToken(line, pos);
   if (dir == "R") {
     out.direction_known = true;
@@ -299,15 +276,10 @@ void parseLogBody(std::string_view line, ParsedLine& out, std::size_t pos) {
   }
 }
 
-/// Finishes an interactive-screen-output line whose shared prefix
-/// (timestamp + interface) has already been parsed into `out`; `pos` is
-/// just past the interface token.
+/// Screen-format body; the prefix is already in `out` and `pos` is just past the interface.
 void parseScreenBody(std::string_view line, ParsedLine& out, std::size_t pos) {
-  // `-x`: "  RX"/"  TX" then ALWAYS a 3-character flag pair (candump.c
-  // ~L897-909; the shapes are in the file banner above). Its embedded space
-  // makes it tokenize as two symbols; their value carries no information we
-  // need (FD/XL/error are already determined structurally below), so both
-  // are simply consumed.
+  // `-x`: "  RX"/"  TX" then ALWAYS a 3-character flag pair (see the file header). Its embedded space makes it
+  // tokenize as two symbols; FD/XL/error are determined structurally below, so both are just consumed.
   {
     std::size_t peek_pos = pos;
     const std::string_view tok = nextToken(line, peek_pos);
@@ -315,8 +287,8 @@ void parseScreenBody(std::string_view line, ParsedLine& out, std::size_t pos) {
       out.direction_known = true;
       out.is_tx = (tok == "TX");
       pos = peek_pos;
-      nextToken(line, pos);  // flag symbol 1 (e.g. "-"/"B"/"S")
-      nextToken(line, pos);  // flag symbol 2 (e.g. "-"/"E"/"R")
+      nextToken(line, pos);  // flag symbol 1
+      nextToken(line, pos);  // flag symbol 2
     }
   }
 
@@ -333,20 +305,15 @@ void parseScreenBody(std::string_view line, ParsedLine& out, std::size_t pos) {
   out.can_id = id_class->id;
   out.extended = id_class->extended;
 
-  // Error frames (8 hex digits, CAN_ERR_FLAG set) short-circuit here exactly
-  // as upstream's snprintf_long_canframe does: the DLC/data columns that
-  // follow ("...   ERRORFRAME", optionally more TAB-continuation lines from
-  // `-e`) carry no decodable payload, so there is nothing left to parse.
+  // Error frames short-circuit as in upstream's snprintf_long_canframe: the columns that follow ("   ERRORFRAME",
+  // optional `-e` TAB-continuation lines) carry no decodable payload.
   if (id_class->is_error) {
     out.kind = LineKind::kError;
     return;
   }
 
-  // The DLC/length marker's shape (not its value) tells classic/FD/XL apart
-  // -- lib.c always emits a fixed digit count per kind (shapes in the file
-  // banner above). A 3-digit id at this point is either a classic/FD CAN-ID
-  // or a CAN XL frame's priority field -- indistinguishable except by what
-  // follows.
+  // The marker's shape (not its value) tells classic/FD/XL apart: lib.c emits a fixed digit count per kind. A
+  // 3-digit id here is either a classic/FD CAN-ID or a CAN XL priority field, told apart only by what follows.
   const std::string_view marker = nextToken(line, pos);
   bool marker_ok = marker.size() >= 3;
   const bool is_brace = marker_ok && marker.front() == '{' && marker.back() == '}';
@@ -356,8 +323,7 @@ void parseScreenBody(std::string_view line, ParsedLine& out, std::size_t pos) {
     return;
   }
   const std::string_view digits = marker.substr(1, marker.size() - 2);
-  // "{H}" carries one HEX digit (raw len8_dlc code, up to 'F'); "[N...]"
-  // carries decimal digits only.
+  // "{H}" carries one HEX digit (raw len8_dlc code, up to 'F'); "[N...]" decimal digits only.
   for (char c : digits) {
     if ((is_brace && !isHexChar(c)) || (is_bracket && (c < '0' || c > '9'))) {
       marker_ok = false;
@@ -370,9 +336,7 @@ void parseScreenBody(std::string_view line, ParsedLine& out, std::size_t pos) {
   }
 
   if (is_bracket && digits.size() == 4) {
-    // CAN XL: "123 [0004] (00|11:22:12345678) AA BB ..." -- the parenthesized
-    // "(vcid|flags:sdt:af)" group follows as one more whitespace-delimited
-    // token (no embedded spaces in that format string).
+    // CAN XL: "123 [0004] (00|11:22:12345678) AA BB ..." -- the "(vcid|flags:sdt:af)" group is one token.
     const std::string_view xl_group = nextToken(line, pos);
     if (xl_group.size() < 2 || xl_group.front() != '(' || xl_group.back() != ')') {
       out.kind = LineKind::kMalformed;
@@ -390,8 +354,7 @@ void parseScreenBody(std::string_view line, ParsedLine& out, std::size_t pos) {
     return;
   }
 
-  // RTR: the classic "[N]"/"{H}" marker is followed by the two words
-  // "remote request" instead of data bytes (lib.c ~L579-582).
+  // RTR: the classic marker is followed by the words "remote request" instead of data bytes.
   {
     std::size_t peek_pos = pos;
     if (nextToken(line, peek_pos) == "remote") {
@@ -403,11 +366,9 @@ void parseScreenBody(std::string_view line, ParsedLine& out, std::size_t pos) {
     }
   }
 
-  // Classic data. "[N]" (bracket) reliably gives the byte COUNT (lib.c
-  // literally does `buf[offset+2] = len + '0'`), so a byte token that fails
-  // to parse there is a real error. "{H}" (brace, LEN8_DLC) does NOT: H can
-  // be a raw len8_dlc code (9-F) unrelated to how many bytes are actually
-  // present, so its payload length is derived from bytes present instead.
+  // Classic data. "[N]" reliably gives the byte COUNT (lib.c does `buf[offset+2] = len + '0'`), so an unparsable
+  // byte token there is a real error. "{H}" (LEN8_DLC) does not: H can be a raw len8_dlc code (9-F) unrelated to
+  // the bytes present, so the length is derived from the bytes present instead.
   std::vector<std::uint8_t> data;
   if (is_bracket) {
     const int dlc = digits[0] - '0';
@@ -441,11 +402,9 @@ void parseScreenBody(std::string_view line, ParsedLine& out, std::size_t pos) {
   out.data = std::move(data);
 }
 
-/// "DROPCOUNT: dropped %u CAN frame%s on '%s' socket (total drops %u)"
-/// (candump.c ~L840-845, both stdout logfrmt and the log file get the exact
-/// same text -- no timestamp, no leading interface token). Best-effort:
-/// a message shape that does not parse still classifies as kDropCount with
-/// dropped_count left at 0 and interface empty, never kMalformed.
+/// "DROPCOUNT: dropped %u CAN frame%s on '%s' socket (total drops %u)": no timestamp, no leading interface token,
+/// same text on stdout and in the log file. Best-effort: an unparsable message is still kDropCount with
+/// dropped_count 0 and an empty interface, never kMalformed.
 ParsedLine parseDropCount(std::string_view line) {
   ParsedLine out;
   out.kind = LineKind::kDropCount;
@@ -460,9 +419,6 @@ ParsedLine parseDropCount(std::string_view line) {
       count = count * 10 + static_cast<std::uint64_t>(line[pos] - '0');
       ++pos;
     }
-    // `count` is already 0 (ParsedLine's default) when no digit was seen at
-    // all, so assigning it unconditionally is exactly equivalent to gating
-    // on "did we see at least one digit".
     out.dropped_count = count;
   }
 
@@ -476,10 +432,7 @@ ParsedLine parseDropCount(std::string_view line) {
   return out;
 }
 
-/// Raw (seconds, fraction) -> nanoseconds, saturating on overflow. Shared by
-/// the public rawTimestampNs(const ParsedLine&) and the lightweight
-/// timestamp-prefix-only path below (detectTimeMode/prescanCandump's
-/// bookkeeping never needs a full ParsedLine to compute this).
+/// (seconds, fraction) -> nanoseconds, saturating on overflow.
 std::int64_t combineRawNs(std::int64_t seconds, std::int64_t fraction_ns) {
   constexpr std::int64_t kNsPerSecond = 1'000'000'000;
   constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
@@ -493,9 +446,7 @@ std::int64_t combineRawNs(std::int64_t seconds, std::int64_t fraction_ns) {
   return seconds * kNsPerSecond + fraction_ns;
 }
 
-/// Result of parsing ONLY the leading "(ts) iface" prefix -- everything
-/// detectTimeMode()'s bookkeeping needs, without paying for the frame-body
-/// parse (hex bytes, DLC markers, ...).
+/// Just the timestamp prefix: all detectTimeMode() needs, without the frame-body parse.
 struct TimestampPrefix {
   bool has_timestamp = false;
   bool is_wall_clock = false;  ///< present but non-numeric (`-tA`)
@@ -520,9 +471,7 @@ TimestampPrefix parseTimestampPrefix(std::string_view line) {
   return result;
 }
 
-/// Shared by detectTimeMode() and prescanCandump(): both accumulate
-/// "saw a numeric timestamp at all", "the first one's whole-seconds value",
-/// and "are they non-decreasing" the same way, then apply this one rule.
+/// The one rule shared by detectTimeMode() and prescanCandump().
 TimeModeDetection decideTimeMode(bool saw_numeric_timestamp, std::int64_t first_seconds, bool monotonic) {
   TimeModeDetection result;
   result.saw_numeric_timestamp = saw_numeric_timestamp;
@@ -599,11 +548,8 @@ ParsedLine parseLine(std::string_view line) {
     return out;  // kMalformed or kWallClockTs -- neither grammar's body ever runs
   }
 
-  // Try log format first (the common case for `-l` captures, and upstream's
-  // own hardcoded order) directly off the prefix just parsed above -- no
-  // second parseCommonPrefix call. Only on failure do we retry as screen,
-  // reusing the SAME already-parsed prefix (has_timestamp/ts_*/interface)
-  // instead of parsing it again from scratch.
+  // Log format first (common for `-l` captures, and upstream's order); only on failure retry as screen, reusing
+  // the already-parsed prefix.
   const std::size_t body_pos = pos;
   parseLogBody(line, out, pos);
   if (out.kind != LineKind::kMalformed) {
@@ -639,7 +585,7 @@ std::optional<std::int64_t> TimelineClock::advance(const ParsedLine& line) {
   }
   const std::int64_t raw_ns = rawTimestampNs(line);
   if (mode_ == TimeMode::kRelativeDelta) {
-    // Saturating, like combineRawNs: a corrupt line can carry a huge delta.
+    // Saturating like combineRawNs: a corrupt line can carry a huge delta.
     constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
     constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
     if (raw_ns > 0 && cumulative_ns_ > kMax - raw_ns) {
@@ -728,9 +674,6 @@ PrescanResult prescanCandump(std::istream& stream, std::uint64_t max_lines) {
     }
     ++result.lines_scanned;
 
-    // parseLine() handles the two shapes that sit OUTSIDE either per-frame
-    // grammar (a "DROPCOUNT:" notification -- no timestamp/interface at
-    // all; a `-e` TAB-continuation detail line) before trying log/screen.
     const ParsedLine parsed = parseLine(line);
 
     if (parsed.kind == LineKind::kMalformed) {
@@ -751,8 +694,6 @@ PrescanResult prescanCandump(std::istream& stream, std::uint64_t max_lines) {
       continue;
     }
 
-    // Format-label bookkeeping: parseLine() already recorded which grammar
-    // matched, so this never re-parses the line.
     if (parsed.grammar == Grammar::kLog) {
       ++result.log_shaped;
     } else if (parsed.grammar == Grammar::kScreen) {

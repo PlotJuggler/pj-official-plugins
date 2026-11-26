@@ -42,8 +42,6 @@ TEST(Ros2SchemaTypeNameTest, PreservesInterfaceCategory) {
   EXPECT_EQ(schemaTypeName("example_interfaces/srv/AddTwoInts_Request"), "example_interfaces/AddTwoInts_Request");
 }
 
-// --- DesiredTopicsSlot ---
-
 TEST(DesiredTopicsSlotTest, TakeOnEmptySlotReturnsNullopt) {
   DesiredTopicsSlot slot;
   EXPECT_FALSE(slot.take().has_value());
@@ -91,8 +89,6 @@ TEST(DesiredTopicsSlotTest, LastWriteFromAnotherThreadWins) {
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(*result, (std::set<std::string>{"/topic_99"}));
 }
-
-// --- computeRos2SubscriptionDiff ---
 
 TEST(ComputeRos2SubscriptionDiffTest, EmptyEverythingIsANoOp) {
   auto diff = computeRos2SubscriptionDiff({}, {}, {});
@@ -199,8 +195,6 @@ TEST(ComputeRos2SubscriptionDiffTest, TypeChangeForcesResubscribe) {
   EXPECT_EQ(diff.to_subscribe, (std::vector<std::string>{"/foo"}));
 }
 
-// --- passesAdvertiseFilter ---
-
 TEST(PassesAdvertiseFilterTest, EmptySelectionAdvertisesEverything) {
   EXPECT_TRUE(passesAdvertiseFilter("/any/topic", "std_msgs/msg/String", {}));
 }
@@ -211,7 +205,7 @@ TEST(PassesAdvertiseFilterTest, NonEmptySelectionRestrictsToSelection) {
   EXPECT_FALSE(passesAdvertiseFilter("/odom", "nav_msgs/msg/Odometry", selection));
 }
 
-// --- filteredDiscoveredTopics: the filter bounds SUBSCRIPTIONS, not just advertising ---
+// The filter bounds subscriptions, not just advertising.
 
 TEST(FilteredDiscoveredTopicsTest, FilteredOutDesiredTopicProducesNoSubscription) {
   std::map<std::string, std::string> discovered{
@@ -241,8 +235,6 @@ TEST(FilteredDiscoveredTopicsTest, LiveSubscriptionToNewlyFilteredTopicIsDropped
   EXPECT_EQ(diff.to_unsubscribe, (std::vector<std::string>{"/odom"}));
   EXPECT_TRUE(diff.to_subscribe.empty());
 }
-
-// --- splitTopicTypes ---
 
 TEST(SplitTopicTypesTest, SingleTypeTopicsPassThrough) {
   std::map<std::string, std::vector<std::string>> raw{
@@ -274,8 +266,6 @@ TEST(SplitTopicTypesTest, EmptyTypesListIsSkipped) {
   EXPECT_TRUE(split.single_type.empty());
 }
 
-// --- Transforms: never filtered out, locked in the dialog's topic table ---
-
 const std::map<std::string, std::string> kGraph = {
     {"/imu", "sensor_msgs/msg/Imu"},   {"/odom", "nav_msgs/msg/Odometry"},       {"/odom_raw", "nav_msgs/msg/Odometry"},
     {"/tf", "tf2_msgs/msg/TFMessage"}, {"/tf_static", "tf2_msgs/msg/TFMessage"},
@@ -303,7 +293,7 @@ TEST(TransformTopicsTest, TheAdvertiseFilterNeverHidesATransform) {
 }
 
 TEST(TransformTopicsTest, ASavedTfIsAnOrdinarySelectedTopic) {
-  // A config saved by an earlier version may list /tf: it filters like any selected topic.
+  // A saved selection may list /tf: it filters like any selected topic.
   const std::vector<std::pair<std::string, std::string>> selection = {{"/tf", "tf2_msgs/msg/TFMessage"}};
   EXPECT_FALSE(ros2_streamer::passesAdvertiseFilter("/imu", "sensor_msgs/msg/Imu", selection));
   EXPECT_EQ(ros2_streamer::filteredDiscoveredTopics(kGraph, selection).size(), 2U);

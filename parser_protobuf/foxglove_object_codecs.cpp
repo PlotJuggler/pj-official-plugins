@@ -118,7 +118,6 @@ struct SubMessage {
   }
 };
 
-// ---------------------------------------------------------------------------
 // Decode-robustness contract (deliberate, not accidental):
 //   * The nested readers below (geometry + scene/annotation primitives) are
 //     best-effort / LENIENT: each returns a plain value (not Expected) and
@@ -133,7 +132,6 @@ struct SubMessage {
 // This only affects corrupt/truncated payloads; well-formed Foxglove messages
 // always decode in full. Consumers must treat primitive fields (counts,
 // indices) as untrusted and bounds-check against the sibling arrays.
-// ---------------------------------------------------------------------------
 
 // --- field-loop sugar ------------------------------------------------------
 // scanSubMessage drives the loop the lenient readers share; the field* helpers
@@ -351,7 +349,7 @@ CompressedImageFieldNumbers resolveCompressedImageFieldNumbers(const google::pro
 }
 
 CameraCalibrationFieldNumbers resolveCameraCalibrationFieldNumbers(const google::protobuf::Descriptor* descriptor) {
-  CameraCalibrationFieldNumbers n;  // historical-hardcoded defaults (frame_id last)
+  CameraCalibrationFieldNumbers n;  // defaults put frame_id last
   n.timestamp = fieldNumberOr(descriptor, "timestamp", n.timestamp);
   n.width = fieldNumberOr(descriptor, "width", n.width);
   n.height = fieldNumberOr(descriptor, "height", n.height);
@@ -412,11 +410,9 @@ SceneUpdateFieldNumbers resolveSceneUpdateFieldNumbers(const google::protobuf::D
   return n;
 }
 
-// ===========================================================================
 // foxglove.FrameTransform -> sdk::FrameTransforms
 // { timestamp=1, parent_frame_id=2, child_frame_id=3, translation=4 Vector3,
 //   rotation=5 Quaternion }
-// ===========================================================================
 PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(
     const uint8_t* data, size_t size, const FrameTransformFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -462,14 +458,12 @@ PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(
   return out;
 }
 
-// ===========================================================================
 // foxglove.Odometry -> sdk::PosesInFrame (single pose)
 // { timestamp=1, frame_id=2, body_frame_id=3, pose=4 Pose, linear_velocity=5,
 //   angular_velocity=6, pose_covariance=7, velocity_covariance=8, metadata=9 }
 // Only timestamp / frame_id / pose are decoded; every other field is skipped.
 // The pose is "body_frame_id expressed in frame_id", so frame_id is the reference
 // frame of the emitted PosesInFrame — mirroring nav_msgs/Odometry.
-// ===========================================================================
 PJ::Expected<PJ::sdk::PosesInFrame> deserializeFoxgloveOdometry(
     const uint8_t* data, size_t size, const OdometryFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -506,10 +500,8 @@ PJ::Expected<PJ::sdk::PosesInFrame> deserializeFoxgloveOdometry(
   return out;
 }
 
-// ===========================================================================
 // foxglove.CompressedImage -> sdk::Image  (zero-copy data)
 // { timestamp=1, data=2 bytes, format=3 string, frame_id=4 string }
-// ===========================================================================
 PJ::Expected<PJ::sdk::Image> deserializeFoxgloveCompressedImageView(
     const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor, const CompressedImageFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -564,7 +556,6 @@ PJ::Expected<PJ::sdk::Image> deserializeFoxgloveCompressedImageView(
   return img;
 }
 
-// ===========================================================================
 // foxglove.RawImage -> sdk::Image  (zero-copy data, UNCOMPRESSED pixels)
 // Official numbering { timestamp=1, frame_id=2 string, width=3 fixed32,
 //   height=4 fixed32, encoding=5 string, step=6 fixed32, data=7 bytes }, but the
@@ -573,7 +564,6 @@ PJ::Expected<PJ::sdk::Image> deserializeFoxgloveCompressedImageView(
 // Unlike CompressedImage, the pixels are raw, so width/height/encoding/row_step
 // MUST be carried through for the consumer to interpret `data` (same contract as
 // a ROS sensor_msgs/Image — the encoding string drives the renderer).
-// ===========================================================================
 PJ::Expected<PJ::sdk::Image> deserializeFoxgloveRawImageView(
     const uint8_t* data, size_t size, PJ::sdk::BufferAnchor anchor, const RawImageFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -644,11 +634,9 @@ PJ::Expected<PJ::sdk::Image> deserializeFoxgloveRawImageView(
   return img;
 }
 
-// ===========================================================================
 // foxglove.CameraCalibration -> sdk::CameraInfo
 // { timestamp=1, width=2 fixed32, height=3 fixed32, distortion_model=4,
 //   D=5 repeated double, K=6, R=7, P=8, frame_id=9 }
-// ===========================================================================
 PJ::Expected<PJ::sdk::CameraInfo> deserializeFoxgloveCameraCalibration(
     const uint8_t* data, size_t size, const CameraCalibrationFieldNumbers& fields) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -724,10 +712,8 @@ PJ::Expected<PJ::sdk::CameraInfo> deserializeFoxgloveCameraCalibration(
   return ci;
 }
 
-// ===========================================================================
 // foxglove.ImageAnnotations -> sdk::ImageAnnotations
 // { circles=1, points=2 (PointsAnnotation), texts=3 }
-// ===========================================================================
 namespace {
 
 PJ::sdk::CircleAnnotation readCircle(CodedInputStream& in, uint32_t len, int64_t& timestamp_out) {
@@ -873,10 +859,8 @@ PJ::Expected<PJ::sdk::ImageAnnotations> deserializeFoxgloveImageAnnotations(
   return ann;
 }
 
-// ===========================================================================
 // foxglove.SceneUpdate -> sdk::SceneEntities
 // { deletions=1, entities=2 (SceneEntity) }
-// ===========================================================================
 namespace {
 
 PJ::sdk::ArrowPrimitive readArrow(CodedInputStream& in, uint32_t len) {

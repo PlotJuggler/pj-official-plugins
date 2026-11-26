@@ -1,7 +1,7 @@
 #include "ipc_decoder.hpp"
 
-// SDK 0.28 defines ArrowArrayStream under the C Data guard. Arrow 23 uses
-// a separate stream guard; the identical ABI struct is already declared above.
+// The SDK defines ArrowArrayStream under the C Data guard while Arrow uses a separate stream guard; the identical ABI
+// struct is already declared above.
 #ifndef ARROW_C_STREAM_INTERFACE
 #define ARROW_C_STREAM_INTERFACE
 #endif

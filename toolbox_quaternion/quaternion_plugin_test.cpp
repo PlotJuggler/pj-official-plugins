@@ -23,13 +23,8 @@
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Fake pj.data_processors.v1 host
-//
-// Captures the single create_data_processor call the plugin makes, so the test
-// can assert the data-only contract (inputs/outputs/script) without a real
-// DerivedEngine. The actual Luau execution is validated end-to-end inside PJ4.
-// ---------------------------------------------------------------------------
+// Fake pj.data_processors.v1 host: captures the create_data_processor call so tests assert the data-only contract
+// (inputs/outputs/script) without a real DerivedEngine. Luau execution is validated end-to-end in PJ4.
 struct FakeDataProcessorsHost {
   int create_calls = 0;
   int remove_calls = 0;
@@ -123,7 +118,6 @@ struct FakeDataProcessorsHost {
   PJ_data_processors_host_vtable_t vtable_{};
 };
 
-// Bind toolbox + runtime + data-processors services to the handle.
 void bindStore(
     PJ::ToolboxHandle& handle, PJ::testing::ToolboxTestStore& store, FakeDataProcessorsHost& dp,
     PJ::ServiceRegistryBuilder& registry) {
@@ -143,10 +137,8 @@ TEST(QuaternionPluginTest, LoadsAndHasCorrectManifest) {
   EXPECT_NE(handle.manifest().find("Quaternion to RPY"), std::string::npos);
 }
 
-// The plugin now hands the host a Luau class instead of computing RPY itself.
-// Assert the data-only contract: field-level inputs in w,x,y,z order, ONE grouped
-// output topic ("<prefix>:roll,pitch,yaw"), and a script carrying the conversion +
-// the chosen options.
+// Data-only contract: field-level inputs in w,x,y,z order, ONE grouped output topic ("<prefix>:roll,pitch,yaw"),
+// and a script carrying the conversion + the chosen options.
 TEST(QuaternionPluginTest, InstallsDataProcessorWithFieldInputs) {
   auto library = PJ::ToolboxLibrary::load(PJ_QUATERNION_PLUGIN_PATH);
   ASSERT_TRUE(library) << library.error();
@@ -323,11 +315,8 @@ TEST(QuaternionPluginTest, ConfigRoundTrip) {
   EXPECT_EQ(out_config, config);
 }
 
-// ---------------------------------------------------------------------------
-// Converter math (the source the generated Luau ports verbatim, and what the
-// dialog preview runs). The Luau-on-host equivalence is covered end-to-end in
-// PJ4; these guard the C++ converter the script mirrors.
-// ---------------------------------------------------------------------------
+// Converter math: the generated Luau mirrors it and the dialog preview runs it. Luau-on-host equivalence is
+// covered end-to-end in PJ4.
 
 TEST(QuaternionConverterTest, IdentityProducesZeroRPY) {
   QuaternionToRPYConverter conv;

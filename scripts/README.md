@@ -24,18 +24,15 @@ Scripts for releasing PlotJuggler extensions and submitting them to the extensio
 
 ## Release Pipeline Overview
 
-Each official plugin must declare `min_sdk_required` in its manifest, independently
-of the repository's build pin in `SDK_VERSION`. Both name stable SDK releases
-(`X.Y.Z`); the minimum must not exceed the build pin. A build SDK upgrade alone
-must not change plugin minimums. Raise only the minimums of plugins that acquire a
-new mandatory host requirement, including through shared code; see the required
-PR review policy in [`CLAUDE.md`](../CLAUDE.md#plugin-sdk-compatibility--required-pr-review).
+Each official plugin declares `min_sdk_required` in its manifest, independently of the build pin
+in `SDK_VERSION`; the minimum must not exceed the build pin. Raise a plugin's minimum only when it
+acquires a new mandatory host requirement, including through shared code (policy:
+[`CLAUDE.md`](../CLAUDE.md#plugin-sdk-compatibility--required-pr-review)).
 
-`python3 scripts/bump_core_version.py --check` validates all plugin declarations in
-PR CI. The existing manifest validator also checks minimums before local releases,
-release packaging, and registry submission. Both published and local registry
-entries preserve `min_sdk_required`. This checks declared metadata only; it does
-not scan source code or prove runtime compatibility.
+`python3 scripts/bump_core_version.py --check` validates the declarations in PR CI; the manifest
+validator also checks them before local releases, packaging and registry submission, and published
+and local registry entries preserve `min_sdk_required`. This checks declared metadata only, not
+source code or runtime compatibility.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
@@ -65,97 +62,51 @@ not scan source code or prove runtime compatibility.
 
 ## Release Workflows
 
-Choose the automation level that fits your needs:
-
 ### Option A: Fully Automatic (Recommended)
 
-One command does everything: bumps version, commits, creates tag, CI builds all platforms, and automatically submits to the registry.
+Bumps the version, commits, tags and pushes; CI builds all platforms and submits to the registry.
 
 ```bash
-# Single command: bump version, commit, tag, push, auto-submit
-python3 scripts/release_extension.py csv-loader --bump patch --submit-to-registry
-
-# Or bump minor/major version
-python3 scripts/release_extension.py csv-loader --bump minor --submit-to-registry
-python3 scripts/release_extension.py csv-loader --bump major --submit-to-registry
-
-# Or set explicit version
+python3 scripts/release_extension.py csv-loader --bump patch --submit-to-registry   # or --bump minor|major
 python3 scripts/release_extension.py csv-loader --version 2.0.0 --submit-to-registry
-
-# Done! The script will:
-#   - Update manifest.json with new version
-#   - Commit the change
-#   - Create annotated tag
-#   - Push to GitHub (triggers CI)
-#   - CI builds the tagged plugin on all 6 platforms
-#   - CI creates GitHub release with plugin-scoped notes and artifacts
-#   - CI automatically creates PR to registry
 ```
 
 ### Option B: Two-Step (Release + Submit Separately)
 
-Useful when you want to verify CI builds before submitting to the registry.
+Verify the CI builds before submitting to the registry.
 
 ```bash
-# 1. Update version in manifest.json
+# 1. Update version in manifest.json, commit and push
 vim data_load_csv/manifest.json
-
-# 2. Commit and push
 git add data_load_csv/manifest.json
 git commit -m "Bump csv-loader to v1.0.6"
 git push
 
-# 3. Create release tag (triggers CI builds)
+# 2. Create the release tag (triggers CI builds)
 python3 scripts/release_extension.py csv-loader
 
-# 4. Wait for CI to complete, verify builds succeeded
-
-# 5. Submit to registry manually
+# 3. After CI succeeds, submit to the registry
 python3 scripts/submit_to_registry.py csv-loader
 ```
 
 ### Option C: Tag-Only (Manifest Already Updated)
 
-When the manifest already has the correct version (e.g., version was bumped in a previous commit), use the script without `--bump` or `--version` to create only the tag.
+Without `--bump` / `--version` the script reads the version from the committed manifest and creates
+only the tag (no manifest update, no new commit). Use it after a hotfix bump, for batch releases,
+or to re-create tags after cleanup.
 
 ```bash
-# Manifest already has version 1.2.0 committed to main
-# Just create tag and trigger CI
-
 python3 scripts/release_extension.py csv-loader --submit-to-registry
-
-# The script will:
-#   - Read version from manifest.json (e.g., 1.2.0)
-#   - Create annotated tag data_load_csv/v1.2.0
-#   - Push to GitHub → triggers CI
-#   - NO manifest update, NO new commit
 ```
 
-**Use cases:**
-- Version was bumped in a hotfix commit
-- Multiple plugins need releasing after a batch version update
-- Re-creating tags after cleanup (deleted tags, failed releases)
-
-### Option D: Fully Manual (Create Tags by Hand)
-
-Maximum control. Useful for debugging or special releases.
+### Option D: Fully Manual
 
 ```bash
-# 1. Update version in manifest.json
-vim data_load_csv/manifest.json
-
-# 2. Commit and push
-git add data_load_csv/manifest.json
-git commit -m "Bump csv-loader to v1.0.6"
-git push
-
-# 3. Create and push tag manually
+# After committing and pushing the manifest bump:
 git tag -a "data_load_csv/v1.0.6" -m '{"extension_id":"csv-loader","version":"1.0.6"}'
 git push origin "data_load_csv/v1.0.6"
 
-# 4. Wait for CI to complete
-
-# 5. Submit to registry
+# After CI completes:
 python3 scripts/submit_to_registry.py csv-loader --version 1.0.6
 ```
 
@@ -208,11 +159,10 @@ Triggered by tags matching `*/v*` pattern.
 | Windows x64 | windows-2022 | x64 |
 | Windows ARM64 | windows-11-arm | arm64 |
 
-> **Note:** Windows x64 is pinned to `windows-2022` (not `windows-latest`). The newer
-> `windows-latest` (VS18 / MSVC 14.5x) image broke the `libsodium/1.0.20` build with
-> `MSB8052` (default toolset 14.44 vs the v145 platform toolset its bundled solution
-> selects). Not re-tested since the move to `libsodium/1.0.22`: revert to
-> `windows-latest` once that is confirmed to build there.
+> **Note:** Windows x64 is pinned to `windows-2022`: the `windows-latest` image (VS18 / MSVC 14.5x)
+> breaks the libsodium build with `MSB8052` (default toolset 14.44 vs the v145 platform toolset its
+> bundled solution selects). Untested with `libsodium/1.0.22`; revert to `windows-latest` once
+> confirmed to build there.
 
 **Per-platform steps:**
 
@@ -238,9 +188,14 @@ Triggered by tags matching `*/v*` pattern.
 | Check tag metadata | Read JSON from annotated tag message |
 | Submit to registry | Run `submit_to_registry.py --version <tag version>` if `auto_submit_to_registry: true` |
 
-Release notes are intentionally generated from non-merge commits touching only the tagged plugin directory, with release bookkeeping commits omitted. This keeps a CSV release from inheriting a ROS, MQTT, or toolbox changelog entry just because both live in the same repository. Shared build, packaging, or runtime commits can be included manually with `--include-shared` when they are genuinely useful for a specific release.
+Release notes come from non-merge commits touching only the tagged plugin directory (release
+bookkeeping commits omitted), so a CSV release does not inherit other plugins' entries. Pass
+`--include-shared` to include shared build, packaging or runtime commits.
 
-Tagged releases keep the existing one-tag-per-plugin strategy. The source directory before `/v` selects both the dependency graph and the CMake target scope. For example, `data_load_csv/v1.2.0` runs `./build.sh data_load_csv`, which installs `data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so Arrow, MQTT, and other unrelated plugin dependencies are not installed for that release.
+One tag per plugin: the source directory before `/v` selects the dependency graph and the CMake
+target scope. `data_load_csv/v1.2.0` runs `./build.sh data_load_csv`, which installs
+`data_load_csv/conanfile.py` and configures CMake with `-DPJ_BUILD_PLUGIN=data_load_csv`, so
+unrelated plugins' dependencies (Arrow, MQTT, ...) are not installed.
 
 ---
 
@@ -276,9 +231,9 @@ platforms and changes in nothing else, so metadata corrected by hand in the regi
 A re-submission that adds nothing succeeds without opening a PR. The script refuses one that
 would change a stored URL or checksum, and a new version that would be pruned at once. The
 registry PR lists every record or platform entry it removes. Nothing else is removed
-automatically: pulling a broken release, or publishing
-the new checksums of a force-recreated tag, is a manual edit of `registry.json`. The registry's
-own validator rejects a file that is not pruned by this rule.
+automatically: pulling a broken release, or publishing the new checksums of a force-recreated tag,
+is a manual edit of `registry.json`. The registry's own validator rejects a file that is not pruned
+by this rule.
 
 **Registry entry format:**
 
@@ -316,7 +271,7 @@ Triggered on PRs to pj-plugin-registry that modify `registry.json`.
 | Platform coverage | Warns if missing platforms |
 | **Checksum verification** | Downloads each artifact and verifies SHA256 |
 
-The checksum verification runs on every PR, ensuring artifacts haven't been tampered with or corrupted.
+Checksum verification runs on every PR.
 
 ---
 
@@ -442,31 +397,25 @@ By default the command diffs against the previous tag for the same source direct
 
 ## Local registry (offline testing)
 
-`build_local_registry.py` is the offline counterpart of `submit_to_registry.py`. Instead of
-downloading release assets and opening a PR against the remote registry, it packages the plugin
-`.so`s already sitting in a local build directory into ZIPs on disk and writes a `registry.json`
-whose platform URLs are `file://` links to those ZIPs. The result loads directly in the PlotJuggler
-Marketplace (its registry URL accepts the `file` scheme), so you can exercise install / update /
-uninstall end-to-end **without cutting a release**.
-
-It reuses the same packaging and registry-entry logic as the release path (`release_tools.py` +
-`submit_to_registry.py`), so a locally produced ZIP has the same layout (`<extension_id>/` at the
-archive root) as a real release artifact.
+`build_local_registry.py` is the offline counterpart of `submit_to_registry.py`: it packages the
+plugin `.so`s from a local build directory into ZIPs and writes a `registry.json` whose platform
+URLs are `file://` links to them. The PlotJuggler Marketplace accepts the `file` scheme, so you can
+exercise install / update / uninstall end-to-end **without cutting a release**. It shares the
+packaging and registry-entry logic of the release path, so the ZIP layout (`<extension_id>/` at the
+archive root) matches a real release.
 
 ### Steps to reproduce a local registry
 
 ```bash
-# 1. Build the plugins you want to serve (any normal build works; produces build/.../bin/*.so).
-./build.sh                       # or the standalone conan+cmake build
+# 1. Build the plugins to serve (produces build/.../bin/*.so).
+./build.sh
 
-# 2. Generate the registry from those binaries.
-#    Default: all plugins with a manifest.json, host platform only,
-#    output under build/local-registry/registry.json
+# 2. Generate the registry (default: all plugins with a manifest.json, host platform only,
+#    written to build/local-registry/registry.json).
 python3 scripts/build_local_registry.py
 
-# 3. Point the Marketplace at it (Marketplace → registry URL setting):
-#    file:///abs/path/to/build/local-registry/registry.json
-#    The script prints this exact URL when it finishes.
+# 3. Set the Marketplace registry URL to file:///abs/path/to/build/local-registry/registry.json
+#    (the script prints it).
 ```
 
 Verify the result with the same schema validator the CI uses (skip the URL check since the URLs are
@@ -488,15 +437,15 @@ python3 scripts/build_local_registry.py csv-loader data_load_parquet \
 ### Multiple platforms
 
 By default only the host platform is packaged (`--host-platform`, default `linux-x86_64`) from
-`--build-dir`. Add other platforms — e.g. a Windows build cross-mounted from another machine — with
-the repeatable `--platform NAME=BUILDDIR` flag:
+`--build-dir`. Add other platforms (e.g. a Windows build from another machine) with the repeatable
+`--platform NAME=BUILDDIR` flag:
 
 ```bash
 python3 scripts/build_local_registry.py --platform windows-x86_64="$WINDOWS_BUILD_DIR"
 ```
 
-A platform whose build directory is missing, or that has no matching binary, is skipped with a
-warning; coverage vs. the full platform set is reported at the end so the gaps are visible.
+A platform whose build directory is missing or that has no matching binary is skipped with a
+warning; coverage against the full platform set is reported at the end.
 
 ### CLI reference
 

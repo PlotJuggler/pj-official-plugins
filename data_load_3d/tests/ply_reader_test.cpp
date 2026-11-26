@@ -85,19 +85,18 @@ TEST(PlyReader, VertexColorAndNormalPreserved) {
   EXPECT_EQ(r->cloud->point_step, 12u + 3u);
 }
 
-// Proves the mesh is self-owning: destroy the input buffer, mesh bytes survive
-// AND still compare equal to the original content (reads mesh.data.data(),
-// not just .size(), so an aliasing bug would be caught).
+// The mesh must own its bytes: after the input buffer is destroyed they still equal the original (compares the
+// content, not just .size(), so an aliasing bug is caught).
 TEST(PlyReader, MeshSurvivesInputDestruction) {
   PJ::sdk::Mesh3D mesh;
-  std::string original;  // keep a copy of the expected bytes past the input's scope
+  std::string original;
   {
     std::string ply =
         "ply\nformat ascii 1.0\nelement vertex 3\n"
         "property float x\nproperty float y\nproperty float z\n"
         "element face 1\nproperty list uchar int vertex_indices\n"
         "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
-    original = ply;  // independent copy of the expected content
+    original = ply;
     auto r = pj3d::readPly(asSpan(ply), "m");
     ASSERT_TRUE(r) << (r ? "" : r.error());
     ASSERT_TRUE(r->mesh.has_value());

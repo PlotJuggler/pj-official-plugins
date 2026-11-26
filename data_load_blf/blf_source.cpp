@@ -17,9 +17,7 @@
 
 namespace {
 
-// Imports Vector BLF CAN logs. Each CAN channel is decoded with its own DBC
-// database(s) (per-channel mapping); decoded signals become timeseries grouped
-// as one topic per (channel, message).
+// Each CAN channel is decoded with its own DBC(s); one topic per (channel, message).
 class BlfSource : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
@@ -30,9 +28,8 @@ class BlfSource : public PJ::FileSourceBase {
     return PJ::borrowDialog(dialog_);
   }
 
-  // The dialog owns the config JSON round-trip; the host replaces the source
-  // config with the dialog's saveConfig() after accept, so delegating keeps a
-  // single source of truth (matches data_load_mcap/csv/parquet).
+  // The host replaces the source config with the dialog's saveConfig() after accept, so the dialog is the single
+  // source of truth.
   std::string saveConfig() const override {
     return dialog_.saveConfig();
   }
@@ -55,7 +52,6 @@ class BlfSource : public PJ::FileSourceBase {
     const std::uint64_t total = ec ? 0 : static_cast<std::uint64_t>(file_size);
     (void)runtimeHost().progressStart("Importing BLF", total, true);
 
-    // One decoder per CAN channel, each loaded with that channel's DBC(s).
     std::unordered_map<std::uint16_t, pj_can_dbc::CanDecoder> decoders;
     for (const auto& [channel, paths] : dialog_.channelDbcs()) {
       auto& decoder = decoders[channel];
@@ -70,8 +66,7 @@ class BlfSource : public PJ::FileSourceBase {
           PJ::DataSourceMessageLevel::kWarning, "no DBC database assigned to any channel; nothing will be decoded");
     }
 
-    // Keyed by (channel, id, extended) packed numerically so the hot per-frame
-    // lookup avoids building a string; the topic name is only built on a miss.
+    // Keyed by (channel, id, extended) packed numerically so the per-frame lookup builds no string.
     std::unordered_map<std::uint64_t, PJ::sdk::TopicHandle> topics;
     pj_can_dbc::SignalRowBuilder row_builder;
     std::uint64_t decoded_frames = 0;
@@ -80,7 +75,7 @@ class BlfSource : public PJ::FileSourceBase {
     std::uint64_t no_dbc_channel = 0;
     std::uint64_t seen = 0;
     bool cancelled = false;
-    // Poll cancel / update progress every N frames (N a power of two).
+    // Cancel/progress poll interval (power of two minus one, used as a mask).
     constexpr std::uint64_t kCancelPollMask = 4095;
 
     blf_detail::BlfStats stats;
@@ -92,8 +87,7 @@ class BlfSource : public PJ::FileSourceBase {
               cancelled = true;
               return false;  // stop reading; cancellation handled below
             }
-            // Advance the byte-denominated bar via the header's object count
-            // (stats counts advance live during the read).
+            // The bar is byte-denominated; advance it via the header's object count.
             if (total > 0 && stats.total_objects > 0) {
               const std::uint64_t done = seen + stats.skipped_objects;
               const std::uint64_t scaled = total * std::min(done, stats.total_objects) / stats.total_objects;

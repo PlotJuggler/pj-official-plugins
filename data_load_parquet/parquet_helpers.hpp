@@ -25,19 +25,17 @@ inline std::string basenameWithoutExt(const std::string& filepath) {
   return filepath.substr(start);
 }
 
-// Heuristic: find a column that looks like a timestamp by name or type.
+/// First Arrow TIMESTAMP column, else the first column with a well-known time name (case-insensitive); -1 if none.
 inline int findTimestampColumn(const std::shared_ptr<arrow::Schema>& schema) {
   static const std::vector<std::string> kTimestampNames = {"timestamp", "time",      "t",          "ts",   "time_stamp",
                                                            "datetime",  "date_time", "_timestamp", "_time"};
 
-  // Prefer Arrow TIMESTAMP typed columns
   for (int i = 0; i < schema->num_fields(); i++) {
     if (schema->field(i)->type()->id() == arrow::Type::TIMESTAMP) {
       return i;
     }
   }
 
-  // Fallback: match by name (case-insensitive)
   for (int i = 0; i < schema->num_fields(); i++) {
     std::string name = schema->field(i)->name();
     std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
@@ -70,10 +68,8 @@ inline int64_t unitToNanos(int64_t value, arrow::TimeUnit::type unit) {
   return PJ::scaleToNanoseconds(value, pj_unit).value_or(0);
 }
 
-/// Extract timestamp in nanoseconds from an Arrow array cell (for the time axis).
-/// Does NOT apply timezone adjustment — callers that need the host-relative
-/// nanoseconds wrap this with their own timezone post-step (the production
-/// import path in parquet_source.cpp does so via adjustTimezoneNanos).
+/// Nanosecond value of an Arrow array cell used as the time axis. Applies no timezone adjustment (the import path
+/// does that, see adjustTimezoneNanos in parquet_source.cpp).
 inline int64_t getTimestampNanos(
     const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type) {
   if (array->IsNull(index)) {

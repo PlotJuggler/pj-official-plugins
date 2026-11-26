@@ -1,14 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// anomaly_core — the ENGINE layer. It adds the Luau-backed `runAnomalyScript` (which
-// delegates to the SHARED pj_scripting_core engine) on top of the Lua-free
-// `anomaly_helpers`. Links pj_scripting_core (Luau + kissfft).
-//
-// The HEADLESS runner links this (it executes rules locally, no PlotJuggler host).
-// The GUI toolbox plugin links only `anomaly_helpers` — it submits rules to the host,
-// which executes them — so the plugin carries no script engine. Both paths run rules
-// through the same engine, so a rule behaves identically GUI <-> headless.
+// The ENGINE layer: the Luau-backed `runAnomalyScript`, delegating to the shared pj_scripting_core
+// engine. Only the headless runner links this; the GUI plugin links `anomaly_helpers` alone and the
+// host runs its rules.
 
 #pragma once
 
@@ -22,8 +17,6 @@
 
 namespace anomaly_core {
 
-/// The shared engine's series types, kept under the long-standing anomaly_core names
-/// so the runner's call sites are unchanged.
 using SeriesAccessor = PJ::scripting::SeriesView;
 using SeriesProvider = PJ::scripting::SeriesProvider;
 

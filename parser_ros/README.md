@@ -1,186 +1,66 @@
 # ROS Message Parser
 
-Decodes ROS 1 and ROS 2 (CDR) messages using `rosx_introspection`, with
-canonical-object handlers for image, compressed image, and point cloud
-types, plus specialized scalar handlers for common sensor types.
+Decodes ROS 1 and ROS 2 (CDR) messages with `rosx_introspection`. Common sensor, geometry,
+log and grid schemas are also promoted to canonical objects for the image, 3D, 2D and log views.
 
-Registered for `"ros1msg"`, `"ros2msg"`, `"ros2idl"`, and `"omgidl"` schema encodings. CDR is
-the ROS 2 wire serialization, not the schema encoding used to select the parser.
-MCAP `ros2idl` schemas resolve the named root file and its `.idl` includes from
-the bundled definitions; unrelated files are ignored.
+Registered for the `"ros1msg"`, `"ros2msg"`, `"ros2idl"` and `"omgidl"` schema encodings. CDR is
+the ROS 2 wire serialization, not a schema encoding. MCAP `ros2idl` schemas resolve the named root
+file and its `.idl` includes from the bundled definitions; unrelated files are ignored.
 
-## Architecture — declarative schema catalog
+## Configuration
 
-`parser_ros` declares a **static catalog** of schemas it knows how to
-translate. The catalog
-includes a default entry (`CatalogEntry::kDefault`, keyed `"*"`) for
-the generic introspection-based fallback, so `bindSchema` is a single
-lookup with no branching:
+| Key | Meaning |
+|-----|---------|
+| `schema_encoding` | `ros1msg`, `ros2msg`, `ros2idl` or `omgidl`. Without it the format is inferred from the schema (scoped `pkg::Type` names and `module` blocks mean IDL). |
+| `serialization` | `cdr` (default) or `ros1`. |
+| `max_array_size`, array policy | Arrays longer than this (default 500) are clamped or discarded. |
+| `use_embedded_timestamp` | Use `header.stamp` as the sample time instead of the receive/log time. A non-positive stamp is ignored. |
+| `boolean_strings_to_number` | String fields `"true"`/`"false"` become 1/0. |
+| `remove_suffix_from_strings` | String fields such as `"100ms"` become 100 (a leading `{digit + - .}` prefix; `1e3km` yields 1). |
 
-```cpp
-const auto& RosMsgParser::catalog() {
-  using ObjectType = PJ::sdk::BuiltinObjectType;
-  static const std::unordered_map<std::string, CatalogEntry> kMap = {
-      // Canonical-object schemas: produce zero-copy sdk::Image /
-      // PointCloud, plus header scalars.
-      {"sensor_msgs/msg/Image",
-          {.object_type   = ObjectType::kImage,
-           .parse_scalars = &RosMsgParser::imageScalars,
-           .parse_object  = &RosMsgParser::parseImage}},
-      {"sensor_msgs/msg/CompressedImage",
-          {.object_type   = ObjectType::kImage,
-           .parse_scalars = &RosMsgParser::compressedImageScalars,
-           .parse_object  = &RosMsgParser::parseCompressedImage}},
-      {"sensor_msgs/msg/PointCloud2",
-          {.object_type   = ObjectType::kPointCloud,
-           .parse_scalars = &RosMsgParser::pointCloud2Scalars,
-           .parse_object  = &RosMsgParser::parsePointCloud2}},
+## Scalar output
 
-      // Scalar-only schemas: column extraction, no canonical object.
-      {"sensor_msgs/msg/Imu",
-          {.parse_scalars = wrapVoidHandler<&RosMsgParser::handleImu>()}},
-      {"sensor_msgs/msg/JointState",
-          {.parse_scalars = wrapVoidHandler<&RosMsgParser::handleJointState>()}},
-      // ... etc.
+The generic path walks the schema and emits one column per primitive field, nested messages joined
+with `/` and arrays as `name[i]`. Any `geometry_msgs/Quaternion` also gets `roll`/`pitch`/`yaw`
+columns. A ROS 2 message that leads with a `std_msgs/Header` gets a combined `/header/stamp`
+(seconds) next to the split `sec`/`nanosec` leaves.
 
-      // Default entry — used for any schema not matched above.
-      // Drives the generic rosx_introspection walker that flattens
-      // nested messages and emits one column per primitive field.
-      {CatalogEntry::kDefault,
-          {.parse_scalars = &RosMsgParser::introspectionScalars}},
-  };
-  return kMap;
-}
+Specialized handlers cover `Pose`, `PoseStamped`, `Transform`, `TransformStamped`, `Imu`,
+`Odometry`, `JointState`, `DiagnosticArray`, `tf2_msgs/TFMessage`, DataTamer
+(`data_tamer_msgs/Schemas` + `Snapshot`), PAL Statistics and TSL. The DataTamer, PAL and TSL
+messages are split in two: the names/schema message is remembered and applied to the values/snapshot
+message that follows (TSL values arriving first are buffered).
 
-PJ::Status RosMsgParser::bindSchema(std::string_view type_name,
-                                     PJ::Span<const uint8_t> schema) {
-  base::bindSchema(type_name, schema);
-  // Store the schema. PJ4 passes parser_config_json immediately after
-  // bindSchema(), so loadConfig({"schema_encoding":"omgidl"}) selects the
-  // rosx_introspection schema format before compiling/registering handlers.
-  return PJ::Status::ok();
-}
-```
+## Canonical objects
 
-`catalog().resolve(name)` returns the exact-match entry if present and
-falls back to the `"*"` entry otherwise — guaranteed by the catalog
-construction. The entries are pure data — member-function pointers, no
-`this` capture. Per bound schema, the base class invokes `parse_scalars`
-for column extraction and `parse_object` for canonical media bytes.
+The object bytes alias the original payload (zero-copy, kept alive by its anchor) unless noted. An object-bearing schema also
+keeps a scalar route so that its metadata stays plottable under any ingest policy.
 
-Delegated sources pass the selected schema encoding through parser config:
-`{"schema_encoding":"ros2msg"}` or `{"schema_encoding":"omgidl"}`. This keeps
-ROS `.msg` and OMG IDL selection explicit without guessing from type names or
-schema text.
+| Schema | Object | Notes |
+|--------|--------|-------|
+| `sensor_msgs/Image` | Image | `step` must cover `width * bytes-per-pixel`. Encoding string passed through; only the raw rgb/bgr/mono/`16UC1`/`32FC1`/Bayer encodings are accepted (Bayer is one sample per pixel). |
+| `sensor_msgs/CompressedImage` | Image | `jpeg`, `png` or `compressedDepth`. A leading PNG signature on `compressedDepth` means no 12-byte config header (some recorders omit it); a 16UC1 PNG is raw millimetres and takes the depth path. |
+| `sensor_msgs/CameraInfo` | CameraInfo | Stops after `P`. |
+| `foxglove_msgs/CompressedVideo` | VideoFrame | |
+| `sensor_msgs/PointCloud2` | PointCloud | Packed `rgb`/`rgba` colour is repacked to the canonical `rgba` field (a fresh buffer: zero-copy is given up only for colour clouds, via the shared `pj_pointcloud_color`, as in `parser_protobuf`). Separate `red`/`green`/`blue`/`alpha` channels collapse zero-copy. Scalars: header and `/num_points` = `len(data) / point_step` (the points actually present, not `width * height`). |
+| `foxglove_msgs/CompressedPointCloud`, `point_cloud_interfaces/CompressedPointCloud2` | CompressedPointCloud | The blob is repackaged, not decoded; the foxglove pose is dropped (place clouds by TF on `frame_id`). Scalars: `/timestamp` + `/frame_id`, or the header only. |
+| `sensor_msgs/LaserScan` | PointCloud | Eagerly projected to x/y/z (+`intensity`); non-finite and out-of-`[range_min, range_max]` rays are dropped. Generic scalar flatten. |
+| `tf2_msgs/TFMessage`, `geometry_msgs/TransformStamped` | FrameTransforms | Per-transform timestamp is the message time, unless `use_embedded_timestamp` is on or the stamp is 0 (a static transform, kept at 0). |
+| `geometry_msgs/PoseArray`, `foxglove_msgs/PosesInFrame`, `geometry_msgs/PoseStamped`, `nav_msgs/Odometry`, `nav_msgs/Path` | PosesInFrame | A `Path` becomes one frame at its own header stamp (per-pose stamps dropped). `PoseStamped` and `Odometry` also keep their per-axis scalars; arrays use the discard policy. |
+| `nav_msgs/OccupancyGrid`, `map_msgs/OccupancyGridUpdate` | OccupancyGrid(Update) | |
+| `grid_map_msgs/GridMap` | GridMap | Transcoded to a row-major grid (`pj_grid_map`): one `FLOAT32` field per layer; a cell where any `basic_layers` entry is non-finite is NaN in every field. The origin is the map's -x/-y corner. A layout `grid_map_core` would not produce is rejected; capped at 16M cells / 64 layers. |
+| `foxglove_msgs/Grid` | GridMap | Zero-copy; `row_count = data.size() / row_stride` (a remainder is rejected). |
+| `rcl_interfaces/Log`, `rosgraph_msgs/Log` | Log | Levels map ROS 2 10/20/30/40/50 and ROS 1 1/2/4/8/16; anything else is unknown. File, function, line and ROS 1 `topics[]` are not kept. |
+| `foxglove_msgs/Log`, `mavros_msgs/StatusText`, `px4_msgs/LogMessage`, `px4_msgs/MavlinkLog` | Log | `foxglove_msgs/Log` levels 0..5 are kept as is; the others use syslog severities 0..7 (EMERGENCY/ALERT/CRITICAL fatal). PX4 stamps count from boot, so the record time is used. |
+| `std_msgs/String` on a `robot_description` topic | RobotDescription | URDF, SDF or MJCF text. |
+| `visualization_msgs/Marker`, `MarkerArray` | SceneEntities | See `MARKER_NOTES.md`. |
+| `yolo_msgs/DetectionArray` | ImageAnnotations | Third-party message; see `YOLO_NOTES.md`. |
 
-## Canonical-object handlers (zero-copy)
+Truncated or corrupt messages (a declared length beyond the payload) are rejected, not decoded.
 
-Three schemas produce canonical objects whose `data` spans
-sit over the original CDR payload, kept alive by the `BufferAnchor`
-shipped in the `PayloadView`:
+## Adding a schema
 
-| Schema | `BuiltinObjectType` | Handler |
-|--------|-----------------------|---------|
-| `sensor_msgs/msg/Image` | `kImage` | `parseImage` — populates `sdk::Image` (width, height, encoding string, `row_step`, `data`) |
-| `sensor_msgs/msg/CompressedImage` | `kImage` | `parseCompressedImage` — returns unified `sdk::Image` with `jpeg`, `png`, or `compressedDepth` encoding and detects compressed-depth extras |
-| `sensor_msgs/msg/PointCloud2` | `kPointCloud` | `parsePointCloud2` — fills `sdk::PointCloud` with point step, row step, and the raw `data` span. Per-point colour is normalized to the canonical packed `rgba` field (see below). |
-
-The canonical object's lifetime is tied to the input payload — the host
-copies into the `ObjectStore` only when policy demands materialization.
-
-`parsePointCloud2` normalizes per-point colour to the canonical packed field via
-the shared `pj_pointcloud_color` helper (`common/pointcloud_color`), the **same**
-helper `parser_protobuf` uses, so both parsers emit one colour representation and
-the host has a single colour rule. A PCL-style packed colour — a `FLOAT32 rgb` or
-`UINT32 rgba` field whose bytes are `0x00RRGGBB` (B in the low byte) — is repacked
-into canonical R, G, B, A increasing-address order, becoming a single
-`PointField{ name:"rgba", datatype:kUint32 }`. Because that reorders bytes, the
-repack allocates a fresh buffer that the cloud's `BufferAnchor` owns (zero-copy is
-given up **only** for colour clouds; plain XYZI clouds keep the zero-copy span).
-Separate `red`/`green`/`blue`/`alpha` channels, if present, collapse zero-copy
-instead. The host then renders one per-point colour (its "RGB" colour mode).
-
-One schema is promoted **eagerly instead of zero-copy** — the wire carries
-polar ranges, so cartesian points must be generated:
-
-| Schema | `BuiltinObjectType` | Handler |
-|--------|-----------------------|---------|
-| `sensor_msgs/msg/LaserScan` | `kPointCloud` | `parseLaserScan` — projects rays to x/y/z (+`intensity` when present) FLOAT32 points via the shared `pj_laser_scan` projector (cos/sin LUT cached per scanner config); non-finite and out-of-`[range_min, range_max]` rays are dropped, so the cloud is unorganized and dense. The point buffer is newly generated and owned via the cloud's `BufferAnchor`. The scalar route stays on the generic flatten (`angle_*`, `ranges[i]`, … columns). |
-| `rcl_interfaces/msg/Log` (ROS 2), `rosgraph_msgs/Log` (ROS 1) | `kLog` | `parseLogObject` — level (mapped to the SDK levels; ROS 2 10/20/30/40/50, ROS 1 1/2/4/8/16, anything else is unknown), name, msg; file, function and line are not kept, and no category is set. The timestamp is the message stamp, or the record time when the stamp is 0. ROS 1 `topics[]` is not read. The scalar route stays on the generic flatten. |
-| `foxglove_msgs/Log`, `mavros_msgs/StatusText`, `px4_msgs/LogMessage`, `px4_msgs/MavlinkLog` | `kLog` | `parseFoxgloveLogObject` (level 0..5 kept as is; message, name as source; file and line not kept), `parseStatusTextLogObject` and `parsePx4Log` (syslog severity 0..7: EMERGENCY/ALERT/CRITICAL fatal, ERROR, WARNING, NOTICE/INFO info, DEBUG; text). Foxglove and StatusText take the message stamp (record time when 0); PX4 stamps count from boot, so the record time is used. The scalar route stays on the generic flatten. |
-
-Four pose schemas are promoted to the canonical `kPosesInFrame` object (owned —
-the message carries only scalars, no byte blob). The shared `readPose()` helper
-reads each `geometry_msgs/Pose` (7 `float64`). Pose arrays can be huge (an AMCL
-particle cloud), so the scalar route uses the large-array discard policy; only
-`PoseStamped` keeps its per-axis scalar flatten (dual route, like
-`TransformStamped`):
-
-| Schema | `BuiltinObjectType` | Handler |
-|--------|-----------------------|---------|
-| `geometry_msgs/msg/PoseArray` | `kPosesInFrame` | `parsePoseArray` — Header frame + `Pose[]` |
-| `foxglove_msgs/msg/PosesInFrame` | `kPosesInFrame` | `parseFoxglovePosesInFrame` — bare `Time` + `frame_id` + `Pose[]` |
-| `geometry_msgs/msg/PoseStamped` | `kPosesInFrame` | `parsePoseStampedObject` — single pose; keeps `handlePoseStamped` scalars |
-| `nav_msgs/msg/Path` | `kPosesInFrame` | `parsePath` — path-frame poses; per-pose stamps dropped (one frame at one instant) |
-
-Two grid schemas are promoted to the canonical `kGridMap` object (a 2D grid of
-per-cell channels — elevation maps, layered costmaps). Both carry a slim
-hand-written scalar route so the object ingests under any policy without
-walking the cell data:
-
-| Schema | `BuiltinObjectType` | Handler |
-|--------|-----------------------|---------|
-| `grid_map_msgs/msg/GridMap` | `kGridMap` | `parseGridMap` — **transcoded** (owned buffer) through the shared `pj_grid_map` library (`common/grid_map`): grid_map stores each layer as a column-major Eigen matrix behind a ring buffer with index (0,0) at the +x/+y corner; the canonical grid is row-major with cell (0,0) at the -x/-y corner, so cell `(c, r)` reads storage `((size_y-1-r+inner_start) % size_y) * size_x + (size_x-1-c+outer_start) % size_x`. One `FLOAT32` field per layer in message order; a cell where any `basic_layers` entry is non-finite is NaN in every field. The origin is the map's -x/-y corner with identity orientation and `z = 0` (grid_map_ros ignores the pose's z/orientation; elevations are absolute heights in `frame_id`). Rejects any layout grid_map_core would not have produced (see `transcodeGridMap` in `common/grid_map`), capped at 16M cells / 64 layers. Scalars: `/header/*`, `/info/resolution`, `/info/length_x|y`, `/info/pose/*`, `/num_layers`, `/size_x`, `/size_y`. |
-| `foxglove_msgs/msg/Grid` | `kGridMap` | `parseFoxgloveGrid` — **zero-copy** view of `data[]` (the packed row-major layout is the canonical one). Bare time head (`int32 sec` on ROS 2, `uint32` on ROS 1), pose kept as the origin, `PackedElementField` types mapped explicitly (Foxglove numbers UINT8=1/INT8=2, swapped relative to ROS), `row_count = data.size() / row_stride` (a remainder is rejected). Scalars: `/timestamp`, `/frame_id`, `/column_count`, `/row_count`, `/row_stride`, `/cell_stride`, `/data_size`. |
-
-## Scalar handlers
-
-Specialized handlers (registered through `wrapVoidHandler<>`) extract
-columns from common sensor messages:
-
-- **Quaternion fields** — auto-detected anywhere in the schema, adds
-  roll/pitch/yaw columns.
-- **JointState** — per-joint `position` / `velocity` / `effort` series.
-- **DiagnosticArray** — key/value extraction from each status entry.
-- **TF2** — frame hierarchy as position + rotation columns per frame.
-- **Imu**, **NavSatFix**, **Pose**, **Twist**, **PoseStamped**, … —
-  one-shot scalar extractors.
-- **DataTamer**, **PAL Statistics**, **TSL** — multi-message buffering
-  parsers that pair schema/snapshot or definition/value pairs.
-
-The generic fallback walks the introspection tree and emits one column
-per primitive field, with nested messages flattened via `/` and arrays
-expanded with bracket notation (up to a configurable element cap).
-
-## How the host uses these handlers
-
-The host (PJ4's runtime) selects how to call into the parser per message:
-
-| Ingest policy | Effect |
-|---------------|--------|
-| `kEager` | `parse_scalars` + `parse_object` invoked immediately; canonical bytes copied into the `ObjectStore`. |
-| `kLazyObjectsEagerScalars` | `parse_scalars` invoked now (columns become available immediately); `parse_object` deferred behind a fetcher closure pulled on demand. |
-| `kPureLazy` | Neither invoked at push time; the fetcher closure sits in the `ObjectStore` until something pulls. |
-
-The parser does not know which mode is active — it answers honestly when
-the host asks. Per-topic / per-source / per-type defaults are configured
-through the runtime's `ObjectIngestPolicyResolver`.
-
-## Adding a new schema
-
-1. Add a new entry to `catalog()` in `RosMsgParser.cpp`. Choose a
-   `BuiltinObjectType` if the schema maps to one (image, compressed
-   image, point cloud); leave it `kNone` for scalar-only schemas.
-2. Implement the handler member function(s):
-   - `parse_scalars(const ParseContext&, ScalarSink&)` for columns.
-   - `parse_object(Timestamp, sdk::PayloadView)` for canonical media bytes
-     (if any).
-3. Add a focused test under `parser_ros/tests/`.
-
-No enum to extend, no switch to update, no virtual methods to
-override — registration is just an entry in the table.
-
-## Timestamp handling
-
-Extracts `header.stamp` (sec + nanosec) as the message timestamp when
-`use_embedded_timestamp` is enabled in the parser configuration.
+Add an entry to `RosParser::catalog()` in `ros_parser.cpp` with its `BuiltinObjectType` (omit it
+for scalar-only schemas), the `parse_scalars` route and, for objects, the `parse_object` member
+function; then add a test under `tests/`. An object entry needs a `parse_scalars` too: an
+object-only entry aborts the message push on non-`kPureLazy` ingest policies.

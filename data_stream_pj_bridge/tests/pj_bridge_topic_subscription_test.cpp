@@ -27,8 +27,6 @@ namespace {
 
 using namespace PJ::BridgeProtocol;
 
-// --- DesiredTopicsSlot ---
-
 TEST(BridgeDesiredTopicsSlotTest, TakeOnEmptySlotReturnsNullopt) {
   DesiredTopicsSlot slot;
   EXPECT_FALSE(slot.take().has_value());
@@ -75,8 +73,6 @@ TEST(BridgeDesiredTopicsSlotTest, LastWriteFromAnotherThreadWins) {
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(*result, (std::set<std::string>{"/topic_99"}));
 }
-
-// --- computeSubscriptionDiff ---
 
 TEST(BridgeComputeSubscriptionDiffTest, EmptyEverythingIsANoOp) {
   auto diff = computeSubscriptionDiff({}, {}, {});
@@ -150,8 +146,6 @@ TopicInfo topic(const std::string& name, const std::string& type = "pkg/Msg") {
   return t;
 }
 
-// --- passesAdvertiseFilter ---
-
 TEST(BridgePassesAdvertiseFilterTest, EmptySelectionAdvertisesEverything) {
   EXPECT_TRUE(passesAdvertiseFilter(topic("/any/topic"), {}));
 }
@@ -169,7 +163,7 @@ TEST(BridgePassesAdvertiseFilterTest, ATransformPassesWhateverTheSelection) {
   EXPECT_FALSE(passesAdvertiseFilter(topic("/tf", "std_msgs/msg/String"), selection));
 }
 
-// --- filteredAdvertisedTopics: the filter bounds SUBSCRIPTIONS, not just advertising ---
+// The filter bounds subscriptions, not just advertising.
 
 TEST(BridgeFilteredAdvertisedTopicsTest, FilteredOutDesiredTopicProducesNoSubscription) {
   std::map<std::string, TopicInfo> advertised;
@@ -192,8 +186,6 @@ TEST(BridgeFilteredAdvertisedTopicsTest, EmptySelectionAdvertisesAll) {
   advertised["/b"] = topic("/b");
   EXPECT_EQ(filteredAdvertisedTopics(advertised, {}), (std::set<std::string>{"/a", "/b"}));
 }
-
-// --- parseTopicEntry: get_topics / topics_changed.added entry parsing ---
 
 TEST(BridgeParseTopicEntryTest, WrongTypedFieldsDegradeToAbsentInsteadOfThrowing) {
   // Off-the-wire malice/corruption: present-but-wrong-typed keys. json::value()
@@ -324,8 +316,6 @@ TEST(BridgeParseTopicEntryTest, NonObjectIsRejected) {
   EXPECT_FALSE(parseTopicEntry(nlohmann::json("just a string")).has_value());
   EXPECT_FALSE(parseTopicEntry(nlohmann::json::array()).has_value());
 }
-
-// --- applyAdvertiseDelta: catalog update from topics_changed ---
 
 TEST(BridgeApplyAdvertiseDeltaTest, AddsNewTopicsAndReportsChanged) {
   std::map<std::string, TopicInfo> advertised;

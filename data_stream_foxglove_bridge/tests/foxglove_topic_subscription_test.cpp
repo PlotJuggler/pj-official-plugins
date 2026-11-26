@@ -25,8 +25,6 @@ namespace {
 
 using namespace PJ::FoxgloveProtocol;
 
-// --- DesiredTopicsSlot ---
-
 TEST(DesiredTopicsSlotTest, TakeOnEmptySlotReturnsNullopt) {
   DesiredTopicsSlot slot;
   EXPECT_FALSE(slot.take().has_value());
@@ -74,8 +72,6 @@ TEST(DesiredTopicsSlotTest, LastWriteFromAnotherThreadWins) {
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(*result, (std::set<std::string>{"/topic_99"}));
 }
-
-// --- computeSubscriptionDiff ---
 
 TEST(ComputeSubscriptionDiffTest, EmptyEverythingIsANoOp) {
   auto diff = computeSubscriptionDiff({}, {}, {});
@@ -164,8 +160,6 @@ ChannelInfo supportedChannel(uint64_t id, const std::string& topic) {
   return ch;
 }
 
-// --- passesAdvertiseFilter ---
-
 TEST(PassesAdvertiseFilterTest, EmptySelectionAdvertisesEverything) {
   EXPECT_TRUE(passesAdvertiseFilter(supportedChannel(1, "/any/topic"), {}));
 }
@@ -185,7 +179,7 @@ TEST(PassesAdvertiseFilterTest, ATransformPassesWhateverTheSelection) {
   EXPECT_FALSE(passesAdvertiseFilter(tf, selection));
 }
 
-// --- filteredAdvertisedTopics: the filter bounds SUBSCRIPTIONS, not just advertising ---
+// The filter bounds subscriptions, not just advertising.
 
 TEST(FilteredAdvertisedTopicsTest, FilteredOutDesiredTopicProducesNoSubscription) {
   std::map<uint64_t, ChannelInfo> advertised;

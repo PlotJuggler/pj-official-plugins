@@ -1,9 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// SettingsStore is a thin adapter over the host's pj.settings.v1 service. These
-// tests drive it through an in-memory SettingsBackend wired up exactly as a host
-// would (SettingsStoreHost::view() -> SettingsView).
+// Drives SettingsStore through an in-memory SettingsBackend wired up as a host would
+// (SettingsStoreHost::view() -> SettingsView).
 #include "settings_store.hpp"
 
 #include <gtest/gtest.h>
@@ -13,8 +12,7 @@
 
 namespace {
 
-// Owns the backend + host adapter so the produced SettingsView stays valid for
-// the test's lifetime (the host's scratch buffers must outlive every view use).
+// Owns the backend + host adapter: the host's scratch buffers must outlive every view use.
 struct Fixture {
   PJ::sdk::InMemorySettingsBackend backend;
   PJ::sdk::SettingsStoreHost host{backend};
@@ -34,16 +32,13 @@ TEST(AssistantSettingsStore, StringRoundTrip) {
 }
 
 TEST(AssistantSettingsStore, BackendChoiceRoundTrip) {
-  // The dialog persists the backend selection here and restores it on the next
-  // launch (initFromSettings reads exactly this key).
   Fixture fx;
   fx.store().setString("assistant.backend", "claude");
   EXPECT_EQ(fx.store().getString("assistant.backend"), "claude");
 }
 
 TEST(AssistantSettingsStore, MissingBackendDefaultsEmpty) {
-  // First-ever launch: the key is absent, so the caller's default comes back
-  // verbatim (the dialog passes "claude" and gets the only backend there is).
+  // An absent key returns the caller's default verbatim.
   Fixture fx;
   EXPECT_EQ(fx.store().getString("assistant.backend", ""), "");
 }
@@ -56,7 +51,7 @@ TEST(AssistantSettingsStore, AllKeysPersistAcrossFreshStore) {
     store.setString("assistant.claude.model", "claude-opus-4-8");
     store.setString("assistant.claude.cli_path", "/usr/local/bin/claude");
   }
-  // A fresh adapter over the same backend mirrors a later session reading back.
+  // A fresh adapter over the same backend mirrors a later session.
   auto store = fx.store();
   EXPECT_EQ(store.getString("assistant.backend"), "claude");
   EXPECT_EQ(store.getString("assistant.claude.model"), "claude-opus-4-8");
@@ -64,8 +59,7 @@ TEST(AssistantSettingsStore, AllKeysPersistAcrossFreshStore) {
 }
 
 TEST(AssistantSettingsStore, UnboundViewReturnsDefaults) {
-  // The settings service is optional; a default-constructed (unbound) view reads
-  // defaults and silently drops writes.
+  // The service is optional: an unbound view reads defaults and drops writes.
   assistant_agent::SettingsStore store(PJ::sdk::SettingsView{});
   store.setString("assistant.backend", "ignored");
   EXPECT_EQ(store.getString("assistant.backend", "claude"), "claude");

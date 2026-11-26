@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Drives the real runProcess() against tests/support/child_helper.cpp (a
-// tiny standalone executable, ASSISTANT_CHILD_HELPER's full path) rather
-// than mocking the OS -- the whole point of this file is that argv, stdin,
-// the working directory and the environment survive the real POSIX
-// fork/exec or Windows CreateProcess round trip exactly.
+// Drives the real runProcess() against tests/support/child_helper.cpp (ASSISTANT_CHILD_HELPER)
+// rather than mocking the OS: argv, stdin, the working directory and the environment must survive
+// the real fork/exec or CreateProcess round trip exactly.
 #include "subprocess.hpp"
 
 #include <gtest/gtest.h>
@@ -43,9 +41,8 @@ std::string trimTrailingNewline(std::string s) {
   return s;
 }
 
-// Parses child_helper's "argv" mode output ("<len>:<bytes>\n" per argument,
-// byte-length-prefixed so an argument that itself contains a newline is
-// still unambiguous) back into the original argument list.
+// Parses child_helper's "argv" mode output ("<len>:<bytes>\n" per argument, length-prefixed so an
+// argument containing a newline is unambiguous) back into the argument list.
 bool parseArgvOutput(const std::string& out, std::vector<std::string>& result) {
   std::size_t pos = 0;
   while (pos < out.size()) {
@@ -96,10 +93,8 @@ TEST(Subprocess, ReportsExitCode) {
   EXPECT_EQ(res.exit_code, 7);
 }
 
-// Every one of these survives a fork/exec with no shell involved (POSIX) or
-// the appendQuotedArg round trip through a single command-line string
-// (Windows) byte for byte -- no shell metacharacter is ever interpreted,
-// and no quoting algorithm drops or duplicates a backslash.
+// Each survives byte for byte: no shell on POSIX (so no metacharacter is interpreted), and on
+// Windows the appendQuotedArg round trip must not drop or duplicate a backslash.
 TEST(Subprocess, ArgvSurvivesExactly) {
   const std::vector<std::string> inputs = {
       "",
@@ -133,9 +128,7 @@ TEST(Subprocess, ArgvSurvivesExactly) {
 
 TEST(Subprocess, HonoursWorkingDir) {
   namespace fs = std::filesystem;
-  // "pj sub ñ" as raw UTF-8 bytes, spelled this way (rather than a literal
-  // non-ASCII character in the source) so the test does not depend on this
-  // file's own saved encoding.
+  // "pj sub ñ" as raw UTF-8 bytes, so the test does not depend on the source file's encoding.
   const fs::path dir = fs::temp_directory_path() / assistant_agent::utf8ToPath("pj sub \xC3\xB1");
   std::error_code ec;
   fs::create_directories(dir, ec);
@@ -242,8 +235,7 @@ TEST(SubprocessWindows, ChildExitDoesNotWaitForGrandchild) {
   EXPECT_LT(elapsed, std::chrono::seconds(5));
 
   const DWORD grandchild_pid = static_cast<DWORD>(std::stoul(trimTrailingNewline(output)));
-  // The job object kills every descendant when the immediate child exits
-  // (subprocess.hpp), so the grandchild ("sleep 60") should already be gone.
+  // The job object kills every descendant when the child exits, so the grandchild ("sleep 60") is gone.
   if (HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, grandchild_pid); h != nullptr) {
     EXPECT_EQ(WaitForSingleObject(h, 5000), WAIT_OBJECT_0);
     CloseHandle(h);

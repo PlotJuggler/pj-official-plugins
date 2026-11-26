@@ -1,30 +1,17 @@
-# ---------------------------------------------------------------------------
-# data_stream_ros2 — ROS 2 topic subscriber marketplace extension
-#
-# Two build targets live in this directory:
+# Two targets:
 #
 #   ros2_stream_plugin  (proxy/src/)
-#     Distro dispatch shim with no rclcpp dependency. Always built.
-#     Entry point advertised by the marketplace manifest. Detects the
-#     installed ROS 2 distribution at load time and dlopen-s the
-#     matching per-distro binary.
+#     Distro dispatch shim with no rclcpp dependency; always built. It is the marketplace manifest's entry point:
+#     it detects the installed ROS 2 distribution at load time and dlopen-s the matching per-distro binary.
 #     Output: libros2_stream_plugin.so
 #
 #   ros2_stream_plugin_distro  (distro/src/)
-#     Actual subscriber compiled against a specific ROS 2 distribution.
-#     Opt-in: only built when -DPJ_BUILD_ROS2_DISTRO=ON, inside a
-#     ROS-aware environment (osrf/ros Docker container).
+#     The subscriber, compiled against one ROS 2 distribution. Built only with -DPJ_BUILD_ROS2_DISTRO=ON inside a
+#     ROS environment (ros:<distro>-ros-base container, ROS_DISTRO set by sourcing /opt/ros/<distro>/setup.bash).
 #     Output: libros2_stream_plugin-<distro>.so  (e.g. -humble, -jazzy)
 #
-# Typical CI invocations:
 #   proxy : cmake ... -DPJ_BUILD_PLUGIN=data_stream_ros2
-#   distro : cmake ... -DPJ_BUILD_PLUGIN=data_stream_ros2 -DPJ_BUILD_ROS2_DISTRO=ON
-#           (requires ROS_DISTRO to be set via source /opt/ros/<distro>/setup.bash)
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Proxy target — entry point, no ROS dependency, always built
-# ---------------------------------------------------------------------------
+#   distro: cmake ... -DPJ_BUILD_PLUGIN=data_stream_ros2 -DPJ_BUILD_ROS2_DISTRO=ON
 
 add_library(ros2_stream_plugin SHARED proxy/src/data_stream_ros2.cpp)
 target_compile_features(ros2_stream_plugin PRIVATE cxx_std_20)
@@ -39,10 +26,8 @@ set_target_properties(ros2_stream_plugin PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
-# Embed the manifest into the proxy itself so the host plugin scanner can
-# discover and describe this extension without ROS installed. The proxy's
-# data-source vtable advertises this manifest; the inner per-distro binary is
-# only dlopen-ed when the source is actually instantiated.
+# Embedded in the proxy so the host scanner can describe this extension without ROS installed; the inner per-distro
+# binary is dlopen-ed only when the source is instantiated.
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 pj_embed_manifest(ros2_stream_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
@@ -55,10 +40,8 @@ pj_emit_plugin_manifest(ros2_stream_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Unit test for the demand-subscription control plane (header-only, no ROS) ---
-# ros2_topic_subscription.hpp has no rclcpp dependency, so this target builds
-# unconditionally (like the proxy above) — it does NOT require
-# PJ_BUILD_ROS2_DISTRO or a sourced ROS 2 environment.
+# ros2_topic_subscription.hpp has no rclcpp dependency, so this builds without PJ_BUILD_ROS2_DISTRO or a ROS 2
+# environment.
 add_executable(ros2_topic_subscription_test tests/ros2_topic_subscription_test.cpp)
 target_compile_features(ros2_topic_subscription_test PRIVATE cxx_std_20)
 target_compile_options(ros2_topic_subscription_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -70,8 +53,8 @@ target_link_libraries(ros2_topic_subscription_test PRIVATE
 )
 add_test(NAME ros2_topic_subscription_test COMMAND ros2_topic_subscription_test)
 
-# Exercise optional-runtime admission without ROS, including a real dlopen
-# failure whose missing dependency is present outside the loader search path.
+# Optional-runtime admission without ROS, including a real dlopen failure whose missing dependency exists outside the
+# loader search path.
 add_library(ros2_proxy_test_dependency SHARED tests/proxy_dependency.cpp)
 add_library(ros2_proxy_test_inner SHARED tests/proxy_inner.cpp)
 target_compile_definitions(ros2_proxy_test_inner PRIVATE PJ_TEST_ROS2_DEPENDENCY)
@@ -93,13 +76,8 @@ target_compile_definitions(ros2_proxy_test PRIVATE
 add_dependencies(ros2_proxy_test ros2_proxy_test_inner ros2_proxy_test_missing_exports)
 add_test(NAME ros2_proxy_test COMMAND ros2_proxy_test)
 
-# ---------------------------------------------------------------------------
-# Per-distro target — per-distro ROS 2 subscriber, opt-in
-# ---------------------------------------------------------------------------
-
 if(PJ_BUILD_ROS2_DISTRO)
-  # Read distro from environment (set by source /opt/ros/<distro>/setup.bash).
-  # Can also be overridden explicitly with -DROS_DISTRO=<distro>.
+  # From the environment (source /opt/ros/<distro>/setup.bash), or -DROS_DISTRO=<distro>.
   if(NOT DEFINED ROS_DISTRO)
     set(ROS_DISTRO "$ENV{ROS_DISTRO}")
   endif()
@@ -147,10 +125,8 @@ if(PJ_BUILD_ROS2_DISTRO)
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
   )
 
-  # Expose the active distro as a compile macro (e.g. ROS_DISTRO_HUMBLE,
-  # ROS_DISTRO_JAZZY) so source code can branch on the version when an
-  # API differs across distros (see distro/src/ros2_schema_builder.hpp
-  # for the rosbag2_cpp -> rclcpp typesupport migration).
+  # ROS_DISTRO_<UPPER> (e.g. ROS_DISTRO_HUMBLE) lets source branch where an API differs across distros (see
+  # distro/src/ros2_schema_builder.hpp).
   string(TOUPPER "${ROS_DISTRO}" ROS_DISTRO_UPPER)
   target_compile_definitions(ros2_stream_plugin_distro PRIVATE
     "ROS_DISTRO_${ROS_DISTRO_UPPER}"
@@ -163,19 +139,16 @@ if(PJ_BUILD_ROS2_DISTRO)
 endif()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
-# The proxy also exports the documented PJ_get_proxy_last_error diagnostic
-# hook (see proxy/src/data_stream_ros2.cpp) — keep it in the allowlist and
-# enforced by the gate alongside both family getters.
+# The proxy also exports the PJ_get_proxy_last_error diagnostic hook (see proxy/src/data_stream_ros2.cpp); keep it in
+# the allowlist and enforced by the gate alongside both family getters.
 pj_harden_plugin_exports(ros2_stream_plugin
   REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable PJ_get_proxy_last_error
   EXTRA_EXPORTS PJ_get_proxy_last_error)
 
-# The inner per-distro payload is dlopen-ed by the proxy, which resolves the
-# deliberately renamed PJ_ros2_inner_* getters (renamed so the host scanner
-# never mistakes the payload for a top-level plugin). The shared allowlist
-# would localize them, so they ride in as EXTRA_EXPORTS. ROS core libraries
-# (rclcpp/rcl/rmw) are linked shared, so localizing the payload's own spill
-# does not affect RMW/typesupport symbol resolution.
+# The proxy dlopen-s the inner payload and resolves its PJ_ros2_inner_* getters (renamed so the host scanner never
+# mistakes the payload for a top-level plugin). The shared allowlist would localize them, so they ride in as
+# EXTRA_EXPORTS. ROS core libraries (rclcpp/rcl/rmw) are linked shared, so localizing the payload's own symbols does
+# not affect RMW/typesupport symbol resolution.
 if(PJ_BUILD_ROS2_DISTRO)
   pj_harden_plugin_exports(ros2_stream_plugin_distro
     REQUIRED_EXPORTS PJ_ros2_inner_get_data_source_vtable PJ_ros2_inner_get_dialog_vtable

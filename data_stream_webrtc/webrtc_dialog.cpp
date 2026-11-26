@@ -268,8 +268,7 @@ bool WebrtcDialog::loadConfig(std::string_view config_json) {
   if (cfg.is_discarded()) {
     return false;
   }
-  // Pre-WHEP configs (address/port/our_id/manual_stream) have no meaningful
-  // mapping and are ignored: unknown keys fall through to these defaults.
+  // Legacy address/port/our_id/manual_stream keys are ignored: unknown keys fall through to these defaults.
   server_parts_ = parseHttpUrl(cfg.value("server_url", std::string("http://127.0.0.1:8889")));
   bearer_ = cfg.value("bearer_token", std::string());
   if (cfg.contains("api_url")) {

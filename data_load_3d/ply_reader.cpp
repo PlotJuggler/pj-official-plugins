@@ -40,8 +40,7 @@ Datatype plyType(const std::string& t) {
   return Datatype::kUnknown;
 }
 
-// Parse a whole token as an unsigned 64-bit int. nullopt on any junk / overflow
-// / trailing characters, so callers can surface a clean error instead of throwing.
+// Whole token as uint64; nullopt on junk, overflow or trailing characters.
 std::optional<uint64_t> parseU64(const std::string& tok) {
   uint64_t value = 0;
   const char* first = tok.data();
@@ -127,8 +126,8 @@ PJ::Expected<PlyResult> readPly(PJ::Span<const uint8_t> file_bytes, std::string 
         in_vertex = false;
       }
     } else if (tok[0] == "property" && in_vertex) {
-      // Record only; validation is deferred to the cloud path. A file with
-      // faces ignores vertex properties entirely (raw bytes go to the renderer).
+      // Validation is deferred to the cloud path: a file with faces ignores vertex properties (raw bytes go to
+      // the renderer).
       if (tok.size() >= 2 && tok[1] == "list") {
         vertex_has_unsupported_prop = true;
       } else if (tok.size() >= 3) {
@@ -151,7 +150,6 @@ PJ::Expected<PlyResult> readPly(PJ::Span<const uint8_t> file_bytes, std::string 
   PlyResult result;
   result.num_faces = face_count;
 
-  // Faces present -> hand the raw file bytes to the renderer as a self-owning Mesh3D.
   if (face_count > 0) {
     auto buf = std::make_shared<std::vector<uint8_t>>(file_bytes.data(), file_bytes.data() + total);
     PJ::sdk::Mesh3D mesh;
@@ -159,12 +157,12 @@ PJ::Expected<PlyResult> readPly(PJ::Span<const uint8_t> file_bytes, std::string 
     mesh.frame_id = std::move(frame_id);
     mesh.format = "ply";
     mesh.data = PJ::Span<const uint8_t>(buf->data(), buf->size());
-    mesh.anchor = buf;  // self-owning: bytes outlive `file_bytes`
+    mesh.anchor = buf;  // bytes outlive `file_bytes`
     result.mesh = std::move(mesh);
     return result;
   }
 
-  // Vertices only -> point cloud. Validate the deferred vertex properties now.
+  // Vertices only: validate the deferred vertex properties.
   if (vertex_has_unsupported_prop) {
     return PJ::unexpected("PLY: vertex element has an unsupported (list or malformed) property");
   }

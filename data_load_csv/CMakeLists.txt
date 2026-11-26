@@ -4,7 +4,6 @@ find_package(date REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# --- CSV parser library (pure C++, no Qt) ---
 add_library(csv_parser_lib STATIC
   csv_parser.cpp
   timestamp_parsing.cpp
@@ -15,7 +14,6 @@ target_compile_options(csv_parser_lib PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(csv_parser_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(csv_parser_lib PUBLIC date::date plotjuggler_sdk::base)
 
-# --- Plugin shared library ---
 add_library(csv_source_plugin SHARED csv_source.cpp csv_dialog.cpp)
 target_compile_features(csv_source_plugin PRIVATE cxx_std_20)
 target_compile_options(csv_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -40,21 +38,19 @@ pj_embed_manifest(csv_source_plugin
   VAR_NAME kCsvManifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+# Sidecar .pjmanifest.json (from manifest.json + {abi_major, family}) that the host scans before dlopen.
 pj_emit_plugin_manifest(csv_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Unit test for CSV parser (no plugin loading) ---
 add_executable(csv_parser_test tests/csv_parser_test.cpp)
 target_compile_features(csv_parser_test PRIVATE cxx_std_20)
 target_compile_options(csv_parser_test PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(csv_parser_test PRIVATE csv_parser_lib GTest::gtest_main)
 add_test(NAME csv_parser_test COMMAND csv_parser_test)
 
-# --- Import test: loads the built plugin and drives it end to end ---
+# Loads the built plugin and drives it end to end.
 add_executable(csv_source_test tests/csv_source_test.cpp)
 target_compile_features(csv_source_test PRIVATE cxx_std_20)
 target_compile_options(csv_source_test PRIVATE ${PJ_WARNING_FLAGS})

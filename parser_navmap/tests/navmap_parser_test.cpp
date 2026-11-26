@@ -793,8 +793,6 @@ TEST_F(NavMapParserTest, RejectsBigEndianAndOversizedSequences) {
   EXPECT_NE(record.error().find("sequence length"), std::string::npos);
 }
 
-// --- use_embedded_timestamp ---------------------------------------------------
-
 TEST_F(NavMapParserTest, EmbeddedTimestampMovesObjectsAndScalarsToTheHeaderStamp) {
   ASSERT_TRUE(handle_.loadConfig(R"({"use_embedded_timestamp": true})"));
   std::string saved;
@@ -874,8 +872,6 @@ TEST_F(NavMapParserTest, ReceiveTimeIsTheDefault) {
   ASSERT_NE(update, nullptr);
   EXPECT_EQ(update->timestamp_ns, kReceiveTime);
 }
-
-// --- Hostile schemas ------------------------------------------------------------
 
 // A message type with no fields is one uint8 on the wire (what rosidl writes),
 // so a fixed array of them is bounded by the payload. The first count is the
@@ -1035,8 +1031,6 @@ TEST_F(NavMapParserTest, InvalidFloatingIndexValuesAreDropped) {
   EXPECT_DOUBLE_EQ(numericField(row, "/dropped_links"), 3.0);
 }
 
-// --- Channels -------------------------------------------------------------------
-
 TEST_F(NavMapParserTest, NavCelsOnNoSurfaceGetTheNoDataSentinel) {
   bind(kNavMapType, kCurrentSchema);
   TestMap map;
@@ -1111,8 +1105,6 @@ TEST_F(NavMapParserTest, Float64LayersInTheMapAndInUpdates) {
   EXPECT_EQ(update.patches[0].channel.datatype, Datatype::kFloat64);
   EXPECT_DOUBLE_EQ(valueAt(update.patches[0].channel.data, Datatype::kFloat64, 1, 1), -8.25);
 }
-
-// --- One channel name and datatype per layer, shared by maps and updates --------
 
 TEST_F(NavMapParserTest, EmptyAndDuplicateLayerNamesAreDroppedNotRenamed) {
   bind(kNavMapType, kCurrentSchema);
@@ -1219,8 +1211,6 @@ TEST_F(NavMapParserTest, MapAndUpdateAgreeOnTheChannelDatatype) {
   }
 }
 
-// --- Dropped layers and links, upstream fidelity --------------------------------
-
 TEST_F(NavMapParserTest, ReportsDroppedLayersAndLinks) {
   bind(kNavMapType, kCurrentSchema);
   TestMap map;
@@ -1307,11 +1297,8 @@ TEST_F(NavMapParserTest, EmptyHeaderFrameFallsBackToTheFirstSurface) {
   EXPECT_EQ(parseMap(map.serializeCurrent()).frame_id, "floor_0");
 }
 
-// --- Messages recorded from the real navmap_ros_interfaces ----------------------
-//
-// tests/data holds messages serialized by rclpy and recorded with rosbag2: the
-// schema each MCAP channel carries (*.msg) and one raw CDR payload (*.cdr), for
-// the current layout and for the first released one.
+// tests/data: messages serialized by rclpy from the real navmap_ros_interfaces and recorded with rosbag2 (the
+// schema each MCAP channel carries as *.msg, one raw CDR payload as *.cdr), for the current and the first layout.
 
 std::vector<uint8_t> readFixture(std::string_view name) {
   std::ifstream in(std::string(PJ_NAVMAP_TEST_DATA_DIR) + "/" + std::string(name), std::ios::binary);

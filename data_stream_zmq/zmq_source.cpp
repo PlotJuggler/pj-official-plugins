@@ -33,25 +33,22 @@ class ZmqSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    // Always populate available encodings first (needed even if config is empty)
+    // Encodings are needed even when the config is empty (first run).
     dialog_.setAvailableEncodings(PJ::sdk::parseEncodingsJson(runtimeHost().listAvailableEncodings()));
 
-    // Load config if provided (empty config on first run is OK)
     if (!config_json.empty()) {
-      (void)dialog_.loadConfig(config_json);  // Ignore errors, use defaults
+      (void)dialog_.loadConfig(config_json);  // errors keep the defaults
     }
 
-    // Capture the parser configuration the app injects under "_parser_config"
-    // (e.g. the protobuf descriptor + message type). Streaming sources must
-    // forward it to ensureParserBinding, otherwise schema-based parsers bind
-    // with no schema and drop every message.
+    // The parser configuration the app injects under "_parser_config" (e.g. the
+    // protobuf descriptor + message type) must reach ensureParserBinding, or
+    // schema-based parsers bind with no schema and drop every message.
     parser_config_override_ = PJ::sdk::parserConfigOverride(config_json);
 
     return PJ::okStatus();
   }
 
   PJ::Status onStart() override {
-    // Read config from dialog
     auto cfg = nlohmann::json::parse(dialog_.saveConfig(), nullptr, false);
     if (cfg.is_discarded()) {
       return PJ::unexpected("invalid dialog config");
@@ -76,11 +73,10 @@ class ZmqSource : public PJ::StreamSourceBase {
         socket_->bind(endpoint_);
       }
 
-      // Subscribe to topics
       if (topic_filter_.empty()) {
         socket_->set(zmq::sockopt::subscribe, "");
       } else {
-        // Split by comma/semicolon/whitespace
+        // Separators: comma, semicolon, space, tab.
         std::string current;
         for (char c : topic_filter_) {
           if (c == ',' || c == ';' || c == ' ' || c == '\t') {
@@ -116,7 +112,7 @@ class ZmqSource : public PJ::StreamSourceBase {
         break;
       }
 
-      // Multi-part: first frame is topic
+      // A multi-part message starts with the topic frame.
       std::string topic;
       if (recv_msg.more()) {
         topic = std::string(static_cast<const char*>(recv_msg.data()), recv_msg.size());
@@ -144,28 +140,27 @@ class ZmqSource : public PJ::StreamSourceBase {
           while (!ts_str.empty() && std::isspace(static_cast<unsigned char>(ts_str.back()))) {
             ts_str.remove_suffix(1);
           }
-          // Strict, locale-independent parse. std::strtod respects LC_NUMERIC and
-          // under a comma-decimal locale silently truncated "1721.5" to 1721.
+          // Locale-independent: std::strtod respects LC_NUMERIC and under a
+          // comma-decimal locale truncates "1721.5" to 1721.
           if (auto ts_sec = PJ::parseNumber<double>(ts_str)) {
             timestamp_ns = static_cast<int64_t>(*ts_sec * 1e9);
             timestamp_parsed = true;
           }
         }
-        // Drain remaining frames
+        // Discard any further frames.
         while (ts_msg.more()) {
           ts_msg.rebuild();
           (void)socket_->recv(ts_msg, zmq::recv_flags::dontwait);
         }
       }
       if (!timestamp_parsed) {
-        // No timestamp frame, or a frame that is not a valid number: fall back to
-        // arrival time. (An unparsable frame previously produced timestamp 0, i.e.
-        // the epoch, which mis-places the sample by decades.)
+        // No timestamp frame, or one that is not a number: use arrival time (an
+        // unparsable frame must not become timestamp 0, which mis-places the
+        // sample by decades).
         auto now = std::chrono::system_clock::now().time_since_epoch();
         timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
       }
 
-      // Delegated ingest: push raw payload to parser
       std::string topic_name = topic.empty() ? "zmq/data" : topic;
 
       auto status = ingest_.push(

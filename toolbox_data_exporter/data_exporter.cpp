@@ -54,7 +54,7 @@ std::string fileName(const std::filesystem::path& path) {
 }
 
 void stripGroupPrefix(std::vector<std::string>& names, const std::string& group_name) {
-  // PJ3 toolbox_csv.cpp:220-237 — remove an exact group prefix and one optional slash.
+  // Remove an exact group prefix and one optional slash.
   for (auto& column_name : names) {
     if (column_name.size() > group_name.size() && column_name.compare(0, group_name.size(), group_name) == 0) {
       size_t start = group_name.size();
@@ -80,7 +80,7 @@ std::string joinedNames(const std::vector<std::string>& names) {
 }
 
 std::string sanitizeGroupName(std::string group_name) {
-  // PJ3 toolbox_csv.cpp:239-245 — neutralize the three path-hostile separators.
+  // Neutralize the three path-hostile separators.
   for (char& character : group_name) {
     if (character == '/' || character == '\\' || character == ':') {
       character = '_';
@@ -133,11 +133,10 @@ std::string DataExporterDialog::widget_data() {
       .setVisible("labelPrefix", multifile_)
       .setVisible("lineEditPrefix", multifile_)
       .setText("lineEditPrefix", prefix_)
-      // PJ3 toolbox_ui.cpp:360-367 — time and export controls are live iff the table is non-empty.
+      // Time and export controls are live iff the table is non-empty.
       .setEnabled("rangeSlider", !topics_.empty())
       .setEnabled("saveButton", !topics_.empty())
-      // Streaming-only affordance (deliberate PJ4 addition over PJ3): the refresh
-      // button pulls newly received samples into the export window, and is live
+      // Streaming-only: the refresh button pulls newly received samples into the export window, and is live
       // only while the table holds at least one topic from a streaming source.
       .setButtonIconNamed("refreshButton", "refresh")
       .setEnabled("refreshButton", has_streaming_topics_)
@@ -167,9 +166,8 @@ bool DataExporterDialog::onItemsDropped(std::string_view widget_name, const std:
     return false;
   }
 
-  // PJ3 toolbox_ui.cpp:426-463 — trim, append in input order, dedupe. Unlike
-  // PJ3, the range only recomputes when the topic set actually changed: pulling
-  // fresh samples without touching the list is the refresh button's job.
+  // Trim, append in input order, dedupe. Unlike PJ3, the range only recomputes when the topic set actually
+  // changed: pulling fresh samples without touching the list is the refresh button's job.
   if (appendTopics(items)) {
     invokeRecomputeRange();
   }
@@ -183,9 +181,8 @@ bool DataExporterDialog::onDroppedItems(std::string_view widget_name, const std:
 
 bool DataExporterDialog::onClicked(std::string_view widget_name) {
   if (widget_name == "buttonAddAllFiles") {
-    // PJ3 toolbox_csv.cpp:53-74 — add numeric+string catalog entries sorted,
-    // with insertion delegated to the same deduplicating path as a drop. The
-    // range only recomputes when the topic set actually grew (see refresh).
+    // Add numeric+string catalog entries sorted, with insertion delegated to the same deduplicating path as a
+    // drop. The range only recomputes when the topic set actually grew (see refresh).
     if (on_add_all_ && appendTopics(on_add_all_())) {
       invokeRecomputeRange();
     }
@@ -204,10 +201,9 @@ bool DataExporterDialog::onClicked(std::string_view widget_name) {
   }
 
   if (widget_name == "removeButton") {
-    // PJ3 toolbox_ui.cpp:256-279 and toolbox_csv.cpp:39-44 — remove selected
-    // rows bottom-up. Removals never recompute: re-reading the catalog would
-    // drag fresh streaming samples in, and that is the refresh button's job.
-    // The range keeps its last span even if the widest topic just left.
+    // Remove selected rows bottom-up. Removals never recompute: re-reading the catalog would drag fresh
+    // streaming samples in, and that is the refresh button's job. The range keeps its last span even if the
+    // widest topic just left.
     std::vector<int> rows = selected_rows_;
     std::sort(rows.begin(), rows.end(), std::greater<>());
     rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
@@ -222,8 +218,8 @@ bool DataExporterDialog::onClicked(std::string_view widget_name) {
   }
 
   if (widget_name == "clearButton") {
-    // PJ3 toolbox_csv.cpp:46-51 — clear all topics and update gating on the
-    // next render. No recompute: like removals, clearing must not pull data.
+    // Clear all topics and update gating on the next render. No recompute: like removals, clearing must not
+    // pull data.
     topics_.clear();
     selected_rows_.clear();
     dirty_ = true;
@@ -252,9 +248,8 @@ bool DataExporterDialog::onSelectionChanged(std::string_view widget_name, const 
     return false;
   }
 
-  // The PJ4 host emits QTableWidget selection keys from the table's recorded
-  // first text column (widget_binding.cpp:615-635,1986-2011). This maps the
-  // PJ3 row selection consumed by clearTable (toolbox_ui.cpp:266-278).
+  // The host emits QTableWidget selection keys from the table's recorded first text column; map them back to
+  // row indices.
   selected_rows_.clear();
   for (const auto& key : selected) {
     const auto it = std::find(topics_.begin(), topics_.end(), key);
@@ -268,13 +263,13 @@ bool DataExporterDialog::onSelectionChanged(std::string_view widget_name, const 
 
 bool DataExporterDialog::onTextChanged(std::string_view widget_name, std::string_view text) {
   if (widget_name == "lineEditFilter") {
-    // PJ3 toolbox_ui.cpp:95-117 — filtering trims the query and matches case-insensitively.
+    // Filtering trims the query and matches case-insensitively.
     filter_ = std::string(text);
     dirty_ = true;
     return true;
   }
   if (widget_name == "lineEditPrefix") {
-    // PJ3 toolbox_ui.cpp:246-249 — trimming is deferred until the folder is chosen.
+    // Trimming is deferred until the folder is chosen.
     prefix_ = std::string(text);
     dirty_ = true;
     return false;
@@ -295,19 +290,19 @@ bool DataExporterDialog::onToggled(std::string_view widget_name, bool checked) {
     return true;
   }
   if (widget_name == "csvButton") {
-    // PJ3 toolbox_ui.cpp:46-48,136-147 — the two format radios are mutually exclusive.
+    // The two format radios are mutually exclusive.
     export_csv_ = checked;
     dirty_ = true;
     return true;
   }
   if (widget_name == "parquetButton") {
-    // PJ3 toolbox_ui.cpp:136-147 — parquet selected means CSV is not selected.
+    // Parquet selected means CSV is not selected.
     export_csv_ = !checked;
     dirty_ = true;
     return true;
   }
   if (widget_name == "checkBoxMultifile") {
-    // PJ3 toolbox_ui.cpp:119-128 — persist multi-file mode and show/hide prefix controls.
+    // Persist multi-file mode and show/hide prefix controls.
     multifile_ = checked;
     dirty_ = true;
     return true;
@@ -320,8 +315,7 @@ bool DataExporterDialog::onRangeChanged(std::string_view widget_name, int lower,
     return false;
   }
 
-  // PJ3 toolbox_ui.cpp:71-80 plus pj3_range_slider.cpp:675-678 — slider integers
-  // convert back to display seconds using the currently reduced decimal scale.
+  // Slider integers convert back to display seconds using the currently reduced decimal scale.
   sel_start_s_ = display_min_s_ + (static_cast<double>(lower) / static_cast<double>(slider_scale_));
   sel_end_s_ = display_min_s_ + (static_cast<double>(upper) / static_cast<double>(slider_scale_));
   dirty_ = true;
@@ -335,9 +329,9 @@ bool DataExporterDialog::onFileSelected(std::string_view widget_name, std::strin
 
   std::string normalized(path);
   const std::string suffix = export_csv_ ? ".csv" : ".parquet";
-  // PJ3 toolbox_ui.cpp:146-159: append the selected canonical suffix unless
-  // filename.endsWith("." + suffix, Qt::CaseInsensitive). The Parquet picker
-  // accepts *.pq, but this condition deliberately does NOT treat .pq as complete.
+  // Append the selected canonical suffix unless the filename already ends with "." + suffix
+  // (case-insensitive). The Parquet picker accepts *.pq, but this condition deliberately does NOT treat .pq
+  // as complete.
   if (!endsWithCaseInsensitive(normalized, suffix)) {
     normalized += suffix;
   }
@@ -354,7 +348,7 @@ bool DataExporterDialog::onFolderSelected(std::string_view widget_name, std::str
     return false;
   }
 
-  // PJ3 toolbox_ui.cpp:164-180 — use a trimmed prefix and pj_export fallback.
+  // Use a trimmed prefix, falling back to pj_export.
   std::string effective_prefix = trim(prefix_);
   if (effective_prefix.empty()) {
     effective_prefix = "pj_export";
@@ -417,8 +411,7 @@ void DataExporterDialog::setOnExportMulti(ExportMultiCallback callback) {
 }
 
 void DataExporterDialog::setDataRange(std::optional<std::pair<double, double>> range) {
-  // PJ3 toolbox_csv.cpp:332-340 — an unresolved/empty selection leaves every
-  // displayed bound and selected endpoint exactly as it was.
+  // An unresolved/empty selection leaves every displayed bound and selected endpoint exactly as it was.
   if (!range.has_value()) {
     return;
   }
@@ -430,8 +423,7 @@ void DataExporterDialog::setDataRange(std::optional<std::pair<double, double>> r
   data_tmin_s_ = minimum;
   data_tmax_s_ = maximum;
 
-  // PJ3 toolbox_ui.cpp:369-413 — mode conversion sets the offset and resets
-  // both slider handles to the complete newly computed range.
+  // Mode conversion sets the offset and resets both slider handles to the complete newly computed range.
   if (relative_time_) {
     time_offset_ = data_tmin_s_;
     display_min_s_ = 0.0;
@@ -473,7 +465,7 @@ const std::vector<std::string>& DataExporterDialog::topics() const {
 }
 
 std::pair<double, double> DataExporterDialog::absoluteTimeRange() const {
-  // PJ3 toolbox_ui.cpp:211-223 — relative display seconds regain the recorded offset.
+  // Relative display seconds regain the recorded offset.
   const double offset = relative_time_ ? time_offset_ : 0.0;
   return {sel_start_s_ + offset, sel_end_s_ + offset};
 }
@@ -538,8 +530,7 @@ void DataExporterDialog::updateSliderMapping() {
     std::swap(minimum, maximum);
   }
 
-  // PJ3 pj3_range_slider.cpp:680-719 exactly: non-positive spans use 1.0;
-  // precision starts at 3 and d-- while span * 10^d exceeds INT_MAX.
+  // Non-positive spans use 1.0; precision starts at 3 and decrements while span * 10^d exceeds INT_MAX.
   double span = maximum - minimum;
   if (span <= 0.0) {
     span = 1.0;
@@ -566,7 +557,7 @@ void DataExporterDialog::updateSliderMapping() {
 }
 
 int DataExporterDialog::sliderPosition(double value) const {
-  // PJ3 pj3_range_slider.cpp:662-673 — clamp, then positive-domain rounding via +0.5.
+  // Clamp, then positive-domain rounding via +0.5.
   value = std::clamp(value, display_min_s_, display_max_s_);
   const double rounded_position = (value - display_min_s_) * static_cast<double>(slider_scale_) + 0.5;
   const double clamped_position = std::min(rounded_position, static_cast<double>(std::numeric_limits<int>::max()));
@@ -574,10 +565,9 @@ int DataExporterDialog::sliderPosition(double value) const {
 }
 
 std::vector<int> DataExporterDialog::visibleRows() const {
-  // QString::contains(..., Qt::CaseInsensitive) at toolbox_ui.cpp:114 performs
-  // full Unicode folding. PJ4 toolbox plugins intentionally have no Qt/Unicode
-  // dependency, so this is the closest host-free equivalent: ASCII byte folding
-  // (field paths outside ASCII still match exactly, but not by case variant).
+  // PJ3's QString::contains(..., Qt::CaseInsensitive) folds full Unicode. Toolbox plugins have no Qt/Unicode
+  // dependency, so this is ASCII byte folding (field paths outside ASCII still match exactly, but not by case
+  // variant).
   const std::string filter = trim(filter_);
   std::string folded_filter = filter;
   std::transform(folded_filter.begin(), folded_filter.end(), folded_filter.begin(), [](unsigned char character) {
@@ -616,15 +606,15 @@ std::string DataExporterToolbox::saveConfig() const {
 }
 
 PJ::Status DataExporterToolbox::loadConfig(std::string_view config_json) {
-  // FFT precedent: dialog owns persisted state and toolbox reports a valid host-level load.
+  // The dialog owns persisted state; the toolbox reports a valid host-level load.
   (void)dialog_.loadConfig(config_json);
   return PJ::okStatus();
 }
 
 void DataExporterToolbox::prepareDialog() {
-  // PanelEngine::close() currently calls DialogHandle::reject(), which reaches
-  // onRejected(). Clear this one-shot state at every getDialog() boundary anyway
-  // as a backstop for a host that tears down without either result callback.
+  // PanelEngine::close() calls DialogHandle::reject(), which reaches onRejected(). Clear this one-shot state
+  // at every getDialog() boundary anyway as a backstop for a host that tears down without either result
+  // callback.
   dialog_.clearPendingAccept();
   wireCallbacks();
   refreshCatalog();
@@ -644,8 +634,7 @@ void DataExporterToolbox::wireCallbacks() {
     return;
   }
 
-  // PJ4 FFT getDialog precedent (fft_plugin.cpp:392-408): callbacks are
-  // installed once, while catalog/range refresh happens on every dialog open.
+  // Callbacks are installed once, while catalog/range refresh happens on every dialog open.
   dialog_.setOnRecomputeRange([this]() { recomputeRange(); });
   dialog_.setOnAddAll([this]() { return allCatalogFields(); });
   dialog_.setOnDropRows(
@@ -767,9 +756,8 @@ void DataExporterToolbox::refreshCatalog() {
   field_type_.swap(new_field_type);
   series_sources_.swap(new_series_sources);
 
-  // Re-gate the refresh button after every catalog walk — the entry points
-  // (drop/add/remove/clear/mode switch/export) are exactly the moments the
-  // table contents can change.
+  // Re-gate the refresh button after every catalog walk: the entry points (drop/add/remove/clear/mode
+  // switch/export) are exactly the moments the table contents can change.
   bool any_streaming = false;
   for (const auto& path : dialog_.topics()) {
     if (streaming_rows.count(path) > 0) {
@@ -859,8 +847,8 @@ std::vector<std::string> DataExporterToolbox::allCatalogFields() {
 
 void DataExporterToolbox::recomputeRange() {
   refreshCatalog();
-  // PJ3 toolbox_csv.cpp:281-340 — timestamps (not value validity) define the
-  // global range, and an entirely unresolved/empty set preserves the UI range.
+  // Timestamps (not value validity) define the global range, and an entirely unresolved/empty set preserves
+  // the UI range.
   if (!toolboxHostBound()) {
     dialog_.setDataRange(std::nullopt);
     return;
@@ -910,8 +898,8 @@ void DataExporterToolbox::recomputeRange() {
 
 void DataExporterToolbox::exportSingle(bool is_csv, const std::string& path) {
   refreshCatalog();
-  // PJ3 toolbox_csv.cpp:131-162 — all table rows form the export set; warning
-  // paths stay open, while successful serialization closes after reporting.
+  // All table rows form the export set; warning paths stay open, while successful serialization closes after
+  // reporting.
   if (dialog_.topics().empty()) {
     report(PJ::ToolboxMessageLevel::kWarning, "No topics selected.");
     return;
@@ -962,8 +950,8 @@ void DataExporterToolbox::exportSingle(bool is_csv, const std::string& path) {
 
 void DataExporterToolbox::exportMulti(bool is_csv, const std::string& directory, const std::string& prefix) {
   refreshCatalog();
-  // PJ3 toolbox_csv.cpp:164-274 — lexicographic groups, empty-group skips,
-  // first-write-failure abort, and close only after at least one saved file.
+  // Lexicographic groups, empty-group skips, first-write-failure abort, and close only after at least one
+  // saved file.
   if (dialog_.topics().empty()) {
     report(PJ::ToolboxMessageLevel::kWarning, "No topics selected.");
     return;

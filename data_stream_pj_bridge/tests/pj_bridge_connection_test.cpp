@@ -294,8 +294,6 @@ TEST(PjBridgeConnectionTest, StopDropsLateCallbacks) {
   EXPECT_EQ(commands(*second), (std::vector<std::string>{"subscribe_topic_updates", "get_topics"}));
 }
 
-// --- Endpoints ---
-
 TEST(PjBridgeConnectionTest, ExplicitWssUrlWithPathIsUsedVerbatim) {
   BridgeFixture fixture;
   ASSERT_TRUE(fixture.source.loadConfig(R"({"url":"wss://robot.local:8443/bridge","address":"ignored","port":1})"));
@@ -357,8 +355,6 @@ TEST(PjBridgeConnectionTest, LegacySubscribeDeadlineWarnsWithoutStopping) {
   EXPECT_TRUE(fixture.source.poll());
   EXPECT_TRUE(fixture.host.reported("Subscribe response not received"));
 }
-
-// --- Streaming ---
 
 TEST(PjBridgeConnectionTest, DemandSubscriptionsWaitForTheConnectionThenFollowTheHost) {
   BridgeFixture fixture(/*demand_capable=*/true, patientOptions());
@@ -473,8 +469,6 @@ TEST(PjBridgeConnectionTest, InboundOverflowDropsTheOldestDataAndKeepsTheSession
   EXPECT_EQ(fixture.host.countReported("dropped"), 1);
   EXPECT_EQ(fixture.host.pushes.back().timestamp_ns, 100 + kFrames - 1);
 }
-
-// --- Dialog ---
 
 TEST(PjBridgeConnectionTest, DialogConnectionIsHandedToTheSource) {
   BridgeFixture fixture;
@@ -635,8 +629,6 @@ TEST(PjBridgeConnectionTest, DialogDefaultsToTheBridgeServersPort) {
   EXPECT_EQ(dialog.endpoint().str(), "ws://10.0.0.2:9090");
 }
 
-// --- The URL line ---
-
 TEST(PjBridgeConnectionTest, DialogCompletesABareHostWithWsAndTheDefaultPort) {
   fakeSockets().clear();
   PjBridgeDialog dialog(testOptions());
@@ -705,8 +697,7 @@ TEST(PjBridgeConnectionTest, DialogInvalidUrlDisablesConnectAndSaysWhy) {
   EXPECT_TRUE(nlohmann::json::parse(dialog.widget_data())["buttonConnect"].value("enabled", false));
 }
 
-// An earlier version saved what IXWebSocket accepted, ignoring userinfo and a fragment: such a
-// config still loads, with its selection, and dials what connected before.
+// A saved url with userinfo or a fragment still loads, with its selection, and dials the url without them.
 TEST(PjBridgeConnectionTest, AnEarlierConfigWithUserinfoOrAFragmentStillLoads) {
   for (const auto& [saved, dialed] : std::vector<std::pair<std::string, std::string>>{
            {"ws://user:pw@robot:9090", "ws://robot:9090"}, {"ws://robot:9090/b#top", "ws://robot:9090/b"}}) {
@@ -721,7 +712,6 @@ TEST(PjBridgeConnectionTest, AnEarlierConfigWithUserinfoOrAFragmentStillLoads) {
 }
 
 // --- The remembered URL (pj.settings.v1) ---
-
 TEST(PjBridgeConnectionTest, DialogStartsFromTheRememberedUrlUnlessTheConfigNamesOne) {
   PJ::sdk::InMemorySettingsBackend backend;
   PJ::sdk::SettingsStoreHost store(backend);
@@ -786,7 +776,6 @@ TEST(PjBridgeConnectionTest, DialogWithoutASettingsStoreConnectsWithoutRememberi
 }
 
 // --- Topic selection: Select All / Deselect All and the locked transform rows ---
-
 std::string typedTopicsResponse(const std::vector<std::pair<std::string, std::string>>& topics) {
   auto response = nlohmann::json::parse(getTopicsResponse({}));
   for (const auto& [name, type] : topics) {
@@ -880,7 +869,7 @@ TEST(PjBridgeConnectionTest, ASavedSelectionOmittingTransformsStillShowsThem) {
   EXPECT_EQ(savedTopics(dialog), (std::set<std::string>{"/imu"}));
 }
 
-// A config saved by an earlier version may list /tf: an ordinary selected topic.
+// A saved selection may list /tf: it loads as an ordinary selected topic.
 TEST(PjBridgeConnectionTest, AnEarlierConfigListingTfLoadsAsAnOrdinarySelection) {
   BridgeFixture fixture;
   ASSERT_TRUE(fixture.source.loadConfig(

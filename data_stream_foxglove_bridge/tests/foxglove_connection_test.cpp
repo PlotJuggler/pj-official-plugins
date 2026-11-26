@@ -144,8 +144,6 @@ std::vector<std::string> ops(const FakeSocket& socket) {
   return names;
 }
 
-// --- Connection lifecycle ---
-
 TEST(FoxgloveConnectionTest, StartReturnsBeforeConnectionAndOffersBothSubprotocols) {
   FoxgloveFixture fixture(/*demand_capable=*/true, patientOptions());
   const auto started = std::chrono::steady_clock::now();
@@ -185,8 +183,6 @@ TEST(FoxgloveConnectionTest, RefusedFirstConnectionStopsTheStream) {
   socket.sink->push({EventType::kError, "connection refused"});
   EXPECT_FALSE(fixture.source.poll());
 }
-
-// --- Streaming ---
 
 TEST(FoxgloveConnectionTest, DemandModeAdvertisesSubscribesAndPushesInArrivalOrder) {
   FoxgloveFixture fixture;
@@ -416,8 +412,6 @@ TEST(FoxgloveConnectionTest, StopUnsubscribesAndDropsLateEvents) {
   EXPECT_FALSE(fixture.host.reported("failed to connect"));
 }
 
-// --- Dialog ---
-
 TEST(FoxgloveConnectionTest, DialogConnectionIsHandedToTheSource) {
   FoxgloveFixture fixture;
   FoxgloveDialog& dialog = fixture.dialog();
@@ -576,8 +570,6 @@ TEST(FoxgloveConnectionTest, DialogRefreshesWhenTheUrlValidityChanges) {
   EXPECT_EQ(dialog.endpoint().str(), "wss://robot");
 }
 
-// --- The remembered URL (pj.settings.v1) ---
-
 TEST(FoxgloveConnectionTest, DialogRemembersTheCleanedUrlAndStartsFromIt) {
   PJ::sdk::InMemorySettingsBackend backend;
   PJ::sdk::SettingsStoreHost store(backend);
@@ -596,8 +588,6 @@ TEST(FoxgloveConnectionTest, DialogRemembersTheCleanedUrlAndStartsFromIt) {
   FoxgloveFixture next(true, testOptions(), store.view());
   EXPECT_EQ(next.dialog().endpoint().str(), "wss://robot:8765/fg");
 }
-
-// --- Channel selection: Select All / Deselect All and the locked transform rows ---
 
 nlohmann::json typedChannel(
     uint64_t id, const std::string& topic, const std::string& schema_name, const std::string& encoding) {
@@ -710,9 +700,8 @@ TEST(FoxgloveConnectionTest, ATfNameOfAnotherTypeIsNotLocked) {
   EXPECT_TRUE(shownSelection(table(dialog.widget_data(), "topicsList")).empty());
 }
 
-// A config saved by an earlier version may list /tf: an ordinary selected topic. PlotJuggler
-// subscribes the transforms itself: the source advertises them whatever the saved selection and
-// subscribes only what the host asks for.
+// A saved selection may list /tf, which loads as an ordinary selected topic. PlotJuggler subscribes the transforms
+// itself: the source advertises them whatever the saved selection and subscribes only what the host asks for.
 TEST(FoxgloveConnectionTest, TransformsAreAdvertisedWhateverTheSelectionAndSubscribedOnDemand) {
   FoxgloveFixture fixture;
   FakeSocket& socket = fixture.startWith(

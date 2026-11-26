@@ -1,7 +1,5 @@
-// End-to-end tests: fixture file -> candump_parser -> pj_can_dbc::CanDecoder,
-// the same pipeline candump_source.cpp drives (which itself needs a live PJ
-// host and so is not unit-tested directly -- mirrors
-// data_load_blf/tests/blf_frames_test.cpp's BlfDecode.* tests).
+// End-to-end tests: fixture file -> candump_parser -> pj_can_dbc::CanDecoder, the pipeline candump_source.cpp
+// drives (the source itself needs a live host and is not unit-tested directly).
 
 #include <gtest/gtest.h>
 
@@ -58,12 +56,8 @@ const DecodedSignal* find(const std::vector<DecodedSignal>& sigs, const std::str
   return nullptr;
 }
 
-/// Parses every line, tallying each recognized-but-unsupported kind (RTR,
-/// error, FD, XL, `-e` detail, DROPCOUNT) and collecting the kData lines for
-/// the caller's own decode assertions -- the "parse, switch on kind, tally
-/// or fall through to kData" scaffolding both fixture-decode tests below
-/// otherwise duplicate. kMalformed/kWallClockTs are never expected by either
-/// fixture, so they fail the line immediately either way.
+/// Tallies each recognized-but-unsupported kind and collects the kData lines. kMalformed/kWallClockTs are never
+/// expected by either fixture, so they fail the line immediately.
 struct KindCounts {
   int rtr = 0;
   int error = 0;
@@ -114,10 +108,8 @@ KindCounts countKinds(const std::vector<std::string>& lines) {
   return counts;
 }
 
-// log_format.log + sample.dbc: classic + extended decodable frames, plus one
-// of each recognized-but-unsupported kind, counted correctly. Fixture shapes
-// verified against linux-can/can-utils lib.c snprintf_canframe (see
-// candump_parser.hpp's grammar comment for exact line references).
+// log_format.log + sample.dbc: classic + extended decodable frames, plus one of each recognized-but-unsupported
+// kind, counted correctly.
 TEST(CandumpDecode, LogFormatFixtureDecodesThroughDbc) {
   CanDecoder dec;
   ASSERT_TRUE(dec.loadDbcFile(testDataPath("sample.dbc")).has_value());
@@ -171,11 +163,9 @@ TEST(CandumpDecode, LogFormatFixtureDecodesThroughDbc) {
   EXPECT_DOUBLE_EQ(under_value, 0.0);
 }
 
-// sample.dbc's VAL_ tables through the SAME SignalRowBuilder path
-// candump_source.cpp's decoded-frame branch uses: Speed's raw value (1000,
-// pinned above) matches its table exactly; ExtSig's raw value (1) has no
-// matching entry (the table only has key 5) and must fall back to its
-// number as text.
+// sample.dbc's VAL_ tables through the same SignalRowBuilder path candump_source.cpp uses: Speed's raw value
+// (1000, pinned above) matches its table exactly; ExtSig's raw value (1) has no entry (the table only has key 5)
+// and must fall back to its number as text.
 TEST(CandumpDecode, ValueTableLabelsRouteThroughSignalRowBuilder) {
   CanDecoder dec;
   ASSERT_TRUE(dec.loadDbcFile(testDataPath("sample.dbc")).has_value());
@@ -201,8 +191,7 @@ TEST(CandumpDecode, ValueTableLabelsRouteThroughSignalRowBuilder) {
   EXPECT_EQ(std::get<std::string_view>(ext_label->value), "1");
 }
 
-// screen_format.txt + sample.dbc. Fixture shapes verified against
-// lib.c snprintf_long_canframe (see candump_parser.hpp's grammar comment).
+// screen_format.txt + sample.dbc.
 TEST(CandumpDecode, ScreenFormatFixtureDecodesThroughDbc) {
   CanDecoder dec;
   ASSERT_TRUE(dec.loadDbcFile(testDataPath("sample.dbc")).has_value());
@@ -246,8 +235,7 @@ TEST(CandumpDecode, ScreenFormatFixtureDecodesThroughDbc) {
   EXPECT_EQ(counts.data_lines.size(), 6u);
 }
 
-// arus_race.txt + arus_subset.csv -> DBC: full pipeline reproducing the
-// worked example verified against the real ARUS CSV (log_plotter semantics).
+// arus_race.txt + arus_subset.csv -> DBC: full pipeline reproducing the ARUS log_plotter semantics.
 TEST(CandumpDecode, ArusRaceFixtureMatchesWorkedExample) {
   std::string dbc_text, warnings;
   ASSERT_TRUE(candump_detail::arusCsvToDbc(readFile("arus_subset.csv"), dbc_text, warnings).has_value());

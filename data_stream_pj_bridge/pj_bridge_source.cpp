@@ -52,17 +52,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   uint64_t extraCapabilities() const override {
-    // kCapabilitySupportsPause keeps the connection-global pause()/resume() wire
-    // commands the host toolbar drives; kCapabilityPerTopicPause adds the
-    // demand-driven per-topic subscription control (pj.topic_subscription.v1).
+    // SupportsPause: the host toolbar's connection-global pause()/resume(). PerTopicPause: demand-driven per-topic
+    // subscription (pj.topic_subscription.v1).
     return PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog | PJ::kCapabilitySupportsPause |
            PJ::kCapabilityPerTopicPause;
   }
 
-  /// pj.topic_subscription.v1 (host -> plugin): the host pushes the full active-
-  /// topic set here (see setActiveTopicsThunk). Every other extension id is
-  /// unknown -> nullptr, the default DataSourcePluginBase::pluginExtension()
-  /// behavior for a host that doesn't ask for this one.
+  /// pj.topic_subscription.v1: the host pushes the full active-topic set here (see setActiveTopicsThunk).
   const void* pluginExtension(std::string_view id) override {
     if (id == PJ_TOPIC_SUBSCRIPTION_EXTENSION_V1) {
       static const PJ_topic_subscription_v1_t ext{sizeof(PJ_topic_subscription_v1_t), &setActiveTopicsThunk};
@@ -106,9 +102,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
     use_timestamp_ = cfg.value("use_timestamp", false);
 
-    // Read the saved topic selection. On a legacy host this is the subscribe
-    // set (exactly as before); on a demand-capable host it is only an OPTIONAL
-    // advertise filter (empty = advertise everything).
+    // The saved selection is the subscribe set on a legacy host; on a demand-capable host only an optional advertise
+    // filter (empty = advertise everything).
     selected_topics_.clear();
     if (cfg.contains("topics") && cfg["topics"].is_array()) {
       for (const auto& t : cfg["topics"]) {
@@ -123,15 +118,12 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       }
     }
 
-    // Adopt the dialog's connection when it hands over an open one (one socket serves both
-    // dialog and streaming, as in the original plugin); otherwise connect fresh, e.g. for a
-    // configured start without the dialog. Either way start() returns before the connection
-    // completes: onPoll() drives connecting -> discovery -> streaming.
+    // One socket serves dialog and streaming: adopt the dialog's open connection, else connect fresh (configured start
+    // without the dialog). Either way start() returns before the connection completes; onPoll() drives
+    // connecting -> discovery -> streaming.
     const bool adopted = connection_.adopt(dialog_.takeConnection());
     if (adopted) {
-      // Seed the advertise catalog from the topics the dialog already discovered, so demand mode
-      // can list them immediately instead of waiting for our own get_topics round-trip.
-      // Discarded if the host turns out to be legacy.
+      // Lets demand mode list topics before our own get_topics round-trip; discarded on a legacy host.
       for (auto& info : dialog_.allDiscoveredTopics()) {
         advertised_topics_[info.name] = std::move(info);
       }
@@ -139,17 +131,13 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       return status;
     }
 
-    // Demand mode is decided ONCE per start by the first notify_available_topics
-    // attempt: a host that lacks the tail slot (old PJ4) returns an error, so a
-    // new plugin degrades to the legacy selection-driven subscribe path below,
-    // byte-for-byte. A host that accepts it drives subscriptions solely through
+    // Decided once per start by the first notify_available_topics attempt: a host without the tail slot returns an
+    // error and the selection-driven legacy subscribe path is used; otherwise subscriptions are driven solely through
     // pj.topic_subscription.v1 (see onPoll / applyDesiredTopics).
     demand_mode_ = static_cast<bool>(refreshAdvertisedTopics());
 
     if (!demand_mode_) {
-      // --- Legacy host: preserve the original behavior. ---
-      // The dialog seed is only for demand mode; drop it so the legacy schema
-      // lookup resolves from selected_topics_ alone.
+      // The dialog seed is for demand mode only: legacy schema lookup must resolve from selected_topics_ alone.
       advertised_topics_.clear();
       if (selected_topics_.empty()) {
         runtimeHost().reportMessage(
@@ -164,7 +152,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   }
 
   PJ::Status onPoll() override {
-    // Applies the queued events; a failed or lost connection stops the stream.
+    // A failed or lost connection stops the stream.
     if (auto status = connection_.poll(); !status) {
       return status;
     }
@@ -185,22 +173,20 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       }
     }
 
-    // Heartbeat: send every ~1s (30 polls at 33ms each)
+    // ~1 s: 30 polls at 33 ms
     if (++heartbeat_tick_ >= 30) {
       heartbeat_tick_ = 0;
       connection_.sendText(buildRequest("heartbeat", generateRequestId()));
     }
 
     if (demand_mode_) {
-      // Re-advertise + reconcile only on a genuine advertise delta, so a
-      // desired-but-not-yet-advertised topic subscribes as soon as the server
-      // announces it (topics_changed) without waiting for another host command.
+      // Only on a real advertise delta, so a desired-but-not-yet-advertised topic subscribes as soon as the server
+      // announces it, without waiting for another host command.
       if (advertise_dirty_) {
         advertise_dirty_ = false;
         refreshAdvertisedTopicsAndWarn();
         reconcileSubscriptions();
       }
-      // Apply the host's latest desired active-topic set, if it wrote one.
       applyDesiredTopics();
     }
 
@@ -227,25 +213,19 @@ class PjBridgeSource : public PJ::StreamSourceBase {
  private:
   using Clock = std::chrono::steady_clock;
 
-  // [poll thread] The socket is open, a fresh server session: request what this mode needs
-  // before streaming.
+  // [poll thread] Fresh server session on an open socket: request what this mode needs before streaming.
   void beginDiscovery() {
     server_paused_ = false;  // onPoll() re-sends a pause() that came while connecting
     if (demand_mode_) {
-      // Ask the server for the authoritative full topic set WITH schemas, and
-      // opt into topics_changed pushes (also WITH schemas). Old servers ignore
-      // include_schemas and just answer name+type — the subscribe response is
-      // still the authoritative schema source, so binding works regardless.
-      // Order matters: opt into topics_changed pushes BEFORE taking the
-      // snapshot. The reverse leaves a gap — a topic appearing between the
-      // snapshot and the opt-in is folded into the server's baseline without
-      // ever being pushed to us. A duplicate (pushed AND in the snapshot) is
-      // harmless: applyAdvertiseDelta upserts.
+      // Old servers ignore include_schemas and answer name+type only; the subscribe response is still the
+      // authoritative schema source.
+      // Order matters: opt into topics_changed BEFORE the snapshot. Otherwise a topic appearing between the two is
+      // folded into the server's baseline and never pushed to us. A duplicate (pushed and in the snapshot) is harmless:
+      // applyAdvertiseDelta upserts.
       connection_.sendText(buildDiscoveryRequest("subscribe_topic_updates"));
       connection_.sendText(buildDiscoveryRequest("get_topics"));
     } else {
-      // Legacy: subscribe to the selected topics — the response carries the schemas needed for
-      // parsing. onPoll() waits for it until subscribe_deadline_.
+      // The response carries the schemas needed for parsing; onPoll() waits for it until subscribe_deadline_.
       subscribe_response_received_ = false;
       std::vector<std::string> names;
       names.reserve(selected_topics_.size());
@@ -267,11 +247,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     for (const auto& msg : messages) {
       auto it = bindings_.find(msg.topic_name);
       if (it != bindings_.end()) {
-        // msg.cdr_data points into decompress_buffer_ which is reused for the
-        // next frame, so we own the bytes through a shared_ptr-owned buffer.
-        // The fetcher must be idempotent (ObjectIngestPolicy may dispatch
-        // it more than once / asynchronously) and must return a PayloadView
-        // whose anchor keeps the bytes alive past the call.
+        // cdr_data points into decompress_buffer_, reused for the next frame, so copy. The fetcher must be idempotent
+        // (ObjectIngestPolicy may dispatch it more than once, asynchronously) and its PayloadView anchor must keep the
+        // bytes alive past the call.
         auto payload = std::make_shared<std::vector<uint8_t>>(msg.cdr_data, msg.cdr_data + msg.cdr_size);
         auto status = runtimeHost().pushMessage(
             it->second, PJ::Timestamp{msg.timestamp_ns},
@@ -284,10 +262,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
-  // Build a subscribe frame for a set of topic names. `subscribe` is ADDITIVE:
-  // the server merges these into the session's set without disturbing the rest.
-  // The caller supplies the request id so it can remember which subscribe was
-  // the LAST one sent per topic (see failureIsStale).
+  // `subscribe` is additive: the server merges these into the session's set. The caller supplies the request id so it
+  // can remember the last subscribe sent per topic (see failureIsStale).
   std::string buildSubscribeMessage(const std::vector<std::string>& topics, const std::string& request_id) const {
     nlohmann::json cmd;
     cmd["command"] = "subscribe";
@@ -297,8 +273,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     return cmd.dump();
   }
 
-  // Build an unsubscribe frame for a set of topic names. Unknown names are
-  // silently ignored by the server.
+  // The server silently ignores unknown names.
   std::string buildUnsubscribeMessage(const std::vector<std::string>& topics) const {
     nlohmann::json cmd;
     cmd["command"] = "unsubscribe";
@@ -306,9 +281,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     return cmd.dump();
   }
 
-  // Build a get_topics / subscribe_topic_updates frame that opts into per-topic
-  // schemas. Old servers ignore include_schemas (graceful degradation to
-  // name+type-only entries).
+  // Old servers ignore include_schemas and answer with name+type-only entries.
   std::string buildDiscoveryRequest(const std::string& command) const {
     nlohmann::json cmd;
     cmd["command"] = command;
@@ -318,10 +291,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     return cmd.dump();
   }
 
-  // Resolve the ROS 2 type name for `topic`. In demand mode it comes from the
-  // advertise catalog (get_topics/topics_changed); in legacy mode the catalog is
-  // empty, so this falls back to the saved selection — identical to the original
-  // per-topic schema_name lookup.
+  // Demand mode resolves from the advertise catalog; legacy mode has an empty catalog and falls back to the saved
+  // selection.
   std::string resolveSchemaName(const std::string& topic) const {
     auto it = advertised_topics_.find(topic);
     if (it != advertised_topics_.end() && !it->second.schema_name.empty()) {
@@ -335,19 +306,15 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     return {};
   }
 
-  // stringField with a non-empty fallback (wire fields default like json::value
-  // used to, but wrong-typed values degrade instead of throwing).
+  // stringField with a fallback for absent, empty or wrong-typed values (json::value would throw on the latter).
   static std::string stringFieldOr(const nlohmann::json& entry, const char* key, const char* fallback) {
     std::string value = stringField(entry, key);
     return value.empty() ? std::string(fallback) : value;
   }
 
-  // [poll thread] An applied topic whose advertised type/schema CHANGED keeps
-  // streaming bytes the old parser binding would misparse. Drop it from
-  // applied_/bindings_ so the reconcile armed by this catalog change
-  // re-subscribes it: the fresh subscribe response re-binds with the new schema
-  // (the host mints a fresh binding when the signature changed). The server
-  // treats the re-subscribe of a still-live topic idempotently.
+  // [poll thread] An applied topic whose advertised type/schema changed keeps streaming bytes the old parser binding
+  // would misparse. Dropping it from applied_/bindings_ makes the reconcile re-subscribe it, and the fresh response
+  // re-binds with the new schema. The server treats re-subscribing a live topic idempotently.
   void dropRetypedApplied(const std::map<std::string, TopicInfo>& before) {
     for (const auto& topic : retypedTopics(before, advertised_topics_, applied_)) {
       applied_.erase(topic);
@@ -356,9 +323,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
-  // The advertise filter: just the names of the saved selection (empty = no
-  // filter, advertise everything). Derived from selected_topics_ so the two
-  // can't drift; recomputed per advertise/reconcile, both cold paths.
+  // Names of the saved selection (empty = no filter). Derived from selected_topics_ so the two can't drift.
   std::vector<std::string> advertiseFilter() const {
     std::vector<std::string> names;
     names.reserve(selected_topics_.size());
@@ -368,11 +333,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     return names;
   }
 
-  // Build the AvailableTopic list for notify_available_topics from the advertise
-  // catalog, restricted by the (optional) advertise filter. Schema bytes alias
-  // the TopicInfo::schema strings held in advertised_topics_, which outlive the
-  // synchronously-consumed notify_available_topics call. Mirrors the ros2 /
-  // foxglove parameter shape: {topic, parser_encoding, type_name, schema}.
+  // Schema bytes alias the TopicInfo::schema strings in advertised_topics_, which outlive the synchronous
+  // notify_available_topics call.
   std::vector<PJ::AvailableTopic> buildAvailableTopics() const {
     const auto filter = advertiseFilter();
     std::vector<PJ::AvailableTopic> topics;
@@ -389,11 +351,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     return topics;
   }
 
-  // Advertise the current (filtered) full topic set to the host. The FIRST call,
-  // from onStart(), also decides demand_mode_ via the returned status. Later
-  // calls (from onPoll, after an advertise delta) are only made when demand_mode_
-  // is already true — no point re-probing a host that has already been found to
-  // lack the slot.
+  // The first call (onStart) also decides demand_mode_ via the returned status; later calls are made only when
+  // demand_mode_ is already true.
   PJ::Status refreshAdvertisedTopics() {
     const auto topics = buildAvailableTopics();
     return runtimeHost().notifyAvailableTopics(PJ::Span<const PJ::AvailableTopic>(topics.data(), topics.size()));
@@ -406,13 +365,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
-  // [poll thread] The single reconciliation point for demand mode: diff the
-  // applied subscriptions against last_applied_desired_ over the currently
-  // advertised (and filter-passing) topics, sending ONE additive subscribe for
-  // the newly wanted topics and ONE unsubscribe for the dropped ones. Called
-  // after every advertise delta (onPoll) AND when a new desired set lands
-  // (applyDesiredTopics) — so desired-then-advertised and advertised-then-desired
-  // converge on one code path. Empty send lists are suppressed.
+  // [poll thread] The single reconciliation point for demand mode: diffs applied_ against last_applied_desired_ over
+  // the advertised, filter-passing topics and sends one subscribe and one unsubscribe. Runs after every advertise delta
+  // and every new desired set, so desired-then-advertised and advertised-then-desired converge.
   void reconcileSubscriptions() {
     const auto advertised = filteredAdvertisedTopics(advertised_topics_, advertiseFilter());
     const auto diff = computeSubscriptionDiff(applied_, advertised, last_applied_desired_);
@@ -429,11 +384,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     if (!diff.to_subscribe.empty()) {
       const std::string request_id = generateRequestId();
       connection_.sendText(buildSubscribeMessage(diff.to_subscribe, request_id));
-      // Optimistically mark applied; a per-topic failure in the subscribe
-      // response strips it back off (see handleSubscribeResponse), and it
-      // retries on the next advertise delta rather than in a tight loop.
-      // Remember the id so a STALE failure (from a subscribe this one
-      // superseded) cannot erase applied_'s truth for the live subscription.
+      // Optimistic: a per-topic failure strips it back off (see handleSubscribeResponse) and it retries on the next
+      // advertise delta, not in a tight loop. The id lets a stale failure be ignored (see failureIsStale).
       for (const auto& topic : diff.to_subscribe) {
         applied_.insert(topic);
         last_subscribe_id_by_topic_[topic] = request_id;
@@ -441,8 +393,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
-  // [poll thread] Apply the host's latest desired active-topic set, if it wrote
-  // one since the last poll (latest-wins slot — see setActiveTopicsThunk).
+  // [poll thread] Latest-wins slot, see setActiveTopicsThunk.
   void applyDesiredTopics() {
     auto desired = desired_topics_slot_.take();
     if (!desired) {
@@ -452,27 +403,23 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     reconcileSubscriptions();
   }
 
-  // [poll thread] Dispatch one inbound text frame by SHAPE (not by request id —
-  // the plugin never correlates ids): a subscribe response carries "schemas", a
-  // topics_changed push carries "notification", a get_topics response carries a
-  // "topics" array. Anything else is tolerated and ignored.
+  // [poll thread] Dispatches by shape, not request id: a subscribe response has "schemas", a topics_changed push
+  // "notification", a get_topics response a "topics" array. Anything else is ignored.
   void onTextMessage(const std::string& message) {
     auto json = nlohmann::json::parse(message, nullptr, false);
     if (json.is_discarded() || !json.is_object()) {
       return;
     }
 
-    // The ONE hard compatibility gate: a response from a KNOWN-newer protocol
-    // may carry semantics this client cannot interpret, so stop the stream
-    // instead of guessing. Everything additive is feature-detected via the
-    // `server` capability list instead (see handleGetTopicsResponse).
+    // The one hard compatibility gate: a newer protocol may carry semantics this client cannot interpret. Additive
+    // features are feature-detected via the `server` capability list (see handleGetTopicsResponse).
     if (const auto newer = unsupportedProtocolVersion(json, kSupportedProtocolVersion)) {
       const std::string upgrade = "server speaks protocol_version " + std::to_string(*newer) +
                                   " but this plugin supports " + std::to_string(kSupportedProtocolVersion) +
                                   " — upgrade PlotJuggler (or run an older plotjuggler_bridge)";
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, upgrade);
       connection_.fail(upgrade);
-      return;  // do not interpret the frame
+      return;
     }
 
     if (json.contains("notification")) {
@@ -482,12 +429,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       return;
     }
 
-    // Any response carrying "schemas" is a subscribe response — INCLUDING the
-    // all-failed shape (status "error" + ALL_SUBSCRIPTIONS_FAILED, schemas:{}),
-    // whose failures must still strip applied_, or the rejected topics stay
-    // "applied" forever and are never retried. Binding is gated on applied_
-    // membership and failures on staleness, so processing is safe for every
-    // status.
+    // Any response with "schemas" is a subscribe response, including the all-failed shape (status "error" +
+    // ALL_SUBSCRIPTIONS_FAILED, schemas:{}): its failures must still strip applied_ or the rejected topics stay
+    // "applied" forever. Binding is gated on applied_ membership and failures on staleness, so every status is safe.
     if (json.contains("schemas")) {
       handleSubscribeResponse(json);
       return;
@@ -499,18 +443,15 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
-  // Subscribe response: bind a parser per schema entry (exactly as the original
-  // plugin did — the host reuses bindings by signature, so re-binding an
-  // unchanged topic is cheap) and strip any per-topic failures back off applied_.
+  // Binds a parser per schema entry (the host reuses bindings by signature, so re-binding an unchanged topic is cheap)
+  // and strips per-topic failures off applied_.
   void handleSubscribeResponse(const nlohmann::json& json) {
     const auto& schemas = json["schemas"];
     if (schemas.is_object()) {
       for (auto it = schemas.begin(); it != schemas.end(); ++it) {
         const std::string& topic_name = it.key();
-        // A LATE response for a topic the host has since paused must not
-        // resurrect its binding — in-flight frames would ingest into an
-        // inactive topic. (Legacy mode never populates applied_, so the gate
-        // only applies in demand mode.)
+        // A late response for a topic the host has since paused must not resurrect its binding: in-flight frames would
+        // ingest into an inactive topic. Legacy mode never populates applied_, so the gate is demand-mode only.
         if (demand_mode_ && applied_.count(topic_name) == 0) {
           continue;
         }
@@ -519,12 +460,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
         const std::string definition = stringField(schema_obj, "definition");
         const std::string schema_name = resolveSchemaName(topic_name);
 
-        // Per-topic parser config, mirroring the foxglove source: parser_ros
-        // needs schema_encoding to compile with the RIGHT schema language —
-        // without it, it falls back to its ros2msg default, which happens to
-        // work for the ROS2 backend but miscompiles the FastDDS backend's
-        // omgidl schemas. use_embedded_timestamp is the key parser_ros reads
-        // (use_timestamp kept for parsers using the older name).
+        // parser_ros needs schema_encoding to pick the schema language: without it it defaults to ros2msg, which
+        // miscompiles the FastDDS backend's omgidl schemas. use_embedded_timestamp is the key parser_ros reads;
+        // use_timestamp is its older name, kept for other parsers.
         nlohmann::json parser_cfg;
         PJ::sdk::arrayLimitToJson(parser_cfg, array_limit_);
         parser_cfg["use_timestamp"] = use_timestamp_;
@@ -550,11 +488,9 @@ class PjBridgeSource : public PJ::StreamSourceBase {
       }
     }
 
-    // Per-topic failures: the server forgets a failed subscribe (no sticky
-    // retry), so drop it from applied_ — the next advertise delta re-proposes it.
-    // Unless the failure is STALE (its request id predates the last subscribe we
-    // sent for that topic): a newer subscribe superseded it, and erasing
-    // applied_ would leave a live server-side subscription no pause can stop.
+    // The server forgets a failed subscribe (no sticky retry), so drop it from applied_; the next advertise delta
+    // re-proposes it. A stale failure (see failureIsStale) is skipped: erasing applied_ would leave a live server-side
+    // subscription no pause can stop.
     if (json.contains("failures") && json["failures"].is_array()) {
       const std::string response_id = stringField(json, "id");
       for (const auto& f : json["failures"]) {
@@ -575,7 +511,6 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     subscribe_response_received_ = true;
   }
 
-  // topics_changed push: apply the added/removed delta to the advertise catalog.
   // A real change arms a re-advertise + reconcile on the next poll.
   void handleTopicsChanged(const nlohmann::json& json) {
     std::vector<TopicInfo> added;
@@ -594,9 +529,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
         }
       }
     }
-    // retypedTopics only inspects entries whose name is in applied_, so snapshot
-    // just those — copying the whole catalog would clone every topic's multi-KB
-    // schema definition to compare a handful of subscribed ones.
+    // Snapshot only applied_ entries: copying the whole catalog would clone every topic's multi-KB schema.
     std::map<std::string, TopicInfo> before_applied;
     for (const auto& name : applied_) {
       if (const auto it = advertised_topics_.find(name); it != advertised_topics_.end()) {
@@ -609,10 +542,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
-  // get_topics response: the authoritative FULL current topic set. Replace the
-  // advertise catalog wholesale; a real change arms a re-advertise + reconcile.
-  // Also the server-identity touchpoint: log who we're talking to ONCE and
-  // warn (once) when a capability the demand UX relies on is missing.
+  // The authoritative full topic set: replaces the catalog wholesale; a real change arms a re-advertise + reconcile.
+  // Also logs the server identity once and warns once when a capability the demand UX relies on is missing.
   void handleGetTopicsResponse(const nlohmann::json& json) {
     if (!server_info_logged_) {
       server_info_logged_ = true;
@@ -626,8 +557,7 @@ class PjBridgeSource : public PJ::StreamSourceBase {
             PJ::DataSourceMessageLevel::kInfo,
             "Connected to " + info->name + " " + info->version + " (capabilities: " + caps + ")");
       }
-      // Feature-detect by capability NAME; a pre-capability server (no
-      // `server` object) is treated as having none. Never compare versions.
+      // A pre-capability server (no `server` object) has none.
       if (demand_mode_ && (!info || !info->hasCapability("include_schemas"))) {
         runtimeHost().reportMessage(
             PJ::DataSourceMessageLevel::kWarning,
@@ -650,10 +580,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
     }
   }
 
-  // [host GUI thread] pj.topic_subscription.v1's set_active_topics: stash the
-  // full desired set into desired_topics_slot_ and return. ctx is the
-  // PjBridgeSource instance (DataSourceHandle::context()), per the ABI doc —
-  // NOT the extension pointer returned by pluginExtension().
+  // [host GUI thread] set_active_topics: stash the full desired set in desired_topics_slot_. `ctx` is the
+  // PjBridgeSource (DataSourceHandle::context()), not the extension pointer from pluginExtension().
   static bool setActiveTopicsThunk(
       void* ctx, const PJ_string_view_t* names, uint64_t count, PJ_error_t* /*out_error*/) noexcept {
     auto* self = static_cast<PjBridgeSource*>(ctx);
@@ -669,9 +597,8 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   PJ::sdk::ArrayLimit array_limit_;
   bool use_timestamp_ = false;
 
-  // Saved topic selection: the legacy subscribe list AND the demand-mode advertise
-  // filter (see onStart). Keeps per-topic schema info for the legacy schema_name
-  // lookup; the advertise filter is just its names, derived on demand.
+  // Legacy subscribe list and demand-mode advertise filter (see onStart); per-topic schema info serves the legacy
+  // schema_name lookup.
   std::vector<TopicInfo> selected_topics_;
 
   std::map<std::string, PJ::ParserBindingHandle> bindings_;  // poll-thread-only
@@ -687,41 +614,32 @@ class PjBridgeSource : public PJ::StreamSourceBase {
   // Poll-thread-only: every response is handled from connection_.poll().
   bool subscribe_response_received_ = false;
 
-  // --- Demand-driven per-topic subscription (pj.topic_subscription.v1) ---
+  // Demand-driven per-topic subscription (pj.topic_subscription.v1). Poll-thread-only unless noted.
 
   // Decided once per start() by the first notify_available_topics attempt.
-  // Poll-thread-only after start().
   bool demand_mode_ = false;
 
-  // Set when handleTopicsChanged/handleGetTopicsResponse mutate the catalog, so
-  // onPoll re-advertises + reconciles once per poll even across a burst of deltas.
+  // Set when the catalog changes, so onPoll re-advertises and reconciles once per poll even across a burst of deltas.
   bool advertise_dirty_ = false;
 
-  // The advertise catalog: topic name -> full info (type + encoding + schema).
-  // Populated from get_topics / topics_changed. Poll-thread-only. Empty in legacy
-  // mode (so resolveSchemaName falls back to selected_topics_).
+  // Topic name -> type + encoding + schema, from get_topics / topics_changed. Empty in legacy mode (resolveSchemaName
+  // then falls back to selected_topics_).
   std::map<std::string, TopicInfo> advertised_topics_;
 
-  // Topics with a live subscription right now. Poll-thread-only. Grown
-  // optimistically at subscribe, shrunk by unsubscribe and per-topic failures.
+  // Live subscriptions. Grown optimistically at subscribe, shrunk by unsubscribe and per-topic failures.
   std::set<std::string> applied_;
 
-  // One server-identity log + capability warning per start.
   bool server_info_logged_ = false;
 
-  // The id of the LAST subscribe request naming each topic — lets a stale
-  // per-topic failure (from a superseded request) be ignored instead of
-  // erasing applied_'s truth. Pruned on unsubscribe/retype; cleared in onStop.
+  // Id of the last subscribe naming each topic, so a stale failure is ignored (see failureIsStale). Pruned on
+  // unsubscribe/retype; cleared in onStop.
   std::map<std::string, std::string> last_subscribe_id_by_topic_;
 
-  // Most recent desired-topic set from the host (via applyDesiredTopics).
-  // Poll-thread-only. Retained so a topic advertised AFTER the host asked for it
-  // gets subscribed without waiting for another set_active_topics.
+  // Retained so a topic advertised after the host asked for it is subscribed without another set_active_topics.
   std::set<std::string> last_applied_desired_;
 
-  // Cross-thread control-plane surface: setActiveTopicsThunk (host GUI thread)
-  // writes; applyDesiredTopics (poll thread) drains. Its own mutex — the only
-  // cross-thread surface besides connection_'s queue.
+  // Written by setActiveTopicsThunk (host GUI thread), drained by applyDesiredTopics; the only cross-thread surface
+  // besides connection_'s queue.
   DesiredTopicsSlot desired_topics_slot_;
 };
 

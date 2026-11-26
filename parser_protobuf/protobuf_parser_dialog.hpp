@@ -23,7 +23,6 @@ namespace {
 
 namespace gp = google::protobuf;
 
-/// Error collector for protobuf compiler (stores errors as strings).
 class ProtoErrorCollector : public gp::compiler::MultiFileErrorCollector {
  public:
 #if GOOGLE_PROTOBUF_VERSION >= 4022000
@@ -51,16 +50,12 @@ class ProtoErrorCollector : public gp::compiler::MultiFileErrorCollector {
   std::vector<std::string> errors_;
 };
 
-/// Dialog plugin for the Protobuf Parser options.
-/// Provides UI for loading .proto files, selecting message types, and include folders.
-/// Compiles the .proto file using google::protobuf::compiler::Importer and serializes
-/// the FileDescriptorSet for use by the parser.
+/// Loads a .proto, compiles it with google::protobuf::compiler::Importer and hands the serialized FileDescriptorSet to
+/// the parser.
 class ProtobufParserDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  // --- Dialog protocol ---
-
   std::string manifest() const override {
     return kProtobufManifest;
   }
@@ -72,13 +67,11 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Proto file: editable path field (typing a path == picking one) + an
-    // icon-only browse button (the "file" glyph), matching the certificate rows.
+    // Editable path field (typing a path == picking one) plus an icon-only browse button.
     wd.setText("lineEditProtoFile", proto_file_path_);
     wd.setFilePicker("buttonLoadProtoFile", "", "*.proto", "Select Proto File");
     wd.setButtonIconNamed("buttonLoadProtoFile", "file");
 
-    // Message type combo
     bool has_file = !proto_file_path_.empty() && !message_types_.empty();
     wd.setEnabled("comboBoxMessageType", has_file);
     if (has_file) {
@@ -90,9 +83,8 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       wd.setCurrentIndex("comboBoxMessageType", 0);
     }
 
-    // Show compilation errors without hiding the fact that a saved descriptor
-    // remains usable, and surface missing native source files as a non-fatal
-    // notice rather than silently pretending the source is still available.
+    // Compile errors say when a saved descriptor remains usable, and a missing native source file is a non-fatal
+    // notice rather than being silently treated as available.
     if (!compile_error_.empty()) {
       const std::string heading = !compiled_schema_.empty() && !message_types_.empty()
                                       ? "SOURCE COMPILE ERROR (USING SAVED DESCRIPTOR):\n"
@@ -104,33 +96,25 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       wd.setPlainText("textEditProtoPreview", proto_file_content_);
     }
 
-    // Timestamp controls
     wd.setChecked("checkBoxUseEmbeddedTimestamp", use_embedded_timestamp_);
     wd.setText("lineEditTimestampField", timestamp_field_name_);
     wd.setEnabled("lineEditTimestampField", use_embedded_timestamp_);
     wd.setEnabled("labelTimestampField", use_embedded_timestamp_);
 
-    // Array-size policy
     wd.setValue("spinBoxArraySize", static_cast<int>(array_limit_.max_size));
     wd.setChecked("radioMaxClamp", array_limit_.clamp());
     wd.setChecked("radioMaxDiscard", !array_limit_.clamp());
 
-    // Include folders - folder picker
-    // Icon-only affordance docked on the "Include Folders" banner (no button text).
 #ifdef PJ_TARGET_WASM
-    // Browser-staged files do not expose stable host directories that protoc
-    // can traverse. Keep the native include-path workflow available while
-    // making the unsupported browser controls explicitly inert.
+    // Browser-staged files do not expose stable host directories that protoc can traverse, so the include-folder
+    // controls are inert.
     wd.setEnabled("includeFoldersColumn", false);
 #endif
     wd.setFolderPicker("buttonAddIncludeFolder", "", "Select Include Folder");
 
-    // Include folders list — empty-state hint shown as a centered overlay while
-    // no folders are added (host hides it the moment items appear).
     wd.setListItems("listWidgetIncludeFolders", include_folders_);
     wd.setListPlaceholder("listWidgetIncludeFolders", "Add folders where imported .proto files can be found:");
-    // Per-row trailing trash icon on each folder (replaces the "Remove selected"
-    // button); clicking it fires onItemDeleteRequested for that row.
+    // A per-row trash icon fires onItemDeleteRequested.
     wd.setListItemsDeletable("listWidgetIncludeFolders", true);
 
     return wd.toJson();
@@ -140,7 +124,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     if (widget_name == "buttonLoadProtoFile") {
       proto_file_path_ = std::string(path);
       loadAndCompileProtoFile();
-      return true;  // Refresh UI
+      return true;
     }
     return false;
   }
@@ -148,15 +132,13 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   bool onFolderSelected(std::string_view widget_name, std::string_view path) override {
     if (widget_name == "buttonAddIncludeFolder") {
       std::string folder(path);
-      // Avoid duplicates
       if (std::find(include_folders_.begin(), include_folders_.end(), folder) == include_folders_.end()) {
         include_folders_.push_back(folder);
-        // Re-compile with new include path
         if (!proto_file_path_.empty()) {
           loadAndCompileProtoFile();
         }
       }
-      return true;  // Refresh UI
+      return true;
     }
     return false;
   }
@@ -166,7 +148,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       if (index >= 0 && index < static_cast<int>(message_types_.size())) {
         selected_message_type_ = message_types_[static_cast<size_t>(index)];
       }
-      return false;  // No UI refresh needed
+      return false;
     }
     return false;
   }
@@ -201,12 +183,10 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "lineEditProtoFile") {
       proto_file_path_ = std::string(text);
-      // Compile once the typed path resolves to an existing file. When it does
-      // NOT (cleared or mistyped), DROP the previously compiled schema/types/
-      // preview instead of keeping them: otherwise saveConfig() pairs the new
-      // invalid path with the stale schema. Clearing by hand (not via
-      // loadAndCompileProtoFile) avoids flashing "could not open" errors on
-      // intermediate keystrokes.
+      // Compile once the typed path resolves to an existing file. Otherwise (cleared or mistyped) the previously
+      // compiled schema/types/preview are DROPPED, because saveConfig() would pair the new invalid path with the
+      // stale schema. Clearing by hand rather than via loadAndCompileProtoFile avoids flashing "could not open" errors
+      // on intermediate keystrokes.
       if (std::ifstream(PJ::utf8_path::pathFromUtf8(proto_file_path_)).good()) {
         loadAndCompileProtoFile();
       } else {
@@ -217,7 +197,7 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
         source_notice_.clear();
         selected_message_type_.clear();
       }
-      return true;  // refresh message types + preview
+      return true;
     }
     return false;
   }
@@ -225,11 +205,10 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
   bool onItemDeleteRequested(std::string_view widget_name, int index) override {
     if (widget_name == "listWidgetIncludeFolders" && index >= 0 && index < static_cast<int>(include_folders_.size())) {
       include_folders_.erase(include_folders_.begin() + index);
-      // Re-compile with the updated include paths.
       if (!proto_file_path_.empty()) {
         loadAndCompileProtoFile();
       }
-      return true;  // Refresh UI
+      return true;
     }
     return false;
   }
@@ -243,7 +222,6 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     cfg["include_folders"] = include_folders_;
     PJ::sdk::arrayLimitToJson(cfg, array_limit_);
 
-    // Include the compiled schema as base64-encoded bytes
     if (!compiled_schema_.empty()) {
       cfg["compiled_schema_base64"] = base64Encode(compiled_schema_);
     }
@@ -277,28 +255,23 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       }
     }
 
-    // Load compiled schema if present
     if (cfg.contains("compiled_schema_base64") && cfg["compiled_schema_base64"].is_string()) {
       compiled_schema_ = PJ::base64::decode(cfg["compiled_schema_base64"].get<std::string>());
     }
 
     source_notice_.clear();
 
-    // Restore the embedded descriptor first. The original .proto may have been
-    // moved, deleted, or browser-staged at a temporary path since this config
-    // was saved; the descriptor set is the portable source of truth in that
-    // case. Prefer a fresh compilation only when the configured source is still
-    // available.
+    // Restore the embedded descriptor first: the original .proto may have been moved, deleted or browser-staged at a
+    // temporary path since the config was saved, so the descriptor set is the portable source of truth. A fresh
+    // compilation is preferred only when the configured source is still available.
     restoreMessageTypesFromCompiledSchema();
     if (!proto_file_path_.empty()) {
       std::ifstream proto_file(PJ::utf8_path::pathFromUtf8(proto_file_path_));
       if (proto_file.good()) {
         proto_file.close();
 
-        // Source compilation is transactional during config restore. A path
-        // being openable does not mean it is a compilable proto (it may be a
-        // directory, empty/invalid, or have missing imports). Keep the portable
-        // descriptor live if refreshing from the source fails.
+        // An openable path may not be a compilable proto (a directory, empty/invalid, missing imports), so the
+        // portable descriptor stays live if refreshing from the source fails.
         const std::string embedded_schema = compiled_schema_;
         const std::vector<std::string> embedded_message_types = message_types_;
         const std::string embedded_selected_message_type = selected_message_type_;
@@ -330,16 +303,15 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     if (!descriptors.ParseFromString(compiled_schema_) || descriptors.file().empty()) {
       return;
     }
-    // buildFileDescriptorSet() appends dependencies first and the selected
-    // source file last. Match loadAndCompileProtoFile() by listing only that
-    // file's top-level messages, not every imported dependency.
+    // buildFileDescriptorSet() appends dependencies first and the selected source file last. Like
+    // loadAndCompileProtoFile(), list only that file's top-level messages, not those of imported dependencies.
     const gp::FileDescriptorProto& source = descriptors.file(descriptors.file_size() - 1);
     const std::string prefix = source.package().empty() ? std::string{} : source.package() + ".";
     for (const gp::DescriptorProto& message : source.message_type()) {
       message_types_.push_back(prefix + message.name());
     }
-    // Match loadAndCompileProtoFile(): drop a saved selection that the restored
-    // schema no longer offers, then default to the first available type.
+    // Same selection rule as loadAndCompileProtoFile(): drop a selection the schema no longer offers, then default to
+    // the first type.
     if (!selected_message_type_.empty() &&
         std::find(message_types_.begin(), message_types_.end(), selected_message_type_) == message_types_.end()) {
       selected_message_type_.clear();
@@ -370,7 +342,6 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       return;
     }
 
-    // Read file content for preview
     std::ifstream file(PJ::utf8_path::pathFromUtf8(proto_file_path_));
     if (!file.is_open()) {
       compile_error_ = "Could not open file: " + proto_file_path_;
@@ -382,19 +353,15 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     proto_file_content_ = buffer.str();
     file.close();
 
-    // Setup protobuf compiler
     gp::compiler::DiskSourceTree source_tree;
 
-    // Import roots are the selected proto's own directory plus any include
-    // folders the user configured. Deliberately NOT the filesystem root: mapping
-    // "/" resolves imports against arbitrary host contents outside those roots.
+    // Import roots are the selected proto's own directory plus the configured include folders. Deliberately NOT the
+    // filesystem root: mapping "/" would resolve imports against arbitrary host contents outside those roots.
     source_tree.MapPath("", "");
 
-    // Add the directory containing the proto file
     std::string proto_dir = directoryFromPath(proto_file_path_);
     source_tree.MapPath("", proto_dir);
 
-    // Add user-specified include folders
     for (const auto& folder : include_folders_) {
       source_tree.MapPath("", folder);
     }
@@ -402,7 +369,6 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     ProtoErrorCollector error_collector;
     gp::compiler::Importer importer(&source_tree, &error_collector);
 
-    // Import the proto file
     std::string filename = filenameFromPath(proto_file_path_);
     const gp::FileDescriptor* file_descriptor = importer.Import(filename);
 
@@ -415,35 +381,28 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       return;
     }
 
-    // Extract message types
     for (int i = 0; i < file_descriptor->message_type_count(); i++) {
       const gp::Descriptor* msg_desc = file_descriptor->message_type(i);
       message_types_.push_back(std::string(msg_desc->full_name()));
     }
 
-    // Build FileDescriptorSet containing all dependencies
     gp::FileDescriptorSet fd_set;
     buildFileDescriptorSet(file_descriptor, fd_set);
 
-    // Serialize to bytes
     compiled_schema_ = fd_set.SerializeAsString();
 
-    // If selected message type is not in the list, clear it
     if (!selected_message_type_.empty()) {
       if (std::find(message_types_.begin(), message_types_.end(), selected_message_type_) == message_types_.end()) {
         selected_message_type_.clear();
       }
     }
 
-    // Default to first message type if none selected
     if (selected_message_type_.empty() && !message_types_.empty()) {
       selected_message_type_ = message_types_[0];
     }
   }
 
-  /// Recursively add file descriptors and their dependencies to the set
   void buildFileDescriptorSet(const gp::FileDescriptor* fd, gp::FileDescriptorSet& fd_set) {
-    // Check if already added
     for (int i = 0; i < fd_set.file_size(); i++) {
       if (fd_set.file(i).name() == fd->name()) {
         return;
@@ -455,7 +414,6 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
       buildFileDescriptorSet(fd->dependency(i), fd_set);
     }
 
-    // Add this file
     fd->CopyTo(fd_set.add_file());
   }
 
@@ -467,7 +425,6 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     return (it != message_types_.end()) ? static_cast<int>(std::distance(message_types_.begin(), it)) : 0;
   }
 
-  // Base64 encoding/decoding for serialized schema
   static std::string base64Encode(const std::string& input) {
     static const char kBase64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string output;
@@ -490,7 +447,6 @@ class ProtobufParserDialog : public PJ::DialogPluginTyped {
     return output;
   }
 
-  // Persistent config
   std::string proto_file_path_;
   std::string selected_message_type_;
   bool use_embedded_timestamp_ = false;

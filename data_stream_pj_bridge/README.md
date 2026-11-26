@@ -90,7 +90,7 @@ When connected to a host that supports the `pj.topic_subscription.v1` extension
 
 **Legacy fallback.** Against an old host that lacks the extension,
 `notifyAvailableTopics` fails; the source detects this once at start and falls
-back to the original behavior exactly: it subscribes to the dialog's selected
+back to legacy behavior: it subscribes to the dialog's selected
 topics up front and streams them. In this mode the dialog's topic selection is
 the subscribe list. In demand mode that same selection becomes an **optional
 advertise filter** — leave it empty to advertise (and let the host subscribe to)
@@ -116,7 +116,7 @@ come from `<pj_websocket/connection_dialog.hpp>`.
   are never dropped. A PJRB frame is self-contained, so a drop leaves a gap in the plots,
   never a broken stream. A dropped frame of a latched or one-shot topic (`/tf_static`,
   `/robot_description`) is not resent, so that data stays missing until the bridge
-  republishes it. The existing 256 MB decompression limit per frame is unchanged.
+  republishes it. A frame may decompress to at most 256 MB.
 - In the browser the WebSocket, its callbacks and every send, close and delete run on
   the main runtime thread. The worker never waits for it: `stop()` queues the close
   and returns, because the main thread may be joining that worker.
@@ -127,8 +127,8 @@ come from `<pj_websocket/connection_dialog.hpp>`.
 
 ## Compatibility policy
 
-`protocol_version` (currently 1, stamped on every response) is the ONLY hard
-gate: a response from a KNOWN-newer protocol stops the stream with an upgrade
+`protocol_version` (currently 1, stamped on every response) is the only hard
+gate: a response from a newer protocol stops the stream with an upgrade
 message. Everything additive is feature-detected through the `server`
 capability list in the `get_topics` response — a missing capability degrades
 that one feature with a precise warning (e.g. no `include_schemas` → topic
@@ -137,8 +137,8 @@ classification degraded). Version strings are never compared.
 ## Latched (transient-local) topics
 
 Latched topics (`/tf_static`, `/map`, …) publish a retained sample that late
-subscribers depend on — and under demand-driven subscriptions every subscriber
-is late by construction. The protocol makes this the SERVER's job: retained
+subscribers depend on, and under demand-driven subscriptions every subscriber
+is late. The protocol makes this the server's job: retained
 samples are replayed right after the subscribe response that adds the topic
 (the client just ingests them), and topic entries carry an optional
 `latched: true` badge when the server knows a topic is transient-local (see
@@ -152,7 +152,6 @@ channel metadata when present, a name heuristic otherwise, plus the players'
 > The mcap player defaults to a SINGLE pass (looping rewinds bag time,
 > which live consumers see as non-monotonic). Run selftest data-flow checks
 > against it with `--loop`, or use a bag longer than the check run.
-
 
 `test_scripts/` holds standalone Python servers that speak the PJ Bridge wire
 protocol so the plugin (and the self-test below) can be exercised without a real
@@ -215,6 +214,6 @@ mixed server and the mcap player, which advertise a fixed topic set).
 ## Known Limitations
 
 - No per-topic rate limiting (`max_rate_hz`) — the wire protocol supports it, but
-  it is not yet exposed.
+  it is not exposed.
 - No automatic reconnection: if the connection drops mid-stream the source stops
   with an error rather than retrying (browsers offer no reconnection either).

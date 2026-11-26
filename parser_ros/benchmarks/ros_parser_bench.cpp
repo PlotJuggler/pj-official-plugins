@@ -17,7 +17,7 @@
 
 namespace {
 
-// Lightweight write host that discards all output.
+// Write host that discards all output.
 struct NullWriteHost {
   static bool ensureField(void*, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* out, PJ_error_t*) noexcept {
     *out = PJ_field_handle_t{{1}, 1};
@@ -33,7 +33,6 @@ struct NullWriteHost {
 
 PJ_parser_write_host_t makeNullHost() {
   static NullWriteHost host;
-  // v4: parser write vtable is per-record only.
   static const PJ_parser_write_host_vtable_t vtable = {
       .abi_version = PJ_PLUGIN_DATA_API_VERSION,
       .struct_size = sizeof(PJ_parser_write_host_vtable_t),
@@ -44,7 +43,6 @@ PJ_parser_write_host_t makeNullHost() {
   return {.ctx = &host, .vtable = &vtable};
 }
 
-// Serialize helpers
 std::vector<uint8_t> serializeCdr(const std::function<void(RosMsgParser::NanoCDR_Serializer&)>& fill) {
   RosMsgParser::NanoCDR_Serializer encoder;
   fill(encoder);
@@ -69,8 +67,6 @@ void serializeQuaternion(RosMsgParser::NanoCDR_Serializer& enc, double x, double
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(z));
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(w));
 }
-
-// ----- Message definitions -----
 
 static const char* kImuDef =
     "std_msgs/Header header\n"
@@ -115,8 +111,6 @@ static const char* kPoseDef =
     "================\n"
     "MSG: geometry_msgs/Quaternion\n"
     "float64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
-
-// ----- Pre-serialized payloads -----
 
 std::vector<uint8_t> makeImuPayload() {
   return serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
@@ -165,8 +159,6 @@ std::vector<uint8_t> makePosePayload() {
   });
 }
 
-// ----- Benchmark fixture -----
-
 struct ParserBench {
   PJ::MessageParserLibrary library;
   PJ::MessageParserHandle handle{static_cast<const PJ_message_parser_vtable_t*>(nullptr)};
@@ -190,8 +182,6 @@ struct ParserBench {
     return handle.bindSchema(type_name, PJ::Span<const uint8_t>(data, std::strlen(def))).has_value();
   }
 };
-
-// ----- Benchmarks -----
 
 void BM_ParseImu(benchmark::State& state) {
   ParserBench bench;

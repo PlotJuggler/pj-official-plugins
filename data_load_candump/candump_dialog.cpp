@@ -51,9 +51,7 @@ const ProtocolName& protocolName(pj_can_dbc::CanProtocol protocol) {
   return kProtocols[0];
 }
 
-/// Renders `value` with "," thousands separators (e.g. 16000 -> "16,000").
-/// No locale dependence, matching this file's existing no-double/no-locale
-/// number formatting.
+/// "," thousands separators (16000 -> "16,000"); no locale dependence.
 std::string formatThousands(std::uint64_t value) {
   const std::string digits = std::to_string(value);
   std::string out;
@@ -68,8 +66,7 @@ std::string formatThousands(std::uint64_t value) {
   return out;
 }
 
-/// Renders a non-negative nanosecond duration as "<seconds>.<decisecond> s"
-/// (e.g. "40.0 s"), using integer arithmetic only.
+/// A non-negative nanosecond duration as "<seconds>.<decisecond> s" (e.g. "40.0 s"), in integer arithmetic.
 std::string formatSecondsOneDecimal(std::int64_t duration_ns) {
   const std::uint64_t mag = duration_ns > 0 ? static_cast<std::uint64_t>(duration_ns) : 0;
   const std::uint64_t whole = mag / 1'000'000'000ull;
@@ -77,10 +74,7 @@ std::string formatSecondsOneDecimal(std::int64_t duration_ns) {
   return formatThousands(whole) + "." + std::to_string(tenths) + " s";
 }
 
-/// UTC calendar date-time "YYYY-MM-DD HH:MM:SS" (PJ::formatIso8601Utc with
-/// its "T" separator swapped for a space) -- the SDK's own no-locale
-/// date-time formatter, so this stays consistent with how the rest of the
-/// host displays absolute timestamps.
+/// UTC "YYYY-MM-DD HH:MM:SS": PJ::formatIso8601Utc (no locale, like the rest of the host) with a space for "T".
 std::string formatDateTime(std::int64_t ts_ns) {
   std::string iso = PJ::formatIso8601Utc(ts_ns);
   if (iso.size() > 10) {
@@ -89,19 +83,15 @@ std::string formatDateTime(std::int64_t ts_ns) {
   return iso;
 }
 
-/// Basename of a filesystem path (text after the last '/' or '\', or the
-/// whole string if neither is present).
+/// Text after the last '/' or '\', or the whole string if neither is present.
 std::string basenameOf(const std::string& path) {
   const std::size_t pos = path.find_last_of("/\\");
   return pos == std::string::npos ? path : path.substr(pos + 1);
 }
 
-/// Runs one of RecognizedCounters' `append*(std::string&) const` helpers --
-/// shared with CandumpSource's own one-line summary, where each writes
-/// "; <text>" as a continuation -- and, if it produced anything, appends its
-/// text as its OWN line instead (stripping the "; " continuation marker).
-/// Keeps the wording identical to CandumpSource's summary while giving the
-/// dialog's multi-line preview one warning per line.
+/// Runs one of RecognizedCounters' `append*` helpers, which write "; <text>" as a continuation of
+/// CandumpSource's one-line summary, and appends the text as its own line with the "; " stripped: same wording,
+/// one warning per line in the preview.
 void appendCounterLine(
     std::vector<std::string>& lines, void (RecognizedCounters::*appender)(std::string&) const,
     const RecognizedCounters& counters) {
@@ -112,11 +102,9 @@ void appendCounterLine(
   }
 }
 
-/// Reads the last `tail_bytes` of `path` and returns the raw timestamp of
-/// the LAST line (scanning backwards) that carries a numeric timestamp.
-/// Deliberately independent of the forward prescan below: a 200k-line
-/// prescan cap can stop long before the end of a multi-million-line file,
-/// so the displayed "end of capture" time comes from here instead.
+/// Raw timestamp of the last line carrying a numeric one, found by scanning the last `tail_bytes` of `path`
+/// backwards. Independent of the forward prescan, whose 200k-line cap can stop long before the end of a large
+/// file.
 std::optional<std::int64_t> readTailLastTimestampNs(const std::string& path, std::uint64_t tail_bytes) {
   std::ifstream file(PJ::utf8_path::pathFromUtf8(path), std::ios::binary);
   if (!file.is_open()) {
@@ -209,8 +197,6 @@ std::string CandumpDialog::widget_data() {
   PJ::WidgetData wd;
   wd.setText("labelSummary", summary_);
   wd.setTableHeaders("tableInterfaces", {"Interface", "Frames", "Messages", "Dictionary", "Protocol"});
-  // The Dictionary column follows the live assignment (the picker edits it
-  // after the scan), so it is filled here rather than in scanFile().
   constexpr std::size_t kDictionaryColumn = 3;
   auto rows = interface_rows_;
   std::vector<std::string> dict_paths(rows.size());
@@ -311,10 +297,10 @@ bool CandumpDialog::applyConfigJson(std::string_view config_json, bool scan_now)
   if (time_mode_override_ < 0 || time_mode_override_ > 3) {
     time_mode_override_ = 0;
   }
-  // A forced mode belongs to the capture it was chosen for. The host pre-fills the next file's dialog with this
-  // config, "filepath" rewritten, and that file needs its own auto-detection. The capture is told by its file name,
-  // not its path: a layout replay may find it in another folder (a moved layout, or a browser upload under a fresh
-  // backing path, for which the host records no __pj_saved_filepath). A config without the key keeps its mode.
+  // A forced mode belongs to the capture it was chosen for: the host pre-fills the next file's dialog with this
+  // config (filepath rewritten), and that file needs its own auto-detection. Captures are told apart by file name,
+  // not path, since a layout replay may find the capture in another folder (a moved layout, or a browser upload
+  // under a fresh backing path with no __pj_saved_filepath). A config without the key keeps its mode.
   if (const auto chosen_for = cfg.value(kTimeModeFileKey, std::string{});
       !chosen_for.empty() && basenameOf(chosen_for) != basenameOf(filepath_)) {
     time_mode_override_ = 0;
@@ -442,9 +428,8 @@ void CandumpDialog::scanFile() {
     return;
   }
 
-  // The one bounded-scan pass: interface/grammar/malformed counts and the
-  // TimeMode decision, shared verbatim with CandumpSource::importData()'s
-  // own (smaller) use of the same function.
+  // Bounded prescan: interface/grammar/malformed counts and the TimeMode decision, shared with
+  // CandumpSource::importData().
   const PrescanResult scan = prescanCandump(file, kScanCap);
 
   std::uint64_t total_frames = 0;
@@ -453,7 +438,7 @@ void CandumpDialog::scanFile() {
   for (const auto& iface : scan.interfaces) {
     total_frames += iface.frames;
     interface_names_.push_back(iface.interface);
-    // Dictionary and Protocol columns (index 3, 4) are filled per render in widget_data().
+    // The Dictionary and Protocol columns (3, 4) follow live edits, so widget_data() fills them per render.
     interface_rows_.push_back(
         {iface.interface, formatThousands(iface.frames) + (scan.truncated ? "+" : ""),
          formatThousands(iface.distinct_ids), std::string{}, std::string{}});

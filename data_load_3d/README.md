@@ -1,8 +1,7 @@
 # 3D Loader (PLY / PCD / LAS)
 
-Loads a **static** `.ply`, `.pcd` or `.las` 3D file as a single object at timestamp 0.
-Unlike the streaming/log loaders, there is no time axis — the file is one
-snapshot.
+Loads a **static** `.ply`, `.pcd` or `.las` 3D file as a single object at timestamp 0
+(no time axis).
 
 ## What loads as what
 
@@ -74,7 +73,3 @@ that puts a coordinate outside the float32 range is refused.
 ./build.sh data_load_3d
 ctest --test-dir build/data_load_3d/Release
 ```
-
-The reader core (`cloud_common`, `pcd_reader`, `ply_reader`) is pure and unit
-tested via serialize/deserialize round-trips; `loader_3d.cpp` is the thin
-`FileSourceBase` glue that does file I/O and the host calls.

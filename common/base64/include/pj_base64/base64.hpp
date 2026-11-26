@@ -1,12 +1,8 @@
 #pragma once
 
 /// @file base64.hpp
-/// @brief Minimal, dependency-free base64 decoder shared across plugins.
-///
-/// Header-only so consumers just link the INTERFACE target `pj_base64` and
-/// `#include <pj_base64/base64.hpp>`. Binary-safe: the decoded output may
-/// contain embedded NUL bytes (e.g. a protobuf FileDescriptorSet), so it is
-/// returned as a std::string used as a byte buffer.
+/// @brief Minimal, dependency-free base64 decoder. Binary-safe: the output may contain embedded
+/// NUL bytes (e.g. a protobuf FileDescriptorSet), so it is a std::string used as a byte buffer.
 
 #include <cstdint>
 #include <string>
@@ -14,8 +10,7 @@
 
 namespace PJ::base64 {
 
-/// Decode a standard base64 string. Invalid quartets are skipped (lenient,
-/// matching the historical behaviour this consolidates). `=` padding is honored.
+/// Decodes a standard base64 string. Invalid quartets are skipped (lenient); `=` padding is honored.
 inline std::string decode(std::string_view input) {
   static const int kDecodeTable[256] = {
       -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,

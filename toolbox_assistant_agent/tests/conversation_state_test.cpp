@@ -1,12 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// The one thing this plugin still persists about a conversation: which
-// Claude session is active (conversation_state.hpp). Everything else that
-// used to live here — the copied transcript, the catalog hash — is read from
-// the harness's own store on demand instead (claude_sessions.hpp); this file
-// only has to prove the active-id round trip and the one-shot migration that
-// erases what an older build left behind.
+// Covers the active-session-id round trip and the one-shot scrubs of keys older builds left behind
+// (conversation_state.hpp).
 #include "conversation_state.hpp"
 
 #include <gtest/gtest.h>
@@ -63,7 +59,7 @@ TEST(ActiveSessionId, ClearLeavesAnEmptyStore) {
 TEST(ScrubLegacyConversationKeys, RemovesTheCopiedTranscriptAndCatalogHash) {
   Fixture fx;
   auto store = fx.store();
-  // What a pre-harness-store build of this plugin would have left behind.
+  // Keys older builds persisted.
   store.setString("assistant.conv.transcript", R"({"v":1,"messages":[{"r":"u","t":"hi"}]})");
   store.setString("assistant.conv.claude.catalog_hash", "deadbeefdeadbeef");
 
@@ -71,14 +67,14 @@ TEST(ScrubLegacyConversationKeys, RemovesTheCopiedTranscriptAndCatalogHash) {
   EXPECT_FALSE(store.contains("assistant.conv.transcript"));
   EXPECT_FALSE(store.contains("assistant.conv.claude.catalog_hash"));
 
-  // Idempotent by its gate: a second pass reads two keys and writes nothing.
+  // Idempotent: a second pass reads two keys and writes nothing.
   scrubLegacyConversationKeys(store);
   EXPECT_FALSE(store.contains("assistant.conv.transcript"));
 }
 
 TEST(ScrubLegacyConversationKeys, LeavesTheActiveSessionIdKeyAlone) {
-  // The active-id key shares a "assistant.conv.claude.*" prefix with the
-  // retired catalog-hash key -- the scrub must remove only the latter.
+  // The active-id key shares the "assistant.conv.claude.*" prefix with the retired catalog-hash
+  // key; the scrub must remove only the latter.
   Fixture fx;
   auto store = fx.store();
   saveActiveSessionId(store, "sess-keep-me", "claude");
@@ -92,8 +88,7 @@ TEST(ScrubLegacyConversationKeys, LeavesTheActiveSessionIdKeyAlone) {
 TEST(ScrubRetiredOllamaKeys, ErasesEveryRetiredOllamaKey) {
   Fixture fx;
   auto store = fx.store();
-  // An Ollama-era store could hold up to 256 KB of dead conversation plus the
-  // backend's settings; the one-shot scrub at bind time erases all of it.
+  // A retired Ollama backend's settings and up to 256 KB of history.
   store.setString("assistant.ollama.url", "http://box:11434");
   store.setString("assistant.ollama.model", "qwen2.5");
   store.setString("assistant.conv.ollama.history", R"([{"role":"user","content":"old"}])");
@@ -103,7 +98,7 @@ TEST(ScrubRetiredOllamaKeys, ErasesEveryRetiredOllamaKey) {
   EXPECT_EQ(store.getString("assistant.ollama.model", "unset"), "");
   EXPECT_EQ(store.getString("assistant.conv.ollama.history", "unset"), "");
 
-  // Idempotent by its gate: a second pass reads and writes nothing new.
+  // Idempotent: a second pass writes nothing new.
   scrubRetiredOllamaKeys(store);
   EXPECT_EQ(store.getString("assistant.conv.ollama.history", "unset"), "");
 }
@@ -174,7 +169,7 @@ TEST(ConversationTitlesTest, PruneWritesNothingWhenNothingChanged) {
   auto store = fx.store();
   setConversationTitle(store, "claude", "sess-1", "Keep me");
 
-  // sess-2 isn't in the map to begin with; nothing here should be dropped.
+  // sess-2 is not in the map; nothing is dropped.
   pruneConversationTitles(store, "claude", {"sess-1", "sess-2"});
 
   EXPECT_EQ(loadConversationTitles(fx.store(), "claude").at("sess-1"), "Keep me");
@@ -185,7 +180,7 @@ TEST(ConversationTitlesTest, PruningEverythingAwayLeavesTheStoreReadingAsEmpty) 
   auto store = fx.store();
   setConversationTitle(store, "claude", "sess-1", "Gone soon");
 
-  pruneConversationTitles(store, "claude", {});  // nothing is live anymore
+  pruneConversationTitles(store, "claude", {});  // no live ids
 
   EXPECT_TRUE(loadConversationTitles(fx.store(), "claude").empty());
 }
@@ -208,8 +203,8 @@ TEST(ConversationTitlesTest, ANonObjectJsonValueDegradesToNoCustomNames) {
 }
 
 TEST(Fnv1aHex, StableAndDistinct) {
-  // Compared across turns within a live process (HarnessMemory::sent_catalog_hash
-  // dedup) -- the value must be a fixed function of the input, not of the run.
+  // Compared across turns (HarnessMemory::sent_catalog_hash dedup), so it must be a fixed function
+  // of the input, not of the run.
   EXPECT_EQ(fnv1aHex("catalog"), fnv1aHex("catalog"));
   EXPECT_NE(fnv1aHex("catalog"), fnv1aHex("catalog2"));
   EXPECT_EQ(fnv1aHex(""), fnv1aHex(""));

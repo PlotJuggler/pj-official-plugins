@@ -1,31 +1,17 @@
 #!/usr/bin/env python3
 """Create and push a release tag for an extension.
 
-Terminology:
-- extension: The distributable package (ZIP containing plugin binary + manifest.json)
-- plugin: The compiled binary (.so/.dll/.dylib) containing the C++ class
-- source_dir: The source directory containing code and manifest.json
+source_dir is the plugin source directory (code + manifest.json); the extension is the
+distributable ZIP built from it.
 
-Usage:
-    # Release with current manifest version
+Usage (from the repository root; needs GitPython and push access to the GitHub remote):
     python3 scripts/release_extension.py data_load_csv
+    python3 scripts/release_extension.py csv-loader --bump patch|minor|major
+    python3 scripts/release_extension.py csv-loader --version 2.0.0
     python3 scripts/release_extension.py csv-loader --submit-to-registry
 
-    # Bump version automatically (updates manifest, commits, tags, pushes)
-    python3 scripts/release_extension.py csv-loader --bump patch   # 1.0.5 -> 1.0.6
-    python3 scripts/release_extension.py csv-loader --bump minor   # 1.0.5 -> 1.1.0
-    python3 scripts/release_extension.py csv-loader --bump major   # 1.0.5 -> 2.0.0
-
-    # Set explicit version
-    python3 scripts/release_extension.py csv-loader --version 2.0.0
-
-Prerequisites:
-    - GitPython installed (pip install -r scripts/requirements.txt)
-    - Push access to the target GitHub remote
-    - Run from the repository root (pj_official_plugins)
-
-The --submit-to-registry flag embeds metadata in the tag annotation that tells
-CI to automatically create a PR to the extension registry after successful builds.
+--submit-to-registry records in the tag annotation that CI should open a registry PR
+after a successful build.
 """
 
 import argparse
@@ -38,7 +24,6 @@ from urllib.parse import urlparse
 
 import git
 
-# Add scripts directory to path for imports
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -53,15 +38,7 @@ GITHUB_REMOTE_PATTERN = re.compile(r"github\.com[:/].+/pj-official-plugins")
 
 
 def bump_version(current: str, bump_type: str) -> str:
-    """Increment version according to semver.
-
-    Args:
-        current: Current version string (e.g., "1.0.5")
-        bump_type: One of "major", "minor", "patch"
-
-    Returns:
-        New version string
-    """
+    """Bump a plain X.Y.Z version; any bump_type other than major/minor is a patch bump."""
     parts = current.split(".")
     if len(parts) != 3:
         raise ValueError(f"Invalid version format: {current}")
@@ -77,27 +54,17 @@ def bump_version(current: str, bump_type: str) -> str:
 
 
 def update_manifest_version(manifest_path: Path, new_version: str) -> None:
-    """Update version in manifest.json.
-
-    Preserves JSON formatting with 2-space indent.
-    """
+    """Rewrite the manifest's version, re-serialized with a 2-space indent."""
     manifest = json.loads(manifest_path.read_text())
     manifest["version"] = new_version
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 def find_source_dir(arg: str) -> str:
-    """Find source directory from argument.
-
-    Accepts:
-      - Directory name: data_load_csv
-      - Extension id (manifest id): csv-loader
-    """
-    # Check if it's a direct directory match
+    """Resolve a directory name (data_load_csv) or manifest id (csv-loader) to a source directory."""
     if Path(arg).is_dir() and (Path(arg) / "manifest.json").exists():
         return arg
 
-    # Search all manifests for matching id
     for manifest_path in Path(".").glob("*/manifest.json"):
         manifest = read_manifest(manifest_path)
         if manifest and manifest.get("id") == arg:
@@ -107,10 +74,7 @@ def find_source_dir(arg: str) -> str:
 
 
 def find_github_remote(repo: git.Repo) -> tuple[str, str] | None:
-    """Find a remote pointing to a GitHub pj-official-plugins repo.
-
-    Returns (remote_name, url) or None if not found.
-    """
+    """Return (remote_name, url) of the first GitHub pj-official-plugins remote, or None."""
     for remote in repo.remotes:
         for url in remote.urls:
             if GITHUB_REMOTE_PATTERN.search(url):
@@ -119,20 +83,14 @@ def find_github_remote(repo: git.Repo) -> tuple[str, str] | None:
 
 
 def check_tag_local(repo: git.Repo, tag: str) -> tuple[bool, str | None]:
-    """Check if tag exists locally.
-
-    Returns (exists, commit_sha).
-    """
+    """Return (exists, commit_sha) for a local tag."""
     if tag in [t.name for t in repo.tags]:
         return True, repo.tags[tag].commit.hexsha
     return False, None
 
 
 def check_tag_remote(repo: git.Repo, remote_name: str, tag: str) -> tuple[bool, str | None]:
-    """Check if tag exists on remote.
-
-    Returns (exists, commit_sha).
-    """
+    """Return (exists, commit_sha) for a remote tag."""
     try:
         refs = repo.git.ls_remote("--tags", remote_name, f"refs/tags/{tag}")
         if refs:
@@ -144,14 +102,10 @@ def check_tag_remote(repo: git.Repo, remote_name: str, tag: str) -> tuple[bool, 
 
 
 def build_authenticated_url(url: str, token: str) -> str | None:
-    """Build authenticated URL for HTTPS remotes.
-
-    Returns authenticated URL or None if not an HTTPS URL.
-    """
+    """Return the token-embedded URL for an HTTPS remote, None for any other scheme."""
     parsed = urlparse(url)
     if parsed.scheme != "https":
         return None
-    # Build URL with token: https://token@github.com/owner/repo.git
     return f"https://{token}@{parsed.netloc}{parsed.path}"
 
 
@@ -160,21 +114,16 @@ def push_tag_with_auth(repo: git.Repo, remote_url: str, tag: str, token: str | N
     if token:
         auth_url = build_authenticated_url(remote_url, token)
         if auth_url:
-            # Push directly to authenticated URL
             repo.git.push(auth_url, tag)
             return
         else:
             print(f"  Warning: Token provided but remote is not HTTPS, ignoring token")
 
-    # Fall back to normal push (uses git credentials/SSH)
     repo.git.push(remote_url, tag)
 
 
 def build_tag_message(extension_id: str, version: str, submit_to_registry: bool) -> str:
-    """Build annotated tag message with JSON metadata.
-
-    The metadata is used by CI to determine post-build actions.
-    """
+    """Tag message: JSON metadata that CI reads to decide post-build actions."""
     metadata = {
         "extension_id": extension_id,
         "version": version,
@@ -190,11 +139,10 @@ def run_sdk_feature_floor_preflight(
     out=sys.stdout,
     err=sys.stderr,
 ) -> bool:
-    """Check committed release inputs, then run the SDK-floor guardrail.
+    """Run the SDK-floor check, but only on inputs that match HEAD.
 
-    Release tags point at HEAD, so scanning mutable files would allow an
-    uncommitted manifest floor to validate a different tree from the one being
-    tagged. Require every scanner input to match HEAD before checking it.
+    The tag points at HEAD; scanning uncommitted files could validate a different tree
+    from the one being tagged.
     """
     repo_root_text = repo.working_tree_dir
     if repo_root_text is None:
@@ -280,17 +228,14 @@ def main():
     )
     args = parser.parse_args()
 
-    # Get token from args or environment
     github_token = args.token or os.environ.get("GITHUB_TOKEN")
 
     repo = git.Repo(".")
     head_commit = repo.head.commit.hexsha
 
-    # Find source directory
     source_dir = find_source_dir(args.source)
     manifest_path = Path(source_dir) / "manifest.json"
 
-    # Read and validate manifest
     manifest, validation_errors = validate_manifest_file(manifest_path)
     if manifest is None:
         sys.exit(f"Error: Could not read {manifest_path}")
@@ -300,14 +245,12 @@ def main():
             print(f"  - {err}", file=sys.stderr)
         sys.exit(1)
 
-    # Check for conflicting version arguments
     if args.bump and args.version:
         sys.exit("Error: Cannot use both --bump and --version. Choose one.")
 
     current_version = manifest["version"]
     extension_id = manifest["id"]
 
-    # Handle version bump or explicit version
     if args.bump:
         try:
             version = bump_version(current_version, args.bump)
@@ -323,11 +266,9 @@ def main():
     else:
         version = current_version
 
-    # Validate semver format
     if not validate_semver(version):
         sys.exit(f"Error: Invalid version format '{version}'. Expected semantic versioning (e.g., 1.0.0)")
 
-    # Update manifest if version changed
     version_changed = version != current_version
     if version_changed:
         if args.dry_run:
@@ -336,12 +277,10 @@ def main():
             update_manifest_version(manifest_path, version)
             print(f"Updated {manifest_path}")
 
-            # Commit the version change
             repo.index.add([str(manifest_path)])
             commit_msg = f"chore({source_dir}): bump version to {version}"
             repo.index.commit(commit_msg)
             print(f"Committed: {commit_msg}")
-            # Update head_commit after the new commit
             head_commit = repo.head.commit.hexsha
 
     if not run_sdk_feature_floor_preflight(repo, source_dir):
@@ -356,7 +295,6 @@ def main():
     print(f"HEAD: {head_commit[:12]}")
     print(f"Submit to registry: {'Yes' if args.submit_to_registry else 'No'}")
 
-    # Find GitHub remote
     if args.remote:
         if args.remote not in [r.name for r in repo.remotes]:
             sys.exit(f"Error: Remote '{args.remote}' not found")
@@ -375,7 +313,6 @@ def main():
 
     print(f"\nRemote: {remote_name} ({remote_url})")
 
-    # Check tag status
     print(f"\nChecking tag '{tag}'...")
 
     local_exists, local_commit = check_tag_local(repo, tag)
@@ -391,7 +328,6 @@ def main():
     else:
         print(f"  Remote: does not exist")
 
-    # Check for tag conflicts
     tag_conflict = False
     tag_at_head = False
 
@@ -410,7 +346,6 @@ def main():
     if local_exists and remote_exists and local_commit == head_commit and remote_commit == head_commit:
         tag_at_head = True
 
-    # Handle conflicts
     if tag_conflict:
         if not args.force:
             print(f"\n  ERROR: Tag '{tag}' already exists at a different commit.")
@@ -427,7 +362,6 @@ def main():
             print(f"  will fail checksum verification and the registry entry must be updated.")
             print(f"  ***************")
 
-            # Delete local tag if exists
             if local_exists:
                 print(f"\n  Deleting local tag '{tag}'...")
                 if not args.dry_run:
@@ -436,7 +370,6 @@ def main():
                 else:
                     print(f"    [dry-run] Would delete")
 
-            # Delete remote tag if exists
             if remote_exists:
                 print(f"\n  Deleting remote tag '{tag}' from {remote_name}...")
                 if not args.dry_run:
@@ -448,11 +381,9 @@ def main():
                 else:
                     print(f"    [dry-run] Would delete")
 
-            # Reset state after deletion
             local_exists = False
             remote_exists = False
 
-    # Determine actions needed
     need_create_local = not local_exists
     need_push = not remote_exists
 
@@ -462,10 +393,8 @@ def main():
         print(f"\n  To force recreate anyway, use: --force")
         return
 
-    # Build tag message with metadata
     tag_message = build_tag_message(extension_id, version, args.submit_to_registry)
 
-    # Create local tag if needed
     if need_create_local:
         print(f"\nCreating annotated tag '{tag}'...")
         if args.dry_run:
@@ -475,7 +404,6 @@ def main():
             repo.create_tag(tag, message=tag_message)
             print(f"  Tag created at {head_commit[:12]}")
 
-    # Push to remote if needed
     if need_push:
         print(f"\nPushing tag to {remote_name}...")
         if args.dry_run:

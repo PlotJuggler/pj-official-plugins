@@ -1,9 +1,7 @@
 #pragma once
 
-// Shared by pj_can_dbc's own tests and by data_load_blf/data_load_candump's
-// tests that build rows through SignalRowBuilder: finds one field by name in
-// the flat PJ::sdk::NamedFieldValue span build() returns, instead of each
-// test file writing its own linear-scan loop.
+// Finds one field by name in the span SignalRowBuilder::build() returns; shared by pj_can_dbc's
+// tests and data_load_blf/data_load_candump's.
 
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/span.hpp>

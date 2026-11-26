@@ -34,13 +34,10 @@ concurrency:
 jobs:
   build:
     runs-on: ${{ matrix.runner }}
-    # Without an explicit bound these inherit GitHub's 360-minute default, so a
-    # wedged build burns six hours per leg before anyone notices.
-    #
-    # 120 rather than 60: with a warm cache a leg takes 1-16 minutes, but a cold
-    # cache whose binaries are also missing from the JFrog remote means compiling
-    # the whole closure. toolbox_mosaico 1.1.0 built Arrow+Flight from source in
-    # 65m21s on windows-2022 and SUCCEEDED -- a 60-minute cap would have killed it.
+    # Explicit bound: the 360-minute default lets a wedged build burn six hours per leg.
+    # 120, not 60: a warm cache takes 1-16 minutes, but a cold cache whose binaries are also
+    # missing from JFrog compiles the whole closure (Arrow+Flight from source took 65 min on
+    # windows-2022).
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -56,17 +53,15 @@ jobs:
             os_label: linux
             platform: linux-arm64
             lib_ext: so
-          # macOS x86_64 is intentionally absent: Intel Macs are not a supported
-          # target for the time being. The runners are also the scarcest and
-          # slowest in the matrix (15-25 min builds vs ~40 s on macos-15).
+          # macOS x86_64 is intentionally absent: Intel Macs are not a supported target, and
+          # their runners are the scarcest and slowest (15-25 min builds vs ~40 s on macos-15).
           - runner: macos-15
             arch: arm64
             os_label: macos
             platform: macos-arm64
             lib_ext: dylib
-          # Pinned to windows-2022: see ci-windows.yml — the VS18/MSVC 14.5x image
-          # broke the libsodium/1.0.20 build (MSB8052, toolset 14.44 vs v145).
-          # The ARM runner uses its installed 14.44 compatibility toolset below.
+          # Pinned to windows-2022: see ci-windows.yml. The ARM runner uses its installed
+          # 14.44 compatibility toolset below.
           - runner: windows-2022
             arch: x64
             os_label: windows
@@ -139,9 +134,9 @@ jobs:
             conan-${{ steps.setup-conan.outputs.conan-version }}-${{ runner.os }}-${{ matrix.arch }}-${{ steps.build-scope.outputs.scope }}-
 
       - name: Install cmake and ninja
-        # ninja 1.13.0 corrupts MSVC link response files (leading chars of
-        # >16,383-char rsp lines stripped -> LNK1181); pin the last good
-        # release on PyPI (1.12.x was never published there) — ninja-build/ninja#2616
+        # ninja 1.13.0 strips the leading chars of >16,383-char MSVC rsp lines (-> LNK1181);
+        # pin the last good release on PyPI (1.12.x was never published there):
+        # ninja-build/ninja#2616
         run: pip install cmake "ninja==1.11.1.4"
 
       - name: Set up MSVC environment (Windows)
@@ -149,8 +144,8 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.arch }}
-          # VS2026 is now the ARM runner default. Keep Conan/MSBuild on the
-          # installed VS2022-compatible compiler used by dependency projects.
+          # The ARM runner defaults to VS2026; keep Conan/MSBuild on the VS2022-compatible
+          # compiler used by dependency projects.
           toolset: ${{ matrix.arch == 'arm64' && '14.44' || '' }}
 
       # Widget-family libraries (needs_qt) are built against the official Qt that matches the host's
@@ -170,9 +165,8 @@ jobs:
         if: runner.os == 'Windows' && matrix.arch == 'arm64' && steps.build-scope.outputs.skip != 'true'
         shell: pwsh
         run: |
-          # Detection follows the VS installation's default, even after vcvars
-          # selects an older compiler. Keep package IDs and generated toolchains
-          # consistent with the actual 14.44 compiler in VS2026.
+          # Detection follows the VS installation's default even after vcvars selects an older
+          # compiler; match the actual 14.44 compiler so package IDs and toolchains agree.
           $profile = conan profile path default
           $content = (Get-Content -Raw $profile) -replace '(?m)^compiler.version=.*$', 'compiler.version=194'
           $content += "`n[conf]`ntools.microsoft.msbuild:vs_version=18`ntools.microsoft:msvc_update=4`n"
@@ -221,15 +215,12 @@ jobs:
           fi
 
       - name: Upload built Conan binaries to JFrog
-        # Publish every dependency compiled above (and the SDK if ensure_core.sh
-        # built it from source) so the next tag / weekly run on this
-        # platform fetches them prebuilt. This matrix is the ONLY producer of
-        # linux-aarch64, windows-x64/arm64 and macos-arm64 release binaries: the
-        # CI workflows prime JFrog for linux-x86_64 and macos only, so without
-        # this step every cold release leg recompiled Arrow/gRPC from
-        # source (40 min on ubuntu-22.04-arm, 77 min on windows-2022). Idempotent:
-        # Conan skips revisions already on the remote, and the script is a no-op
-        # when the remote was not configured (fork, missing secrets, outage).
+        # Publish every dependency compiled above (and the SDK, if built from source) so the
+        # next tag / weekly run fetches them prebuilt. This matrix is the ONLY producer of
+        # linux-aarch64, windows-x64/arm64 and macos-arm64 binaries (the CI workflows prime
+        # JFrog for linux-x86_64 and macos only); without it cold legs recompile Arrow/gRPC
+        # (40 min on ubuntu-22.04-arm, 77 min on windows-2022). Idempotent; a no-op when the
+        # remote was not configured (fork, missing secrets, outage).
         if: steps.build-scope.outputs.skip != 'true' && github.repository == 'PlotJuggler/pj-official-plugins'
         shell: bash
         run: scripts/upload_conan_artifacts.sh
@@ -349,8 +340,7 @@ jobs:
       - name: Check tag metadata
         id: check-tag
         run: |
-          # Get tag annotation message (contains JSON metadata)
-          # Use git cat-file to reliably get the tag message for annotated tags
+          # The tag annotation holds the JSON metadata; git cat-file reads it reliably.
           TAG_SHA=$(git rev-parse "refs/tags/${RELEASE_TAG}")
           TAG_TYPE=$(git cat-file -t "$TAG_SHA")
 
@@ -365,7 +355,6 @@ jobs:
           echo "Tag type: $TAG_TYPE"
           echo "Tag message: $TAG_MSG"
 
-          # Parse auto_submit_to_registry from JSON
           AUTO_SUBMIT=$(echo "$TAG_MSG" | python3 -c "import sys,json; d=json.loads(sys.stdin.read() or '{}'); print(str(d.get('auto_submit_to_registry', False)).lower())")
           echo "auto_submit=$AUTO_SUBMIT" >> $GITHUB_OUTPUT
           echo "Auto-submit to registry: $AUTO_SUBMIT"

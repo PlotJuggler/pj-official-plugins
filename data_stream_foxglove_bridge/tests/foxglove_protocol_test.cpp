@@ -26,8 +26,6 @@ namespace {
 
 using namespace PJ::FoxgloveProtocol;
 
-// --- parseBinaryFrame ---
-
 TEST(FoxgloveProtocolTest, ParseBinaryFrameValid) {
   // Build a valid binary frame: opcode(1) + sub_id(4) + log_time(8) + payload
   std::vector<uint8_t> frame;
@@ -81,8 +79,6 @@ TEST(FoxgloveProtocolTest, ParseBinaryFrameEmptyPayload) {
   EXPECT_EQ(out.payload_data, frame.data() + kBinaryFrameHeaderSize);
 }
 
-// --- buildSubscribeMessage ---
-
 TEST(FoxgloveProtocolTest, BuildSubscribeMessageSingle) {
   auto msg = buildSubscribeMessage({{1, 100}});
   EXPECT_EQ(msg, R"({"op":"subscribe","subscriptions":[{"id":1,"channelId":100}]})");
@@ -100,8 +96,6 @@ TEST(FoxgloveProtocolTest, BuildSubscribeMessageEmpty) {
   EXPECT_EQ(msg, R"({"op":"subscribe","subscriptions":[]})");
 }
 
-// --- buildUnsubscribeMessage ---
-
 TEST(FoxgloveProtocolTest, BuildUnsubscribeMessageSingle) {
   auto msg = buildUnsubscribeMessage({42});
   EXPECT_EQ(msg, R"({"op":"unsubscribe","subscriptionIds":[42]})");
@@ -116,8 +110,6 @@ TEST(FoxgloveProtocolTest, BuildUnsubscribeMessageEmpty) {
   auto msg = buildUnsubscribeMessage({});
   EXPECT_EQ(msg, R"({"op":"unsubscribe","subscriptionIds":[]})");
 }
-
-// --- classifyChannel ---
 
 TEST(FoxgloveProtocolTest, ClassifyChannelRos2msg) {
   ChannelInfo ch;
@@ -277,8 +269,6 @@ TEST(FoxgloveProtocolTest, ClassifyChannelEmptySchemaName) {
   ch.schema_encoding = "ros2msg";
   EXPECT_FALSE(classifyChannel(ch).supported);
 }
-
-// --- shared base64 decoder (pj_base64) ---
 
 TEST(FoxgloveProtocolTest, ParseAdvertisedChannelsSkipsEntriesWithoutAValidId) {
   const auto json = nlohmann::json::parse(R"({"op":"advertise","channels":[

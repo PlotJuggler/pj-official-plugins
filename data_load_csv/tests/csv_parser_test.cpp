@@ -286,10 +286,8 @@ TEST(CsvParse, WindowsLineEndings) {
   EXPECT_EQ(result.column_names[1], "b");
 }
 
-// End-to-end mirror of test_data/test_escaped_quotes.csv. The reported symptom
-// was that a header like "temp ""degC""" ended up nameless (_Column_N) because
-// SplitLine emitted an empty string; assert the escape-collapsed header AND
-// that the numeric column downstream still lands on the right index.
+// End-to-end mirror of test_data/test_escaped_quotes.csv: a header like "temp ""degC""" must collapse to a named
+// column (not _Column_N) and the numeric column after it must keep its index.
 TEST(CsvParse, EscapedQuotesHeaderAndData) {
   std::string csv =
       "time,\"temp \"\"degC\"\"\",value\n"
@@ -351,10 +349,8 @@ TEST(CsvParse, CancellationViaProgress) {
   EXPECT_LT(result.lines_processed, 300);
 }
 
-// A DATA column of large integers that happens to fall in an epoch range must
-// keep its raw value — epoch scaling belongs to the time column only. Before the
-// fix, byte_counter (1.5e12, an epoch-millis-range integer) was silently divided
-// by 1000.
+// A data column of large integers in an epoch range (byte_counter, 1.5e12) must keep its raw value: epoch scaling
+// belongs to the time column only.
 TEST(CsvParse, LargeIntegerDataColumnIsNotEpochScaled) {
   std::string csv = "index,byte_counter\n0,1500000000000\n1,1500000000001\n2,1500000000002\n";
   CsvParseConfig config;
@@ -370,8 +366,7 @@ TEST(CsvParse, LargeIntegerDataColumnIsNotEpochScaled) {
   EXPECT_DOUBLE_EQ(result.columns[1].numeric_points[2].second, 1500000000002.0);
 }
 
-// The time column, by contrast, IS scaled from epoch-millis to seconds (that is
-// the correct behaviour for the axis the user picked as time).
+// The time column, by contrast, IS scaled from epoch-millis to seconds.
 TEST(CsvParse, TimeColumnStillScaledFromEpochMillis) {
   std::string csv = "ts_ms,value\n1700000000000,10\n1700000001000,20\n";
   CsvParseConfig config;
@@ -492,13 +487,11 @@ TEST(CsvTimestamp, Trim) {
   EXPECT_EQ(Trim("no_space"), "no_space");
 }
 
-// --- Locale independence (issue #238) ---
+// --- Locale independence ---
 //
-// The plugin runs inside a Qt host, and QCoreApplication calls
-// setlocale(LC_ALL, "") at startup. On comma-decimal systems (fr_FR, es_ES,
-// de_DE, ...) that makes std::strtod treat ',' as the decimal separator and
-// reject "1781610745.99047" — every row of a dot-decimal CSV was skipped as
-// "Invalid timestamp". Parsing must not depend on the process locale.
+// The plugin runs inside a Qt host, and QCoreApplication calls setlocale(LC_ALL, "") at startup. Under a
+// comma-decimal locale (fr_FR, es_ES, de_DE, ...) std::strtod rejects "1781610745.99047" and every row of a
+// dot-decimal CSV would be skipped as "Invalid timestamp". Parsing must not depend on the process locale.
 
 constexpr const char* kIssue238Csv =
     "time_epoch,data1,data2\n"

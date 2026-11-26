@@ -12,9 +12,6 @@
 /// cannot represent), which is wrong for anything sent to the host, the UI, Arrow or FFmpeg.
 /// Build every path that comes from the host with pathFromUtf8() and turn every path that goes back
 /// into a `std::string` with pathToUtf8(). On POSIX both are byte copies.
-///
-/// Header-only: consumers link the INTERFACE target `pj_utf8_path` and
-/// `#include <pj_utf8_path/utf8_path.hpp>`.
 
 #include <filesystem>
 #include <string>

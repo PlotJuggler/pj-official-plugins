@@ -1,10 +1,6 @@
-// Pure resolution of which video access units a LeRobot episode emits, and the
-// origin used to rebase their timestamps to an episode-local 0. Split out of the
-// plugin (which needs a host) so the tricky v3.0 windowing — keyframe-seek-back,
-// presentation window, rebase — is unit-testable against synthetic indices.
-//
-// Depends only on the (header-only, ffmpeg-free) pj_video_demux AccessUnit POD
-// and the C++ stdlib: no host APIs, no libav.
+// Which video access units a LeRobot episode emits, and the origin that rebases their timestamps to an
+// episode-local 0. Split out of the plugin so the v3.0 windowing is unit-testable against synthetic indices (needs
+// only the pj_video_demux AccessUnit POD: no host, no libav).
 #pragma once
 
 #include <cstddef>
@@ -15,9 +11,8 @@
 
 namespace lerobot {
 
-/// The decode-order slice `[first_idx, last_idx]` of a VideoIndex to emit for one
-/// episode, plus the `origin_ns` subtracted from each unit's dts/pts to land the
-/// episode-local timeline on 0.
+/// The decode-order slice `[first_idx, last_idx]` of a VideoIndex to emit, plus the `origin_ns` subtracted from
+/// each unit's dts/pts.
 struct EmitSlice {
   std::size_t first_idx = 0;
   std::size_t last_idx = 0;

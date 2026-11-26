@@ -1,13 +1,9 @@
 #pragma once
 
-// blf_frames: reads a Vector BLF file and yields classic-CAN frames. lblf is
-// used only in the .cpp, so this header pulls in no lblf types.
-//
-// Scope (v1): classic CAN (CAN_MESSAGE / CAN_MESSAGE2). CAN FD is out: lblf
-// has no CAN-FD parse struct, so CAN-FD/LIN/other objects are counted in
-// BlfStats::skipped_objects. Timestamps
-// are absolute ns = the file's measurement-start time (a Windows SYSTEMTIME,
-// treated as UTC) plus the per-object relative timestamp.
+// Reads a Vector BLF file and yields classic-CAN frames (CAN_MESSAGE / CAN_MESSAGE2). lblf is used only in the
+// .cpp, so this header pulls in no lblf types. CAN FD, LIN and other objects are counted in
+// BlfStats::skipped_objects (lblf has no CAN-FD parse struct). Timestamps are absolute ns: the file's
+// measurement-start time (a Windows SYSTEMTIME, treated as UTC) plus the per-object relative timestamp.
 
 #include <cstdint>
 #include <functional>
@@ -37,18 +33,15 @@ struct BlfStats {
   std::uint64_t total_objects = 0;    ///< object count from the file header (0 if absent)
 };
 
-/// Reads `path`, invoking `cb` for each classic-CAN frame. `stats` receives the
-/// frame/skip counts. Returns an error if the file cannot be opened/read.
+/// Calls `cb` for each classic-CAN frame. Fails if the file cannot be opened/read.
 PJ::Status readCanFrames(const std::string& path, const CanFrameCallback& cb, BlfStats& stats);
 
-/// Parses a `channel_dbcs` map key ("1".."65535") from a saved config. Returns
-/// nullopt for non-numeric, negative, or out-of-range keys — hand-edited
-/// configs must not throw or silently wrap onto another channel.
+/// Parses a `channel_dbcs` map key ("1".."65535"). nullopt for non-numeric, negative or out-of-range keys: a
+/// hand-edited config must not throw or wrap onto another channel.
 std::optional<std::uint16_t> parseChannelKey(std::string_view key);
 
-/// Relative BLF object timestamp in nanoseconds, honoring the TimeTenMics
-/// flag (10-µs ticks vs ns). The tick count is file-controlled: saturates at
-/// INT64_MAX instead of overflowing or wrapping negative.
+/// Relative BLF object timestamp in nanoseconds, honoring the TimeTenMics flag (10-µs ticks vs ns). The tick
+/// count is file-controlled: saturates at INT64_MAX instead of overflowing.
 std::int64_t objectTimeNs(std::uint32_t object_flags, std::uint64_t ticks);
 
 }  // namespace blf_detail

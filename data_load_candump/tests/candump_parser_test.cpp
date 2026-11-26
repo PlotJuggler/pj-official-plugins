@@ -81,15 +81,13 @@ TEST(CandumpParserLog, RecognizesFdFrame) {
 }
 
 TEST(CandumpParserLog, RecognizesXlFrame) {
-  // Real shape: "%02X%03X#%02X:%02X:%08X#<data>" (vcid+prio#flags:sdt:af#data),
-  // can-utils lib.c snprintf_canframe ~L343-346.
+  // Real shape: "%02X%03X#%02X:%02X:%08X#<data>" (vcid+prio#flags:sdt:af#data).
   const auto line = parseLogLine("(1700000000.173456) can0 00123#11:22:12345678#AABB");
   EXPECT_EQ(line.kind, LineKind::kXl);
 }
 
 TEST(CandumpParserLog, RecognizesUnderscoreLen8DlcSuffix) {
-  // A classic 8-byte frame may carry an optional raw len8_dlc suffix
-  // "_<hex-digit>" (lib.c ~L428-435, CC_DLC_DELIM='_').
+  // A classic 8-byte frame may carry a raw len8_dlc suffix "_<hex-digit>" (CC_DLC_DELIM).
   const auto line = parseLogLine("(1700000000.213456) can0 600#0011223344556677_F");
   ASSERT_EQ(line.kind, LineKind::kData);
   ASSERT_EQ(line.data.size(), 8u);
@@ -147,12 +145,10 @@ TEST(CandumpParserLog, EmptyLineIsMalformed) {
 }
 
 // --- Screen format ---
-// Grammar verified against linux-can/can-utils lib.c snprintf_long_canframe
-// (see candump_parser.hpp's top-of-file comment for exact line references).
+// Grammar follows linux-can/can-utils lib.c snprintf_long_canframe (see candump_parser.hpp).
 
 TEST(CandumpParserScreen, LeadingSpaceBeforeTimestampIsRequired) {
-  // Screen format always has a leading space (candump.c's
-  // `sprintf(afrbuf, " %s", ...)`); log format never does. Both are accepted.
+  // Screen format always has a leading space, log format never does. Both are accepted.
   const auto line = parseScreenLine(" (1700000000.123456)  can0  100   [2]  E8 03");
   ASSERT_EQ(line.kind, LineKind::kData);
   EXPECT_EQ(line.interface, "can0");
@@ -169,9 +165,8 @@ TEST(CandumpParserScreen, DecodesPlainFrame) {
 }
 
 TEST(CandumpParserScreen, DirectionColumnWithFlagPairBeforeFrame) {
-  // `-x`: "  RX"/"  TX" then ALWAYS a flag pair (extra_fd_info, e.g. "- -"
-  // for CC/FD) -- the flag string has an embedded space, so it tokenizes as
-  // TWO symbols (candump.c ~L897-909).
+  // `-x`: "  RX"/"  TX" then ALWAYS a flag pair (e.g. "- -" for CC/FD) -- the embedded space makes it tokenize as
+  // TWO symbols.
   const auto rx = parseScreenLine(" (1700000000.133456)  can0  RX - -  100   [2]  E8 03");
   ASSERT_EQ(rx.kind, LineKind::kData);
   EXPECT_TRUE(rx.direction_known);
@@ -186,8 +181,7 @@ TEST(CandumpParserScreen, DirectionColumnWithFlagPairBeforeFrame) {
 }
 
 TEST(CandumpParserScreen, TwoDigitBracketIsFd) {
-  // CAN FD length is always "[%02d]" (2 digits, zero-padded) regardless of
-  // the actual byte count -- lib.c ~L583-588.
+  // CAN FD length is always "[%02d]" (2 digits, zero-padded) regardless of the actual byte count.
   const auto line = parseScreenLine(" (1700000000.153456)  can0  300  [12]  AA BB CC DD EE FF 00 11 22 33 44 55");
   EXPECT_EQ(line.kind, LineKind::kFd);
   EXPECT_EQ(line.can_id, 0x300u);
@@ -205,16 +199,14 @@ TEST(CandumpParserScreen, RecognizesErrorFrameByIdFlag) {
 }
 
 TEST(CandumpParserScreen, RecognizesRemoteRequestAsRtr) {
-  // "[N]  remote request" (DLC bracket, THEN the two words) -- lib.c
-  // ~L579-582, not a bare "R"/"remote" token right after the id.
+  // "[N]  remote request" (DLC bracket, THEN the two words), not a bare "R"/"remote" token right after the id.
   const auto line = parseScreenLine(" (1700000000.173456)  can0  400   [2]  remote request");
   EXPECT_EQ(line.kind, LineKind::kRtr);
   EXPECT_EQ(line.can_id, 0x400u);
 }
 
 TEST(CandumpParserScreen, RecognizesLenEightDlcBrace) {
-  // "{H}" (LEN8_DLC view): one HEX digit, not the byte count -- payload
-  // length comes from bytes actually present (coordinator correction).
+  // "{H}" (LEN8_DLC view): one HEX digit, not the byte count -- payload length comes from bytes actually present.
   const auto line = parseScreenLine(" (1700000000.193456)  can0  600   {F}  11 22 33 44 55 66 77 88");
   ASSERT_EQ(line.kind, LineKind::kData);
   ASSERT_EQ(line.data.size(), 8u);
@@ -223,32 +215,28 @@ TEST(CandumpParserScreen, RecognizesLenEightDlcBrace) {
 }
 
 TEST(CandumpParserScreen, RecognizesCanXlFrame) {
-  // "123 [0004] (00|11:22:12345678) AA BB" -- 3-digit prio id, 4-digit
-  // length, then a "(vcid|flags:sdt:af)" group -- lib.c ~L473-497.
+  // "123 [0004] (00|11:22:12345678) AA BB" -- 3-digit prio id, 4-digit length, then a "(vcid|flags:sdt:af)" group.
   const auto line = parseScreenLine(" (1700000000.183456)  can0  123 [0004] (00|11:22:12345678) AA BB");
   EXPECT_EQ(line.kind, LineKind::kXl);
 }
 
 TEST(CandumpParserScreen, SffIndentAfterEffIsToleratedByWhitespaceSkipping) {
-  // CANLIB_VIEW_INDENT_SFF adds 5 extra spaces before an SFF id once an EFF
-  // frame has been seen in the same dump session -- pure whitespace, no
-  // special-casing needed.
+  // CANLIB_VIEW_INDENT_SFF adds 5 extra spaces before an SFF id once an EFF frame has been seen -- pure whitespace.
   const auto line = parseScreenLine(" (1700000000.203456)  can0       100   [2]  E8 03");
   ASSERT_EQ(line.kind, LineKind::kData);
   EXPECT_EQ(line.can_id, 0x100u);
 }
 
 TEST(CandumpParserScreen, RightPaddedShortInterfaceName) {
-  // Interfaces are right-aligned ("%*s") to the longest name in the dump
-  // session, so a short name gets extra LEADING spaces.
+  // Interfaces are right-aligned ("%*s") to the longest name in the session, so a short name gets LEADING spaces.
   const auto line = parseScreenLine(" (1700000000.213456)    c0  100   [2]  E8 03");
   ASSERT_EQ(line.kind, LineKind::kData);
   EXPECT_EQ(line.interface, "c0");
 }
 
 TEST(CandumpParserScreen, NineByteBracketDlcIsMalformed) {
-  // "[N]" is `len + '0'` for len <= 8 upstream, so "[9]" cannot come from
-  // candump -- and 9 payload bytes must never reach the classic-frame consumers.
+  // "[N]" is `len + '0'` for len <= 8, so "[9]" cannot come from candump -- and 9 payload bytes must never reach
+  // the classic-frame consumers.
   EXPECT_EQ(parseLine(" (0.0)  can0  100   [9]  00 11 22 33 44 55 66 77 88").kind, LineKind::kMalformed);
   const auto control = parseLine(" (0.0)  can0  100   [8]  00 11 22 33 44 55 66 77");
   ASSERT_EQ(control.kind, LineKind::kData);
@@ -260,14 +248,12 @@ TEST(CandumpParserScreen, MissingDlcBracketIsMalformed) {
 }
 
 TEST(CandumpParserScreen, NonHexByteIsMalformed) {
-  // "[1]" reliably means exactly 1 byte follows (lib.c writes `len + '0'`
-  // directly), so a non-hex token there is a real error, unlike the
+  // "[1]" reliably means exactly 1 byte follows, so a non-hex token there is a real error, unlike the
   // brace/LEN8_DLC case which just stops consuming.
   EXPECT_EQ(parseScreenLine("(0.0) can0 100 [1] ZZ").kind, LineKind::kMalformed);
 }
 
-// --- DROPCOUNT / error-detail: recognized only at the parseLine() dispatch
-// level -- neither carries a timestamp/interface prefix in either grammar.
+// DROPCOUNT / error-detail: recognized only at the parseLine() dispatch level; neither carries a timestamp/interface.
 
 TEST(CandumpParserDispatch, RecognizesDropCountWithNoTimestampOrIfacePrefix) {
   const auto line = parseLine("DROPCOUNT: dropped 3 CAN frames on 'can0' socket (total drops 3)");

@@ -13,17 +13,12 @@
 namespace PJ::query {
 namespace {
 
-// A small fixed schema used across completion/analyze tests.
 Schema makeSchema() {
   return Schema{
       {"robot", {"bonirob", "other"}},
       {"sensor", {"camera", "laser"}},
   };
 }
-
-// ---------------------------------------------------------------------------
-// Lexer / tokenize (token.h)
-// ---------------------------------------------------------------------------
 
 TEST(Lexer, TwoCharOperators) {
   auto toks = Lexer("a == b ~= c <= d >= e").tokenize();
@@ -46,7 +41,6 @@ TEST(Lexer, SingleCharComparisonOperators) {
 }
 
 TEST(Lexer, LoneEqualsAndTildeAreOperators) {
-  // token.h: "Lone = or ~ (not part of a two-char op)" → Operator.
   auto toks = Lexer("a = b").tokenize();
   ASSERT_EQ(toks.size(), 3u);
   EXPECT_EQ(toks[1].type, TokenType::kOperator);
@@ -79,7 +73,7 @@ TEST(Lexer, UnterminatedQuoteConsumesToEnd) {
 }
 
 TEST(Lexer, NumericLiteralsClassifyAsValue) {
-  // classify_word: the whole word parses as a number → Value.
+  // The whole word must parse as a number.
   auto toks = Lexer("count >= 42").tokenize();
   ASSERT_EQ(toks.size(), 3u);
   EXPECT_EQ(toks[2].type, TokenType::kValue);
@@ -98,14 +92,13 @@ TEST(Lexer, NonNumericWordsClassifyAsKey) {
   EXPECT_EQ(toks[0].type, TokenType::kKey);
   EXPECT_EQ(toks[0].text, "robot_type");
 
-  // Word that starts numeric but isn't fully numeric → Key.
+  // Starts numeric but isn't fully numeric.
   auto toks2 = Lexer("3abc").tokenize();
   ASSERT_EQ(toks2.size(), 1u);
   EXPECT_EQ(toks2[0].type, TokenType::kKey);
 }
 
 TEST(Lexer, KeywordsAndOrNot) {
-  // "a and b or not c" → a, and, b, or, not, c = 6 tokens.
   auto toks = Lexer("a and b or not c").tokenize();
   ASSERT_EQ(toks.size(), 6u);
   EXPECT_EQ(toks[1].type, TokenType::kAnd);
@@ -141,21 +134,11 @@ TEST(Lexer, WhitespaceSkippedAndEmptyInput) {
 }
 
 TEST(Lexer, UnrecognizedCharsSkippedNoCrash) {
-  // token.h promises unrecognized chars are skipped (no infinite loop).
-  // Characters like ! , ; are not punct and not space, so they form a "word".
-  // But a truly stray punctuation that the word loop won't consume must be
-  // skipped. Use a char the is_punct set excludes but is also handled: none
-  // exist, so confirm a control char between keys still yields both keys.
+  // \x01 is neither space nor punctuation, so it joins the "a" word: ["a\x01", "b"].
   auto toks = Lexer("a\x01 b").tokenize();
-  // \x01 is not space and not punct, so it joins the "a" word; the word ends
-  // at the space. So we get ["a\x01", "b"].
   ASSERT_EQ(toks.size(), 2u);
   EXPECT_EQ(toks[1].text, "b");
 }
-
-// ---------------------------------------------------------------------------
-// Parser + serialize (ast.h)
-// ---------------------------------------------------------------------------
 
 TEST(Parser, FullClause) {
   auto toks = Lexer("robot == \"bonirob\"").tokenize();
@@ -184,13 +167,12 @@ TEST(Parser, PartialKeyOpIsPartialExprAndIncomplete) {
 }
 
 TEST(Parser, AndOrPrecedence) {
-  // "or has lower precedence than and": A or B and C → A or (B and C)
+  // A or B and C parses as A or (B and C).
   auto res = Parser(Lexer("a == \"1\" or b == \"2\" and c == \"3\"").tokenize()).parse();
   ASSERT_TRUE(res.ast);
   EXPECT_EQ(res.ast->type, NodeType::kBinary);
   auto* top = static_cast<const BinaryExpr*>(res.ast.get());
   EXPECT_EQ(top->connective.type, TokenType::kOr);
-  // Right side is the "and" subtree.
   ASSERT_EQ(top->right->type, NodeType::kBinary);
   EXPECT_EQ(static_cast<const BinaryExpr*>(top->right.get())->connective.type, TokenType::kAnd);
   EXPECT_TRUE(res.complete);
@@ -213,12 +195,8 @@ TEST(Parser, NestedGroup) {
 }
 
 TEST(Parser, EmptyParensYieldsNullAst) {
-  // "()" — parse_primary consumes "(", recurses into parse_or which reaches
-  // the ")"; none of its branches match it, so the "Unexpected token" path
-  // skips (consumes) the ")" and returns null. Back in the OpenParen branch
-  // the close-paren is already gone, so the CloseParen check is false and the
-  // (null) inner is returned. Net: empty parens produce a null AST, marked
-  // incomplete with no error.
+  // The inner parse skips the ")" as an unexpected token, so the group's own close-paren check
+  // fails and the null inner is returned: a null AST, incomplete, no error.
   auto res = Parser(Lexer("()").tokenize()).parse();
   EXPECT_EQ(res.ast, nullptr);
   EXPECT_FALSE(res.complete);
@@ -226,7 +204,6 @@ TEST(Parser, EmptyParensYieldsNullAst) {
 }
 
 TEST(Parser, UnclosedParenReturnsInner) {
-  // parse_primary: unclosed paren returns inner.
   auto res = Parser(Lexer("(a == \"1\"").tokenize()).parse();
   ASSERT_TRUE(res.ast);
   EXPECT_EQ(res.ast->type, NodeType::kCompare);
@@ -234,7 +211,6 @@ TEST(Parser, UnclosedParenReturnsInner) {
 }
 
 TEST(Parser, ShorthandExpansion) {
-  // ast.h header: robot == "a" or "b" → robot == "a" or robot == "b"
   auto res = Parser(Lexer("robot == \"a\" or \"b\"").tokenize()).parse();
   ASSERT_TRUE(res.ast);
   EXPECT_TRUE(res.complete);
@@ -256,9 +232,7 @@ TEST(Parser, EmptyInputIsIncompleteWithError) {
 }
 
 TEST(Parser, LeftoverTokensMarkIncomplete) {
-  // "a == \"1\" foo" — the leftover bare key "foo" is parsed in parse_or as a
-  // separate clause? No: parse_or stops at a non-connective. So "foo" is
-  // leftover → not complete, error "unexpected tokens".
+  // The parser stops at a non-connective, so "foo" is leftover.
   auto res = Parser(Lexer("a == \"1\" foo").tokenize()).parse();
   ASSERT_TRUE(res.ast);
   EXPECT_FALSE(res.complete);
@@ -266,11 +240,8 @@ TEST(Parser, LeftoverTokensMarkIncomplete) {
 }
 
 TEST(Parser, DanglingConnectiveStopsCleanly) {
-  // "a == \"1\" or" — parse_or consumes the "or" (pos_++) THEN parse_and
-  // returns null and breaks. The "or" is already consumed, so there is no
-  // leftover token: the result is the lone CompareExpr, which is complete.
-  // (This is the engine's actual behavior — the trailing connective is simply
-  // dropped, not flagged.)
+  // The "or" is consumed before the missing right side is detected, so no token is left over:
+  // the trailing connective is dropped, not flagged.
   auto res = Parser(Lexer("a == \"1\" or").tokenize()).parse();
   ASSERT_TRUE(res.ast);
   EXPECT_EQ(res.ast->type, NodeType::kCompare);
@@ -278,26 +249,20 @@ TEST(Parser, DanglingConnectiveStopsCleanly) {
   EXPECT_TRUE(res.error.empty());
 }
 
-// ---------------------------------------------------------------------------
-// Query facade (query.h)
-// ---------------------------------------------------------------------------
-
 TEST(Query, LuaExpandsCompleteQuery) {
   Query query("robot == \"a\" or \"b\"");
   EXPECT_TRUE(query.complete());
   EXPECT_EQ(query.expanded(), "robot == \"a\" or robot == \"b\"");
   EXPECT_EQ(Query("robot == \"a\" and \"b\"").expanded(), "robot == \"a\" and robot == \"b\"");
-  // No shorthand → serialized verbatim.
+  // No shorthand: serialized verbatim.
   EXPECT_EQ(Query("robot == \"a\"").expanded(), "robot == \"a\"");
 }
 
 TEST(Query, LuaFallsBackToRawForIncomplete) {
-  // query.h: incomplete → lua_str_ = source_ (the raw source).
   Query query("robot ==");
   EXPECT_FALSE(query.complete());
   EXPECT_EQ(query.expanded(), "robot ==");
 
-  // Bare key — also incomplete, raw source.
   Query bare("robot");
   EXPECT_FALSE(bare.complete());
   EXPECT_EQ(bare.expanded(), "robot");
@@ -316,7 +281,7 @@ TEST(Query, TokenAtAndIndexAt) {
   ASSERT_NE(query.tokenAt(0), nullptr);
   EXPECT_EQ(query.tokenAt(0)->text, "robot");
   EXPECT_EQ(query.tokenIndexAt(0), 0);
-  // pos 5 is the space — no token covers [5] since end is exclusive.
+  // pos 5 is the space: token ends are exclusive.
   EXPECT_EQ(query.tokenAt(5), nullptr);
   EXPECT_EQ(query.tokenIndexAt(5), -1);
   EXPECT_EQ(query.tokenAt(6)->text, "==");
@@ -328,32 +293,23 @@ TEST(Query, TokenAtAndIndexAt) {
 TEST(Query, KeyBefore) {
   Query query("robot == \"x\" and sensor ==");
   // Tokens: robot Op Val And sensor Op
-  // key_before(index 5 = the trailing op) → "sensor".
   EXPECT_EQ(query.keyBefore(5), "sensor");
-  // key_before(index 1 = first op) → "robot".
   EXPECT_EQ(query.keyBefore(1), "robot");
-  // key_before(0) → no preceding key → empty.
   EXPECT_EQ(query.keyBefore(0), "");
 }
 
 TEST(Query, ExpectedAtTransitions) {
   Query query("robot == \"x\"");
-  // Before any token → Key.
   EXPECT_EQ(query.expectedAt(-1), TokenType::kKey);
-  // Cursor inside "robot" (pos 2) → editing a Key.
+  // Inside "robot": editing a Key.
   EXPECT_EQ(query.expectedAt(2), TokenType::kKey);
-  // After "robot" (pos 5, past end) → Operator next.
   EXPECT_EQ(query.expectedAt(5), TokenType::kOperator);
-  // After "==" (pos 8) → Value next.
   EXPECT_EQ(query.expectedAt(8), TokenType::kValue);
-  // After the value (pos 12) → connective (And).
   EXPECT_EQ(query.expectedAt(12), TokenType::kAnd);
 }
 
 TEST(Query, ExpectedAtAfterConnectiveAndParen) {
   Query query("a == \"1\" and ( b == \"2\" )");
-  // After the "and" → Key.
-  // "and" token is at some offset; pick a position right after it.
   const Token* and_tok = nullptr;
   for (const auto& token : query.tokens()) {
     if (token.type == TokenType::kAnd) {
@@ -363,10 +319,6 @@ TEST(Query, ExpectedAtAfterConnectiveAndParen) {
   ASSERT_NE(and_tok, nullptr);
   EXPECT_EQ(query.expectedAt(and_tok->end), TokenType::kKey);
 }
-
-// ---------------------------------------------------------------------------
-// complete() (complete.h)
-// ---------------------------------------------------------------------------
 
 TEST(Complete, AtStartExpectsKeysAny) {
   auto schema = makeSchema();
@@ -432,18 +384,12 @@ TEST(Complete, AfterCloseParenExpectsConnective) {
   EXPECT_EQ(character.suggestions, (std::vector<std::string>{"and", "or"}));
 }
 
-// ---------------------------------------------------------------------------
-// analyze() + find_active_token (edit.h)
-// ---------------------------------------------------------------------------
-
 TEST(FindActiveToken, BoundaryAtTokenEnd) {
-  // edit.h: cursor at P is "on" a token if P in [start, end] (inclusive end).
+  // The cursor is "on" a token when it is in [start, end]; the end is inclusive.
   auto toks = Lexer("robot == \"x\"").tokenize();
-  // robot[0,5): cursor at 5 (== end) still "on" robot.
+  // robot is [0,5).
   EXPECT_EQ(findActiveToken(toks, 5), 0);
-  // cursor at 0 (== start) on robot.
   EXPECT_EQ(findActiveToken(toks, 0), 0);
-  // cursor at 6 (== start of "==") on the operator.
   EXPECT_EQ(findActiveToken(toks, 6), 1);
 }
 
@@ -467,7 +413,7 @@ TEST(Analyze, CursorOnKeyReplacesKeyInsertsOp) {
   auto ctx = analyze("robot", 5, schema);
   ASSERT_EQ(ctx.token_index, 0);
   EXPECT_EQ(ctx.active_token.type, TokenType::kKey);
-  // edit.h: on a Key → expect = Operator, context_key = the key.
+  // On a Key: expect = Operator, context_key = the key.
   EXPECT_EQ(ctx.expect, Expect::kOperator);
   EXPECT_EQ(ctx.context_key, "robot");
   // Key dropdown Replaces (cursor on key); Op dropdown Inserts (op next).
@@ -513,19 +459,10 @@ TEST(Analyze, ReplaceRangeMatchesActiveToken) {
 
 TEST(Analyze, WhitespaceBetweenTokensNoActiveToken) {
   auto schema = makeSchema();
-  // "robot ==" the space at pos 5? find_active_token: 5 is end of robot →
-  // still on robot. Use "robot  ==" with cursor at the gap (pos 6, between
-  // two spaces) where no token covers it.
+  // Position 5 is still "on" robot (inclusive end); 6 is the gap between the two spaces.
   auto ctx = analyze("robot  ==", 6, schema);
   EXPECT_EQ(ctx.token_index, -1);
 }
-
-// ---------------------------------------------------------------------------
-// applyCompletion (edit.h) — dropdown insertion/replace into the query text.
-// Mirrors PJ3 QueryBar::applyInsert/applyEdit spacing: a leading space when the
-// preceding char isn't whitespace, plus a trailing space; Replace overwrites
-// the active token's [start, end) span.
-// ---------------------------------------------------------------------------
 
 TEST(ApplyCompletion, InsertKeyIntoEmptyText) {
   auto schema = makeSchema();
@@ -594,8 +531,7 @@ TEST(ApplyCompletion, ReplaceTokenAtEndAddsTrailingSpace) {
 
 TEST(ApplyCompletion, InsertAfterMidTokenCaretLandsPastTheToken) {
   auto schema = makeSchema();
-  // Caret in the middle of the key ("wea|ther"); the Op dropdown Inserts. The
-  // insert must land after the whole token, not splice it ("wea == ther").
+  // The insert must land after the whole token, not splice it ("wea == ther").
   auto ctx = analyze("weather", 3, schema);
   ASSERT_EQ(ctx.op_action, Action::kInsert);
   auto right_expr = applyCompletion("weather", ctx, Action::kInsert, "==");
@@ -616,8 +552,7 @@ TEST(QuoteValueForQuery, EscapesEmbeddedQuotesAndBackslashes) {
   EXPECT_EQ(quoteValueForQuery("a\\b"), "\"a\\\\b\"");
 }
 
-// End-to-end: replacing a string value re-quotes it (the reported bug —
-// picking "cloudy" over "sunny" produced a bare, un-quoted key).
+// A replaced string value must be re-quoted: a bare word lexes as a Key.
 TEST(ApplyCompletion, ReplaceStringValueStaysQuoted) {
   auto schema = makeSchema();
   std::string text = "robot == \"sunny\"";

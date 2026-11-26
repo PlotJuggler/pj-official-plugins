@@ -21,22 +21,14 @@ concurrency:
   group: ci-ros2-${{ github.ref }}
   cancel-in-progress: true
 
-# End-to-end build for the ROS 2 subscriber marketplace extension:
-#
-#  - `build-distro` runs a matrix across every supported ROS 2 distribution
-#    inside the corresponding osrf/ros Docker image. Each job builds
-#    plotjuggler_sdk from the pinned git tag (v<SDK_VERSION>) and links
-#    the resulting distro-specific shared library against that distro's
-#    rclcpp.
-#
-#  - `build-proxy` builds the dispatch proxy once on a plain Ubuntu runner,
-#    because it has no dependency on ROS itself. The proxy detects the ROS
-#    distro on the user's machine at load time and dlopen-s the matching
-#    per-distro binary.
-#
-#  - `package-extension` assembles both into a single marketplace zip with
-#    the proxy at the root and one private .pjros2 payload per distro under
-#    `dist/<distro>/`.
+# ROS 2 subscriber marketplace extension, built end to end:
+#  - `build-distro`: one matrix leg per supported ROS 2 distro, inside its osrf/ros Docker image;
+#    builds plotjuggler_sdk from the pinned tag (v<SDK_VERSION>) and links the distro-specific
+#    shared library against that distro's rclcpp.
+#  - `build-proxy`: the dispatch proxy, built once on plain Ubuntu (no ROS dependency). At load
+#    time it detects the user's ROS distro and dlopen-s the matching per-distro binary.
+#  - `package-extension`: one marketplace zip, the proxy at the root plus one private .pjros2
+#    payload per distro under `dist/<distro>/`.
 jobs:
   build-distro:
     name: distro / ${{ matrix.distro }} (${{ matrix.ubuntu }})
@@ -102,8 +94,7 @@ jobs:
         run: |
           source /opt/ros/${{ matrix.distro }}/setup.bash
 
-          # Plugin-local recipe (plotjuggler_sdk + gtest + nlohmann_json),
-          # not the repo-root conanfile.py that pulls every plugin's deps.
+          # Plugin-local recipe, not the repo-root conanfile.py that pulls every plugin's deps.
           conan install data_stream_ros2 --output-folder=build --build=missing \
             -s build_type=Release \
             -s compiler.cppstd=20 \
@@ -162,8 +153,7 @@ jobs:
       - name: Configure and build proxy
         shell: bash
         run: |
-          # Plugin-local recipe (plotjuggler_sdk + gtest + nlohmann_json),
-          # not the repo-root conanfile.py that pulls every plugin's deps.
+          # Plugin-local recipe, not the repo-root conanfile.py that pulls every plugin's deps.
           conan install data_stream_ros2 --output-folder=build --build=missing \
             -s build_type=Release \
             -s compiler.cppstd=20 \
@@ -184,12 +174,10 @@ jobs:
           path: build/Release/bin/libros2_stream_plugin.so
           if-no-files-found: error
 
-  # RoboStack payloads: the same subscriber built against RoboStack's
-  # conda-built rclcpp, for PlotJuggler installed from conda (see
-  # data_stream_ros2/robostack/build.sh). Shipped as dist/<distro>-robostack/.
-  # The release build packages each Linux arch natively, so both are built here,
-  # plus macos-arm64 (not packaged yet); only the x86_64 payloads feed the
-  # (x86_64) test zip below.
+  # RoboStack payloads: the subscriber built against RoboStack's conda-built rclcpp, for
+  # PlotJuggler installed from conda (data_stream_ros2/robostack/build.sh); shipped as
+  # dist/<distro>-robostack/. Both Linux arches are built (the release packages each natively)
+  # plus macos-arm64 (not packaged); only x86_64 payloads feed the x86_64 test zip below.
   build-robostack:
     name: robostack / ${{ matrix.distro }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -310,12 +298,9 @@ jobs:
           path: ros2_subscriber-linux-x86_64.zip
           if-no-files-found: error
 
-  # Publish the data_stream_ros2 status badge to the shared `badges` branch.
-  # This plugin is built only by this workflow (not the CI Linux per-plugin
-  # matrix), so its badge is owned here. Color aggregates the distro matrix, the
-  # RoboStack payloads and the proxy build. Shares the `badges-branch`
-  # concurrency group with CI Linux so the two workflows serialize their pushes
-  # to the badges branch.
+  # Publish the data_stream_ros2 status badge to the shared `badges` branch (only this workflow
+  # builds the plugin). Color aggregates the distro matrix, RoboStack payloads and proxy build.
+  # Shares the `badges-branch` concurrency group with CI Linux so their pushes serialize.
   update-badge:
     name: update status badge
     needs: [build-distro, build-robostack, build-proxy]

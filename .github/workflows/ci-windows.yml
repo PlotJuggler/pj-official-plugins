@@ -11,9 +11,8 @@ on:
 
 concurrency:
   group: ci-windows-${{ github.ref }}
-  # Cancel superseded PR runs, but QUEUE main runs: a cold main run takes hours
-  # and its trailing JFrog upload + cache save are what keep every other run
-  # warm — a merge-triggered cancellation loses both, repeatedly on busy days.
+  # Cancel superseded PR runs, but QUEUE main runs: a cold main run takes hours and its
+  # trailing JFrog upload + cache save keep every other run warm.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
@@ -39,17 +38,13 @@ jobs:
   build:
     needs: scope
     if: needs.scope.outputs.aggregate == 'true' || needs.scope.outputs.standalone != ''
-    # Pinned: windows-latest migrated to the VS18/MSVC 14.5x image, where the
-    # libsodium/1.0.20 Conan recipe failed to build from source (MSB8052: default
-    # toolset 14.44 is incompatible with the v145 platform toolset its bundled
-    # vs2022 solution selects). windows-2022 is the last known-green image.
-    # Not re-tested since the move to libsodium/1.0.22: revert to windows-latest
-    # once that is confirmed to build there. See follow-up infra issue.
+    # Pinned: windows-latest (VS18/MSVC 14.5x) breaks the libsodium Conan recipe's source build
+    # (MSB8052: default toolset 14.44 is incompatible with the v145 platform toolset its bundled
+    # vs2022 solution selects). Not re-tested with libsodium/1.0.22; revert to windows-latest
+    # once confirmed to build there.
     runs-on: windows-2022
-    # Backstop against hangs (a deadlocked build otherwise holds the runner for
-    # GitHub's 6-hour default). A cold run still rebuilds the whole Conan
-    # closure from source before the cache save persists it; keep margin for
-    # that bootstrap case.
+    # Backstop against hangs (GitHub's default is 6 hours). A cold run rebuilds the whole
+    # Conan closure from source before the cache save, so keep margin for that.
     timeout-minutes: 240
 
     steps:
@@ -59,19 +54,16 @@ jobs:
       - name: Install Conan
         uses: conan-io/setup-conan@v1.3.0
         with:
-          # Binaries come from the explicitly keyed Actions cache below, with
-          # ConanCenter source builds as the fallback. Do not also archive
-          # ~/.conan2 through setup-conan's own coarse cache: it is keyed per
-          # workflow, not per dependency graph, so it both misses after any
-          # change and re-saves multi-GB archives it just restored.
+          # Binaries come from the explicitly keyed Actions cache below (ConanCenter source
+          # builds as fallback). Do not also use setup-conan's coarse cache: it is keyed per
+          # workflow, not per dependency graph, so it misses after any change and re-saves
+          # multi-GB archives it just restored.
           cache_packages: false
 
       - name: Install cmake and ninja
-        # ninja 1.13.0 corrupts MSVC link response files: any rsp line over
-        # 16,383 chars has its leading characters stripped, so link.exe fails
-        # with LNK1181 on a truncated path of the line's first token (the
-        # object list + library line of every multi-object target). Pin the
-        # last good release — https://github.com/ninja-build/ninja/issues/2616
+        # ninja 1.13.0 strips the leading characters of MSVC rsp lines over 16,383 chars, so
+        # link.exe fails with LNK1181 on a truncated path. Pin the last good release:
+        # https://github.com/ninja-build/ninja/issues/2616
         run: pip install cmake "ninja==1.11.1.4"
 
       - name: Set up MSVC environment
@@ -83,13 +75,11 @@ jobs:
         id: conan_cache_key
         shell: pwsh
         run: |
-          # The runner is pinned to windows-2022 above, so this identity maps
-          # to one stable MSVC/Release dependency graph. Key inputs: the root
-          # conanfile.py (the whole third-party closure) and SDK_VERSION (the
-          # plotjuggler_sdk package ensure_core.sh builds into the same cache).
-          # Bump $cacheVersion to force a cold rebuild.
-          # v2 includes partial downloads saved by failed builds. Keep those
-          # archives out of both exact-key and prefix restores.
+          # The runner is pinned to windows-2022, so this identity maps to one stable
+          # MSVC/Release dependency graph. Key inputs: the root conanfile.py (the whole
+          # third-party closure) and SDK_VERSION (the plotjuggler_sdk package ensure_core.sh
+          # builds into the same cache). Bump $cacheVersion to force a cold rebuild; v2 holds
+          # partial downloads saved by failed builds, so keep it out of exact and prefix restores.
           $cacheVersion = "v3"
           $combined = (Get-FileHash conanfile.py -Algorithm SHA256).Hash + (Get-FileHash SDK_VERSION -Algorithm SHA256).Hash
           $stream = [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($combined))
@@ -98,10 +88,9 @@ jobs:
           "restore_prefix=conan-windows-msvc-release-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Restore Conan cache
-        # PR runs can restore caches published by main (base-branch sharing),
-        # so only the first run after a dependency change pays the full
-        # from-source build. Prefix fallback: an older closure for the same
-        # toolchain still seeds most packages, so only changed deps rebuild.
+        # PR runs can restore caches published by main, so only the first run after a
+        # dependency change pays the full from-source build. Prefix fallback: an older
+        # closure for the same toolchain still seeds most packages.
         id: conan-cache
         uses: actions/cache/restore@v4
         with:
@@ -111,11 +100,9 @@ jobs:
             ${{ steps.conan_cache_key.outputs.restore_prefix }}
 
       - name: Install sccache
-        # Compile-cache speedup for the plugin compilation itself (the Conan
-        # dependency closure is covered by the cache above), NOT load-bearing:
-        # the build is correct without it, just slower. Backend: GitHub
-        # Actions cache (SCCACHE_GHA_ENABLED below). The outcome gate in
-        # Build & Test keeps this optional if installation flakes.
+        # Compile cache for the plugin compilation (the Conan closure has its own cache above).
+        # Not load-bearing: the build is correct without it, just slower. The outcome gate in
+        # Build & Test keeps it optional if installation flakes.
         id: setup_sccache
         continue-on-error: true
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -123,15 +110,13 @@ jobs:
           version: "v0.16.0"
 
       - name: Configure PlotJuggler JFrog Conan remote
-        # Second-tier binary source behind the keyed Actions cache above: on a
-        # cache miss (dependency change, SDK bump, or eviction -- this repo sits
-        # at the 10 GB Actions cache limit) `conan install --build=missing` pulls
-        # MSVC binaries the release workflow already published instead of
-        # recompiling Arrow/boost/gRPC. The repository allows anonymous read, so
-        # PR runs (no secrets) use it read-only; push runs also log in so the
-        # upload step can publish. configure_jfrog_conan.sh degrades to
-        # ConanCenter when anything fails. The login token is purged again before
-        # ~/.conan2 is saved (see Trim).
+        # Second-tier binary source behind the keyed Actions cache: on a cache miss (dependency
+        # change, SDK bump, or eviction; the repo sits at the 10 GB cache limit) `conan install
+        # --build=missing` pulls MSVC binaries published by the release workflow instead of
+        # recompiling Arrow/boost/gRPC. Anonymous read lets PR runs (no secrets) use it
+        # read-only; push runs also log in so the upload step can publish. The script falls back
+        # to ConanCenter on any failure. The login token is purged before ~/.conan2 is saved
+        # (see Trim).
         if: github.repository == 'PlotJuggler/pj-official-plugins'
         env:
           JFROG_USER: ${{ vars.JFROG_USER || secrets.JFROG_USER }}
@@ -140,20 +125,17 @@ jobs:
         run: scripts/configure_jfrog_conan.sh
 
       - name: Acquire plotjuggler_sdk
-        # Warm run: the SDK is in the restored cache and ensure_core.sh exits
-        # immediately. Cache miss: prefer a prebuilt binary from JFrog (push
-        # runs), otherwise build the pinned SDK tag from source into ~/.conan2.
+        # Warm run: the SDK is in the restored cache and ensure_core.sh exits immediately.
+        # Cache miss: a prebuilt JFrog binary, else the pinned SDK tag built from source.
         shell: bash
         run: |
           conan profile detect --force
           scripts/ensure_core.sh
 
       - name: Start periodic Conan upload
-        # Push runs only: publish finished packages to JFrog every 10 minutes
-        # while the build runs, so a cancellation or timeout mid-build loses at
-        # most the package in flight instead of hours of compilation. The
-        # script is idempotent (skips revisions already on the remote) and
-        # no-ops when the remote is absent. The loop dies with the job.
+        # Push runs only: publish finished packages to JFrog every 10 minutes during the build,
+        # so a cancellation or timeout loses at most the package in flight. The script is
+        # idempotent and no-ops when the remote is absent. The loop dies with the job.
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
         shell: bash
         run: |
@@ -178,10 +160,8 @@ jobs:
             -s compiler.cppstd=20 -s:b compiler.cppstd=20 \
             -c tools.cmake.cmaketoolchain:generator=Ninja
 
-          # Route the plugin compile through sccache only when its install
-          # succeeded; otherwise degrade to an uncached (but correct) build.
-          # The launcher is honored by the Ninja generator (MSBuild would
-          # silently ignore it).
+          # Use sccache only when its install succeeded; otherwise build uncached. Only the
+          # Ninja generator honors the launcher (MSBuild silently ignores it).
           launcher_args=()
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
             launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache \
@@ -197,7 +177,6 @@ jobs:
             "${launcher_args[@]}"
           cmake --build build/Release --config Release
 
-          # Surface sccache stats next to the compile output.
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
             sccache --show-stats
           fi
@@ -205,17 +184,11 @@ jobs:
           ctest --test-dir build/Release -V --output-on-failure
 
       - name: Build & Test single plugins
-        # The aggregate root recipe above leaves out the plugins whose dependency
-        # pins clash with the Arrow/Flight stack, so this job never compiled them and
-        # a green Windows check said nothing about them. That is not hypothetical: the
-        # macOS fix for data_stream_lsl (#256) merged with all 34 checks green, then
-        # broke both Windows legs of the very next release -- because liblsl is one of
-        # those plugins and no Windows job had ever built it.
-        #
-        # The scope job (scripts/ci_affected_plugins.py) lists them here, and on a pull
-        # request that builds only some plugins, it lists exactly those instead of the
-        # aggregate. Run in this job so the legs reuse the Conan cache the aggregate
-        # just warmed.
+        # The aggregate root recipe leaves out plugins whose dependency pins clash with the
+        # Arrow/Flight stack (e.g. data_stream_lsl / liblsl), so a green aggregate says nothing
+        # about them; they are built here, reusing the Conan cache the aggregate warmed. The
+        # scope job (scripts/ci_affected_plugins.py) lists them, or exactly the affected
+        # plugins on a PR that builds a subset instead of the aggregate.
         shell: bash
         env:
           SCCACHE_GHA_ENABLED: "on"
@@ -234,19 +207,17 @@ jobs:
           done
 
       - name: Upload built Conan binaries to JFrog
-        # Publish every dependency compiled above (Windows x64 MSVC binaries) so
-        # later push runs and the windows-2022 release leg fetch them prebuilt.
-        # Never on pull requests (no secrets there, and we never publish binaries
-        # built from unreviewed code), only on this repo. No-op when the remote is
-        # not configured or was added anonymously.
+        # Publish every dependency compiled above so later push runs and the windows-2022
+        # release leg fetch them prebuilt. Never on pull requests (no secrets there, and
+        # binaries from unreviewed code are never published). No-op when the remote is not
+        # configured or was added anonymously.
         if: github.event_name != 'pull_request' && github.repository == 'PlotJuggler/pj-official-plugins'
         shell: bash
         run: scripts/upload_conan_artifacts.sh
 
       - name: Dump linker response files on failure
-        # A LNK1181 with a truncated .obj path points at rsp corruption; the
-        # log never contains the rsp content, so surface it (plus the object
-        # dir) to make the failure diagnosable without a Windows machine.
+        # A LNK1181 with a truncated .obj path points at rsp corruption; the log never shows
+        # the rsp content, so surface it (plus the object dir).
         if: failure()
         shell: bash
         run: |
@@ -259,12 +230,10 @@ jobs:
           ls -la build/Release/toolbox_data_exporter/CMakeFiles/*.dir/ 2>/dev/null || true
 
       - name: Trim Conan cache before saving
-        # Drop build/source/temp trees so only recipes and package binaries
-        # persist. Also forget the JFrog remote and its login token: the whole
-        # ~/.conan2 tree is what gets cached, PR runs (fork PRs included) can
-        # restore caches saved by main, and a credential must never travel that
-        # way. The remote itself is removed too so the cached remotes.json stays
-        # neutral; every run re-adds it through configure_jfrog_conan.sh.
+        # Drop build/source/temp trees so only recipes and package binaries persist. Also forget
+        # the JFrog remote and its login token: the whole ~/.conan2 tree is cached and PR runs
+        # (fork PRs included) can restore caches saved by main, so a credential must never travel
+        # that way. Every run re-adds the remote via configure_jfrog_conan.sh.
         # Only after an aggregate build: single-plugin builds leave the closure incomplete.
         if: success() && steps.conan-cache.outputs.cache-hit != 'true' && needs.scope.outputs.aggregate == 'true'
         shell: bash

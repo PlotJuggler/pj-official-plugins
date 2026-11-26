@@ -48,7 +48,6 @@ class Engine : public PJ::query::Evaluator {
     }
   }
 
-  // Evaluate a pre-parsed Query. Uses the expanded Lua string.
   [[nodiscard]] bool eval(const Query& query) const noexcept {
     try {
       const auto& lua_str = query.expanded();
@@ -102,17 +101,14 @@ class Engine : public PJ::query::Evaluator {
         return r;
       }
 
-      // Expand shorthand via Query, then check with Lua.
       auto lua_str = Query(query_str).expanded();
       if (lua_str.empty()) {
         lua_str = std::string(query_str);
       }
 
-      // Reuse one lua_State per thread. `load()` only parses bytecode and
-      // doesn't mutate globals, so a failed load leaves the state clean for
-      // the next call. Fresh-constructing sol::state here ran a full
-      // luaL_newstate + teardown on every keystroke (QueryBar::onTextChanged
-      // hits this on each edit), wasting ~10 heap cycles/sec while typing.
+      // One lua_State per thread: load() only parses bytecode and doesn't mutate globals, so a failed load leaves
+      // the state clean. Constructing a sol::state per call (a full luaL_newstate + teardown) would cost on every
+      // keystroke, since QueryBar::onTextChanged calls this on each edit.
       thread_local sol::state tmp;
       auto wrapped = std::string("return (") + lua_str + ")";
       auto result = tmp.load(wrapped);

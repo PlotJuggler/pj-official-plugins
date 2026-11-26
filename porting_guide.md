@@ -1,93 +1,74 @@
 # Plugin Porting Guide
 
-Reference document for porting PlotJuggler plugins to the new SDK. Based on lessons learned porting the CSV plugin (the only fully verified plugin so far). Other plugins (Parquet, ULog, MCAP, Protobuf, ROS, ZMQ, MQTT, Foxglove Bridge, PJ Bridge) are ported but **not yet validated end-to-end** — expect similar issues.
+Reference for porting PlotJuggler plugins to the new SDK. Only the CSV plugin is verified end-to-end; the other ported plugins (Parquet, ULog, MCAP, Protobuf, ROS, ZMQ, MQTT, Foxglove Bridge, PJ Bridge) are not, so expect similar issues (see section 8).
 
 ---
 
 ## 0. Porting Philosophy — Read This First
 
-Porting a plugin is a **mechanical translation**, not a rewrite. The original
-plugin is the specification. Your job is to produce code that behaves
-identically to the original in every observable way, using the new SDK as the
-target language. Nothing more, nothing less.
+Porting is a **mechanical translation**, not a rewrite. The original plugin is the
+specification: the port must behave identically in every observable way, using the new SDK as the
+target language.
 
 ### What "translation" means in practice
 
-1. **Read the original code in its entirety before writing anything.** Not a
-   skim — a line-by-line read. Open every function, every signal/slot
-   connection, every conditional branch. You cannot translate what you have not
-   read.
+1. **Read the original code in its entirety before writing anything**, line by line: every
+   function, signal/slot connection and conditional branch.
 
-2. **Every code path in the original must have a corresponding code path in
-   the port.** If the original has 14 `if` branches, the port has 14 `if`
-   branches. If the original emits a warning on a specific condition, the port
-   emits the same warning on the same condition. If the original saves dialog
-   geometry, the port saves dialog geometry.
+2. **Every code path in the original must have a corresponding code path in the port.** 14 `if`
+   branches in the original means 14 in the port; a warning on a specific condition is emitted on the
+   same condition; saved dialog geometry stays saved.
 
-3. **There are no minor features.** Dialog geometry persistence is not minor.
-   Splitter ratios are not minor. A help button that opens a sub-dialog is not
-   minor. Column selection history is not minor. Every feature the user can
-   observe, interact with, or benefit from is equally mandatory. Do not
-   classify features by importance — classify them only as "ported" or "not
-   yet ported."
+3. **There are no minor features.** Dialog geometry persistence, splitter ratios, a help button that
+   opens a sub-dialog, column selection history: every feature the user can observe or benefit
+   from is mandatory. Classify features only as "ported" or "not yet ported".
 
-4. **Do not optimize, simplify, or "improve" the original's behavior.** If the
-   original has verbose logic, redundant checks, or a roundabout approach —
-   translate it faithfully. The original was tested in production. Your
-   "improvement" was not. If you believe something in the original is a bug,
-   flag it explicitly — do not silently fix it.
+4. **Do not optimize, simplify, or "improve" the original's behavior.** Verbose logic, redundant
+   checks and roundabout approaches are translated faithfully; the original was tested in
+   production. If you believe something is a bug, flag it explicitly; do not silently fix it.
 
-5. **Do not substitute a different approach.** If the original uses
-   `QTreeWidget`, you do not get to decide that `QTableWidget` is "close
-   enough." If the SDK does not support what the original uses, that is a
-   blocker — see the escalation rules below.
+5. **Do not substitute a different approach.** `QTreeWidget` is not replaced by `QTableWidget` because
+   it is "close enough". If the SDK does not support what the original uses, that is a blocker (see
+   below).
 
-6. **Speed does not matter. Completeness does.** This work should take as many
-   iterations as needed. Porting one plugin may take multiple sessions. That
-   is expected and acceptable. What is not acceptable is declaring a plugin
-   "ported" when features have been silently dropped.
+6. **Speed does not matter. Completeness does.** A port may take multiple sessions. Declaring a
+   plugin "ported" with silently dropped features is not acceptable.
 
 ### When you cannot translate something
 
-If the new SDK lacks a capability that the original plugin uses (e.g., a
-widget type, an event type, a host callback), you have exactly two options:
+If the SDK lacks a capability the original uses (a widget type, an event type, a host callback),
+there are exactly two options:
 
 - **Option A: Extend the SDK** to support it, then use it.
-- **Option B: Stop and ask the user** what to do.
+- **Option B: Stop and ask the user.**
 
-You do NOT have the option to silently drop the feature, substitute a simpler
-alternative, or mark it as a "minor gap." If you are unsure whether the SDK
-can do something, ask.
+Never silently drop the feature, substitute a simpler alternative, or mark it a "minor gap". If
+unsure whether the SDK can do something, ask.
 
 ### Verification before claiming "done"
 
-Before you say a plugin port is complete, you must produce a **feature audit
-table** with one row per feature of the original plugin:
+Before declaring a port complete, produce a **feature audit table** with one row per feature of
+the original plugin:
 
 | # | Original Feature | Original Code Location | Port Status | New Code Location | Notes |
 |---|-----------------|----------------------|-------------|-------------------|-------|
 | 1 | (feature name)  | (file:line)          | DONE / BLOCKED / NOT YET | (file:line) | (if BLOCKED: what SDK gap) |
 
-Every row must be filled. Empty rows or missing features mean the audit is
-incomplete. The port is not done until every row says DONE or BLOCKED (with
-an explicit SDK limitation and a decision from the user on how to proceed).
+Every row must be filled. The port is done only when every row says DONE or BLOCKED (with an
+explicit SDK limitation and a user decision on how to proceed).
 
 ### Common failure modes to guard against
 
-These are patterns that have repeatedly caused incomplete ports. Treat them
-as red flags — if you catch yourself doing any of these, stop and correct:
+These have repeatedly caused incomplete ports. If you catch yourself doing one, stop and correct:
 
-- **"This is just cosmetic"** — Cosmetic features are features. Port them.
-- **"The SDK doesn't support X, so I'll use Y instead"** — Stop. Ask.
-- **"I'll come back to this later"** — You will not. Port it now or mark it
-  BLOCKED with a specific SDK limitation.
-- **"The original code is messy, let me clean it up"** — Do not. Translate
-  it as-is. Cleanup is a separate task that can only happen after the
-  translation is verified correct.
-- **"This edge case probably never happens"** — The original author handled
-  it. You handle it too.
-- **"I'm almost done, just these last few things"** — Run the audit table.
-  If any row is not DONE or BLOCKED, you are not almost done.
+- **"This is just cosmetic"**: cosmetic features are features. Port them.
+- **"The SDK doesn't support X, so I'll use Y instead"**: stop and ask.
+- **"I'll come back to this later"**: port it now or mark it BLOCKED with a specific SDK limitation.
+- **"The original code is messy, let me clean it up"**: translate it as-is; cleanup is a separate
+  task after the translation is verified.
+- **"This edge case probably never happens"**: the original author handled it; so do you.
+- **"I'm almost done, just these last few things"**: run the audit table. Any row not DONE or
+  BLOCKED means you are not almost done.
 
 ---
 
@@ -172,7 +153,7 @@ using ValueRef = std::variant<NullValue,
     bool, std::string_view>;
 ```
 
-**PITFALL (hit during porting):** The initial protobuf and JSON parsers cast everything to `double`, losing precision for int64/uint64 values. Push native types directly:
+**PITFALL:** casting everything to `double` loses precision for int64/uint64 values. Push native types directly:
 
 ```cpp
 // WRONG — loses precision for large integers
@@ -186,12 +167,12 @@ out.push_back({name, value.get<int64_t>()});
 
 ```cpp
 struct NamedFieldValue {
-  std::string name;   // owned string (was string_view, changed for safety)
+  std::string name;   // owned
   ValueRef value;
 };
 ```
 
-The `name` field is now `std::string` (previously `string_view`). This eliminates the dangling reference foot-gun that affected early plugin ports. You can safely build field names via string concatenation:
+`name` is owned, so field names can be built by string concatenation without dangling references:
 
 ```cpp
 std::vector<PJ::sdk::NamedFieldValue> fields;
@@ -213,19 +194,18 @@ writeHost().appendRecord(*topic, PJ::Timestamp{ts}, fields);
 
 ## 3. Datastore Internals — Must-Know Behaviors
 
-### 3a. ensureColumn() rejects adding columns after rows are written
+### 3a. ensureColumn() after rows are written
 
 ```
-File: pj_datastore/src/writer.cpp, lines 516-567
+File: pj_datastore/src/writer.cpp
 ```
 
-`ensureColumn()` auto-seals the current chunk when a new column is added
-after rows already exist. The expanded column set continues in a fresh chunk.
-Readers treat absent columns in earlier chunks as null.
+`ensureColumn()` seals the current chunk when a new column is added after rows already exist; the
+expanded column set continues in a fresh chunk, and readers treat absent columns in earlier chunks
+as null.
 
-**Pre-registration is optional but recommended when the schema is known
-upfront** — it avoids mid-stream chunk sealing and enables the faster
-bound-write path (`appendBoundRecord`).
+**Pre-registration is optional but recommended when the schema is known upfront**: it avoids
+mid-stream chunk sealing and enables the faster bound-write path (`appendBoundRecord`).
 
 ```cpp
 auto topic = writeHost().ensureTopic(topic_name);
@@ -241,31 +221,28 @@ for (...) {
 }
 ```
 
-The original CSV segfault was caused by the reader not handling varying column
-sets across chunks. That is now fixed — chunks may have different column sets.
-
 ### 3b. finishRow() auto-fills unset columns with null
 
 ```
-File: pj_datastore/src/chunk.cpp, lines 165-180
+File: pj_datastore/src/chunk.cpp
 ```
 
-When `appendRecord()` is called with only some fields set, `finishRow()` automatically pads unset columns with null (zero bytes + validity bit cleared). This is correct behavior — sparse records are supported.
+When `appendRecord()` sets only some fields, `finishRow()` pads the unset columns with null (zero bytes, validity bit cleared); sparse records are supported.
 
 Example: topic has columns [x, y, z]. Record sets only x:
 - Column x: value written
 - Column y: null (zero bytes, validity bit = 0)
 - Column z: null (zero bytes, validity bit = 0)
 
-All columns always have the same row count. This is an invariant.
+All columns always have the same row count (invariant).
 
 ### 3c. readColumnAsDoubles() returns NaN for nulls
 
 ```
-File: pj_datastore/src/chunk.cpp, lines 664-705
+File: pj_datastore/src/chunk.cpp
 ```
 
-`readColumnAsDoubles()` reads raw bytes and converts to double. **For null rows, it now returns `NaN`** (not 0.0). This means consumers don't need to manually check `isNull()` — NaN values naturally propagate and are not plotted by chart panels.
+`readColumnAsDoubles()` converts raw bytes to double and **returns `NaN` for null rows** (not 0.0), so consumers need no `isNull()` check: NaN propagates and chart panels do not plot it.
 
 ```cpp
 range.chunk->readColumnAsDoubles(col_index, values_span, row_start);
@@ -279,9 +256,9 @@ for (size_t i = 0; i < row_count; ++i) {
 
 Note: `readNumericAsDouble()` (single-value read) does NOT check nulls — use `isNull()` if needed.
 
-### 3d. Chunks can have different column counts (schema evolution)
+### 3d. Chunks can have different column counts
 
-If columns were added after some chunks were sealed, early chunks have fewer columns. Before calling `readColumnAsDoubles(col_index, ...)`, check bounds:
+Chunks sealed before a column was added have fewer columns. Check bounds before `readColumnAsDoubles(col_index, ...)`:
 
 ```cpp
 if (col_index >= range.chunk->columns.size()) {
@@ -300,24 +277,19 @@ WidgetData API: pj_plugins/dialog_protocol/include/pj_plugins/sdk/widget_data.hp
 
 ### Dialog Porting Rule
 
-The dialog is part of the plugin's user-facing behavior. It must be ported
-with the same exactness as the data logic. Specifically:
+The dialog is user-facing behavior and is ported as exactly as the data logic:
 
-- **Copy the original `.ui` file exactly.** Only modify what strictly cannot
-  work (e.g., custom widget classes whose headers don't exist in this
-  codebase). Everything else — layout, sizing, spacing, naming, properties,
-  tab order — stays identical.
-- **Use real `.ui` files** editable in Qt Creator, auto-embedded into a
-  `constexpr char[]` header via CMake's `pj_embed_ui()`. Do NOT write inline
-  XML strings manually. Plugins must NOT depend on Qt for UI loading.
-- **Smart dialog plugins**: streaming source dialogs that have dynamic topic
-  discovery (PJ Bridge, Foxglove, MQTT) must own the connection logic inside
-  the dialog plugin itself, replicating the original Connect → discover →
-  select → subscribe flow.
-- **Every signal/slot connection in the original dialog must be replicated.**
-  If the original wires `itemDoubleClicked` → `accept()`, the port must do
-  the same. If the SDK lacks the event type, that is a blocker — extend the
-  SDK or ask the user.
+- **Copy the original `.ui` file exactly.** Modify only what cannot work (e.g. custom widget
+  classes whose headers don't exist here); layout, sizing, spacing, naming, properties and tab
+  order stay identical.
+- **Use real `.ui` files** (editable in Qt Creator), embedded into a `constexpr char[]` header via
+  CMake's `pj_embed_ui()`. No inline XML strings; plugins must NOT depend on Qt for UI loading.
+- **Smart dialog plugins**: streaming-source dialogs with dynamic topic discovery (PJ Bridge,
+  Foxglove, MQTT) own the connection logic inside the dialog plugin, replicating the original
+  Connect, discover, select, subscribe flow.
+- **Every signal/slot connection in the original dialog must be replicated.** If the original wires
+  `itemDoubleClicked` to `accept()`, so must the port; if the SDK lacks the event type, that is a
+  blocker (extend the SDK or ask).
 
 ### Supported Widgets (via WidgetData)
 
@@ -338,37 +310,36 @@ with the same exactness as the data logic. Specifically:
 
 ### When the original uses an unsupported widget
 
-If the original plugin uses a widget type not in the table above (e.g.,
-QTreeWidget, QTextEdit, QTableView, custom widgets), you must **not**
-silently replace it with a supported widget. Instead:
-
-1. Check if the SDK can be extended to support it (see "Extending the Dialog
-   Protocol" below).
-2. If yes, extend it.
-3. If you are unsure, ask the user.
+A widget type not in the table above (QTreeWidget, QTextEdit, QTableView, custom widgets) must
+**not** be silently replaced by a supported one. Check whether the dialog protocol can be extended
+(below); if so, extend it; if unsure, ask the user.
 
 ### Extending the Dialog Protocol
 
-`pj_plugins/dialog_protocol/` may need to be extended to support interactions that ported plugins require but the current SDK doesn't cover. Before adding new features, **verify that the existing interface truly cannot accomplish the goal** — sometimes a workaround using supported widgets is sufficient.
+Extend `pj_plugins/dialog_protocol/` when a ported plugin needs an interaction the SDK does not
+cover, but first **verify the existing interface truly cannot do it**; a workaround with supported
+widgets is sometimes enough.
 
-Known gaps where protocol extension may be needed:
-- **Double-click on list item to accept** — old CSV plugin wires `listWidgetSeries::itemDoubleClicked` → `accept()`. The dialog SDK has no `onItemDoubleClicked` event. Could be added as a new event type in `widget_event.hpp`.
-- **QTextEdit / rich text** — no binding for QTextEdit exists in `widget_binding.cpp`. Could add one following the QLineEdit pattern.
-- **Raw text preview with syntax highlighting** — would require either QTextEdit support or a custom widget type.
-- **User-choice message boxes** (Continue/Abort) — `reportMessage` is fire-and-forget with no return value. A blocking prompt mechanism would require a new runtime host callback (e.g. `confirmWarning(message) → bool`).
+Already available (do not re-add):
+- **Double-click on list item**: override `onItemDoubleClicked(widget_name, index)` (see `data_load_csv/csv_dialog.cpp`).
+- **Sub-dialogs**: `WidgetData::requestSubDialog(ui_xml)`.
+- **Blocking Continue/Abort prompt**: `runtimeHost().askContinue(...)`; `reportMessage` is fire-and-forget.
 
-When extending, modify these files:
-- `pj_plugins/dialog_protocol/include/pj_plugins/sdk/widget_event.hpp` — new event types
-- `pj_plugins/dialog_protocol/src/widget_binding.cpp` — add widget type handling
-- `pj_plugins/dialog_protocol/include/pj_plugins/sdk/widget_data.hpp` — new set* methods
-- `pj_base/include/pj_base/data_source_protocol.h` — for new runtime host callbacks
+Known gaps:
+- **QTextEdit / rich text**: no binding in `widget_binding.cpp` (follow the QLineEdit pattern).
+- **Raw text preview with syntax highlighting**: needs QTextEdit support or a custom widget type.
+
+Files to modify when extending:
+- `pj_plugins/dialog_protocol/include/pj_plugins/sdk/widget_event.hpp`: new event types
+- `pj_plugins/dialog_protocol/src/widget_binding.cpp`: widget type handling
+- `pj_plugins/dialog_protocol/include/pj_plugins/sdk/widget_data.hpp`: new set* methods
+- `pj_base/include/pj_base/data_source_protocol.h`: new runtime host callbacks
 
 ### Dialog Implementation Checklist
 
 1. Subclass `PJ::DialogPluginTyped`
-2. Use a real `.ui` file (editable in Qt Creator) in the plugin's `ui/` directory.
-   CMake auto-generates a header via `pj_embed_ui()` — `ui_content()` returns the generated
-   `constexpr char[]`. No Qt dependency needed. Do NOT use inline XML strings.
+2. Use a real `.ui` file in the plugin's `ui/` directory. `pj_embed_ui()` generates a header;
+   `ui_content()` returns the generated `constexpr char[]`.
    ```cmake
    include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
    pj_embed_ui(my_plugin
@@ -393,18 +364,18 @@ When extending, modify these files:
 ### Host Dialog Flow (how pj_proto_app uses it)
 
 ```
-File: pj_proto_app/src/main_window.cpp, lines 155-175
+File: pj_proto_app/src/main_window.cpp
 ```
 
 1. Host checks `capabilities & kCapabilityHasDialog`
-2. **Loads config with filepath BEFORE showing dialog** — so the dialog can analyze the file:
+2. **Loads config with filepath BEFORE showing dialog**, so the dialog can analyze the file:
    ```cpp
    temp_handle.loadConfig(R"({"filepath":"/path/to/file"})");
    ```
 3. Gets `dialogContext()` → creates `DialogEngine` → calls `showDialog(parent)`
 4. On accept: retrieves `savedConfig()` and passes to `loadConfig()` for import
 
-**PITFALL (hit during porting):** If you don't load the filepath config before showing the dialog, the dialog appears empty (no columns, no preview) because it doesn't know which file to analyze.
+**PITFALL:** without the filepath config loaded first, the dialog appears empty (no columns, no preview) because it does not know which file to analyze.
 
 ### Host Config Persistence (QSettings)
 
@@ -412,9 +383,9 @@ File: pj_proto_app/src/main_window.cpp, lines 155-175
 File: pj_proto_app/src/main_window.cpp, onLoadFile()
 ```
 
-The host persists the plugin's last-used config in QSettings so dialogs remember user choices across sessions:
+The host persists the plugin's last-used config in QSettings (delimiter, time column, custom format, ...):
 
-1. **Before dialog:** Restore saved config, merge in new filepath:
+1. **Before dialog:** restore the saved config and merge in the new filepath:
    ```cpp
    auto saved = settings.value("PluginConfig/<plugin_name>").toString().toStdString();
    auto cfg = nlohmann::json::parse(saved);  // last session's choices
@@ -422,19 +393,17 @@ The host persists the plugin's last-used config in QSettings so dialogs remember
    temp_handle.loadConfig(cfg.dump());        // pre-populate dialog
    ```
 
-2. **After successful import:** Save the config:
+2. **After successful import:** save the config:
    ```cpp
    settings.setValue("PluginConfig/<plugin_name>", QString::fromStdString(config));
    ```
 
-This preserves: delimiter choice, time column selection, custom format, etc.
+### Dialog Widget Naming: Critical Constraints
 
-### Dialog Widget Naming — Critical Constraints
-
-- `QDialogButtonBox` **must** be named `"buttonBox"` (not `"button_box"`) — the DialogEngine searches by this exact name
-- `QDialogButtonBox` **must** have `standardButtons` property set in the XML, or no OK/Cancel buttons appear
-- `QTextEdit` is **not supported** by the widget binding system — see "When the original uses an unsupported widget" above
-- `setSelectedItems` takes a vector of strings (not indices) — use the item text, not a numeric index
+- `QDialogButtonBox` **must** be named `"buttonBox"` (not `"button_box"`); the DialogEngine searches by this exact name
+- `QDialogButtonBox` **must** have `standardButtons` set in the XML, or no OK/Cancel buttons appear
+- `QTextEdit` is **not supported** by the widget binding system (see "When the original uses an unsupported widget")
+- `setSelectedItems` takes item text, not numeric indices
 
 ---
 
@@ -448,22 +417,17 @@ This preserves: delimiter choice, time column selection, custom format, etc.
 
 ### Sparse CSV Handling
 
-The turtle.csv dataset has sparse data: turtle1 columns are empty on rows where turtle2 has data. The correct approach:
+In turtle.csv, turtle1 columns are empty on rows where turtle2 has data. Handle sparse data by:
 
-1. Pre-register columns (optional but recommended since CSV headers are known upfront)
-2. Group data points by timestamp (merge across columns)
-3. For each timestamp, write a record with only the columns that have data
-4. Missing columns are auto-filled with null
+1. Pre-registering columns (optional but recommended; CSV headers are known upfront)
+2. Grouping data points by timestamp (merge across columns)
+3. Writing, per timestamp, a record with only the columns that have data; missing columns are auto-filled with null
 
 ### Timestamp Column Selection
 
-When user selects a time column via dialog:
-- CSV parser uses that column's values as timestamps (detected type: EPOCH_SECONDS, DATETIME, etc.)
-- Timestamps are converted to absolute nanoseconds: `int64_t(seconds * 1e9)`
-- Time column itself is excluded from data fields
+With a time column selected in the dialog, its values are the timestamps (detected type: EPOCH_SECONDS, DATETIME, ...), converted to absolute nanoseconds (`int64_t(seconds * 1e9)`), and the column is excluded from data fields.
 
-When no time column selected (row number mode):
-- Row index is used as timestamp (0, 1, 2, ... in nanoseconds)
+With no time column (row number mode), the row index is the timestamp (0, 1, 2, ... in nanoseconds).
 
 ---
 
@@ -491,20 +455,16 @@ When no time column selected (row number mode):
 
 ### Plugin Output Directory
 
-All plugin `.so` files are built into a single directory for easy loading:
-```
-build/pj_ported_plugins/bin/   # set by CMAKE_LIBRARY_OUTPUT_DIRECTORY in umbrella CMakeLists.txt
-```
-
-This is set in `pj_ported_plugins/CMakeLists.txt`:
+All plugin `.so` files build into `build/pj_ported_plugins/bin/`, set by
+`CMAKE_LIBRARY_OUTPUT_DIRECTORY` in `pj_ported_plugins/CMakeLists.txt`:
 ```cmake
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 ```
 
 ### Reference Test Files
 
-- `data_load_csv/test_data/turtle.csv` (tracked in this repository) — sparse CSV with epoch timestamps, 563 rows, 13 columns. Time range ~20.6 seconds. Good test for sparse data handling.
-- a throwaway CSV in `$(mktemp -d)` — create with: `echo -e "time,x,y\n0,1.0,2.0\n1,3.0,4.0\n2,5.0,6.0"` for quick smoke tests
+- `data_load_csv/test_data/turtle.csv` (tracked): sparse CSV with epoch timestamps, 563 rows, 13 columns, ~20.6 s; tests sparse data handling.
+- A throwaway CSV in `$(mktemp -d)` for quick smoke tests: `echo -e "time,x,y\n0,1.0,2.0\n1,3.0,4.0\n2,5.0,6.0"`
 
 ### Full Validation Workflow
 
@@ -530,59 +490,37 @@ ctest --test-dir build/debug_asan --output-on-failure   # same, under ASAN
 
 ---
 
-## 7. CSV Plugin — Remaining Gaps (Audit Results)
+## 7. CSV Plugin: Parity Notes
 
-The CSV plugin was audited feature-by-feature against the old plugin. **45 features ported, 6 partial, 12 missing.**
-
-### Critical Missing Features
-
-| Feature | Status | Description |
-|---------|--------|-------------|
-| **String series** | **FIXED** | String-only columns now written via `PrimitiveType::kString`. Both numeric and string columns are pre-registered and included in the merged timeline. |
-| **Non-monotonic time warning** | **FIXED** | Warning reported via `reportMessage(kWarning, ...)`. Note: old plugin showed Continue/Abort QMessageBox — a true blocking prompt requires extending the runtime host protocol (see Dialog Protocol section). |
-| **Skipped lines detail** | **FIXED** | Per-line detail now reported via `reportMessage(kWarning, "Line N: reason\n...")`. Old plugin showed a QMessageBox with detailed text. |
-| **Double-click column to accept** | **SDK LIMITATION** | Dialog SDK has no `onItemDoubleClicked` event. Requires protocol extension. |
-| **Column history** | NOT PORTED | Old persists last-50 time column selections via QSettings. Would need dialog-side QSettings or host-provided persistence. |
-| **Date Format Help dialog** | NOT PORTED | Old has a separate dialog with format reference tables. Could be implemented as a second dialog or inline help text. |
-| **Raw text preview tab** | NOT PORTED | Old uses QCodeEditor with CSV syntax highlighting. Dialog SDK doesn't support QTextEdit. Requires protocol extension. |
-
-### Other Gaps (equally mandatory — "minor" is not a category)
-
-| Feature | Description | What must happen |
-|---------|-------------|-----------------|
-| **toDouble locale handling** | Old uses QLocale::c() after replacing all commas. New uses strtod with different single-comma logic. | Must match original behavior exactly, including for inputs like `"1,000,000"`. |
-| **Dialog geometry** | Old saves/restores dialog geometry via QSettings. New relies on dialog SDK defaults. | Must be ported — either extend dialog SDK or replicate via config. |
-| **Splitter ratio** | Old sets explicit stretch factors (1:2). New uses default. | Must be ported. |
-
-### Confirmed Bugs in New Code
-
-1. ~~**Windows path separator**~~: **FIXED** — now uses `find_last_of("/\\")` to handle both separators.
-2. **Time column skipped by name not index**: If two columns have the same raw name (before dedup), the wrong one could be skipped. Unlikely but fragile — dedup ensures unique names.
-3. ~~**Preview label says "20 rows"**~~: **FIXED** — now says "100 rows" matching the actual code.
+- **toDouble locale handling:** the original uses QLocale::c() after replacing all commas; the port
+  uses strtod with different single-comma logic. It must match the original exactly, including
+  inputs like `"1,000,000"`.
+- **Time column skipped by name, not index:** if two columns share a raw name (before dedup) the
+  wrong one could be skipped; dedup makes names unique, so this is fragile rather than broken.
 
 ---
 
-## 8. Unverified Plugins — Known Risks
+## 8. Unverified Plugins: Known Risks
 
-The following plugins compile and have unit tests but have **NOT been tested end-to-end** in pj_proto_app. They likely have similar issues to those found in the CSV plugin:
+These plugins compile and have unit tests but have **not** been tested end-to-end in pj_proto_app:
 
 | Plugin | Risk | Likely Issue |
 |--------|------|-------------|
-| DataLoadParquet | Medium | May need pre-registration of columns; timestamp precision loss (double→int64) |
+| DataLoadParquet | Medium | May need pre-registration of columns; timestamp precision loss (double to int64) |
 | DataLoadULog | Medium | Same pre-registration issue possible; binary format edge cases |
-| DataLoadMCAP | Low | Uses delegated ingest (no direct column writes) |
-| ParserProtobuf | Low | Unit tested; native types now preserved |
-| ParserROS | Medium | No unit tests; rosx_introspection API may have changed |
-| DataStreamZMQ | Medium | strtod on non-null-terminated buffer was fixed; only parses text doubles |
-| DataStreamMQTT | Medium | Encoding hardcoded (now configurable); binding cache added |
-| DataStreamFoxgloveBridge | High | parser_encoding was wrong (fixed: ch.encoding not ch.schema_encoding) |
+| DataLoadMCAP | Low | Delegated ingest (no direct column writes) |
+| ParserProtobuf | Low | Unit tested |
+| ParserROS | Medium | rosx_introspection API changes |
+| DataStreamZMQ | Medium | Only parses text doubles |
+| DataStreamMQTT | Medium | Encoding must be configurable; binding cache |
+| DataStreamFoxgloveBridge | High | `parser_encoding` must come from `ch.encoding`, not `ch.schema_encoding` |
 | DataStreamPJBridge | Medium | ZSTD decompression untested with real data |
 
 ### Common Issues to Check in Each Plugin
 
 1. **Pre-register columns** when the schema is known upfront (recommended for direct ingest, optional otherwise)
-2. **ValueRef types** — don't cast to double; push native int64/uint64/bool
-3. **string_view lifetime** — ensure owned strings outlive appendRecord call
-4. **Null handling** — readers must check `isNull()` before using values
-5. **Non-null-terminated buffers** — copy to `std::string` before `strtod`/parsing
-6. **Delegated ingest encoding** — `parser_encoding` must be the wire format (e.g. `"cdr"`), not the schema format (e.g. `"ros2msg"`)
+2. **ValueRef types**: don't cast to double; push native int64/uint64/bool
+3. **string_view lifetime**: owned strings must outlive the `appendRecord` call
+4. **Null handling**: readers must check `isNull()` before using values
+5. **Non-null-terminated buffers**: copy to `std::string` before `strtod`/parsing
+6. **Delegated ingest encoding**: `parser_encoding` must be the wire format (e.g. `"cdr"`), not the schema format (e.g. `"ros2msg"`)

@@ -34,8 +34,6 @@ std::vector<ModelChoice> listCodexModels(const std::filesystem::path& cache_file
     return out;
   }
 
-  // priority + choice, sorted below -- keeping them paired is simpler than a
-  // parallel-array sort.
   std::vector<std::pair<int, ModelChoice>> entries;
   for (const auto& m : models) {
     if (!m.is_object() || m.value("visibility", std::string{}) != "list") {

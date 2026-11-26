@@ -71,10 +71,9 @@ TEST(SettingsStore, WriteThroughVisibleToSecondStore) {
   EXPECT_EQ(fx.store().getString("key"), "persisted");
 }
 
-// Gap #5: the dialog persists the last selection under these two keys
-// (mosaico/selected_sequence + mosaico/selected_topics) and restores them on
-// the next connect. This pins the persist/restore round-trip for those exact
-// keys through the same store the dialog uses.
+// The dialog persists the last selection under these two keys (mosaico/selected_sequence +
+// mosaico/selected_topics) and restores them on the next connect. This pins the persist/restore round-trip for
+// those exact keys through the same store the dialog uses.
 TEST(SettingsStore, SelectedSequenceAndTopicsRoundTrip) {
   Fixture fx;
   auto store = fx.store();

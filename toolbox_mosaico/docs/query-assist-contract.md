@@ -5,7 +5,7 @@
 The behaviour contract for the metadata-filter **Key / Op / Value** dropdowns and
 the **PLUS** button in the Mosaico toolbox dialog.
 
-The model lives in `src/query/assist.h` (Qt-free, unit-testable);
+The model lives in `src/query_assist.h` (Qt-free, unit-testable);
 `src/mosaico_dialog.cpp` drives the real combo boxes and the Lua editor from it.
 `tests/assist_test.cpp` pins each clause below with one test.
 

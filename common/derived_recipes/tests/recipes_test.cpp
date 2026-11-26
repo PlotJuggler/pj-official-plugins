@@ -181,8 +181,6 @@ TEST(DerivedRecipes, QualifyAndJoinHelpers) {
   EXPECT_FALSE(isMarkerObjectTopic("/cloud"));
 }
 
-// --- Python on-demand chunk ---
-
 TEST(DerivedRecipes, PythonChunkDefinesEvaluateWithIndentedBody) {
   ResolvedEvalInputs resolved;
   const std::string chunk = buildOnDemandChunkPython("x = 1\n\nreturn {'a': x}", resolved).script;
@@ -214,8 +212,6 @@ int lineOf(const std::string& script, const std::string& line) {
 }
 
 }  // namespace
-
-// --- Script layout ---
 
 TEST(DerivedRecipes, TransformLayoutPointsAtTheBodyAndTheGlobals) {
   const BuiltScript luau = buildTransformScript("id", "name", "g = 1\nh = 2", "local y = value\nreturn y", 1, "luau");
@@ -255,8 +251,6 @@ TEST(DerivedRecipes, OnDemandChunksReportWhereTheBodyStarts) {
   const BuiltScript bare = buildResolvedOnDemandChunk("return {}", ResolvedEvalInputs{});
   EXPECT_EQ(bare.layout.body_first_line, lineOf(bare.script, "return {}"));
 }
-
-// --- Catalog path resolution ---
 
 namespace {
 
@@ -358,7 +352,7 @@ TEST(DerivedRecipesPaths, QualifiedPathPicksItsDataset) {
   EXPECT_EQ(friday.resolved->host_path, "/speed/value");
 }
 
-// The bare path used to resolve silently to whichever file loaded first, for reads and installs alike.
+// A bare path must not silently resolve to whichever file loaded first, for reads and installs alike.
 TEST(DerivedRecipesPaths, BarePathExistingInSeveralDatasetsIsRefused) {
   FakeCatalogHost host;
   addTwoRuns(host);
@@ -476,8 +470,6 @@ TEST(DerivedRecipesPaths, DataSourceHandleForMatchesTheDatasetName) {
   EXPECT_EQ(only->id, 1u);
 }
 
-// --- Object topics ---
-
 TEST(DerivedRecipesObjects, ListedObjectTopicsCarryTheCatalogRowAndSkipMarkers) {
   FakeCatalogHost host;
   host.addTopic("/imu").addField("/imu", "x");
@@ -528,8 +520,6 @@ TEST(DerivedRecipesObjects, QualifierPicksOneObjectTopicAndBareNameIsAmbiguous) 
   ASSERT_TRUE(a.resolved.has_value());
   EXPECT_EQ(a.resolved->object_type, "kPointCloud");
 }
-
-// --- On-demand input resolution ---
 
 // The dataset qualifier survives into the request key, and the script can address the input by its bare
 // name, its requested name or its qualified one. "B:run" contains a ':' and must beat the shorter "B".
@@ -638,8 +628,6 @@ TEST(DerivedRecipesInputs, AliasesCannotOverwriteAnotherQualifiedInput) {
   const auto resolved = resolveEvalInputs(view, *v2, {"A:/cloud", "A:A:/cloud"});
   EXPECT_NE(resolved.error.find("ambiguous input alias"), std::string::npos) << resolved.error;
 }
-
-// --- Display <-> raw time ---
 
 // Display seconds convert back to the dataset's raw ns through one forward conversion of raw 0.
 TEST(DerivedRecipes, ToRawNsInvertsTheSourceScopedDisplayConversion) {

@@ -8,28 +8,21 @@
 
 namespace assistant_agent {
 
-// Where a conversation turn is in its lifecycle. The panel is single-turn:
-// the user sends one message, the backend works on it (WaitingForLlm), then
-// it returns to Idle. The input box + Send are only enabled in Idle; Cancel is
-// only enabled otherwise.
+// The panel is single-turn: Send is enabled only in Idle, Cancel only otherwise.
 enum class TurnState {
-  Idle,           // ready to accept a new user message
-  WaitingForLlm,  // request in flight to the backend
+  Idle,
+  WaitingForLlm,
 };
 
-// One rendered message in the transcript. `Tool` rows carry the model's tool
-// call and its result, collapsed to a short summary in the view (the full
-// payload would overwhelm the transcript and leak internal JSON to the user).
+// One rendered message in the transcript. `Tool` rows carry a collapsed summary of
+// the model's tool call and result (the full payload would leak internal JSON).
 struct ChatMessage {
   enum class Role { User, Assistant, System, Tool };
   Role role;
   std::string text;
 };
 
-// Pure, Qt-free transcript + turn-state model. Mutated on the GUI thread only;
-// the dialog owns one instance and renders it into the panel on every change.
-// Kept free of threading and host types so it is exhaustively unit-testable in
-// isolation.
+// Pure, Qt-free transcript + turn-state model, mutated on the GUI thread only.
 class ChatSession {
  public:
   void addUser(std::string text) {
@@ -38,10 +31,8 @@ class ChatSession {
   void addAssistant(std::string text) {
     messages_.push_back({ChatMessage::Role::Assistant, std::move(text)});
   }
-  // Grow the assistant's current reply instead of starting a new one. Backends
-  // that stream deliver a reply in many small pieces; without this each piece
-  // would become its own speaker-tagged turn and the transcript would read as
-  // one word per line.
+  // Grows the current assistant reply; streamed pieces must not each become a
+  // speaker-tagged message.
   void appendAssistant(const std::string& text) {
     if (!messages_.empty() && messages_.back().role == ChatMessage::Role::Assistant) {
       messages_.back().text += text;
@@ -76,10 +67,9 @@ class ChatSession {
     state_ = TurnState::Idle;
   }
 
-  // Render Markdown for the transcript widget. Speaker labels occupy their
-  // own paragraphs, leaving a message body free to begin with a heading, list,
-  // or fenced block. User and assistant bodies remain Markdown; system and
-  // tool text is escaped because it is status text rather than authored prose.
+  // Speaker labels get their own paragraph so a body can start with a heading,
+  // list or fence. User and assistant bodies stay Markdown; system and tool text
+  // is escaped (status text, not authored prose).
   [[nodiscard]] std::string renderMarkdown() const {
     if (frozen_markdown_count_ > messages_.size()) {
       frozen_markdown_.clear();
@@ -95,11 +85,8 @@ class ChatSession {
     return frozen_markdown_ + renderMarkdownMessage(messages_.back());
   }
 
-  // A one-line status suitable for the panel's status label, reflecting the
-  // turn state (and the busy hint the user needs while a request is in flight).
-  //
-  // No full stop: the panel appends the turn's token counts after this, and
-  // "Ready. - 19.8k" reads as two fragments rather than one line.
+  // No full stop: the panel appends the token counts, and "Ready. - 19.8k" reads
+  // as two fragments.
   [[nodiscard]] std::string statusText() const {
     switch (state_) {
       case TurnState::Idle:
@@ -207,9 +194,8 @@ class ChatSession {
   }
 
   std::vector<ChatMessage> messages_;
-  // Rendered Markdown of messages_[0, frozen_markdown_count_) — the ones that
-  // can no longer change. Mutable because renderMarkdown() is a const
-  // observer that maintains it.
+  // Rendered Markdown of messages_[0, frozen_markdown_count_), the ones that can no
+  // longer change; mutable because renderMarkdown() is const.
   mutable std::string frozen_markdown_;
   mutable std::size_t frozen_markdown_count_ = 0;
   TurnState state_ = TurnState::Idle;

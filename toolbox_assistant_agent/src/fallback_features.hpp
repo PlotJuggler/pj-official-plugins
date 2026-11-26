@@ -10,19 +10,17 @@
 namespace assistant_agent {
 
 // The "PlotJuggler features" block used when the host omits the optional
-// pj.feature_catalog.v1 service or its document cannot be read or used
-// (featuresBlock / featuresDigest, features_digest.hpp). Without it
-// the model answers product questions from its PlotJuggler 3 training.
+// pj.feature_catalog.v1 service or its document is unusable (features_digest.hpp);
+// without it the model answers from its PlotJuggler 3 training.
 //
-// Two rules shape the text. It never says what is installed: this build
-// cannot know, so every plugin line is conditional. And it lists only routes
-// the PlotJuggler 4.1 code confirms (docs/benchmarks/features/fixtures/
-// README.md); the drag-and-drop gestures still to be checked in the app are
-// left out. Labels are the live UI strings: menu actions end in three ASCII
-// dots, and only "Extensions Marketplace…" uses the ellipsis character.
+// It never says what is installed (this build cannot know), so every plugin line is
+// conditional, and it lists only routes confirmed in the PlotJuggler 4.1 code
+// (docs/benchmarks/features/fixtures/README.md). Labels are the live UI strings:
+// menu actions end in three ASCII dots, only "Extensions Marketplace…" uses the
+// ellipsis character.
 //
-// No blank line anywhere inside: stripCatalogPrefix (session_text.hpp) finds
-// the end of the block by the first blank line.
+// No blank line anywhere inside: stripCatalogPrefix (session_text.hpp) finds the end
+// of the block by the first blank line.
 inline constexpr std::string_view kFallbackFeaturesBody =
     "Built in:\n"
     "- Open a data file: File → Open Data File... (or Sources panel → File → Load a data file). Which formats open "
@@ -79,9 +77,8 @@ inline constexpr std::string_view kFallbackFeaturesBody =
     "Plugins are installed from File → Extensions Marketplace…; a plugin not listed here may still be distributed "
     "outside the Marketplace.";
 
-// The fallback block, headed like a host listing so the model reads one
-// format. `note` (one line, optional) says why the host's own listing was not
-// used when it exists but could not be read.
+// Headed like a host listing so the model reads one format. `note` (optional, one
+// line) says why an existing host listing was not used.
 [[nodiscard]] inline std::string fallbackFeatures(std::string_view note = {}) {
   std::string out(kFallbackFeaturesHeader);
   out += '\n';

@@ -28,11 +28,8 @@ COLOR_BY_STATUS = {
 
 
 def read_version(plugin_dir: Path) -> str:
-    """Return the ``version`` field from ``<plugin_dir>/manifest.json``.
-
-    Returns ``"unknown"`` (and warns) if the manifest is missing or malformed,
-    so a manifest glitch downgrades the badge message rather than failing CI.
-    """
+    """``version`` from ``<plugin_dir>/manifest.json``, or ``"unknown"`` (with a warning) when it is
+    missing or malformed, so a manifest glitch degrades the badge instead of failing CI."""
     manifest = plugin_dir / "manifest.json"
     try:
         version = json.loads(manifest.read_text())["version"]

@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "claude_sessions.hpp"  // listConversations/loadTranscript/deleteConversation
+#include "claude_sessions.hpp"
 #include "cli_locator.hpp"      // locateCli, childEnvFor
 #include "cli_probe.hpp"        // probeCliVersion, cannotFindCliMessage
 #include "harness_workdir.hpp"  // ensureWorkDir
@@ -28,34 +28,24 @@ std::vector<std::string> buildClaudeArgv(
       "--output-format",
       "stream-json",
       "--verbose",  // required for stream-json under --print
-      // Disable EVERY built-in tool (Bash/Read/Write/...). This is the safety
-      // spine: headless Claude gets ONLY our MCP tools, so it cannot touch the
-      // machine outside PlotJuggler's non-destructive surface. `--strict-mcp-config`
-      // alone does not do this — it only restricts which MCP servers load.
-      //
-      // Not a default to be relaxed. Granting a built-in tool — `Read` to let the
-      // model look at an exported image is the tempting one — hands it the whole
-      // filesystem, and the guarantee that this plugin cannot touch the user's
-      // machine is gone. Any such feature has to arrive through an MCP tool of
-      // ours with its own bounds, not by widening this.
+      // Disables EVERY built-in tool (Bash/Read/Write/...): headless Claude gets ONLY our
+      // MCP tools, so it cannot touch the machine outside PlotJuggler's non-destructive
+      // surface. `--strict-mcp-config` alone does not do this; it only restricts which MCP
+      // servers load. Never relax this: a built-in such as `Read` hands the model the whole
+      // filesystem. A feature needing more must be an MCP tool of ours with its own bounds.
       "--tools",
       "",
-      // Ignore the machine's user/project/local settings files (an explicit
-      // --settings would still apply; we pass none). Without this the panel
-      // inherits whatever the user configured for their own coding sessions —
-      // output style included — and, worse, the user-level CLAUDE.md loads as
-      // instructions regardless of cwd (verified 2026-08-31 on CLI 2.1.251:
-      // the same prompt answers "# Global rules" without the flag and NONE
-      // with it). Subscription OAuth is untouched. Its tool restrictions are
-      // redundant under `--tools ""` — that redundancy is fine.
+      // Ignores the machine's user/project/local settings files (an explicit --settings
+      // would still apply; we pass none). Without it the panel inherits the user's own
+      // coding-session configuration, output style included, and the user-level CLAUDE.md
+      // loads as instructions regardless of cwd. Subscription OAuth is untouched. Its tool
+      // restrictions are redundant under `--tools ""`.
       "--restricted",
       "--mcp-config",
       mcp_config_path,
       "--strict-mcp-config",
-      // Every tool of our one MCP server ("pj", the --mcp-config above), and
-      // nothing else: PlotJuggler decides which tools that endpoint serves.
-      // The name is a server, never a built-in, so this door cannot let one
-      // back in.
+      // Every tool of our one MCP server ("pj", from --mcp-config), nothing else.
+      // A server name, never a built-in, so it cannot let one back in.
       "--allowedTools",
       "mcp__pj",
       "--append-system-prompt",
@@ -80,8 +70,7 @@ ClaudeBackend::ClaudeBackend(std::string cli_path, std::string model, std::share
 
 ClaudeBackend::~ClaudeBackend() {
   removePrivateTempFile(mcp_config_path_);
-  // work_dir_ is deliberately left in place: it holds the CLI's session state,
-  // which is exactly what a persisted conversation resumes into.
+  // work_dir_ stays: it holds the session state a persisted conversation resumes into.
 }
 
 bool ClaudeBackend::ensureWorkDir(std::string& error) {
@@ -122,12 +111,9 @@ BackendTestResult ClaudeBackend::testConnection() const {
 }
 
 std::vector<ModelChoice> ClaudeBackend::listModels() {
-  // Curated, not read off disk: `claude --help` names these four aliases and
-  // nothing more, and there is no on-disk catalog the way Codex maintains
-  // one (codex_models.hpp). `sonnet` leads because it is the measured
-  // default (matches the fastest tier on turn time with
-  // zero misses in the 240-cell study) -- the same reasoning kBackends[0]'s
-  // default_model comment gives, said here for the picker instead.
+  // Curated: `claude --help` names only these four aliases and there is no on-disk
+  // catalog like Codex's (codex_models.hpp). `sonnet` leads as the measured default
+  // (fastest tier on turn time, zero misses in the 240-cell study).
   return {
       {"sonnet", "sonnet — fast; the measured default"},
       {"opus", "opus"},
@@ -162,7 +148,7 @@ bool ClaudeBackend::deleteConversation(const std::string& id) {
 
 void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& tools, const EventSink& sink) {
   cancel_.store(false);
-  last_metrics_ = TurnMetrics{};  // per-turn, so a failed turn cannot report the previous one's cost
+  last_metrics_ = TurnMetrics{};  // a failed turn must not report the previous one's cost
 
   const auto fail = [&sink](std::string why) {
     sink({BackendEvent::Kind::Error, std::move(why)});
@@ -184,9 +170,8 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
     return fail(cannotFindCliMessage(cli_path_, loc));
   }
 
-  // Whether this turn carries --resume, captured before the stream's init
-  // record overwrites the memory's id: it is what turns a 0-turn error into
-  // "that session is gone" instead of a generic failure.
+  // Captured before the stream's init record overwrites the memory's id: it turns a
+  // 0-turn error into "that session is gone".
   const std::string resume_id = memory_->session_id;
   ListingsTurn listings_turn(*memory_);
   const std::string payload = composePayload(text, tools.features, tools.catalog, *memory_);
@@ -239,19 +224,16 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
             memory_->session_id = ev.session_id;
           }
           if (ev.is_error && ev.terminal_reason == "api_error") {
-            // parseClaudeLine folds "the CLI never reached the API at all"
-            // (an all-zero usage block under this terminal_reason) into
-            // is_error itself -- this only has to supply the wording.
+            // parseClaudeLine already folds "never reached the API" (all-zero usage under
+            // this terminal_reason) into is_error; this only supplies the wording.
             sink(
                 {BackendEvent::Kind::Error, "the Claude CLI could not reach the API with model '" +
                                                 (model_.empty() ? std::string("CLI default") : model_) +
                                                 "' (unrecognized model, or the API is down)"});
             errored = true;
           } else if (ev.is_error) {
-            // A resumed turn that ran zero model turns never got past
-            // --resume: the CLI has no such session any more (its stderr says
-            // "No conversation found with session ID", but stderr is not ours
-            // to read). Every other error keeps the CLI's own wording.
+            // A resumed turn with zero model turns never got past --resume: the CLI has no
+            // such session (its stderr says so, but we do not read stderr).
             BackendEvent err{BackendEvent::Kind::Error, ev.text.empty() ? "Claude reported an error" : ev.text};
             if (!resume_id.empty() && ev.num_turns == 0) {
               err.text = "this conversation can no longer be resumed: Claude Code has no session " + resume_id;
@@ -271,13 +253,11 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
   };
 
   auto res = runProcess(
-      // The message goes via stdin, and the MCP config (which carries the
-      // bearer token) via a private temp file: nothing sensitive lands on the
-      // command line, where /proc/<pid>/cmdline exposes it to every local
-      // user. stdin also keeps a message starting with '-' from being parsed
-      // as a CLI flag. childEnvFor(loc) is the same PATH-prepend Codex's own
-      // spawn uses, so a `claude` resolved outside this process's PATH (nvm,
-      // ~/.local/bin) still finds its own interpreter if it needs one.
+      // The message goes via stdin and the MCP config (bearer token) via a private temp
+      // file, so nothing sensitive lands on argv, where /proc/<pid>/cmdline exposes it;
+      // stdin also keeps a message starting with '-' from being parsed as a flag.
+      // childEnvFor(loc) prepends the CLI's directory to PATH so a `claude` found outside
+      // this process's PATH (nvm, ~/.local/bin) finds its own interpreter.
       argv, payload, [&](const std::string& chunk) { splitter.feed(chunk, on_line); }, cancel_, work_dir_,
       childEnvFor(loc));
   splitter.flush(on_line);
@@ -292,9 +272,7 @@ void ClaudeBackend::sendUserMessage(const std::string& text, const TurnTools& to
          "Claude CLI exited " + std::to_string(res.exit_code) + " (check it is installed and logged in via Settings)"});
   }
   listings_turn.finish(!res.spawned || cancel_.load() || res.exit_code != 0 || errored || rate_limited);
-  // Report what the turn cost before closing it out. Only when the CLI actually
-  // produced a result record: a turn that died early has no price to quote, and
-  // last_metrics_ was reset at the top so it cannot repeat the previous one's.
+  // Only when the CLI produced a result record; last_metrics_ was reset at the top.
   if (last_metrics_.valid) {
     sink({BackendEvent::Kind::Metrics, {}, last_metrics_});
   }

@@ -111,8 +111,8 @@ ImportOutcome importCsv(const std::string& csv, std::string config, RecordingHos
   return outcome;
 }
 
-// QA repro: a custom time format no row matches. Reporting success with zero rows
-// made the host commit an empty dataset over the one being reloaded.
+// A custom time format no row matches must fail: reporting success with zero rows makes the host commit an empty
+// dataset over the one being reloaded.
 TEST(CsvSourceTest, ImportWithEveryRowSkippedFails) {
   RecordingHost host;
   const auto outcome = importCsv(
@@ -136,7 +136,7 @@ TEST(CsvSourceTest, RowsSkippedPromptDoesNotBlameColumnCountForBadTimestamps) {
   EXPECT_EQ(host.prompts[0].find("incorrect number of columns"), std::string::npos) << host.prompts[0];
 }
 
-// QA repro: a time column that repeats a value failed the whole load with "duplicate field id".
+// A time column that repeats a value must not fail the load with "duplicate field id".
 TEST(CsvSourceTest, RepeatedTimestampsLoadEveryRow) {
   RecordingHost host;
   const auto outcome =
@@ -188,7 +188,7 @@ TEST(CsvTimeColumnRestore, SameHeaderKeepsTheColumn) {
   EXPECT_EQ(next.value("time_column_index", -1), 1);
 }
 
-// QA repro: the column was restored by position, so a file with the columns in another order got "b" as time axis.
+// A file with the columns in another order still gets its time column by name (by position it would pick "b").
 TEST(CsvTimeColumnRestore, ReorderedHeaderFindsTheColumnByName) {
   const auto next = loadAndSave("t,b,a\n0.0,30,3\n", pickedTimeColumnT());
   EXPECT_EQ(next.value("time_mode", ""), "column");
@@ -202,7 +202,7 @@ TEST(CsvTimeColumnRestore, HeaderWithoutTheColumnFallsBackToRowNumber) {
   EXPECT_EQ(next.value("time_column_index", -1), -1);
 }
 
-// A config saved before the column name was (an older plugin, an older layout) still restores by index.
+// A config without column names (older plugin or layout) restores by index.
 TEST(CsvTimeColumnRestore, ConfigWithOnlyAnIndexKeepsTheIndex) {
   const auto saved = pickedTimeColumnT();
   EXPECT_EQ(saved.value("time_mode", ""), "column");

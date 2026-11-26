@@ -19,16 +19,11 @@ namespace pj_can_dbc {
 
 namespace {
 
-/// Normalizes a raw `VAL_` key (`Signal::ValueDescription::value`, a
-/// `uint32_t` bit pattern -- see the vendored dbc.cpp patch in
-/// common/can_dbc/CMakeLists.txt) to the signed integer the signal actually
-/// decodes to. Unsigned signals take the key as-is. Signed signals first
-/// reinterpret it as a two's-complement 32-bit value (the convention our
-/// vendored patch produces for a literal negative key, e.g. "-1"), then --
-/// for a signal narrower than 32 bits -- fold the equivalent ALL-UNSIGNED
-/// convention some DBC exporters use instead (e.g. "255" for an 8-bit
-/// signal's -1) onto the same negative key, so both spellings of the same
-/// fault value land on one table entry.
+/// Maps a raw `VAL_` key (`Signal::ValueDescription::value`, a `uint32_t` bit pattern, see
+/// cmake/dbc_parser.cmake) to the signed integer the signal decodes to. A signed key is read as 32-bit
+/// two's complement (what the patch produces for a literal "-1"); for a signal narrower than 32 bits the
+/// all-unsigned spelling some exporters use ("255" for an 8-bit -1) is folded onto the same negative key,
+/// so both spellings share one table entry.
 std::int64_t normalizeValueKey(std::uint32_t raw_key, bool is_signed, std::uint32_t size) {
   if (!is_signed) {
     return static_cast<std::int64_t>(raw_key);
@@ -46,23 +41,17 @@ std::int64_t normalizeValueKey(std::uint32_t raw_key, bool is_signed, std::uint3
 
 /// DBC extended-frame flag (Vector convention: bit 31 set on 29-bit messages).
 constexpr std::uint32_t kExtendedFlag = 0x8000'0000u;
-/// Highest standard (11-bit) CAN id.
 constexpr std::uint32_t kMaxStandardId = 0x7FFu;
-/// Highest extended (29-bit) CAN id.
 constexpr std::uint32_t kMaxExtendedId = 0x1FFF'FFFFu;
 /// A signal's value must fit in 64 bits.
 constexpr std::uint32_t kMaxSignalBits = 64;
-/// Classic CAN payload size: frames up to this long decode through the pinned
-/// dbc_parser_cpp, longer ones (CAN FD, payloads reassembled from several
-/// frames) through extractRawBits() -- the parser refuses them.
+/// Frames up to this long decode through dbc_parser_cpp; longer ones (CAN FD, payloads reassembled from several
+/// frames) go through extractRawBits(), because the parser refuses them.
 constexpr std::size_t kClassicPayloadBytes = 8;
 
-/// A signal both decode paths handle without an out-of-range shift: size in
-/// [1, 64] and start bit inside the message -- inside the 64-bit classic
-/// payload for a message of up to 8 bytes (the parser shifts a 64-bit value by
-/// the start bit, undefined at >= 64), inside its declared length for a longer
-/// one (only frames at least that long reach decode(), so it never meets the
-/// parser).
+/// A signal both decode paths read without an out-of-range shift: size in [1, 64] and start bit below 64 for a
+/// message of up to 8 bytes (the parser shifts a 64-bit value by the start bit, UB at >= 64), below the declared
+/// length for a longer one (only frames at least that long reach decode(), so it never meets the parser).
 bool signalLayoutInRange(const Libdbc::Signal& sig, std::uint32_t message_bits) {
   return sig.size >= 1 && sig.size <= kMaxSignalBits && sig.start_bit < std::max(kMaxSignalBits, message_bits);
 }
@@ -78,21 +67,14 @@ bool messageLayoutInRange(const Libdbc::Message& msg) {
 }
 }  // namespace
 
-/// Name, unit, value table and bit layout of one signal, cached at DBC load.
-/// Libdbc::Message::get_signals() returns the whole Signal vector *by value*
-/// (each Signal owns strings plus unused receiver/value-description
-/// vectors), so calling it per frame would deep-copy on every decode;
-/// decode() only needs what is cached here.
+/// Name, unit, value table and bit layout of one signal, cached at DBC load: Libdbc::Message::get_signals()
+/// returns the Signal vector by value, so calling it per frame would deep-copy on every decode.
 ///
-/// `labels` holds this signal's `VAL_` table (empty when it has none, or
-/// when `factor == 0` -- the raw-value round trip below is meaningless
-/// then), sorted by key and deduped keeping the FIRST entry for a
-/// duplicate key (a malformed DBC repeating a key is not our problem to
-/// referee). The label strings are owned here so `DecodedSignal::label`
-/// (a view) stays valid for the decoder's lifetime. `label_name` is the
-/// name of the text field carrying the label, allocated once per message at
-/// load (iff `labels` is non-empty; see assignLabelNames) instead of per
-/// decoded frame; `DecodedSignal::label_name` views it the same way.
+/// `labels` is the signal's `VAL_` table, sorted by key, first entry kept for a duplicate key; empty when the
+/// signal has none or `factor == 0` (the raw-value round trip is meaningless then). The strings are owned here so
+/// `DecodedSignal::label` (a view) stays valid for the decoder's lifetime. `label_name` names the text field
+/// carrying the label, allocated once at load iff `labels` is non-empty (see assignLabelNames);
+/// `DecodedSignal::label_name` views it.
 struct SignalMeta {
   std::string name;
   std::string unit;
@@ -109,12 +91,10 @@ struct SignalMeta {
 
 namespace {
 
-/// The raw bits of one signal of a payload longer than 8 bytes, numbered as
-/// dbc_parser_cpp numbers them in a classic frame: Intel (`@1`) counts up from
-/// bit 0 = the LSB of byte 0; Motorola (`@0`) names the signal's MSB and runs
-/// in big-endian ("sawtooth") order -- the same python-can conversion the
-/// parser uses, extended past byte 7. nullopt when the signal reaches past the
-/// payload.
+/// Raw bits of one signal in a payload longer than 8 bytes, numbered as dbc_parser_cpp numbers a classic frame:
+/// Intel (`@1`) counts up from bit 0 = the LSB of byte 0; Motorola (`@0`) names the signal's MSB and runs in
+/// big-endian ("sawtooth") order, the parser's python-can conversion extended past byte 7. nullopt when the
+/// signal reaches past the payload.
 std::optional<std::uint64_t> extractRawBits(const std::vector<std::uint8_t>& data, const SignalMeta& sig) {
   const std::size_t payload_bits = data.size() * 8;
   const auto bitAt = [&data](std::size_t byte, std::size_t bit) -> std::uint64_t {
@@ -141,9 +121,8 @@ std::optional<std::uint64_t> extractRawBits(const std::vector<std::uint8_t>& dat
   return value;
 }
 
-/// Physical value of a signal's raw bits: two's complement for a signed signal
-/// wider than 1 bit (a 1-bit signed signal stays 0/1, as in dbc_parser_cpp),
-/// then `raw * factor + offset`.
+/// Two's complement for a signed signal wider than 1 bit (a 1-bit signed signal stays 0/1, as in
+/// dbc_parser_cpp), then `raw * factor + offset`.
 double physicalValue(std::uint64_t raw, const SignalMeta& sig) {
   if (!sig.is_signed || sig.size < 2) {
     return static_cast<double>(raw) * sig.factor + sig.offset;
@@ -158,9 +137,8 @@ double physicalValue(std::uint64_t raw, const SignalMeta& sig) {
 
 }  // namespace
 
-/// Builds `SignalMeta::labels` from a signal's raw `VAL_` table: normalizes
-/// each key (see normalizeValueKey), sorts by key, and drops a duplicate
-/// key's later entry.
+/// The signal's `VAL_` table with normalized keys (see normalizeValueKey), sorted; the first entry of a
+/// duplicate key wins.
 std::vector<std::pair<std::int64_t, std::string>> buildLabels(const Libdbc::Signal& sig) {
   std::vector<std::pair<std::int64_t, std::string>> labels;
   if (sig.factor == 0.0 || sig.value_descriptions.empty()) {
@@ -177,13 +155,10 @@ std::vector<std::pair<std::int64_t, std::string>> buildLabels(const Libdbc::Sign
   return labels;
 }
 
-/// Gives every signal with a `VAL_` table its text-field name: `"<name>_label"`,
-/// or `"<name>_label_2"`, `"_3"`, ... when that name is already taken within
-/// the message by a real signal (a DBC may pair `Foo` with a genuine
-/// `Foo_label`) or by an earlier signal's label, so one row never carries two
-/// fields with the same name. Allocation walks signals in declaration order
-/// against the set of ALL the message's real signal names, so the result is
-/// fixed at load and independent of frame data. Collisions are per message
+/// Names each `VAL_` signal's text field `"<name>_label"`, or `"<name>_label_2"`, `"_3"`, ... when that name is
+/// taken in the message by a real signal (a DBC may pair `Foo` with a genuine `Foo_label`) or by an earlier
+/// label, so a row never carries two fields with one name. Allocation walks signals in declaration order
+/// against all the message's real signal names, so it depends only on the DBC. Collisions are per message
 /// (each message is its own topic).
 void assignLabelNames(std::vector<SignalMeta>& meta) {
   if (std::none_of(meta.begin(), meta.end(), [](const SignalMeta& m) { return !m.labels.empty(); })) {
@@ -215,8 +190,7 @@ struct MessageEntry {
 
 struct CanDecoder::Impl {
   std::vector<MessageEntry> messages;
-  // Keyed by the DBC message id exactly as stored (raw, possibly with the
-  // extended flag). Lookup handles both the raw and Vector-flagged forms.
+  // Keyed by the DBC message id as stored (possibly with the extended flag); find() handles both forms.
   std::unordered_map<std::uint32_t, std::size_t> id_to_index;
   // The 29-bit messages for CanProtocol::kJ1939 / kNmea2000, first loaded wins in both: by id
   // without priority (the message written for one sender) and by PGN (any sender).
@@ -273,11 +247,9 @@ struct CanDecoder::Impl {
       return it == pgn_to_index.end() ? nullptr : &messages[it->second];
     }
     if (extended) {
-      // Prefer the Vector-flagged 29-bit message so an extended frame is not
-      // shadowed by a standard message sharing the same numeric id. Fall back
-      // to the raw id for DBCs that store 29-bit ids without the flag
-      // (J1939-style), but only above the 11-bit range — a raw entry <= 0x7FF
-      // is a standard message and must not decode an extended frame.
+      // Prefer the Vector-flagged 29-bit message so a standard message with the same numeric id does not shadow
+      // it. Fall back to the raw id for DBCs that store 29-bit ids without the flag (J1939-style), but only above
+      // the 11-bit range: a raw entry <= 0x7FF is a standard message and must not decode an extended frame.
       auto it = id_to_index.find(can_id | kExtendedFlag);
       if (it == id_to_index.end() && can_id > kMaxStandardId) {
         it = id_to_index.find(can_id);
@@ -304,8 +276,8 @@ PJ::Status CanDecoder::loadDbcString(const std::string& dbc_text) {
 }
 
 PJ::Status CanDecoder::loadDbcFile(const std::string& path) {
-  // Libdbc's parse_file(path) accepts only a case-sensitive ".dbc" suffix (text after the last '.'); keep that
-  // gate and its message, then read the file once ourselves.
+  // Libdbc's parse_file(path) accepts only a case-sensitive ".dbc" suffix; keep that gate and its message, but
+  // read the file ourselves.
   if (const auto dot = path.find_last_of('.');
       dot == std::string::npos || path.compare(dot, std::string::npos, ".dbc") != 0) {
     const std::string extension = dot == std::string::npos ? std::string() : path.substr(dot);
@@ -379,23 +351,23 @@ std::vector<DecodedSignal> CanDecoder::decode(
   // Reject frames shorter than the message: dbc_parser_cpp would zero-fill the
   // missing bytes and return "success" with silently wrong signal values.
   if (!variable_length && data.size() < static_cast<std::size_t>(msg.size())) {
-    return out;  // matched, but the frame is truncated -> cannot decode
+    return out;
   }
 
-  const auto& signals = entry->signals;  // cached name/unit/labels/layout, no per-frame copy
-  std::vector<double> values;            // one per signal
+  const auto& signals = entry->signals;
+  std::vector<double> values;
   // Variable length only: false for a signal past the payload's end, which is left out of the result.
   std::vector<bool> fits;
   if (!variable_length && data.size() <= kClassicPayloadBytes) {
     if (msg.parse_signals(data, values) != Libdbc::Message::ParseSignalsStatus::Success) {
-      return out;  // matched but undecodable
+      return out;
     }
   } else {
     values.reserve(signals.size());
     for (const SignalMeta& meta : signals) {
       const auto raw = extractRawBits(data, meta);
       if (!raw && !variable_length) {
-        return out;  // matched, but a signal reaches past the payload
+        return out;
       }
       values.push_back(raw ? physicalValue(*raw, meta) : 0.0);
       if (variable_length) {
@@ -403,7 +375,7 @@ std::vector<DecodedSignal> CanDecoder::decode(
       }
     }
     if (variable_length && std::find(fits.begin(), fits.end(), true) == fits.end()) {
-      return out;  // not even the first signal fits
+      return out;
     }
   }
   result = DecodeResult::kDecoded;
@@ -418,9 +390,7 @@ std::vector<DecodedSignal> CanDecoder::decode(
     DecodedSignal decoded{.name = meta.name, .value = values[k], .unit = meta.unit};
     if (!meta.labels.empty()) {
       decoded.label_name = meta.label_name;
-      // Recover the raw integer value from the physical value (inverse of
-      // dbc_parser_cpp's `value = raw * factor + offset`); factor == 0 was
-      // already excluded from having any labels at load time (buildLabels).
+      // Inverse of `value = raw * factor + offset`; factor == 0 has no labels (see buildLabels).
       const std::int64_t raw = std::llround((values[k] - meta.offset) / meta.factor);
       decoded.raw = raw;
       const auto it = std::lower_bound(

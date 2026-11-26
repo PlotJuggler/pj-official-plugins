@@ -1,20 +1,11 @@
 #pragma once
 
 /// @file pj_bridge_topic_subscription.hpp
-/// @brief WebSocket-free control-plane logic for demand-driven per-topic
-///  subscription (pj.topic_subscription.v1) in the PlotJuggler Bridge streamer,
-///  factored out of pj_bridge_source.cpp so it is unit-testable WITHOUT a live
-///  ixwebsocket connection or host — the same seam as
-///  data_stream_foxglove_bridge/foxglove_topic_subscription.hpp and
-///  data_stream_ros2/ros2_topic_subscription.hpp.
-///
-///  Twin of those two control planes, adapted to the PJ Bridge wire model:
-///  subscriptions are keyed directly by topic NAME (the server's `subscribe` /
-///  `unsubscribe` commands take topic names — there is no Foxglove channel-id
-///  indirection), the "advertised" universe is the server's get_topics /
-///  topics_changed catalog, and `subscribe` is ADDITIVE (a subscribe for one
-///  topic never disturbs the others), so a reconcile emits at most one additive
-///  `subscribe` and one `unsubscribe` per pass.
+/// Socket-free control plane for demand-driven per-topic subscription (pj.topic_subscription.v1), split out of
+/// pj_bridge_source.cpp so it is unit-testable without a connection. Twin of foxglove_topic_subscription.hpp and
+/// ros2_topic_subscription.hpp, adapted to this wire model: subscriptions are keyed by topic NAME, the advertised
+/// universe is the server's get_topics / topics_changed catalog, and `subscribe` is additive (one topic never
+/// disturbs the others), so a reconcile emits at most one `subscribe` and one `unsubscribe`.
 
 #include <algorithm>
 #include <cstdint>
@@ -33,58 +24,37 @@
 
 namespace PJ::BridgeProtocol {
 
-/// Mutex-protected "latest wins" slot for the host's desired active-topic set
-/// (the payload of pj.topic_subscription.v1's set_active_topics). Twin of
-/// PJ::FoxgloveProtocol::DesiredTopicsSlot — identical semantics, duplicated
-/// here so data_stream_pj_bridge does not depend on the other streamers.
-///
-/// set_active_topics() is entered on the HOST GUI thread; this is NOT a command
-/// queue — every call is a full, declarative replacement of the desired set, so
-/// only the MOST RECENT write matters. The poll thread drains it with take(),
-/// which atomically hands over whatever is pending and resets the slot to empty
-/// (nullopt), so a poll pass that finds nothing new is a cheap no-op.
+/// "Latest wins" slot for the host's desired active-topic set (set_active_topics, entered on the host GUI thread).
+/// Not a command queue: every write is a full replacement, so only the most recent matters. The poll thread drains it
+/// with take(), which hands over what is pending and resets the slot to nullopt.
 using DesiredTopicsSlot = PJ::sdk::LatestValueSlot<std::set<std::string>>;
 
-/// Result of computeSubscriptionDiff: which topics to newly subscribe and which
-/// to drop, to reconcile the source's current subscriptions with a desired
-/// active-topic set. Each list maps to ONE wire command (`subscribe` is
-/// additive; `unsubscribe` takes a name list), so an empty list means "send
-/// nothing".
+/// Each list maps to one wire command (`subscribe` is additive; `unsubscribe` takes a name list); empty means send
+/// nothing.
 struct SubscriptionDiff {
   std::vector<std::string> to_subscribe;    ///< topic names for one additive `subscribe`.
   std::vector<std::string> to_unsubscribe;  ///< topic names for one `unsubscribe`.
 };
 
-/// Diff the source's applied subscriptions against a desired active-topic set —
-/// declarative and complete, exactly as delivered by pj.topic_subscription.v1.
-/// Pure function (no I/O, no side effects): the demand-subscription apply logic
-/// in PjBridgeSource::onPoll is unit-testable through this without a live
-/// WebSocket.
+/// Pure diff of applied subscriptions against the desired active-topic set (declarative and complete).
 ///
-/// The subscribe target is `desired ∩ advertised`: a desired topic the server
-/// has not (yet) advertised cannot be subscribed — the caller keeps it in
-/// `desired` and retries once/if it appears via topics_changed. A per-topic
-/// `subscribe` failure is handled by the caller removing that topic from
-/// `applied` (the server forgets a failed subscribe — no sticky retry), so it
-/// re-appears in `to_subscribe` on the next reconcile.
+/// The subscribe target is `desired ∩ advertised`: a desired topic the server has not (yet) advertised stays in
+/// `desired` and is retried when it appears via topics_changed. A per-topic `subscribe` failure is handled by the
+/// caller removing the topic from `applied` (the server forgets a failed subscribe, no sticky retry), so it re-appears
+/// in `to_subscribe` on the next reconcile.
 ///
-/// @param applied     topic names with a live subscription right now.
-/// @param advertised  topic names the server currently advertises AND that pass
-///        the advertise filter (see filteredAdvertisedTopics).
-/// @param desired     the full active-topic set the host wants live right now.
+/// @param advertised  topics the server advertises that also pass the advertise filter (see filteredAdvertisedTopics).
 [[nodiscard]] inline SubscriptionDiff computeSubscriptionDiff(
     const std::set<std::string>& applied, const std::set<std::string>& advertised,
     const std::set<std::string>& desired) {
   SubscriptionDiff diff;
 
-  // Drop anything applied that fell out of the target (undesired OR no longer advertised).
   for (const auto& topic : applied) {
     if (desired.count(topic) == 0 || advertised.count(topic) == 0) {
       diff.to_unsubscribe.push_back(topic);
     }
   }
 
-  // Subscribe anything in the target that is not applied yet.
   for (const auto& topic : advertised) {
     if (desired.count(topic) > 0 && applied.count(topic) == 0) {
       diff.to_subscribe.push_back(topic);
@@ -94,25 +64,17 @@ struct SubscriptionDiff {
   return diff;
 }
 
-/// Whether `topic` should be advertised/subscribed under an (optional) filter —
-/// the dialog's saved topic selection, repurposed in demand mode as an
-/// allow-list rather than a subscribe list. An EMPTY selection means "no
-/// filter, advertise everything" (the default when nothing is selected). A
-/// transform type (PJ::AlwaysIncluded::matchesRos2 on the topic's ROS 2 type)
-/// always passes. Mirrors PJ::FoxgloveProtocol::passesAdvertiseFilter.
+/// The dialog's saved topic selection acts in demand mode as an allow-list; an empty selection means no filter.
+/// A transform type (PJ::AlwaysIncluded::matchesRos2 on the topic's ROS 2 type) always passes.
 [[nodiscard]] inline bool passesAdvertiseFilter(const TopicInfo& topic, const std::vector<std::string>& selection) {
   return PJ::AlwaysIncluded::matchesRos2(topic.schema_name) ||
          PJ::sdk::passesSelectionFilter(
              topic.name, selection, [](const std::string& value) -> const std::string& { return value; });
 }
 
-/// The set of topic names computeSubscriptionDiff() reconciles against:
-/// server-advertised topics restricted by the SAME filter buildAvailableTopics
-/// applies when advertising. Advertise and subscribe stay symmetric — a topic
-/// the filter hides from the host is never subscribed either, even if a (stale)
-/// desired set names it: the filter is explicit user configuration and outranks
-/// a leftover layout reference. Mirrors
-/// PJ::FoxgloveProtocol::filteredAdvertisedTopics.
+/// Server-advertised topics restricted by the same filter buildAvailableTopics applies. Advertise and subscribe stay
+/// symmetric: a topic the filter hides is never subscribed, even if a stale desired set names it (the filter is
+/// explicit user configuration and outranks a leftover layout reference).
 [[nodiscard]] inline std::set<std::string> filteredAdvertisedTopics(
     const std::map<std::string, TopicInfo>& advertised, const std::vector<std::string>& selection) {
   std::set<std::string> out;
@@ -124,26 +86,18 @@ struct SubscriptionDiff {
   return out;
 }
 
-/// Parse one get_topics / topics_changed.added entry into a TopicInfo.
-///
-/// Tolerant of the include_schemas graceful-degradation path: a new server
-/// returns name + type + encoding + definition, but an OLD server (which
-/// ignores include_schemas) and a topic whose schema extraction FAILED both
-/// return only name + type — the encoding/schema fields are then left empty,
-/// and the topic is still listed (the authoritative schema still arrives later
-/// in the subscribe RESPONSE, which every server sends). Returns nullopt when
-/// the entry is not an object or carries no name.
-///
-/// `type` is the ROS 2 message type; the parser binding uses it as `type_name`.
-/// An explicit `schema_name`, if present, wins over `type`.
-/// json::value() THROWS when the key exists with a non-string type, and these
-/// entries come straight off the wire — a malformed field must degrade to
-/// "absent", never throw into the poll loop.
+/// json::value() throws when the key exists with a non-string type; these entries come straight off the wire, so a
+/// malformed field must degrade to "absent", never throw into the poll loop.
 [[nodiscard]] inline std::string stringField(const nlohmann::json& entry, const char* key) {
   const auto it = entry.find(key);
   return it != entry.end() && it->is_string() ? it->get<std::string>() : std::string{};
 }
 
+/// Parse one get_topics / topics_changed.added entry. An old server (ignores include_schemas) or a topic whose schema
+/// extraction failed returns only name + type: encoding/schema stay empty and the topic is still listed (the
+/// authoritative schema arrives in the subscribe RESPONSE). `type` is the ROS 2 message type, used as the parser
+/// binding's `type_name`; an explicit `schema_name` wins. Returns nullopt when the entry is not an object or has no
+/// name.
 [[nodiscard]] inline std::optional<TopicInfo> parseTopicEntry(const nlohmann::json& entry) {
   if (!entry.is_object()) {
     return std::nullopt;
@@ -161,12 +115,9 @@ struct SubscriptionDiff {
   return info;
 }
 
-/// Names in `applied` whose catalog entry CHANGED between two advertise states
-/// (present in both, fields differ). A retyped/re-schemaed topic that is
-/// currently subscribed keeps flowing bytes the OLD parser binding would
-/// misparse — the caller drops these from applied_/bindings_ so the next
-/// reconcile re-subscribes and the fresh subscribe response re-binds with the
-/// new schema (the host mints a fresh binding when the signature changed).
+/// Names in `applied` whose catalog entry changed between two advertise states. A retyped subscribed topic keeps
+/// flowing bytes the old parser binding would misparse, so the caller drops these from applied_/bindings_; the next
+/// reconcile re-subscribes and the fresh response re-binds with the new schema.
 [[nodiscard]] inline std::vector<std::string> retypedTopics(
     const std::map<std::string, TopicInfo>& before, const std::map<std::string, TopicInfo>& after,
     const std::set<std::string>& applied) {
@@ -181,17 +132,13 @@ struct SubscriptionDiff {
   return retyped;
 }
 
-/// The protocol version this plugin speaks. The ONLY hard compatibility gate:
-/// a response carrying a HIGHER version means breaking changes this client
-/// cannot interpret, so the stream stops with an upgrade message. Additive
-/// server features never bump it — they are feature-detected via ServerInfo.
+/// The only hard compatibility gate: a response with a higher version means breaking changes, so the stream stops with
+/// an upgrade message. Additive server features never bump it; they are feature-detected via ServerInfo.
 inline constexpr int kSupportedProtocolVersion = 1;
 
-/// Returns the response's protocol_version when it is above `supported` —
-/// the caller turns that into a fatal stream error. Absent or non-integer
-/// versions yield nullopt (old/test servers predate the field; tolerance is
-/// the compatibility policy for everything except a KNOWN-newer protocol).
-/// Compared without narrowing: a version too large for an int is still newer.
+/// The response's protocol_version when above `supported` (the caller makes it a fatal stream error). Absent or
+/// non-integer versions yield nullopt: old/test servers predate the field. Compared without narrowing, so a version
+/// too large for an int is still newer.
 [[nodiscard]] inline std::optional<uint64_t> unsupportedProtocolVersion(const nlohmann::json& response, int supported) {
   const auto it = response.find("protocol_version");
   if (it == response.end() || !it->is_number_integer() || (!it->is_number_unsigned() && it->get<int64_t>() < 0)) {
@@ -201,9 +148,8 @@ inline constexpr int kSupportedProtocolVersion = 1;
   return version > static_cast<uint64_t>(supported) ? std::optional<uint64_t>(version) : std::nullopt;
 }
 
-/// Server identity + capability list from a get_topics response's `server`
-/// object. Clients feature-detect by capability NAME and degrade per-feature;
-/// `version` is for humans/bug reports, never compared.
+/// From a get_topics response's `server` object. Clients feature-detect by capability name; `version` is for humans,
+/// never compared.
 struct ServerInfo {
   std::string name;
   std::string version;
@@ -214,8 +160,8 @@ struct ServerInfo {
   }
 };
 
-/// nullopt when the response has no `server` object (a pre-capability server:
-/// treat every capability as absent). Wrong-typed fields degrade to empty.
+/// nullopt when there is no `server` object (pre-capability server: every capability is absent). Wrong-typed fields
+/// degrade to empty.
 [[nodiscard]] inline std::optional<ServerInfo> parseServerInfo(const nlohmann::json& response) {
   const auto it = response.find("server");
   if (it == response.end() || !it->is_object()) {
@@ -235,12 +181,9 @@ struct ServerInfo {
   return info;
 }
 
-/// Whether a per-topic failure in a subscribe RESPONSE is stale: the response
-/// id (echoed by the server) predates the LAST subscribe we sent for that
-/// topic, so the failure describes a request that a newer subscribe already
-/// superseded — acting on it would erase applied_'s truth for a live
-/// subscription (a later pause would then never send the unsubscribe).
-/// A response without an id (older/test servers) is never treated as stale.
+/// A per-topic failure is stale when the echoed response id predates the last subscribe sent for that topic: acting on
+/// it would erase applied_ for a live subscription, so a later pause would never send the unsubscribe. A response
+/// without an id (older/test servers) is never stale.
 [[nodiscard]] inline bool failureIsStale(
     const std::map<std::string, std::string>& last_subscribe_id_by_topic, const std::string& topic,
     const std::string& response_id) {
@@ -251,12 +194,8 @@ struct ServerInfo {
   return it != last_subscribe_id_by_topic.end() && it->second != response_id;
 }
 
-/// Apply a topics_changed (or initial get_topics) delta to the advertised
-/// catalog: upsert each `added` topic (a re-add with new fields replaces the
-/// old entry) and erase each `removed` name. Returns true iff the catalog
-/// actually changed, so the caller re-advertises to the host and reconciles
-/// only on a genuine delta. Pure — the JSON→TopicInfo parsing (via
-/// parseTopicEntry) is the caller's, so this stays trivially testable.
+/// Upserts `added` and erases `removed`. Returns true iff the catalog actually changed, so the caller re-advertises
+/// and reconciles only on a real delta.
 [[nodiscard]] inline bool applyAdvertiseDelta(
     std::map<std::string, TopicInfo>& advertised, const std::vector<TopicInfo>& added,
     const std::vector<std::string>& removed) {

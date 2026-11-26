@@ -1,13 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// anomaly_helpers — the Luau-FREE part of the Marker Editor core: the predefined
-// detection-function library, the JSON report, and the portable-rule
-// (de)serialization. It depends ONLY on pj_base (PlotMarker types) + nlohmann_json —
-// NOT on pj_scripting_core / Luau. The GUI toolbox plugin links THIS (so the plugin
-// carries no script engine: it submits rules to the host, which executes them); the
-// headless runner links `anomaly_core`, which adds the engine (runAnomalyScript) on
-// top of these helpers.
+// The Luau-free layer: builtin rule library, JSON report and portable-rule (de)serialization.
+// Depends only on pj_base and nlohmann_json, so the GUI plugin carries no script engine.
 
 #pragma once
 
@@ -35,25 +30,18 @@ struct NamedFunction {
 [[nodiscard]] std::string substituteSource(std::string tmpl, const std::string& source);
 
 /// The series a rule reads: the literal first argument of every `series("...")` and
-/// `when("...", ...)` call in `code` (either quote), in order of first appearance,
-/// deduplicated. Lua comments (`--` to end of line and
-/// `--[[ ]]` / `--[==[ ]==]` blocks) are skipped, and a `--` inside a string is not a
-/// comment, so a help comment or a commented-out line never declares an input.
+/// `when("...", ...)` call in `code` (either quote), in order of first appearance, deduplicated.
+/// Lua comments (`--`, `--[[ ]]`, `--[==[ ]==]`) are skipped; a `--` inside a string is not a comment.
 ///
-/// This is what the GUI declares as generator inputs. The host materializes EVERY declared
-/// input whole-series on each run, so declaring only what the rule touches is what keeps
-/// the preview from re-materializing the dataset. Dynamic names (series("x"..v)) are not
-/// seen; anomaly rules use literal keys.
+/// The GUI declares these as generator inputs. The host materializes EVERY declared input
+/// whole-series on each run, so declaring only what the rule touches keeps the preview from
+/// re-materializing the dataset. Dynamic names (`series("x"..v)`) are not seen.
 [[nodiscard]] std::vector<std::string> parseSeriesRefs(const std::string& code);
 
 /// The generator inputs the GUI declares for `code`: its series refs, or `source` when it reads none (a rule of fixed
 /// lines or bands). The host picks the dataset a Timeseries or Dataset rule belongs to from its inputs and refuses a
 /// rule that has none; pass an empty `source` for a Global rule, which needs no input.
 [[nodiscard]] std::vector<std::string> ruleInputs(const std::string& code, const std::string& source);
-
-// ---------------------------------------------------------------------------
-// JSON report (structured output for the headless runner / CI pipelines)
-// ---------------------------------------------------------------------------
 
 /// Context recorded in the report header + the pass/fail threshold.
 struct ReportMeta {
@@ -75,13 +63,7 @@ struct Report {
 /// anomaly list (kind, label, severity, status, timestamps, values, color).
 [[nodiscard]] Report markersToReport(const std::vector<PJ::sdk::PlotMarker>& markers, const ReportMeta& meta);
 
-// ---------------------------------------------------------------------------
-// Portable rule file (the shareable artifact the GUI saves and the runner runs)
-// ---------------------------------------------------------------------------
-
-/// A self-contained detection rule. The same JSON document is saved/loaded by the
-/// GUI editor and consumed by the headless runner (`--rule`), so a rule authored in
-/// the GUI runs unchanged on a server.
+/// A self-contained detection rule; its JSON form is shared by the GUI editor and the runner's `--rule`.
 struct Rule {
   std::string name;
   std::string description;

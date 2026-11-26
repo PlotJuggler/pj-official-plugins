@@ -104,8 +104,6 @@ size_t elementSizeOf(const NumberArray& values) {
       [](const auto& elements) { return sizeof(typename std::decay_t<decltype(elements)>::value_type); }, values);
 }
 
-// --- Channel encoding --------------------------------------------------------
-
 // The channel datatype that stores T as is; kUnknown for the 64-bit integers,
 // which MeshMap channels cannot hold.
 template <typename T>
@@ -144,7 +142,7 @@ struct OwnedBlobs {
   }
 };
 
-// Three per-axis (or per-corner) arrays as one xyz-interleaved array.
+// Three per-axis (or per-corner) arrays as one interleaved array.
 template <typename T>
 std::vector<T> interleave(const std::vector<T>& a, const std::vector<T>& b, const std::vector<T>& c) {
   std::vector<T> out;
@@ -421,12 +419,10 @@ PJ::sdk::MeshMap buildMeshMap(NavMapData map, int64_t timestamp_ns) {
   mesh.face_count = static_cast<uint32_t>(map.v0.size());
   const size_t navcels = map.v0.size();
 
-  // Geometry: NavMap keeps one array per axis and per corner; MeshMap wants them interleaved.
   mesh.position_type = Datatype::kFloat32;
   mesh.positions = owned->add(interleave(map.x, map.y, map.z));
   mesh.indices = owned->add(interleave(map.v0, map.v1, map.v2));
 
-  // Vertex colour: the arrays are already one per channel.
   if (map.has_vertex_rgba) {
     if (map.a.empty()) {
       map.a.assign(map.x.size(), uint8_t{255});
@@ -519,7 +515,7 @@ PJ::Expected<PJ::sdk::MeshMapUpdate> buildMeshMapUpdate(NavMapLayer layer, int64
   PJ::sdk::MeshChannelPatch patch;
   // The patch lists the values in order; its indices, if any, place them.
   const auto data = addLayerData(*owned, layer.values, {}, 0, info);
-  // No indices: a dense patch replacing the whole channel.
+  // Without indices the patch is dense and replaces the whole channel.
   patch.indices = layer.indices.empty() ? PJ::Span<const uint8_t>{} : owned->add(std::move(layer.indices));
   patch.channel = {
       .name = std::move(layer.name),

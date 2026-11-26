@@ -6,17 +6,13 @@
 
 namespace assistant_agent {
 
-// The assistant's system instruction, shared by every backend. Kept short and
-// concrete: it tells the model what it is driving and how to use the tools, and
-// sets the honest expectation that it cannot delete or modify existing data
-// (the plugin ABI exposes no such operation).
+// The system instruction shared by every backend. It states that the model cannot
+// delete or modify loaded data (the plugin ABI exposes no such operation).
 //
-// Note what this deliberately does NOT say: "discover the paths first". Every
-// tool call is a full round-trip that re-sends the whole conversation, so an
-// instruction to explore before acting costs several of them before any work
-// starts. The loaded data is handed over up front instead (see catalogDigest),
-// and the model is told to act on it — with one verification step as the
-// safety net for when that snapshot turns out to be incomplete.
+// It deliberately does NOT say "discover the paths first": every tool call is a full
+// round-trip that re-sends the whole conversation. The loaded data is handed over up
+// front (see catalogDigest) and the model acts on it, with one verification step as
+// the safety net for an incomplete snapshot.
 inline constexpr const char* kSystemPrompt =
     "You are an assistant embedded in PlotJuggler, a timeseries data viewer. "
     "You help the user explore loaded data and build derived views by calling the provided tools. "
@@ -75,14 +71,12 @@ inline constexpr const char* kSystemPrompt =
     "are different: those you already have, so do not spend a tool call confirming them. Give the "
     "user a short, plain summary of what you did.";
 
-// Product policy: how to answer questions about PlotJuggler itself ("how do I
-// show an image?"). Kept apart from kSystemPrompt so a benchmark baseline can
-// run without it (tests/features_eval_test.cpp). The facts it refers to are
-// not here: they travel as the "PlotJuggler features" listing prefixed to the
-// user's message (features_digest.hpp), because they depend on the host and
-// on what is installed. Closed-world on purpose: the models' training
-// describes PlotJuggler 3, and answering from it sent users to other tools
-// for features PlotJuggler 4 has.
+// How to answer questions about PlotJuggler itself ("how do I show an image?").
+// Separate from kSystemPrompt so a benchmark baseline can run without it
+// (tests/features_eval_test.cpp). The facts travel as the "PlotJuggler features"
+// listing prefixed to the user's message (features_digest.hpp) because they depend on
+// the host and installed plugins. Closed-world on purpose: model training describes
+// PlotJuggler 3 and would send users to other tools for PlotJuggler 4 features.
 inline constexpr const char* kProductPolicy =
     "Every conversation begins with a \"PlotJuggler features\" listing supplied by PlotJuggler, ahead of the "
     "loaded-data listing. It governs what you say about PlotJuggler 4's capabilities and where things are in its "
@@ -98,8 +92,7 @@ inline constexpr const char* kProductPolicy =
     "not cover and point to File → Extensions Marketplace…. "
     "Product questions need no tool call.";
 
-// What every backend hands its CLI as instructions: the system prompt plus,
-// unless a caller deliberately measures without it, the product policy.
+// System prompt plus, unless a benchmark measures without it, the product policy.
 [[nodiscard]] inline std::string assistantInstructions(bool with_product_policy = true) {
   std::string out = kSystemPrompt;
   if (with_product_policy) {

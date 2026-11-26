@@ -49,7 +49,7 @@ Source layout in this repository:
         src/
         datastream_ros2.ui
         package.xml
-      docker/                   ← build helpers (see "Docker" below)
+      docker/                   ← build helpers (see "Building" below)
       manifest.json             ← marketplace manifest
       CMakeLists.txt            ← proxy always; inner only with PJ_BUILD_ROS2_DISTRO=ON
 
@@ -89,9 +89,8 @@ workspace overlays. Missing payloads, unsupported distros, missing installed
 dependencies, corrupt libraries, symbol/version errors and RoboStack loader faults
 remain startup errors.
 
-The unavailable subscriber uses the existing DataSource lifecycle: capability
-probing succeeds, and an explicit Start fails at `bind()` with the setup instruction.
-No host-side diagnostic filtering or SDK ABI extension is needed.
+The unavailable subscriber is an ordinary DataSource: capability probing
+succeeds, and an explicit Start fails at `bind()` with the setup instruction.
 
 ## Building
 
@@ -110,62 +109,17 @@ The active distro is exposed to the inner as a compile definition
 API differences between distros (e.g. the rosbag2 → rclcpp typesupport
 migration).
 
-In practice you will rarely run those commands by hand — the Docker
-helpers under [`docker/`](docker/) wrap them.
+The [`docker/`](docker/) helpers wrap these commands:
 
-## Docker — the two roles
+- **Release builds** (CI and packagers): the proxy is built in a plain Ubuntu 22.04 image with no ROS, so it cannot
+  pick up `librclcpp` symbols and its glibc is old enough to run on any host; each inner is built in an
+  `ros:<distro>-ros-base` image; `--bundle` iterates every entry in `distros.env` and assembles the marketplace
+  zip. CI calls the same `run-local.sh` developers use.
+- **Smoke testing**: `./run-local.sh --distro <distro> --with-pj-app --pj4 <path>` also builds `pj_app` and
+  assembles a single-distro marketplace layout under `build_ros2_<distro>/Release/test_extensions/`, to run in a
+  ROS-aware container with real topics.
 
-This plugin's `docker/` directory exists because two very different
-audiences need a reproducible ROS 2 build environment:
-
-### Role 1 — Reproducible release builds (CI and packagers)
-
-The marketplace artifact must contain the proxy plus one inner per
-supported distro, all built reproducibly against the canonical ROS 2
-images and bundled with the layout PlotJuggler expects. The Docker
-images guarantee that:
-
-- The proxy is built in a **plain Ubuntu 22.04** image with no ROS
-  installed, so it physically cannot pick up `librclcpp` symbols and the
-  resulting binary uses an old-enough glibc to run on any host.
-- Each inner is built in an `osrf/ros:<distro>-desktop` image with that
-  distro's `rclcpp` available on `CMAKE_PREFIX_PATH`.
-- A single `--bundle` invocation iterates every entry in `distros.env`,
-  produces every inner, copies in the proxy, and assembles the
-  marketplace zip.
-
-CI on `linux-x86_64` and `linux-arm64` calls the same `run-local.sh`
-entry point that developers use locally, so the local artifact is
-bit-for-bit the one shipped from CI.
-
-### Role 2 — End-to-end smoke testing (ROS developers)
-
-Beyond producing release artifacts, the same `docker/distro/` image can
-spin up `pj_app` itself inside a ROS-aware container, with a known-good
-ROS 2 distro already sourced and the freshly-built plugin pre-installed
-in the right marketplace layout. This is what `--with-pj-app` enables.
-
-Concretely, `./run-local.sh --distro <distro> --with-pj-app --pj4 <path>`:
-
-- Extends the per-distro builder image with Qt 6.8.3 (via `aqtinstall`,
-  matching `pj4/build.sh`) plus the GL/X runtime libs Qt apps need. The
-  Qt layer is gated by an `ARG`, so the lean CI image used by Role 1 is
-  unchanged.
-- Builds the plugin against `/opt/ros/<distro>` exactly as in Role 1.
-- Builds `pj_app` from your `pj4` super-repo into `<pj4>/build/` so a
-  fresh container start does not have to recompile the host app.
-- Assembles a single-distro marketplace layout under
-  `build_ros2_<distro>/Release/test_extensions/ros2-topic-subscriber/`
-  ready to be bind-mounted as the container's PlotJuggler 4 extensions
-  directory.
-
-The intended flow for a ROS developer is then to launch the resulting
-image, source `setup.bash` for the chosen distro, and run `pj_app` with
-real ROS topics on the network — without polluting the host or worrying
-about which Qt, glibc or ROS version it has installed.
-
-End-to-end recipe and headless variants are documented in
-[`docker/README.md`](docker/README.md).
+Recipes and headless variants: [`docker/README.md`](docker/README.md).
 
 ## Testing the plugin without Docker
 
@@ -280,5 +234,5 @@ proxy loads the payload from the running environment's copy when it exists: a
 Humble and a Jazzy environment each get their own payload, whichever copied the
 extension first.
 
-Windows is a follow-up — Chocolatey-based ROS 2 installs require a
-different bootstrap path and are not covered yet.
+Windows is not covered: Chocolatey-based ROS 2 installs require a
+different bootstrap path.

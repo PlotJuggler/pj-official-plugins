@@ -238,8 +238,7 @@ TEST(MqttDialogLifetime, DestroyWhileTopicsArrive) {
 TEST(MqttDialogLifetime, CancelTwiceAgainstSilentBroker) {
   FakeBroker broker(BrokerMode::kSilent);
   auto dialog = makeDialog(broker.port());
-  // The old code parked a cancelled client and waited 2 s for it on the next
-  // Cancel and on close; each Cancel must now return well under that.
+  // Cancelling must not wait for the unresponsive broker: each Cancel returns well under 2 s.
   for (int i = 0; i < 2; ++i) {
     dialog->onClicked("buttonConnect");
     ASSERT_EQ(connectButtonText(*dialog), "Cancel");
@@ -260,7 +259,7 @@ TEST(MqttDialogLifetime, DisconnectWhileTopicsArrive) {
   EXPECT_EQ(connectButtonText(*dialog), "Connect");
   EXPECT_EQ(discoveredTopicCount(*dialog), 0u);  // the catalog belonged to the broker we left
 
-  // The dialog is reusable after a disconnect.
+  // Reusable after a disconnect.
   dialog->onClicked("buttonConnect");
   ASSERT_TRUE(pumpUntilTopicsArrive(*dialog));
   dialog.reset();

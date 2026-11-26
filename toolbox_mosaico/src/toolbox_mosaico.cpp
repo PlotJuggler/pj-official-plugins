@@ -1,9 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// ToolboxMosaico — PJ4 port of the PJ3 plugin that browses and imports
-// data from Mosaico cloud servers via Apache Arrow Flight. Embedded Lua
-// (sol2) metadata filter, multi-topic streaming, time-range selection.
+// Browse and import data from Mosaico servers via Apache Arrow Flight.
 
 #include <pj_base/descriptor_import_protocol.h>
 
@@ -29,17 +27,12 @@ class MosaicoToolbox : public PJ::ToolboxPluginBase {
     if (!status) {
       return status;
     }
-    // The optional pj.settings.v1 store (QSettings-like persistence); an
-    // unbound view just reads defaults.
+    // Optional pj.settings.v1 store; an unbound view reads defaults.
     settings_ = services.get<PJ::sdk::SettingsStoreService>().value_or(PJ::sdk::SettingsView{});
-    // The panel itself is created lazily by getDialog(): a headless
-    // descriptor-import session binds this toolbox for every layout query
-    // without ever opening the panel, and must not restore panel state or
-    // auto-connect with credentials.
-    // The descriptor-import provider (pj.descriptor_import.v1): same settings
-    // view as the dialog (headless credential resolution at import time,
-    // main-thread), plus the host views its per-job pulls ingest through.
-    // Network-free at bind — the provider touches the network only inside an
+    // The panel is created lazily by getDialog(): a headless descriptor-import session binds this toolbox for every
+    // layout query without opening the panel, and must not restore panel state or auto-connect with credentials.
+    // The provider shares the dialog's settings view (main-thread headless credential resolution) and takes the
+    // host views its per-job pulls ingest through. Network-free at bind: it touches the network only inside an
     // authorized start_import.
     provider_.bind(settings_, {[this]() { return toolboxHost(); }, [this]() { return runtimeHost(); }});
     return PJ::okStatus();
@@ -58,10 +51,8 @@ class MosaicoToolbox : public PJ::ToolboxPluginBase {
   }
 
  private:
-  // plugin_ctx is the toolbox instance the host called get_plugin_extension
-  // with (the PJ_TOOLBOX_PLUGIN create_fn returns `new MosaicoToolbox()` as
-  // void*, so the casts below are exact). The provider walls exceptions
-  // itself.
+  // plugin_ctx is the toolbox instance (the PJ_TOOLBOX_PLUGIN create_fn returns `new MosaicoToolbox()` as void*, so
+  // the casts below are exact). The provider walls exceptions itself.
   static bool descriptorQueryThunk(
       void* plugin_ctx, PJ_string_view_t descriptor_json, PJ_descriptor_query_result_v1_t* out_result,
       PJ_error_t* out_error) noexcept {
@@ -84,17 +75,15 @@ class MosaicoToolbox : public PJ::ToolboxPluginBase {
         ->provider_.startImport(request, callbacks, callback_ctx, out_job, out_error);
   }
 
-  // First panel open: construct the dialog and wire the host providers and
-  // the settings view (which restores persisted state and auto-connects).
-  // Main thread, like getDialog().
+  // First panel open: construct the dialog and wire the host providers and the settings view (which restores
+  // persisted state and auto-connects). Main thread, like getDialog().
   void ensureDialog() {
     if (dialog_) {
       return;
     }
     dialog_ = std::make_unique<MosaicoDialog>();
-    // Host-view provider so the worker can ingest Arrow data on fetch
-    // completion; the runtime host carries notifyDataChanged (writer flush +
-    // catalog rebuild after an import).
+    // The worker ingests Arrow data through the host view; the runtime host carries notifyDataChanged (writer
+    // flush + catalog rebuild after an import).
     dialog_->setHostProvider([this]() { return toolboxHost(); });
     dialog_->setRuntimeHostProvider([this]() { return runtimeHost(); });
     dialog_->setSettings(settings_);

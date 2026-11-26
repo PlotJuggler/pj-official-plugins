@@ -1,20 +1,3 @@
-/**
- * @file parquet_helpers_test.cpp
- * @brief Unit tests for Parquet/Arrow type handling helpers.
- *
- * These tests verify the helper functions used to read Parquet files:
- *   - basenameWithoutExt: extract filename from paths (Unix and Windows)
- *   - isSupportedArrowType: check if Arrow type can be plotted
- *   - arrowTypeToPrimitive: map Arrow types to PJ primitive types
- *   - findTimestampColumn: heuristic to detect timestamp columns by name/type
- *   - getArrowValueRef: extract native values from Arrow arrays
- *   - getTimestampNanos: convert various timestamp formats to nanoseconds
- *
- * All tests create Arrow arrays in memory using builders, so no disk I/O
- * or external files are needed. Path strings in basenameWithoutExt tests
- * are just input literals, not actual filesystem access.
- */
-
 #include "../parquet_helpers.hpp"
 
 #include <arrow/api.h>
@@ -25,8 +8,6 @@ namespace {
 
 using namespace PJ::ParquetHelpers;
 using namespace pj::arrow_helpers;
-
-// --- basenameWithoutExt ---
 
 TEST(ParquetHelpersTest, BasenameWithoutExtUnix) {
   EXPECT_EQ(basenameWithoutExt("/home/user/data/file.parquet"), "file");
@@ -55,8 +36,6 @@ TEST(ParquetHelpersTest, BasenameWithoutExtEmptyString) {
 TEST(ParquetHelpersTest, BasenameWithoutExtHiddenFile) {
   EXPECT_EQ(basenameWithoutExt("/path/.hidden"), ".hidden");
 }
-
-// --- isSupportedArrowType ---
 
 TEST(ParquetHelpersTest, IsSupportedArrowTypeBool) {
   EXPECT_TRUE(isSupportedArrowType(arrow::Type::BOOL));
@@ -94,8 +73,6 @@ TEST(ParquetHelpersTest, IsSupportedArrowTypeUnsupported) {
   EXPECT_FALSE(isSupportedArrowType(arrow::Type::MAP));
 }
 
-// --- arrowTypeToPrimitive ---
-
 TEST(ParquetHelpersTest, ArrowTypeToPrimitiveBool) {
   EXPECT_EQ(arrowTypeToPrimitive(arrow::Type::BOOL), PJ::PrimitiveType::kBool);
 }
@@ -126,11 +103,8 @@ TEST(ParquetHelpersTest, ArrowTypeToPrimitiveStrings) {
 }
 
 TEST(ParquetHelpersTest, ArrowTypeToPrimitiveDefault) {
-  // Unsupported types default to kFloat64
   EXPECT_EQ(arrowTypeToPrimitive(arrow::Type::BINARY), PJ::PrimitiveType::kFloat64);
 }
-
-// --- findTimestampColumn ---
 
 TEST(ParquetHelpersTest, FindTimestampColumnByType) {
   auto schema = arrow::schema({
@@ -160,7 +134,6 @@ TEST(ParquetHelpersTest, FindTimestampColumnByNameCaseInsensitive) {
 }
 
 TEST(ParquetHelpersTest, FindTimestampColumnVariousNames) {
-  // Test various timestamp name patterns
   std::vector<std::string> names = {"time", "t", "ts", "time_stamp", "datetime", "date_time", "_timestamp", "_time"};
   for (const auto& name : names) {
     auto schema = arrow::schema({
@@ -172,12 +145,11 @@ TEST(ParquetHelpersTest, FindTimestampColumnVariousNames) {
 }
 
 TEST(ParquetHelpersTest, FindTimestampColumnPrefersType) {
-  // Type should be preferred over name
   auto schema = arrow::schema({
       arrow::field("timestamp", arrow::int64()),                       // Name match
       arrow::field("value", arrow::timestamp(arrow::TimeUnit::NANO)),  // Type match
   });
-  EXPECT_EQ(findTimestampColumn(schema), 1);  // Should pick column 1 (type match)
+  EXPECT_EQ(findTimestampColumn(schema), 1);
 }
 
 TEST(ParquetHelpersTest, FindTimestampColumnNotFound) {
@@ -187,8 +159,6 @@ TEST(ParquetHelpersTest, FindTimestampColumnNotFound) {
   });
   EXPECT_EQ(findTimestampColumn(schema), -1);
 }
-
-// --- getTimestampNanos ---
 
 TEST(ParquetHelpersTest, GetTimestampNanosFromNano) {
   arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::NANO), arrow::default_memory_pool());
@@ -308,8 +278,6 @@ TEST(ParquetHelpersTest, GetTimestampNanosFromDate64) {
 
   EXPECT_EQ(getTimestampNanos(array, 0, arrow::Type::DATE64), 86'400'000'000'000LL);
 }
-
-// --- getArrowValueRef ---
 
 TEST(ParquetHelpersTest, GetArrowValueRefInt32) {
   arrow::Int32Builder builder;

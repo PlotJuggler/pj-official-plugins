@@ -1,26 +1,15 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Locks in the per-frame image serialization contract for a Mosaico image
-// topic. The real server ships image topics as Arrow record batches whose
-// `data`/`encoding`/`format` columns are the Arrow `*_view` variants
-// (BINARY_VIEW / STRING_VIEW) and whose geometry (width/height/stride/
-// encoding/is_bigendian) is PER ROW, not topic-level.
+// Per-frame image serialization contract for a Mosaico image topic. The real server ships image topics as Arrow record
+// batches whose `data`/`encoding`/`format` columns are the `*_view` variants (BINARY_VIEW / STRING_VIEW) and whose
+// geometry (width/height/stride/encoding/is_bigendian) is PER ROW, not topic-level. The decoder must:
+//   * serialize ONE PJ::sdk::Image PER ROW with that row's own geometry, using the pj_base canonical codec;
+//   * read STRING_VIEW / BINARY_VIEW columns;
+//   * fall back encoding <- format when the per-row encoding is empty (pure-compressed topics carry only `format`);
+//   * skip rows missing required columns, recording ONE error, without aborting the whole topic.
 //
-// pushImageRowsToHost must:
-//   * register the object topic ONCE with the canonical metadata JSON
-//     {"builtin_object_type":"kImage","image_codec":"pj_image_v1"};
-//   * serialize ONE PJ::sdk::Image PER ROW with that row's own geometry,
-//     using the pj_base canonical codec (PJ::serializeImage);
-//   * read STRING_VIEW / BINARY_VIEW columns (the suspected "barely
-//     downloads" root cause — old BINARY/STRING readers returned empty);
-//   * fall back encoding <- format when the per-row encoding is empty
-//     (pure-compressed topics carry only `format`);
-//   * skip rows missing required columns, recording ONE error, without
-//     aborting the whole topic.
-//
-// These tests build synthetic in-memory tables using the *_view types and
-// drive the real helper against a recording fake toolbox host (no Flight/gRPC).
+// The tests build synthetic in-memory tables with the *_view types.
 
 #include <arrow/api.h>
 #include <arrow/array/array_binary.h>
@@ -41,13 +30,6 @@
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Recording fake host. Captures every registerObjectTopic + pushOwnedObject so
-// the test can assert the topic metadata and inspect each pushed blob.
-// ---------------------------------------------------------------------------
-
-// The exact canonical metadata contract the PJ4 consumer keys on.
-
 // One synthetic image row's worth of column values.
 struct RowSpec {
   std::optional<std::vector<std::uint8_t>> data;  // nullopt -> null (missing data)
@@ -60,9 +42,8 @@ struct RowSpec {
   std::int64_t timestamp_ns = 0;
 };
 
-// Build an Arrow Table mimicking the real server image schema: data is
-// BINARY_VIEW, encoding/format are STRING_VIEW, geometry int32, is_bigendian
-// bool, timestamp_ns int64. Per-row values come from `rows`.
+// Mimics the real server image schema: data is BINARY_VIEW, encoding/format are STRING_VIEW, geometry int32,
+// is_bigendian bool, timestamp_ns int64.
 std::shared_ptr<arrow::Table> makeImageViewTable(const std::vector<RowSpec>& rows) {
   arrow::Int64Builder ts_b;
   arrow::BinaryViewBuilder data_b;
@@ -133,8 +114,7 @@ std::vector<std::uint8_t> bytes(std::initializer_list<int> vs) {
 
 }  // namespace
 
-// Two rows with DIFFERENT geometry prove per-frame (not row-0) serialization,
-// and the *_view column types prove BINARY_VIEW/STRING_VIEW handling.
+// Two rows with DIFFERENT geometry prove per-frame (not row-0) serialization.
 TEST(ImageSerialize, PerRowGeometryRoundTripsThroughCanonicalCodec) {
   // row0: rgb8 2x2 stride 6 (12 bytes); row1: rgb8 3x1 stride 9 (9 bytes).
   std::vector<RowSpec> rows;
@@ -148,8 +128,6 @@ TEST(ImageSerialize, PerRowGeometryRoundTripsThroughCanonicalCodec) {
   ASSERT_TRUE(pushed) << pushed.error();
   EXPECT_EQ(pushed->pushed, 2);
   EXPECT_EQ(pushed->skipped, 0);
-
-  // Registered exactly once with the canonical metadata.
 
   // Two blobs pushed, each round-tripping to its OWN row geometry.
   ASSERT_EQ(fake.pushes.size(), 2u);
@@ -178,7 +156,6 @@ TEST(ImageSerialize, PerRowGeometryRoundTripsThroughCanonicalCodec) {
   EXPECT_EQ(img1->data[8], 29);
 }
 
-// encoding empty, format="jpeg" -> deserialized encoding == "jpeg".
 TEST(ImageSerialize, FallsBackToFormatWhenEncodingEmpty) {
   std::vector<RowSpec> rows;
   // A pure-compressed row: no width/height (0), only `format`. encoding empty.
@@ -199,7 +176,6 @@ TEST(ImageSerialize, FallsBackToFormatWhenEncodingEmpty) {
   EXPECT_EQ(img->data[0], 0xFF);
 }
 
-// mono16 with is_bigendian=true must round-trip true.
 TEST(ImageSerialize, BigEndianRoundTrips) {
   std::vector<RowSpec> rows;
   rows.push_back(RowSpec{bytes({0, 1, 2, 3, 4, 5, 6, 7}), "", 2, 2, 4, "mono16", true, 7000});
@@ -218,10 +194,8 @@ TEST(ImageSerialize, BigEndianRoundTrips) {
   EXPECT_TRUE(img->is_bigendian);
 }
 
-// [M10] A NULL is_bigendian column must default to the HOST's native
-// endianness (per the canonical Mosaico Image model), NOT a hard `false`.
-// mono16 carries a null is_bigendian here; the deserialized blob must reflect
-// the test host's byte order.
+// A NULL is_bigendian column defaults to the host's native endianness (canonical Mosaico Image model), not a hard
+// `false`.
 TEST(ImageSerialize, NullBigEndianDefaultsToHostEndianness) {
   std::vector<RowSpec> rows;
   // is_bigendian = nullopt -> null in the Arrow column.
@@ -241,12 +215,9 @@ TEST(ImageSerialize, NullBigEndianDefaultsToHostEndianness) {
   EXPECT_EQ(img->is_bigendian, kHostIsBigEndian);
 }
 
-// [M11] A row whose `encoding` arrives EMPTY but carries a `format` is a
-// pure-compressed frame: encoding falls back to `format`, and because the
-// per-row encoding was empty the row is treated as compressed — so the
-// non-positive-geometry gate is bypassed and the row is pushed (not skipped),
-// even with width/height/stride all 0. This exercises the `encoding_was_empty`
-// capture (empty BEFORE the format fallback overwrites encoding).
+// An empty `encoding` with a `format` marks a pure-compressed frame: encoding falls back to `format` and the
+// non-positive-geometry gate is bypassed, so the row is pushed even with width/height/stride all 0. Exercises the
+// `encoding_was_empty` capture, taken before the fallback overwrites `encoding`.
 TEST(ImageSerialize, EmptyEncodingWithFormatIsCompressedAndKeepsZeroGeometry) {
   std::vector<RowSpec> rows;
   // encoding="" + format="png", geometry 0/0/0 — a raw frame with this geometry
@@ -267,7 +238,6 @@ TEST(ImageSerialize, EmptyEncodingWithFormatIsCompressedAndKeepsZeroGeometry) {
   EXPECT_EQ(img->encoding, "png");  // fell back from `format`.
 }
 
-// A row missing `data` is skipped; others still push; one error recorded.
 TEST(ImageSerialize, MissingDataRowSkippedOthersPushed) {
   std::vector<RowSpec> rows;
   rows.push_back(RowSpec{bytes({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}), "png", 2, 2, 6, "rgb8", false, 1000});
@@ -279,13 +249,11 @@ TEST(ImageSerialize, MissingDataRowSkippedOthersPushed) {
 
   auto pushed = fake.parse("image", {"timestamp_ns", 0, 0}, table);
   ASSERT_TRUE(pushed) << pushed.error();
-  // The two good rows pushed; the null-data row skipped.
   EXPECT_EQ(pushed->pushed, 2);
   ASSERT_EQ(fake.pushes.size(), 2u);
   EXPECT_EQ(fake.pushes[0].ts_ns, 1000);
   EXPECT_EQ(fake.pushes[1].ts_ns, 3000);
 
-  // One skip error recorded.
   EXPECT_EQ(pushed->skipped, 1);
   EXPECT_FALSE(pushed->first_error.empty());
 }

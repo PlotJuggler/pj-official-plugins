@@ -1,18 +1,10 @@
-// Import benchmark for the ULog loader: drives the BUILT ulog_source_plugin
-// over a real .ulg file with a host that discards every record, so the numbers
-// are the plugin's own cost (file read, ulog_cpp parse, decode, ABI calls) with
-// the host datastore taken out.
+// Import benchmark for the ULog loader: drives the BUILT ulog_source_plugin over a real .ulg file with a host that
+// discards every record, so the numbers are the plugin's own cost (file read, ulog_cpp parse, decode, ABI calls).
 //
 //   ulog_import_bench [--values] [--plugin <path.so>] [file.ulg] [iterations]
 //
-// Defaults to the committed PX4 sample log, which is under 1 MB: use it to
-// check the benchmark runs, and pass a large flight log for numbers that mean
-// something. The record/value counts and the checksum are printed so a change
-// that is meant to be behaviour-neutral can be checked for it: the checksum
-// does not depend on the order records arrive in. `--values` also folds every
-// decoded value into it, which costs time in the sink, so use it to compare
-// two builds for equality and leave it off when timing. `--plugin` runs another
-// build of the plugin (for instance the one from main) through the same host.
+// Options and output are described in README.md. The record/value counts and the checksum let a behaviour-neutral
+// change be checked for equality; the checksum does not depend on record order.
 
 #include <pj_base/data_source_protocol.h>
 #include <pj_base/plugin_data_api.h>

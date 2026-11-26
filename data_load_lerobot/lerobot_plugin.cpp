@@ -29,10 +29,7 @@ using pj::arrow_helpers::arrowTypeToPrimitive;
 using pj::arrow_helpers::getArrowValueRef;
 using pj::arrow_helpers::isSupportedArrowType;
 
-// Per-row ns timestamp on the episode's 0-based clock. Uses the parquet
-// `timestamp` column when present, otherwise `frame_index / fps`. Each
-// episode is its own DatasetId so no cross-episode offset arithmetic is
-// needed.
+// Per-row ns on the episode's 0-based clock: the parquet `timestamp` column when present, else `frame_index / fps`.
 int64_t rowTimestampNs(bool has_ts, double ts_seconds, int64_t frame_index, double fps) {
   if (has_ts) {
     return static_cast<int64_t>(std::llround(ts_seconds * 1e9));
@@ -41,8 +38,7 @@ int64_t rowTimestampNs(bool has_ts, double ts_seconds, int64_t frame_index, doub
   return static_cast<int64_t>(std::llround(static_cast<double>(frame_index) / safe_fps * 1e9));
 }
 
-// Guard against an absurd `shape` in info.json blowing up into millions of
-// series (a vector feature in real datasets is a handful of elements).
+// Guards against an absurd `shape` in info.json producing millions of series.
 constexpr int kMaxVectorWidth = 4096;
 
 struct OutColumn {
@@ -83,8 +79,7 @@ int64_t readInt(const std::shared_ptr<arrow::Array>& a, int64_t row, int64_t fal
   }
 }
 
-// True for `list<float|double>` / `fixed_size_list<float|double>` columns
-// (LeRobot observation.state / action are stored this way).
+// `list<float|double>` / `fixed_size_list<float|double>`: how LeRobot stores observation.state / action.
 bool isFloatVectorColumn(const std::shared_ptr<arrow::DataType>& type) {
   std::shared_ptr<arrow::DataType> value_type;
   if (type->id() == arrow::Type::FIXED_SIZE_LIST) {
@@ -126,8 +121,7 @@ struct FloatVectorCell {
   }
 };
 
-// Resolve the child float values + [offset,width) for `row` of a
-// list/fixed_size_list float column. width==0 if the cell is null/empty.
+// width==0 if the cell is null/empty.
 FloatVectorCell floatVectorCell(const std::shared_ptr<arrow::Array>& array, int64_t row) {
   FloatVectorCell cell;
   std::shared_ptr<arrow::Array> child;
@@ -169,10 +163,8 @@ FloatVectorCell floatVectorCell(const std::shared_ptr<arrow::Array>& array, int6
   return cell;
 }
 
-// Demux-index a camera's MP4 once per distinct file. v3.0 fans out N episodes
-// that share one consolidated mp4 via __pj_fanout (sibling LeRobotSource
-// instances in the same process); the cache stops each from re-demuxing the
-// shared file. Thread-safe — fanout instances may run concurrently.
+// Indexes each distinct MP4 once: v3.0 fanout instances share one consolidated mp4, and the cache stops each from
+// re-demuxing it. Thread-safe, since fanout instances may run concurrently.
 PJ::Expected<std::shared_ptr<const PJ::video_demux::VideoIndex>> indexVideoCached(const std::string& path) {
   static std::mutex mutex;
   static std::unordered_map<std::string, std::shared_ptr<const PJ::video_demux::VideoIndex>> cache;
@@ -189,7 +181,7 @@ PJ::Expected<std::shared_ptr<const PJ::video_demux::VideoIndex>> indexVideoCache
   return shared;
 }
 
-/// LeRobot v2.1 dataset loader (numeric + per-camera video on one timeline).
+/// Imports one episode of a LeRobot v2.x / v3.0 dataset: numeric series plus per-camera video.
 class LeRobotSource : public PJ::FileSourceBase {
  public:
   PJ_borrowed_dialog_t getDialog() override {
@@ -197,9 +189,8 @@ class LeRobotSource : public PJ::FileSourceBase {
   }
 
   uint64_t extraCapabilities() const override {
-    // DirectIngest: numeric parquet series written via writeHost(). DelegatedIngest:
-    // per-camera video pushed as PJ.VideoFrame through a parser binding (the
-    // VideoFrame path). HasDialog: the episode/camera picker.
+    // DirectIngest: numeric series via writeHost(). DelegatedIngest: per-camera PJ.VideoFrame pushed through a
+    // parser binding.
     return PJ::kCapabilityDirectIngest | PJ::kCapabilityDelegatedIngest | PJ::kCapabilityHasDialog;
   }
 
@@ -221,10 +212,7 @@ class LeRobotSource : public PJ::FileSourceBase {
       return PJ::unexpected(err.empty() ? std::string("no LeRobot dataset loaded") : err);
     }
 
-    // Each LeRobotSource instance imports exactly one episode into its own
-    // DatasetId. FileLoader spawns N instances via `__pj_fanout` for an
-    // N-episode selection; this code path therefore only ever sees a single
-    // episode index in its config.
+    // The host spawns one instance per selected episode via `__pj_fanout`, so a config carries a single episode.
     const auto single_ep = dialog_.singleEpisode();
     if (!single_ep.has_value()) {
       return PJ::unexpected(std::string("LeRobot config missing required `episode` field"));
@@ -274,9 +262,8 @@ class LeRobotSource : public PJ::FileSourceBase {
       return st;
     }
     if (runtimeHost().isStopRequested()) {
-      // Stop but KEEP: the scalar rows parsed so far are already written, so return OK
-      // (the host's "Stop and Keep" flushes them) and skip the remaining work (video
-      // frames). Returning an error would drop the partial data on the fanout path.
+      // Stop but KEEP: return OK so the host's "Stop and Keep" flushes the rows already written (an error would
+      // drop them on the fanout path), and skip the video frames.
       return PJ::okStatus();
     }
 
@@ -381,8 +368,7 @@ class LeRobotSource : public PJ::FileSourceBase {
       const lerobot::DatasetModel& model, int64_t ep, const std::vector<OutColumn>& plan,
       parquet::arrow::FileReader& reader, const arrow::Schema& schema, const std::string& path,
       PJ::sdk::TopicHandle topic, int64_t& processed) {
-    // Resolve column names → Arrow index once per episode (tolerating schema
-    // drift across episodes); the row loop then indexes by position only.
+    // Column names -> Arrow index once per episode (tolerating schema drift across episodes).
     std::unordered_map<std::string, int> col_of;
     col_of.reserve(static_cast<std::size_t>(schema.num_fields()));
     for (int i = 0; i < schema.num_fields(); ++i) {
@@ -405,13 +391,9 @@ class LeRobotSource : public PJ::FileSourceBase {
     }
     std::shared_ptr<arrow::RecordBatchReader> batches = std::move(batches_result).ValueUnsafe();
 
-    // Resolve the row range to emit. v2.x → [0, length) (whole file is the
-    // episode); v3.0 → [dataset_from_index, dataset_to_index) from the shard
-    // map (one episode's slice inside a consolidated parquet that holds many).
-    // No "row_to == 0 means EOF" overload: an episode with row_from == row_to
-    // is a legitimate empty episode and emits no rows. When the episode is
-    // missing from the shard map entirely we fall through to a read-until-EOF
-    // range, which is the legacy v2.x behavior.
+    // Row range to emit: v2.x [0, length); v3.0 [dataset_from_index, dataset_to_index) inside the shared shard.
+    // row_from == row_to is a legitimate empty episode (no "row_to == 0 means EOF" overload); an episode missing
+    // from the shard map reads until EOF.
     int64_t row_from = 0;
     int64_t row_to = std::numeric_limits<int64_t>::max();
     if (auto sit = model.episode_shards.find(ep); sit != model.episode_shards.end()) {
@@ -429,14 +411,11 @@ class LeRobotSource : public PJ::FileSourceBase {
     while ((read_st = batches->ReadNext(&batch)).ok() && batch) {
       const int64_t n = batch->num_rows();
       const int64_t batch_end = batch_start + n;
-      // Trim the batch to [row_from, row_to). For v2.x with the default
-      // row_from=0 and row_to=int64_max this collapses to [0, n) and the
-      // loop is identical to the original whole-file iteration. For v3.0
-      // the slice typically straddles or sits inside the batch.
+      // Trim the batch to [row_from, row_to).
       const int64_t r_first = std::max<int64_t>(0, row_from - batch_start);
       const int64_t r_last = std::min<int64_t>(n, row_to - batch_start);
       if (r_first >= r_last) {
-        // Whole batch is outside the window — skip without touching arrays.
+        // Batch entirely outside the window.
         if (batch_end >= row_to) {
           break;
         }
@@ -452,9 +431,7 @@ class LeRobotSource : public PJ::FileSourceBase {
       for (int64_t r = r_first; r < r_last; ++r) {
         const bool has_ts = ts_arr != nullptr && !ts_arr->IsNull(r);
         const double sec = has_ts ? readSeconds(ts_arr, r) : 0.0;
-        // Frame index inside the *episode*: relative to row_from so v3.0
-        // episodes see frame_index starting at 0 just like v2.x, regardless
-        // of where the slice sits inside the consolidated parquet.
+        // Relative to row_from so v3.0 episodes start at frame_index 0 like v2.x.
         const int64_t episode_row = (batch_start + r) - row_from;
         const int64_t fi = fidx_arr != nullptr ? readInt(fidx_arr, r, episode_row) : episode_row;
         const int64_t ts_ns = rowTimestampNs(has_ts, sec, fi, model.fps);
@@ -494,9 +471,7 @@ class LeRobotSource : public PJ::FileSourceBase {
         break;
       }
       if (runtimeHost().isStopRequested()) {
-        // Stop but KEEP the rows written so far (break, not return-error), so the
-        // host's "Stop and Keep" flushes the partial data instead of dropping it on
-        // the multi-file/fanout path.
+        // Stop but KEEP the rows written so far (break, not an error), so "Stop and Keep" flushes them.
         break;
       }
     }
@@ -506,18 +481,11 @@ class LeRobotSource : public PJ::FileSourceBase {
     return PJ::okStatus();
   }
 
-  // Per-camera lazy PJ.VideoFrame entries over the episode's MP4. The container is
-  // demux-indexed once (no decode); each access unit is pushed as a lazy entry
-  // whose bytes are read from the file on demand (never fully resident). The
-  // host's streaming decoder drives playback from these per-frame entries.
-  //
-  // Timeline: each episode is its own DatasetId starting at t=0 (rowTimestampNs
-  // above). v2.x — the whole mp4 is the episode, rebased to its first DTS. v3.0
-  // — the mp4 is shared across episodes; this episode is the presentation window
-  // [start_ns, end_ns) (VideoShard, in the file's PTS clock). We start at the
-  // keyframe at-or-before start_ns so a mid-GOP window still decodes (the
-  // pre-window frames carry negative episode-local timestamps the tracker never
-  // visits) and rebase so the frame at start_ns lands on t=0.
+  // Per-camera lazy PJ.VideoFrame entries: the MP4 is demux-indexed once (no decode) and each access unit is
+  // pushed as an entry whose bytes are read from the file on demand. Each episode starts at t=0: v2.x rebases the
+  // whole mp4 to its first DTS; v3.0 emits the episode's presentation window [start_ns, end_ns) of the shared mp4,
+  // starting at the keyframe at-or-before start_ns (so a mid-GOP window decodes; pre-window frames get negative
+  // timestamps the tracker never visits) and rebasing so start_ns lands on 0. See lerobot_video_window.hpp.
   PJ::Status importVideoFrames(const lerobot::DatasetModel& model, int64_t ep) {
     if (model.camera_names.empty()) {
       return PJ::okStatus();
@@ -537,9 +505,7 @@ class LeRobotSource : public PJ::FileSourceBase {
       }
       const PJ::video_demux::VideoIndex& idx = **idx_or;
       if (idx.units.empty()) {
-        // Unreachable for a successful index (indexFile errors on zero packets),
-        // but keep the guard defensive and non-silent — matching the warn-and-skip
-        // convention used for unsupported numeric columns above.
+        // Unreachable after a successful index (indexFile errors on zero packets); kept as a non-silent guard.
         runtimeHost().reportMessage(
             PJ::DataSourceMessageLevel::kWarning, "LeRobot: camera '" + cam + "' has no video packets; skipping");
         continue;
@@ -552,9 +518,6 @@ class LeRobotSource : public PJ::FileSourceBase {
         }
       }
 
-      // Resolve which decode-order slice to emit + the rebase origin. v2.x has no
-      // window (whole file); v3.0 carries the [start_ns, end_ns) presentation
-      // window inside the shared file. See lerobot_video_window.hpp.
       std::optional<int64_t> window_start;
       std::optional<int64_t> window_end;
       if (video_shard != nullptr && video_shard->start_ns.has_value()) {
@@ -576,16 +539,14 @@ class LeRobotSource : public PJ::FileSourceBase {
       }
       const PJ::ParserBindingHandle binding = *binding_or;
 
-      // Shared, lazily-opened reader: each fetch reads exactly one access unit.
-      // Captured by shared_ptr so it outlives this importData() call.
+      // Each fetch reads one access unit; the shared_ptr keeps the reader alive past importData().
       auto reader =
           PJ::video_demux::LazyAccessUnitReader::create(path, idx.format, idx.param_sets, idx.nal_length_size);
       const std::string fmt = idx.format;
 
       for (std::size_t i = slice.first_idx; i <= slice.last_idx; ++i) {
         const PJ::video_demux::AccessUnit au = idx.units[i];
-        // ObjectStore key is DTS-based (monotonic decode order); the embedded
-        // VideoFrame.timestamp is PTS-based (presentation). Both episode-local.
+        // The ObjectStore key is DTS-based (monotonic); the embedded VideoFrame.timestamp is PTS-based.
         const int64_t host_ts = au.dts_ns - slice.origin_ns;
         const int64_t pts_ts = au.pts_ns - slice.origin_ns;
         auto status = runtimeHost().pushMessage(

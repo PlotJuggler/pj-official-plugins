@@ -19,8 +19,7 @@ extern "C" {
 
 namespace {
 
-/// Parsed metadata of one MP4 file. The plugin opens the container, reads
-/// these fields, and closes — no frames are decoded.
+/// Read by opening the container and closing it again; no frame is decoded.
 struct Mp4Metadata {
   std::optional<int64_t> creation_time_ns;  // epoch ns; nullopt if absent / unparseable
 };
@@ -45,16 +44,14 @@ struct Mp4Metadata {
   return meta;
 }
 
-/// Generic MP4 loader: demux-indexes the container (no decode) and pushes one
-/// LAZY sdk::VideoFrame per access unit through a PJ.VideoFrame parser binding.
-/// Each entry's bitstream is read from the file on demand
-/// (pj_video_demux::LazyAccessUnitReader), so the whole video never lands on the
-/// heap. Codecs: H.264 / H.265 / AV1 (matching the host streaming decoder); any
-/// other codec surfaces a clear error from indexFile().
+/// Demux-indexes the container (no decode) and pushes one lazy sdk::VideoFrame
+/// per access unit through a PJ.VideoFrame parser binding. Each bitstream is
+/// read from the file on demand (pj_video_demux::LazyAccessUnitReader), so the
+/// whole video never lands on the heap. Codecs: H.264 / H.265 / AV1 (the host
+/// streaming decoder's); any other fails in indexFile().
 class Mp4Source : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
-    // Lazy VideoFrame entries are pushed through a parser binding (delegated).
     return PJ::kCapabilityDelegatedIngest;
   }
 
@@ -79,7 +76,6 @@ class Mp4Source : public PJ::FileSourceBase {
   }
 
  private:
-  /// Lazy per-frame PJ.VideoFrame entries over the original file.
   PJ::Status importVideoFrames() {
     auto idx_or = PJ::video_demux::indexFile(filepath_);
     if (!idx_or) {
@@ -98,8 +94,8 @@ class Mp4Source : public PJ::FileSourceBase {
     const int64_t origin_ns = creation_time_ns.value_or(0);
     const int64_t base_dts_ns = idx.units.front().dts_ns;
 
-    // Bind the protobuf parser for PJ.VideoFrame (descriptor-free canonical
-    // fast path). The host unwraps each pushed entry via deserializeVideoFrameView.
+    // Descriptor-free canonical fast path: the host unwraps each pushed entry via
+    // deserializeVideoFrameView.
     auto binding_or = runtimeHost().ensureParserBinding({
         .topic_name = "video",
         .parser_encoding = "protobuf",
@@ -112,17 +108,16 @@ class Mp4Source : public PJ::FileSourceBase {
     }
     const PJ::ParserBindingHandle binding = *binding_or;
 
-    // Shared, lazily-opened reader: each fetch reads exactly one access unit
-    // from the file. Captured by shared_ptr so it outlives this call.
+    // Each fetch reads one access unit; the shared_ptr keeps the reader alive past this call.
     auto reader =
         PJ::video_demux::LazyAccessUnitReader::create(filepath_, idx.format, idx.param_sets, idx.nal_length_size);
     const std::string frame_id = "camera";
     const std::string fmt = idx.format;
 
     for (const PJ::video_demux::AccessUnit& au : idx.units) {
-      // ObjectStore key is DTS-based (monotonic decode order); the embedded
-      // VideoFrame.timestamp is PTS-based (presentation). Both rebased to the
-      // creation_time anchor (or to 0 when the file has no creation_time).
+      // The ObjectStore key is DTS-based (monotonic decode order); the embedded
+      // VideoFrame.timestamp is PTS-based (presentation). Both are rebased to the
+      // creation_time anchor, or to 0 when the file has none.
       const int64_t host_ts = origin_ns + (au.dts_ns - base_dts_ns);
       const int64_t pts_ts = origin_ns + (au.pts_ns - base_dts_ns);
 

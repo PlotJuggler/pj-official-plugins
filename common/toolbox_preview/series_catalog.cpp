@@ -35,11 +35,11 @@ std::optional<SeriesCatalog::ArrowSeriesRef> SeriesCatalog::openSeries(
   if (ts_col == nullptr || val_col == nullptr || ts_col->n_buffers < 2 || val_col->n_buffers < 2) {
     return std::nullopt;
   }
-  // Trust the catalog type only as far as the payload agrees with it: decoding a mismatch
-  // reads the buffer at the wrong width, which is silent garbage rather than a failure.
-  // This reaches into the SDK's detail:: namespace because the public wrapper that exposes
-  // the same mapping (MaterializedSeriesView::type) takes ownership of the holders and
-  // hides the raw buffers we still need for validity, bool bits and the slice offset.
+  // Trust the catalog type only as far as the payload agrees with it: decoding a mismatch reads
+  // the buffer at the wrong width, which is silent garbage rather than a failure. This reaches
+  // into the SDK's detail:: namespace because the public wrapper for the same mapping
+  // (MaterializedSeriesView::type) takes ownership of the holders and hides the raw buffers still
+  // needed for validity, bool bits and the slice offset.
   if (PJ::sdk::detail::formatToPrimitiveType(schema->children[1]->format) != type) {
     return std::nullopt;
   }
@@ -92,13 +92,12 @@ bool SeriesCatalog::refresh(const PJ::sdk::ToolboxHostView& host) {
     const std::string topic_name(PJ::sdk::toStringView(topic.name));
     for (uint32_t fi = topic.first_field; fi < topic.first_field + topic.field_count; ++fi) {
       const auto& f = all_fields[fi];
-      // Key with markerSeriesKey so it matches the plot overlay's per-series key exactly
-      // (so per-series markers land on the right curve). It is the canonical "topic/field"
-      // series key, not marker-specific data.
+      // markerSeriesKey is the canonical "topic/field" series key; it must match the plot
+      // overlay's per-series key exactly so per-series markers land on the right curve.
       std::string name = PJ::sdk::markerSeriesKey(topic_name, PJ::sdk::toStringView(f.name));
       const PJ::PrimitiveType type = PJ::sdk::fromAbiType(f.type);
-      // Filter BEFORE the read, not after: a text topic would otherwise be materialised in
-      // full only to be thrown away.
+      // Filter BEFORE the read: a text topic would otherwise be materialised in full only to be
+      // thrown away.
       if (!isPlottableType(type)) {
         continue;
       }
@@ -108,7 +107,7 @@ bool SeriesCatalog::refresh(const PJ::sdk::ToolboxHostView& host) {
       }
     }
   }
-  ++data_revision_;  // every series was re-read → invalidate any cached derived view
+  ++data_revision_;
   return true;
 }
 
@@ -124,10 +123,9 @@ bool SeriesCatalog::refreshStructureIfChanged(const PJ::sdk::ToolboxHostView& ho
   for (const auto& topic : catalog->topics()) {
     sig = (sig ^ (static_cast<std::uint64_t>(topic.source.id) << 32 | topic.field_count)) * 1099511628211ull;
   }
-  // Field handle + TYPE, not just the per-topic count. Reloading a different file over the
-  // same source/topic shape can retype a field without moving any count, and the source
-  // list is now type-filtered — so a signature blind to types would leave the filter
-  // frozen on the previous file's types.
+  // Field handle + TYPE, not just the per-topic count: reloading a different file over the same
+  // source/topic shape can retype a field without moving any count, and the source list is
+  // type-filtered.
   for (const auto& f : catalog->fields()) {
     sig = (sig ^ ((static_cast<std::uint64_t>(f.handle.id) << 8) | static_cast<std::uint64_t>(f.type))) *
           1099511628211ull;
@@ -140,8 +138,7 @@ bool SeriesCatalog::refreshStructureIfChanged(const PJ::sdk::ToolboxHostView& ho
 }
 
 bool SeriesCatalog::refreshSelectedSourceData(const PJ::sdk::ToolboxHostView& host, const std::string& selected) {
-  // The cadence policy lives in source_poll_ (read every tick while the source moves, back
-  // off when it is static); this method is just the read mechanism.
+  // The cadence policy lives in source_poll_.
   if (!source_poll_.shouldRead()) {
     return false;
   }
@@ -153,14 +150,13 @@ bool SeriesCatalog::refreshSelectedSourceData(const PJ::sdk::ToolboxHostView& ho
     return false;  // never materialised (unreadable, or not snapshotted yet)
   }
   if (selected != last_source_name_) {
-    last_source_name_ = selected;  // new selection -> force a fresh read below
+    last_source_name_ = selected;  // new selection: force a fresh read below
     last_source_count_ = 0;
     last_source_last_ts_ = 0.0;
     source_poll_.reset();
   }
-  // Open the Arrow payload but DON'T decode yet: this runs at the panel tick rate while
-  // most polls find nothing new, and decoding first would allocate and fill two vectors
-  // the size of the whole series only to throw them away.
+  // Open the Arrow payload but DON'T decode yet: this runs at the panel tick rate and most polls
+  // find nothing new, so decoding first would allocate two whole-series vectors for nothing.
   PJ::sdk::ArrowSchemaHolder schema;
   PJ::sdk::ArrowArrayHolder array;
   if (!host.readSeriesArrow(cached_it->second.handle, schema.out(), array.out())) {
@@ -172,8 +168,8 @@ bool SeriesCatalog::refreshSelectedSourceData(const PJ::sdk::ToolboxHostView& ho
   }
   const double last_ts = static_cast<double>(ref->timestamps[ref->count - 1]);
   if (ref->count == last_source_count_ && last_ts == last_source_last_ts_) {
-    source_poll_.observe(false);  // unchanged -> let the cadence back off
-    return false;                 // no new samples -> leave the (frozen) preview as is
+    source_poll_.observe(false);
+    return false;
   }
 
   SeriesData data;
@@ -184,11 +180,11 @@ bool SeriesCatalog::refreshSelectedSourceData(const PJ::sdk::ToolboxHostView& ho
           data.values)) {
     return false;
   }
-  source_poll_.observe(true);  // moving -> keep reading every tick for a smooth follow
+  source_poll_.observe(true);
   last_source_count_ = ref->count;
   last_source_last_ts_ = last_ts;
   cached_it->second = std::move(data);
-  ++data_revision_;  // new samples for the selected source → invalidate the cached curve/overlay
+  ++data_revision_;
   return true;
 }
 

@@ -1,9 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Codex backend: the command-line lock, the fake-CLI resume/translation
-// tests, the parser (codex_stream.hpp), and the live opt-in smoke — mirrors
-// claude_smoke_test.cpp's structure for the Codex harness.
+// Codex backend: the command-line lock, fake-CLI resume/translation tests, the parser
+// (codex_stream.hpp) and the live opt-in smoke; mirrors claude_smoke_test.cpp.
 #include "codex_backend.hpp"
 
 #include <gtest/gtest.h>
@@ -35,15 +34,11 @@ using assistant_agent::TurnTools;
 using assistant_agent::testing::runListTopicsSmoke;
 using assistant_agent::testing::toolsFor;
 
-// The one thing about this backend that is not a preference.
-//
-// Codex has no `--tools ""` equivalent: every call, ours included, runs
-// inside Code Mode (a JavaScript host with no `require`, `process` or
-// `fetch`), so disabling it would also disable our own MCP tools -- it stays
-// on by construction. What withholds the rest of the machine is the four `-c`
-// lines (shell_tool, unified_exec, web_search, view_image) plus the seven
-// `--disable`s, `sandbox_mode="read-only"` and `approval_policy="never"`.
-// Take any of them away and this plugin's Codex-backed assistant gains a
+// The one non-negotiable part of this backend. Codex has no `--tools ""` equivalent: every call,
+// ours included, runs inside Code Mode (a JavaScript host with no `require`, `process` or `fetch`),
+// so disabling it would disable our MCP tools too. What withholds the rest of the machine is the four
+// `-c` lines (shell_tool, unified_exec, web_search, view_image) plus the seven `--disable`s,
+// `sandbox_mode="read-only"` and `approval_policy="never"`; dropping any gives the assistant a
 // built-in capability nothing here asked for.
 TEST(CodexBackendCommandLine, WithholdsEveryBuiltInTool) {
   const std::vector<std::string> argv = assistant_agent::buildCodexArgv(
@@ -68,8 +63,7 @@ TEST(CodexBackendCommandLine, WithholdsEveryBuiltInTool) {
        {"view_image", "memories", "shell_snapshot", "multi_agent", "plugins", "apps", "skill_search"}) {
     EXPECT_TRUE(has(disabled)) << disabled << " is missing from the --disable list";
   }
-  // Every --disable value above must actually follow a --disable flag, not
-  // just appear somewhere in argv by coincidence.
+  // Every --disable value must follow a --disable flag, not merely appear in argv.
   for (const char* disabled :
        {"view_image", "memories", "shell_snapshot", "multi_agent", "plugins", "apps", "skill_search"}) {
     const auto at = std::find(argv.begin(), argv.end(), std::string(disabled));
@@ -86,16 +80,15 @@ TEST(CodexBackendCommandLine, WithholdsEveryBuiltInTool) {
   ASSERT_FALSE(argv.empty());
   EXPECT_EQ(argv.back(), "-") << "the prompt must be read from stdin, marked by a trailing '-'";
 
-  // The bearer token itself must never appear in argv (/proc/<pid>/cmdline is
-  // world-readable) -- only the env VAR NAME does, via bearer_token_env_var.
+  // The bearer token must never appear in argv (/proc/<pid>/cmdline is readable); only the env VAR
+  // NAME does, via bearer_token_env_var.
   for (const auto& entry : argv) {
     EXPECT_EQ(entry.find("secret-token-value"), std::string::npos);
   }
 }
 
-// A Windows path handed to model_instructions_file must not be read by
-// Codex's own TOML parser as escape sequences (`\U...` among them): the
-// backslash has to survive as a literal backslash, doubled.
+// A Windows path handed to model_instructions_file must not be read by Codex's TOML parser as escape
+// sequences (`\U...`): the backslash must survive, doubled.
 TEST(CodexBackendCommandLine, EscapesBackslashesInTomlValues) {
   const std::vector<std::string> argv = assistant_agent::buildCodexArgv(
       "codex", "/tmp/work", "http://127.0.0.1:1234/mcp", "PJ_ASSISTANT_MCP_TOKEN", R"(C:\Users\x\f.md)", "", "");
@@ -123,13 +116,8 @@ TEST(CodexBackendCommandLine, DashCPresentOnlyWhenNotResuming) {
   EXPECT_EQ(resumed[3], "thread-123");
 }
 
-// testConnection() now goes through locateCli() instead of execvp-ing the
-// configured name directly, so a CLI nowhere on PATH (and nowhere in any of
-// the fallback directories) fails with the directories it tried, not the
-// opaque "exited 127" execvp used to leave behind. locateCli() has a real
-// search on both POSIX and Windows now (see cli_locator.hpp); only truly
-// exotic platforms fall back to the stub that searches nothing, so this is
-// gated the same way the rest of the fake-CLI-adjacent tests are.
+// testConnection() resolves through locateCli(), so a CLI found nowhere fails with the directories
+// it tried, not an opaque "exited 127". Gated: other platforms use a stub that searches nothing.
 #if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 TEST(CodexBackendConnection, NotFoundNamesEverySearchedDirectory) {
   CodexBackend backend("codex-que-no-existe", "");
@@ -152,8 +140,6 @@ TEST(CodexBackendCommandLine, ModelFlagOmittedWhenEmpty) {
   ASSERT_NE(std::next(m), with_model.end());
   EXPECT_EQ(*std::next(m), "gpt-5-codex");
 }
-
-// --- codex_stream.hpp: parseCodexLine, one event per shape -----------------
 
 TEST(ParseCodexLine, ThreadStartedCapturesSessionId) {
   const CodexEvent ev = parseCodexLine(R"({"type":"thread.started","thread_id":"01a06602-abc"})");
@@ -229,8 +215,7 @@ TEST(ParseCodexLine, AgentMessageIsAssistantText) {
 }
 
 TEST(ParseCodexLine, StartupNoticeItemIsAnErrorItemRegardlessOfPosition) {
-  // The parser does not know about turn order -- that's CodexBackend's job
-  // (`in_turn`). It just reports what the record says.
+  // The parser knows nothing of turn order (CodexBackend's `in_turn`); it reports the record.
   const CodexEvent ev = parseCodexLine(
       R"({"type":"item.completed","item":{"id":"item_0","type":"error",)"
       R"("message":"Code Mode is unavailable because code-mode host is disabled."}})");
@@ -268,8 +253,6 @@ TEST(ParseCodexLine, MalformedJsonIsIgnoredNeverThrows) {
   EXPECT_EQ(parseCodexLine(R"({"type":"something.unheard.of"})").kind, CodexEvent::Kind::Ignored);
 }
 
-// --- CodexBackend, against a fake CLI (never spawns the real one) ----------
-
 #if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 namespace {
 
@@ -294,8 +277,7 @@ std::vector<BackendEvent> runOneCodexTurnAgainst(const std::vector<std::string>&
 
 }  // namespace
 
-// Verbatim what the CLI does for `resume <id>` when it has no such thread:
-// exit 1, stdout completely empty (the reason is on stderr only, discarded).
+// What the CLI does for `resume <id>` with no such thread: exit 1, empty stdout (reason on stderr only).
 TEST(CodexBackendResume, ResumingWithEmptyStdoutAndExit1MeansTheThreadIsGone) {
   const auto events = runOneCodexTurnAgainst({}, /*exit_code=*/1, /*resuming=*/true);
   const BackendEvent* err = firstError(events);
@@ -323,7 +305,7 @@ TEST(CodexBackendResume, ResumingWithThreadStartedThenExit1IsAnOrdinaryError) {
 TEST(CodexBackendSuccess, ACleanTurnEmitsToolActivityAssistantTextMetricsThenComplete) {
   const std::vector<std::string> lines = {
       R"({"type":"thread.started","thread_id":"sess-new"})",
-      // A startup notice BEFORE turn.started -- must not surface as an Error.
+      // A startup notice BEFORE turn.started must not surface as an Error.
       R"({"type":"item.completed","item":{"id":"item_x","type":"error",)"
       R"("message":"Code Mode is unavailable because code-mode host is disabled."}})",
       R"({"type":"turn.started"})",
@@ -358,9 +340,8 @@ TEST(CodexBackendSuccess, ACleanTurnEmitsToolActivityAssistantTextMetricsThenCom
     kinds.push_back(e.kind);
   }
   ASSERT_GE(kinds.size(), 4u);
-  // ToolActivity (started), AssistantText (pong), Metrics, TurnComplete, in
-  // that relative order -- the completed tool call is a ToolResult, not a
-  // second ToolActivity.
+  // ToolActivity (started), AssistantText (pong), Metrics, TurnComplete, in that relative order; the
+  // completed tool call is a ToolResult, not a second ToolActivity.
   const auto tool_at = std::find(kinds.begin(), kinds.end(), BackendEvent::Kind::ToolActivity);
   const auto text_at = std::find(kinds.begin(), kinds.end(), BackendEvent::Kind::AssistantText);
   const auto metrics_at = std::find(kinds.begin(), kinds.end(), BackendEvent::Kind::Metrics);
@@ -384,7 +365,7 @@ TEST(CodexBackendSuccess, ACleanTurnEmitsToolActivityAssistantTextMetricsThenCom
   EXPECT_EQ(memory->session_id, "sess-new");
 }
 
-// The live smoke's own verdict, against the stream a CLI that got an answer prints: it passes.
+// The live smoke's verdict on the stream of a CLI that got an answer: pass.
 TEST(CodexBackendSuccess, TheSmokeVerdictAcceptsAnAnsweredListTopicsCall) {
   const std::string cli = writeFakeCliScript(
       {R"({"type":"thread.started","thread_id":"sess-new"})", R"({"type":"turn.started"})",
@@ -423,8 +404,7 @@ TEST(CodexBackendSuccess, AFailedToolCallIsAFailedToolResult) {
 
 #endif  // POSIX / Windows
 
-// The conversation lives in the LENT memory, not in the backend object,
-// exactly like ClaudeBackend's own pin (claude_smoke_test.cpp).
+// The conversation lives in the LENT memory, not the backend object (see claude_smoke_test.cpp).
 TEST(CodexBackend, ConversationMemorySurvivesARebuild) {
   auto memory = std::make_shared<HarnessMemory>();
   {
@@ -450,10 +430,8 @@ TEST(CodexBackend, ATurnWithoutAnEndpointFailsWithItsReasonAndRunsNoCli) {
   EXPECT_EQ(events[1].kind, BackendEvent::Kind::TurnComplete);
 }
 
-// --- Live opt-in smoke ------------------------------------------------------
-
-// Guarded like the fake-CLI cases above: it spawns the real `codex`, and
-// runProcess() spawns only on POSIX and Windows.
+// Spawns the real `codex`; guarded like the fake-CLI cases since runProcess() spawns only on POSIX
+// and Windows.
 #if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 TEST(CodexSmoke, ListTopicsThroughMcp) {
   const std::optional<std::string> enabled = PJ::sdk::getEnv("ASSISTANT_CODEX_SMOKE");
@@ -470,17 +448,16 @@ TEST(CodexSmoke, ListTopicsThroughMcp) {
 }
 #endif
 
-// The same recording as ClaudeBackendPayload (claude_smoke_test.cpp): the
-// composed payload on stdin, and the instructions -- written to the file
-// model_instructions_file names -- carrying the product policy.
+// As ClaudeBackendPayload (claude_smoke_test.cpp): the composed payload on stdin, and the instructions
+// (in the model_instructions_file) carrying the product policy.
 #if defined(__unix__) || defined(__APPLE__)
 using assistant_agent::testing::kTestCatalog;
 using assistant_agent::testing::kTestFeatures;
 using assistant_agent::testing::payloadTestTools;
 using assistant_agent::testing::RecordingCliCleanup;
 
-// The instructions file a recorded argv names, read while the backend that
-// wrote it is still alive (its destructor unlinks it).
+// The instructions file a recorded argv names, read while the backend is alive (its destructor
+// unlinks it).
 std::string instructionsFrom(const std::string& argv) {
   const std::string key = "model_instructions_file=\"";
   const std::size_t at = argv.find(key);

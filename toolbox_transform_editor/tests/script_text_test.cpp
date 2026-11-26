@@ -12,8 +12,6 @@
 using namespace derived_recipes;
 using namespace transform_editor::text;
 
-// --- Variable names ---
-
 TEST(ScriptText, VariablePrologueBindsOneLocalPerInput) {
   const std::vector<InputBinding> bindings = {{"cloud", "/lidar_top"}, {"x", "pose/x"}};
   EXPECT_EQ(
@@ -54,8 +52,6 @@ TEST(ScriptText, ObjectTypeLabelsAreReadable) {
   EXPECT_EQ(objectTypeLabel("number"), "number");
   EXPECT_EQ(objectTypeLabel("kNotAType"), "kNotAType");
 }
-
-// --- Code tokens ---
 
 namespace {
 
@@ -128,8 +124,6 @@ TEST(ScriptText, ReturnArityIgnoresLuauLongStringsAndPythonTripleQuotes) {
   EXPECT_EQ(returnArity("return \"\"\"x, y\"\"\", z", "python"), 2u);
 }
 
-// --- Identifiers ---
-
 TEST(ScriptText, MentionsIdentifierSkipsStringsCommentsFieldsKeysAndKeywordArguments) {
   EXPECT_TRUE(mentionsIdentifier("return value + 1", "luau", "value"));
   EXPECT_FALSE(mentionsIdentifier("return values + 1", "luau", "value"));
@@ -199,8 +193,6 @@ TEST(ScriptText, VarNameErrorNamesTheReason) {
   EXPECT_TRUE(isReservedScriptName("class"));
   EXPECT_FALSE(isReservedScriptName("cloud"));
 }
-
-// --- Script layout and error lines ---
 
 TEST(ScriptText, LuauOnDemandLayoutPointsAtTheBodyAndTheGlobals) {
   ResolvedEvalInputs resolved;

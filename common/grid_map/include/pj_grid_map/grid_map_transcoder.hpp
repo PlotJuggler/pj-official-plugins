@@ -1,6 +1,5 @@
-// pj_grid_map — grid-map message -> sdk::GridMap conversion shared by the
-// message parsers (parser_ros: grid_map_msgs/GridMap + foxglove_msgs/Grid,
-// parser_protobuf: foxglove.Grid). Qt-free; depends only on pj_base types.
+// pj_grid_map — grid-map message -> sdk::GridMap conversion shared by the message parsers
+// (parser_ros: grid_map_msgs/GridMap + foxglove_msgs/Grid, parser_protobuf: foxglove.Grid).
 //
 // Copyright 2026 PlotJuggler contributors
 // SPDX-License-Identifier: MIT

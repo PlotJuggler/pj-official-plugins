@@ -29,7 +29,6 @@ struct PendingDiagnostic {
   uint64_t occurrences = 1;
 };
 
-/// Return whether two diagnostic lists contain identical code/message pairs in the same order.
 [[nodiscard]] bool sameDiagnostics(
     const std::vector<PendingDiagnostic>& current, const std::vector<ShapeWarning>& previous) noexcept {
   if (current.size() != previous.size()) {
@@ -49,7 +48,6 @@ struct PendingDiagnostic {
   return column.format.size() >= marker.size() && column.format.ends_with(marker);
 }
 
-/// Build the bounded human-readable warning for Arrow columns removed before host ingest.
 [[nodiscard]] std::string droppedColumnsMessage(const std::vector<DroppedColumn>& columns) {
   bool has_unsupported = false;
   bool has_empty_first_batch = false;
@@ -89,7 +87,7 @@ struct PendingDiagnostic {
   return message;
 }
 
-/// Report a changed ordered diagnostic set without making allocation or host-reporting failures fatal to parsing.
+/// Reports only when the ordered diagnostic set changed; allocation or reporting failures never fail parsing.
 void reportDiagnosticsIfChanged(
     const PJ::sdk::ParserRuntimeHostView& runtime_host, const pj::parser_arrow::ShapedStream& shaped,
     std::vector<ShapeWarning>& last_diagnostics) noexcept {
@@ -141,7 +139,6 @@ void reportDiagnosticsIfChanged(
   }
 }
 
-/// User-configurable shaping and timestamp options for Arrow IPC streams.
 struct ArrowParserConfig {
   std::string timestamp_column;
   bool flatten_structs = true;
@@ -150,10 +147,8 @@ struct ArrowParserConfig {
   PJ::sdk::ArrayLimit array_limit;
 };
 
-/// Message parser scaffold for self-describing Arrow IPC streams.
 class ArrowParser : public PJ::MessageParserPluginBase {
  public:
-  /// Bind a self-describing IPC stream type and register its scalar or canonical object classification.
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema_bytes) override {
     if (auto status = MessageParserPluginBase::bindSchema(type_name, schema_bytes); !status) {
       return status;
@@ -180,7 +175,6 @@ class ArrowParser : public PJ::MessageParserPluginBase {
     return PJ::okStatus();
   }
 
-  /// Load parser options from the JSON configuration contract.
   PJ::Status loadConfig(std::string_view config_json) override {
     const auto parsed = nlohmann::json::parse(config_json, nullptr, false);
     if (parsed.is_discarded() || !parsed.is_object()) {
@@ -205,7 +199,6 @@ class ArrowParser : public PJ::MessageParserPluginBase {
     return PJ::okStatus();
   }
 
-  /// Serialize all parser options to the JSON configuration contract.
   [[nodiscard]] std::string saveConfig() const override {
     nlohmann::json saved{
         {"timestamp_column", config_.timestamp_column},
@@ -217,11 +210,9 @@ class ArrowParser : public PJ::MessageParserPluginBase {
     return saved.dump();
   }
 
-  /// Decode, shape, diagnose, and bulk-ingest one self-describing Arrow IPC stream.
   PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override {
     if (mosaico::isCanonicalObjectOntology(ontology_tag_)) {
-      // Object materialization is functional and driven by the host. Do not
-      // push another object here: the host stores this raw message itself.
+      // The host materializes objects itself from the stored raw message; pushing one here would duplicate it.
       auto table = pj::parser_arrow::decodeIpcTable(payload);
       if (!table) {
         return PJ::unexpected(table.error());
@@ -263,8 +254,8 @@ class ArrowParser : public PJ::MessageParserPluginBase {
     if (shaped->has_data) {
       status = writeHost().appendArrowStream(std::move(shaped->stream), shaped->timestamp_column);
     } else {
-      // An empty list message is recoverable. Still drain it: later IPC batch
-      // corruption and invalid timestamps must not turn into a successful import.
+      // An empty list message is recoverable, but it is still drained so later IPC batch corruption and invalid
+      // timestamps do not turn into a successful import.
       while (true) {
         PJ::sdk::ArrowArrayHolder batch;
         const int result = shaped->stream.get()->get_next(shaped->stream.get(), batch.out());

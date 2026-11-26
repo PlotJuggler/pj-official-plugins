@@ -7,7 +7,7 @@
 
 namespace {
 
-// 2026-05-21T10:00:00 UTC == 1779357600 epoch seconds (verified independently).
+// 2026-05-21T10:00:00 UTC in epoch seconds.
 constexpr int64_t kExpectedSec = 1779357600LL;
 constexpr int64_t kExpectedNs = kExpectedSec * 1'000'000'000LL;
 
@@ -28,8 +28,7 @@ TEST(ParseIso8601, AcceptsWithoutFractionalSeconds) {
 }
 
 TEST(ParseIso8601, AcceptsMissingTimezoneAsUtc) {
-  // The SDK parser reads a timezone-less stamp as UTC (FFmpeg always writes
-  // the trailing Z in practice, so runtime behavior is unchanged).
+  // A timezone-less stamp is read as UTC (FFmpeg always writes the trailing Z).
   const auto ns = PJ::parseIso8601Utc("2026-05-21T10:00:00.123456");
   ASSERT_TRUE(ns.has_value());
   EXPECT_EQ(*ns, kExpectedNs + 123'456'000LL);

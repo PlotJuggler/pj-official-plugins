@@ -90,14 +90,12 @@ TEST(McapDialogTest, ForceIncludesOnlyWhitelistedNonEmptyChannels) {
   McapDialog dialog;
   nlohmann::json cfg;
   cfg["filepath"] = std::string(MCAP_TEST_DATA_DIR) + "/test_dialog_whitelist.mcap";
-  // Saved selection predates this feature and omits everything except one
-  // ordinary topic -- as if loading an old layout.
+  // A saved selection that omits everything except one ordinary topic, as an old layout would.
   cfg["selected_topics"] = std::vector<std::string>{"/sensor/value2"};
 
   ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
 
-  // Pin the fixture: all five channels must be present in the analyzed table,
-  // otherwise the negative assertions below would pass vacuously.
+  // Pin the fixture: all five channels must be in the analyzed table, or the negative assertions below pass vacuously.
   const auto data = nlohmann::json::parse(dialog.widget_data());
   std::set<std::string> row_topics;
   for (const auto& row : data["tableWidget"]["rows"]) {
@@ -165,8 +163,7 @@ TEST(McapDialogTest, HostReportedSelectionOmittingWhitelistIsOverridden) {
   cfg["filepath"] = std::string(MCAP_TEST_DATA_DIR) + "/test_dialog_whitelist.mcap";
   ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
 
-  // Simulate the host reporting a selection that omits /tf and transforms --
-  // the dialog must add them back regardless.
+  // The host reports a selection that omits /tf and transforms: the dialog must add them back regardless.
   EXPECT_TRUE(dialog.onSelectionChanged("tableWidget", {"/sensor/value2"}));
 
   const auto& selected = dialog.selectedTopics();
@@ -175,16 +172,10 @@ TEST(McapDialogTest, HostReportedSelectionOmittingWhitelistIsOverridden) {
   EXPECT_TRUE(selected.count("/sensor/value2") > 0);
 }
 
-// ---------------------------------------------------------------------------
-// Analysis failures must be visible.
-//
-// A file the reader cannot open leaves the picker with no rows and OK
-// disabled. Without an explanation that reads as "this recording has no
-// topics" rather than "this file is unreadable".
-// ---------------------------------------------------------------------------
+// Analysis failures must be visible: a file the reader cannot open leaves the picker with no rows and OK disabled,
+// which without an explanation reads as "this recording has no topics" rather than "this file is unreadable".
 
-// Writes a file with a deliberately corrupt leading magic. McapReader::open()
-// rejects it up front, which is the failure the dialog has to explain.
+// A file with a corrupt leading magic: McapReader::open() rejects it up front, the failure the dialog has to explain.
 std::string writeUnopenableFile() {
   const auto path = std::filesystem::temp_directory_path() / "pj_mcap_dialog_unopenable.mcap";
   std::ofstream out(path, std::ios::binary);
@@ -219,10 +210,9 @@ TEST(McapDialogTest, AnalyzeErrorIsSurfacedInWidgetData) {
   EXPECT_FALSE(data["labelAnalyzeError"].value("label", std::string{}).empty());
 }
 
-// A restored config carries the previous recording's topic selection. If
-// analysis fails we never reach the pruning step, so those stale names would
-// survive and leave OK enabled over an empty table — clicking it would start
-// an import that cannot bind anything.
+// A restored config carries the previous recording's topic selection. If analysis fails the pruning step is never
+// reached, so those stale names would survive and leave OK enabled over an empty table: clicking it would start an
+// import that cannot bind anything.
 TEST(McapDialogTest, AnalysisFailureClearsStaleSelectionAndDisablesOk) {
   McapDialog dialog;
   nlohmann::json cfg;
@@ -270,10 +260,8 @@ TEST(McapDialogTest, AnalyzesARecordingInAFolderWithNonAsciiName) {
   fs::remove_all(dir, ec);
 }
 
-// The encoding combo box was removed from dialog_mcap.ui because message
-// encoding is a per-channel property, not a dialog-wide choice. Widget data
-// naming widgets the .ui does not contain is silently dropped by the host, so
-// nothing catches the leftovers except a test.
+// Widget data naming a widget the .ui does not contain is silently dropped by the host, so nothing but this test
+// catches leftovers (e.g. an encoding combo: message encoding is per channel, not a dialog-wide choice).
 TEST(McapDialogTest, WidgetDataNamesNoWidgetAbsentFromTheUi) {
   McapDialog dialog;
   nlohmann::json cfg;

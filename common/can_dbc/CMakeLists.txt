@@ -1,11 +1,9 @@
-# Shared CAN/DBC decoder (pj_can_dbc): turns raw CAN frames (id, extended, bytes)
-# into named DBC signals, plus portable dictionary paths (dictionary_paths.hpp).
-# Consumed by data_load_mf4, data_load_blf and data_load_candump.
+# pj_can_dbc: raw CAN frames (id, extended, bytes) -> named DBC signals, plus portable dictionary
+# paths. Used by data_load_mf4, data_load_blf and data_load_candump.
 #
-# dbc_parser_cpp (+ the header-only fast_float) is vendored via CPM DOWNLOAD_ONLY
-# and built as a static `dbc` lib here; it is PRIVATE-linked and fully hidden
-# behind can_decoder's pImpl, so consumers never see a DBC header. Both deps are
-# pinned by commit tarball + SHA256. Handles little- and big-endian signals.
+# dbc_parser_cpp (+ header-only fast_float) is vendored via CPM DOWNLOAD_ONLY, pinned by commit
+# tarball + SHA256, and built as the static `dbc` lib. It is PRIVATE-linked and hidden behind
+# can_decoder's pImpl: no consumer sees a DBC header.
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/CPM.cmake)
 
 CPMAddPackage(
@@ -31,7 +29,6 @@ if(DEFINED PJ_WARNING_FLAGS)
   target_compile_options(pj_can_dbc PRIVATE ${PJ_WARNING_FLAGS})
 endif()
 target_include_directories(pj_can_dbc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-# dbc is PRIVATE: can_decoder.hpp hides it behind a pImpl (no dbc header leaks).
 target_link_libraries(pj_can_dbc PUBLIC plotjuggler_sdk::base PRIVATE dbc pj_utf8_path)
 
 # GTest-guarded so this common target can be configured unconditionally.
@@ -39,8 +36,7 @@ find_package(GTest QUIET CONFIG)
 if(TARGET GTest::gtest_main)
   add_executable(pj_can_dbc_test tests/can_decoder_test.cpp tests/dictionary_paths_test.cpp tests/j1939_test.cpp)
   target_compile_features(pj_can_dbc_test PRIVATE cxx_std_20)
-  # field_test_helpers.hpp: shared findField() test helper, also used by
-  # data_load_blf/data_load_candump's tests.
+  # field_test_helpers.hpp is shared with data_load_blf/data_load_candump's tests.
   target_include_directories(pj_can_dbc_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
   if(DEFINED PJ_WARNING_FLAGS)
     target_compile_options(pj_can_dbc_test PRIVATE ${PJ_WARNING_FLAGS})

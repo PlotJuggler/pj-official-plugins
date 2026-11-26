@@ -11,10 +11,7 @@ namespace ros_parser_detail {
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Thread-local cross-message state (shared between parser instances)
-// ---------------------------------------------------------------------------
-
+// Cross-message state, shared by the parser instances of a thread.
 thread_local std::unordered_map<uint64_t, DataTamerParser::Schema> g_data_tamer_schemas;
 
 // PAL Statistics: outer key = stripped topic prefix, inner key = names_version
@@ -25,7 +22,7 @@ thread_local std::unordered_map<std::string, std::unordered_map<uint32_t, std::v
 thread_local std::unordered_map<uint64_t, std::vector<std::string>> g_tsl_definitions;
 thread_local std::unordered_map<uint64_t, std::queue<std::tuple<int64_t, std::vector<double>>>> g_tsl_values_buffer;
 
-// TSL type order (matches old parser)
+// Wire order of the TSL per-type arrays.
 constexpr std::array<RosMsgParser::BuiltinType, 11> kTslTypeOrder = {
     RosMsgParser::BOOL,   RosMsgParser::INT8,    RosMsgParser::UINT8,   RosMsgParser::INT16,
     RosMsgParser::UINT16, RosMsgParser::INT32,   RosMsgParser::UINT32,  RosMsgParser::INT64,
@@ -33,10 +30,6 @@ constexpr std::array<RosMsgParser::BuiltinType, 11> kTslTypeOrder = {
 };
 
 }  // namespace
-
-// ---------------------------------------------------------------------------
-// Composition parse helpers
-// ---------------------------------------------------------------------------
 
 void RosParser::addFieldAt(std::string_view segment, double value) {
   PathSegment field(path_, segment);
@@ -125,10 +118,6 @@ size_t RosParser::readArrayCount(size_t min_element_wire_size) {
   }
   return count;
 }
-
-// ---------------------------------------------------------------------------
-// Top-level specialized handlers
-// ---------------------------------------------------------------------------
 
 void RosParser::handleEmpty() {
   addField("/value", 0.0);
@@ -343,10 +332,6 @@ void RosParser::handleTFMessage() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Cross-message state handlers
-// ---------------------------------------------------------------------------
-
 void RosParser::handleDataTamerSchemas() {
   size_t count = deserializer_->deserializeUInt32();
   for (size_t i = 0; i < count; i++) {
@@ -361,7 +346,6 @@ void RosParser::handleDataTamerSchemas() {
     schema.channel_name = channel_name;
     g_data_tamer_schemas.insert({wire_hash, schema});
   }
-  // No fields to emit for schemas message itself.
 }
 
 void RosParser::handleDataTamerSnapshot() {
@@ -413,7 +397,6 @@ void RosParser::handlePalStatisticsNames() {
   uint32_t version = deserializer_->deserializeUInt32();
 
   g_pal_statistics_names[pal_statistics_key_][version] = std::move(names);
-  // No fields to emit.
 }
 
 void RosParser::handlePalStatisticsValues() {
@@ -439,7 +422,7 @@ void RosParser::handlePalStatisticsValues() {
 
   const auto& names = ver_it->second;
   size_t n = std::min(names.size(), values.size());
-  // Clear the header fields already emitted — for PAL values we emit named fields only.
+  // Named fields only: drops the header series emitted above.
   fields_.clear();
   path_.assign("/");
   for (size_t i = 0; i < n; i++) {
@@ -487,7 +470,6 @@ void RosParser::handleTSLDefinition() {
     queue.pop();
   }
   fields_.clear();
-  // No fields to emit for the definition itself.
 }
 
 void RosParser::handleTSLValues() {

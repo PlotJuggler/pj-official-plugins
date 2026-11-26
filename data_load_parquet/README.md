@@ -1,27 +1,23 @@
 # Parquet Data Loader
 
-Imports [Apache Parquet](https://parquet.apache.org/) files, extracting
-numeric columns with optional timestamp detection.
+Imports [Apache Parquet](https://parquet.apache.org/) files into a single topic named after the file; every supported
+column becomes a series.
 
 ## Supported Types
 
-- All Arrow numeric types: bool, int8-int64, uint8-uint64, float, double
-- Arrow TIMESTAMP with automatic unit conversion (second/milli/micro/nano)
-- Native type preservation via ValueRef (no precision loss from double cast)
+- Arrow numeric types: bool, int8-int64, uint8-uint64, float, double. Values keep their native type.
+- Compression: snappy, lz4 and zstd. Other codecs (e.g. brotli) fail with Arrow's error.
 
-## Timestamp Modes
+## Time Axis
 
-- **Row index** — synthetic timestamps from row numbers
-- **Column selection** — pick a column as the time axis
-- **Auto-detection** — heuristic search for columns named `timestamp`, `time`, `ts`, etc.
-- Optional custom date format parsing
+The time column is the one picked in the dialog (restored by name for the next file), else the auto-detected one (the
+first TIMESTAMP column, else a column named `timestamp`, `time`, `t`, `ts`, ...), else the row index at one second per
+row. The Row index option still uses a detected timestamp column if the file has one.
 
-## Timezone Handling
+Time column types: TIMESTAMP, TIME, DURATION and DATE are unit-converted; integers are read as nanoseconds and floats as
+seconds. Timestamps with timezone metadata (e.g. `America/New_York`) are shifted by the zone's UTC offset, as in
+PlotJuggler 3.
 
-Timestamps with timezone metadata (e.g., `America/New_York`) are automatically
-adjusted using `std::chrono::locate_zone` (C++20).
+## Limits
 
-## Known Limitations
-
-- Rows not sorted by timestamp within batches (may produce non-monotonic time)
-- Column selection history not preserved across sessions
+- Rows are sorted by timestamp within each record batch only, so time can be non-monotonic across batches.

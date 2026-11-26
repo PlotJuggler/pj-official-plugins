@@ -67,9 +67,8 @@ sdk::PointCloud LaserScanProjector::projectImpl(
   const bool with_intensity = !intensities.empty() && intensities.size() == ranges.size();
   const uint32_t point_step = with_intensity ? kXyziStep : kXyzStep;
 
-  // The point bytes are newly generated (the wire holds polar ranges, not
-  // cartesian points), so the buffer is owned and anchored — same pattern the
-  // SDK codecs use for decoded payloads.
+  // The wire holds polar ranges, not cartesian points, so the buffer is generated, owned and
+  // anchored.
   auto owned = std::make_shared<std::vector<uint8_t>>();
   owned->reserve(ranges.size() * point_step);
 

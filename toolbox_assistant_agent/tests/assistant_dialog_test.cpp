@@ -1,16 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// The conversations drawer end to end, against a REAL ClaudeBackend pointed
-// at a throwaway $HOME: two of tests/fixtures/sessions/'s files are copied
-// into the harness store that ClaudeBackend would read from
-// (~/.claude/projects/<slug>/), so listConversations/loadTranscript/
-// deleteConversation exercise the real claude_sessions.hpp parser, not a
-// mock. The turns this file sends point the CLI at a name that does not
-// resolve, or fail earlier for want of an MCP endpoint, so no `claude` CLI is
-// spawned — this stays fully offline. The conversations drawer is
-// always visible now (no menuButton toggle), so a refresh happens on bind,
-// on a backend switch, after a delete, and after every completed turn.
+// The conversations drawer end to end, against a REAL ClaudeBackend pointed at a throwaway $HOME:
+// two of tests/fixtures/sessions/'s files are copied into the store ClaudeBackend reads
+// (~/.claude/projects/<slug>/), so the real claude_sessions.hpp parser is exercised. Turns point the
+// CLI at a name that does not resolve, or fail earlier for want of an MCP endpoint, so no `claude`
+// CLI is spawned. The drawer refreshes on bind, on a backend switch, after a delete and after every
+// completed turn.
 #include "assistant_dialog.hpp"
 
 #include <gtest/gtest.h>
@@ -61,13 +57,12 @@ class AssistantDialogTestPeer {
     dialog.applyBackendEvent({BackendEvent::Kind::TurnComplete, {}});
   }
 
-  // The features block sendCurrentInput() hands the backend this turn.
   static std::string featuresForTurn(AssistantDialog& dialog) {
     return dialog.featuresForTurn();
   }
 
-  // Sends `text` as the user would and pumps onTick() until the turn is over.
-  // False if it is still running after a few seconds (a hang).
+  // Sends `text` as the user would and pumps onTick() until the turn is over; false if it is still
+  // running after a few seconds (a hang).
   static bool runTurn(AssistantDialog& dialog, const std::string& text) {
     dialog.onTextChanged("inputEdit", text);
     if (!dialog.onClicked("sendButton")) {
@@ -87,7 +82,6 @@ class AssistantDialogTestPeer {
     return false;
   }
 
-  // Every transcript row's text, one per line.
   static std::string transcript(AssistantDialog& dialog) {
     std::lock_guard<std::mutex> lock(dialog.state_.mu);
     std::string out;
@@ -125,7 +119,7 @@ TEST(AssistantDialogUi, TranscriptOptsIntoMarkdownWithoutRequiringANewWidgetClas
   EXPECT_NE(ui.find(R"(<property name="pjFollowTail" stdset="0"><bool>true</bool></property>)"), std::string::npos);
 }
 
-// The notice is its own row, not inside headerBand (the host hides headerBand), and it carries the link.
+// The notice is its own row, not inside headerBand (the host hides headerBand), and carries the link.
 TEST(AssistantDialogUi, DeprecationNoticeIsVisibleOutsideTheHeaderBandAndLinksToTheSetupGuide) {
   AssistantDialog dialog;
   const std::string ui = dialog.ui_content();
@@ -137,7 +131,7 @@ TEST(AssistantDialogUi, DeprecationNoticeIsVisibleOutsideTheHeaderBandAndLinksTo
   ASSERT_NE(header, std::string::npos);
   ASSERT_LT(header, notice);
   ASSERT_LT(notice, body);
-  // Every widget opened since headerBand is closed before the notice: it is not nested in the band.
+  // Every widget opened since headerBand is closed before the notice: it is not in the band.
   auto count = [&](const std::string& needle) {
     size_t n = 0;
     for (size_t pos = ui.find(needle, header); pos != std::string::npos && pos < notice;
@@ -158,18 +152,15 @@ TEST(AssistantDialogUi, DeprecationNoticeIsVisibleOutsideTheHeaderBandAndLinksTo
   EXPECT_EQ(label.find(R"(name="visible")"), std::string::npos);
 }
 
-// Mirrors ensureWorkDir's own resolution (harness_workdir.cpp): the SDK's
-// per-user data dir plus the fixed "pj-assistant-cli" leaf. Asking the SDK
-// rather than spelling the layout out keeps this correct on all three
-// platforms -- the fixtures below redirect userDataDir() into a temp dir.
+// Mirrors ensureWorkDir's resolution (harness_workdir.cpp): the SDK's per-user data dir plus the
+// fixed "pj-assistant-cli" leaf. The fixtures below redirect userDataDir() into a temp dir.
 std::filesystem::path expectedWorkDir() {
   return PJ::sdk::userDataDir() / "pj-assistant-cli";
 }
 
-// Proves the redirection above actually took: without it these tests would
-// still pass (they seed and read the same path production computes) while
-// quietly creating a directory in the developer's -- or the CI runner's --
-// real home. Called by every fixture right after its ScopedEnvs are in place.
+// Proves the redirection took: without it these tests would still pass (they seed and read the same
+// path production computes) while creating a directory in the real home. Called by every fixture
+// right after its ScopedEnvs.
 ::testing::AssertionResult workDirIsInside(const std::filesystem::path& home) {
   const std::string work = expectedWorkDir().string();
   const std::string root = home.string();
@@ -180,23 +171,19 @@ std::filesystem::path expectedWorkDir() {
                                        << root << " -- PJ::sdk::userDataDir() was not redirected";
 }
 
-// A fresh $HOME per test, with two fixtures pre-seeded into the exact
-// directory a real ClaudeBackend running under that $HOME would read its
-// conversations from.
+// A fresh $HOME per test with two fixtures seeded into the directory ClaudeBackend reads.
 class AssistantDialogDrawerTest : public ::testing::Test {
  protected:
   void SetUp() override {
     home_ = makeTempDir("assistant_dialog_test_");
     ASSERT_FALSE(home_.empty());
     home_env_ = std::make_unique<ScopedEnv>("HOME", home_);
-    // PJ::sdk::userDataDir() reads XDG_DATA_HOME then HOME on Linux, HOME on
-    // macOS, and LOCALAPPDATA on Windows. Clearing the first and pointing the
-    // other two at this temp dir lands the work dir inside it everywhere.
+    // PJ::sdk::userDataDir() reads XDG_DATA_HOME then HOME on Linux, HOME on macOS, LOCALAPPDATA on
+    // Windows; clearing the first and pointing the others at the temp dir puts the work dir inside it.
     xdg_env_ = std::make_unique<ScopedEnv>("XDG_DATA_HOME", nullptr);
     localappdata_env_ = std::make_unique<ScopedEnv>("LOCALAPPDATA", home_);
     cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
-    // The drawer stamps each row with the conversation's LOCAL time; pin the
-    // zone so the row texts asserted below do not move with the machine.
+    // Rows carry LOCAL time; pin the zone so the asserted row texts do not move with the machine.
     tz_env_ = std::make_unique<ScopedEnv>("TZ", "UTC");
     refreshTimezone();
     ASSERT_TRUE(workDirIsInside(home_));
@@ -220,10 +207,9 @@ class AssistantDialogDrawerTest : public ::testing::Test {
     std::filesystem::remove_all(home_, ec);
   }
 
-  // widget_data() drains its dirty flags on every call, so a checkpoint that
-  // wants to inspect more than one widget must snapshot it exactly ONCE and
-  // read every field from that same document -- a second call after a state
-  // change but with nothing newly dirty returns "{}", not the prior state.
+  // widget_data() drains its dirty flags on every call, so a checkpoint inspecting several widgets
+  // must snapshot ONCE and read every field from that document: a second call with nothing newly
+  // dirty returns "{}", not the prior state.
   json snapshot(AssistantDialog& dialog) {
     const std::string raw = dialog.widget_data();
     if (raw.empty()) {
@@ -249,7 +235,7 @@ class AssistantDialogDrawerTest : public ::testing::Test {
 
 TEST_F(AssistantDialogDrawerTest, ThePanelListsRealHarnessConversationsFromTheFirstFrame) {
   AssistantDialog dialog;
-  dialog.setSettings(settings_view_);  // the drawer is always visible now -- no open click needed
+  dialog.setSettings(settings_view_);  // the drawer is always visible: no open click needed
 
   const json snap = snapshot(dialog);
   const json list = entryIn(snap, "conversationList");
@@ -257,8 +243,8 @@ TEST_F(AssistantDialogDrawerTest, ThePanelListsRealHarnessConversationsFromTheFi
   ASSERT_TRUE(list.contains("list_items"));
   const std::vector<std::string> items = list.at("list_items").get<std::vector<std::string>>();
   ASSERT_EQ(items.size(), 2u);
-  // session_gamma (no ai-title -> falls back to the first prompt, truncated)
-  // is newer than session_alpha (ai-title "PlotJuggler demo") -- newest first.
+  // session_gamma (no ai-title: first prompt, truncated) is newer than session_alpha (ai-title
+  // "PlotJuggler demo").
   EXPECT_EQ(items[0], "Can you plot the vehicle speed against the steer · 2 Sep 09:00");
   EXPECT_EQ(items[1], "PlotJuggler demo · 1 Sep 15:17");
 }
@@ -299,9 +285,8 @@ TEST_F(AssistantDialogDrawerTest, DeletingTheActiveConversationStartsANewOneAndR
       << "session_gamma must still be the active (and newest) row before deleting it";
 
   ASSERT_TRUE(dialog.onItemDeleteRequested("conversationList", 0));
-  // ONE snapshot: the delete's list refresh and its startNewConversation()
-  // both land in this same widget_data() build, so reading them from two
-  // separate calls would have the second one see nothing newly dirty.
+  // ONE snapshot: the delete's list refresh and its startNewConversation() land in the same
+  // widget_data() build; a second call would see nothing newly dirty.
   const json snap = snapshot(dialog);
 
   const std::vector<std::string> items_after =
@@ -319,8 +304,8 @@ TEST_F(AssistantDialogDrawerTest, DeletingTheActiveConversationStartsANewOneAndR
 }
 
 TEST_F(AssistantDialogDrawerTest, ReopeningThePanelResumesThePersistedConversation) {
-  // What a previous instance leaves behind: only the active id. The transcript
-  // itself has to come back from the harness's store on the first bind.
+  // A previous instance leaves only the active id; the transcript must come back from the harness's
+  // store on the first bind.
   {
     SettingsStore store(settings_view_);
     saveActiveSessionId(store, "session_alpha", "claude");
@@ -409,8 +394,6 @@ TEST_F(AssistantDialogDrawerTest, EveryCompletionRefreshesAndSelectsTheNewConver
   }
 }
 
-// --- Rename, via the context-menu action ("conversationList", "rename") ---
-
 TEST_F(AssistantDialogDrawerTest, RenamingTheActiveRowKeepsItActiveAndLeavesTheTranscriptAlone) {
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
@@ -418,9 +401,9 @@ TEST_F(AssistantDialogDrawerTest, RenamingTheActiveRowKeepsItActiveAndLeavesTheT
       "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
   (void)dialog.widget_data();  // flush the selection's render before renaming
 
-  // Row 0 is still session_gamma: selecting it doesn't reorder the list.
+  // Row 0 is still session_gamma: selecting does not reorder the list.
   ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));
-  (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+  (void)dialog.widget_data();  // the render requests the sub-dialog (sets open_sub_dialog)
   EXPECT_FALSE(dialog.onTextChanged("renameEdit", "Steering demo"));
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
 
@@ -442,7 +425,7 @@ TEST_F(AssistantDialogDrawerTest, CustomNameSurvivesReopeningThePanelAndWinsOver
     AssistantDialog dialog;
     dialog.setSettings(settings_view_);
     ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));  // row 0: session_gamma
-    (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+    (void)dialog.widget_data();  // the render requests the sub-dialog (sets open_sub_dialog)
     EXPECT_FALSE(dialog.onTextChanged("renameEdit", "Steering demo"));
     EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
   }  // dialog destroyed here, like closing and reopening the panel
@@ -459,7 +442,7 @@ TEST_F(AssistantDialogDrawerTest, AcceptingAnEmptyRenameRemovesTheCustomNameAndT
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
   ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));
-  (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+  (void)dialog.widget_data();  // the render requests the sub-dialog (sets open_sub_dialog)
   EXPECT_FALSE(dialog.onTextChanged("renameEdit", "Steering demo"));
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
   ASSERT_EQ(
@@ -467,7 +450,7 @@ TEST_F(AssistantDialogDrawerTest, AcceptingAnEmptyRenameRemovesTheCustomNameAndT
       "Steering demo · 2 Sep 09:00");
 
   ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));
-  (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+  (void)dialog.widget_data();                               // the render requests the sub-dialog (sets open_sub_dialog)
   EXPECT_FALSE(dialog.onTextChanged("renameEdit", "   "));  // whitespace-only
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
 
@@ -482,13 +465,13 @@ TEST_F(AssistantDialogDrawerTest, PruningDropsACustomNameWhoseConversationIsGone
     AssistantDialog dialog;
     dialog.setSettings(settings_view_);
     ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));  // row 0: session_gamma
-    (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+    (void)dialog.widget_data();  // the render requests the sub-dialog (sets open_sub_dialog)
     EXPECT_FALSE(dialog.onTextChanged("renameEdit", "Steering demo"));
     EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
   }
 
-  // Simulate the harness's own retention purging the file -- not our delete
-  // path, so this proves the prune is driven by the LISTING, not by onItemDeleteRequested.
+  // The harness's own retention purges the file, not our delete path: the prune is driven by the
+  // LISTING, not by onItemDeleteRequested.
   std::error_code ec;
   std::filesystem::remove(claudeSessionsDir(expectedWorkDir().string()) / "session_gamma.jsonl", ec);
   ASSERT_FALSE(ec);
@@ -500,8 +483,7 @@ TEST_F(AssistantDialogDrawerTest, PruningDropsACustomNameWhoseConversationIsGone
   ASSERT_EQ(items.size(), 1u);
   EXPECT_EQ(items[0], "PlotJuggler demo · 1 Sep 15:17");
 
-  // Gone from the store too, not merely unused -- otherwise a later
-  // conversation reusing the same id would inherit the pruned name.
+  // Gone from the store, not merely unused, or a later conversation reusing the id would inherit the name.
   EXPECT_TRUE(loadConversationTitles(SettingsStore(settings_view_), "claude").empty());
 }
 
@@ -511,30 +493,25 @@ TEST_F(AssistantDialogDrawerTest, RenameAndSettingsSubDialogsRouteIndependently)
 
   // Opening the rename dialog and accepting it must not write any settings key.
   ASSERT_TRUE(dialog.onItemContextAction("conversationList", 0, "rename"));
-  (void)dialog.widget_data();  // let the render request the sub-dialog (sets open_sub_dialog)
+  (void)dialog.widget_data();  // the render requests the sub-dialog (sets open_sub_dialog)
   EXPECT_FALSE(dialog.onTextChanged("renameEdit", "Steering demo"));
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
   EXPECT_FALSE(SettingsStore(settings_view_).contains("assistant.backend"))
       << "renaming must never touch a settings key";
 
-  // Opening settings and accepting it still commits it, exactly as before.
+  // Opening settings and accepting still commits.
   ASSERT_TRUE(dialog.onClicked("settingsButton"));
   EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 0));  // stays on claude
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
   EXPECT_EQ(SettingsStore(settings_view_).getString("assistant.backend", "unset"), "claude");
 }
 
-// --- Codex drawer cases: same behavior, different harness store -----------
-//
-// codex_sessions.hpp filters by the `payload.cwd` FIELD inside each rollout
-// file, not by which directory it lives in (unlike Claude's per-cwd project
-// directories) — so, unlike the Claude fixtures above (copied verbatim), the
-// fixtures here are written by this test with `cwd` set to whatever this
-// test's throwaway $HOME actually resolves CodexBackend's work dir to.
+// Codex drawer cases. codex_sessions.hpp filters by the `payload.cwd` FIELD inside each rollout file,
+// not by directory (unlike Claude's per-cwd project directories), so these fixtures are written by
+// the test with `cwd` set to wherever this test's throwaway $HOME resolves CodexBackend's work dir.
 
-// Writes a minimal, valid `codex exec` rollout file: one session_meta record
-// plus one user/assistant response_item pair — everything listCodexConversations
-// / loadCodexTranscript (codex_sessions.cpp) look at.
+// Writes a minimal valid rollout: one session_meta record plus one user/assistant response_item
+// pair, all listCodexConversations / loadCodexTranscript look at.
 void writeCodexFixture(
     const std::filesystem::path& path, const std::string& id, const std::string& cwd, const std::string& first_ts,
     const std::string& user_text, const std::string& assistant_text, const std::string& last_ts) {
@@ -584,9 +561,8 @@ class AssistantDialogCodexDrawerTest : public ::testing::Test {
     home_ = makeTempDir("assistant_dialog_codex_test_");
     ASSERT_FALSE(home_.empty());
     home_env_ = std::make_unique<ScopedEnv>("HOME", home_);
-    // PJ::sdk::userDataDir() reads XDG_DATA_HOME then HOME on Linux, HOME on
-    // macOS, and LOCALAPPDATA on Windows. Clearing the first and pointing the
-    // other two at this temp dir lands the work dir inside it everywhere.
+    // PJ::sdk::userDataDir() reads XDG_DATA_HOME then HOME on Linux, HOME on macOS, LOCALAPPDATA on
+    // Windows; clearing the first and pointing the others at the temp dir puts the work dir inside it.
     xdg_env_ = std::make_unique<ScopedEnv>("XDG_DATA_HOME", nullptr);
     localappdata_env_ = std::make_unique<ScopedEnv>("LOCALAPPDATA", home_);
     cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
@@ -599,8 +575,7 @@ class AssistantDialogCodexDrawerTest : public ::testing::Test {
 
     std::error_code ec;
 
-    // CodexBackend's work dir resolves through the SAME harness_workdir.hpp
-    // rules as Claude's (see expectedWorkDir above).
+    // CodexBackend's work dir resolves through the same harness_workdir.hpp rules (expectedWorkDir).
     const std::string work_dir = expectedWorkDir().string();
     const std::filesystem::path sessions_dir = codex_home_ / "sessions" / "2026" / "09" / "03";
     std::filesystem::create_directories(sessions_dir, ec);
@@ -616,9 +591,8 @@ class AssistantDialogCodexDrawerTest : public ::testing::Test {
         "I opened a new tab plotting vehicle_speed against vehicle_steering.", "2026-09-02T09:00:05.000Z");
 
     settings_view_ = PJ::sdk::SettingsView{host_.view()};
-    // Codex active from the very first bind, so rebuildBackend() builds a
-    // CodexBackend (not the ctor's default ClaudeBackend) before anything
-    // tries to resume a conversation through it.
+    // Codex is active from the first bind, so rebuildBackend() builds a CodexBackend (not the ctor's
+    // default ClaudeBackend) before anything resumes a conversation through it.
     SettingsStore(settings_view_).setString("assistant.backend", "codex");
   }
 
@@ -766,13 +740,11 @@ TEST_F(AssistantDialogCodexDrawerTest, FirstCompletionRefreshesAndSelectsTheNewR
   EXPECT_EQ(std::count(repeated.begin(), repeated.end(), "Inspect fresh data · 3 Sep 10:00"), 1);
 }
 
-// --- Switching backends must not discard either one's resume point --------
-
 TEST(AssistantDialogBackendSwitch, ClaudeCodexClaudeKeepsBothSessionIds) {
   const std::filesystem::path home = makeTempDir("assistant_dialog_switch_test_");
   ASSERT_FALSE(home.empty());
   ScopedEnv home_env("HOME", home);
-  // See the fixtures above: this is what puts userDataDir() inside `home`.
+  // Puts userDataDir() inside `home` (see the fixtures above).
   ScopedEnv xdg_env("XDG_DATA_HOME", nullptr);
   ScopedEnv localappdata_env("LOCALAPPDATA", home);
   ScopedEnv cfg_env("CLAUDE_CONFIG_DIR", nullptr);
@@ -806,27 +778,23 @@ TEST(AssistantDialogBackendSwitch, ClaudeCodexClaudeKeepsBothSessionIds) {
   PJ::sdk::SettingsStoreHost host{backend};
   PJ::sdk::SettingsView settings_view{host.view()};
   {
-    // commitSettings() probes the newly-selected backend with testConnection()
-    // (a real `<cli> --version` subprocess) as its very last step. Point both
-    // CLI paths at names that cannot resolve on PATH, so this test — which is
-    // about session-id bookkeeping, not connectivity — never spawns the real
-    // `claude` or `codex` binary this dev machine happens to have installed.
+    // commitSettings() finishes by probing the new backend with testConnection() (a real
+    // `<cli> --version` subprocess). Point both CLI paths at names that cannot resolve so this
+    // session-id test never spawns a real `claude` or `codex`.
     SettingsStore store(settings_view);
     store.setString("assistant.claude.cli_path", "assistant-agent-test-missing-claude-cli");
     store.setString("assistant.codex.cli_path", "assistant-agent-test-missing-codex-cli");
   }
 
   AssistantDialog dialog;
-  dialog.setSettings(settings_view);  // starts on "claude" (the default)
+  dialog.setSettings(settings_view);  // starts on the default, "claude"
 
   ASSERT_TRUE(dialog.onSelectionChanged("conversationList", {"PlotJuggler demo · 1 Sep 15:17"}));
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view), "claude"), "session_alpha");
 
-  // Switch to Codex through the real settings flow (settingsButton ->
-  // backendCombo -> subDialogAccepted), the same path the UI drives.
-  // activateBackendConversation() refreshes the drawer's listing
-  // unconditionally, so it is already codex's own by the time of the
-  // selection below.
+  // Switch to Codex through the real settings flow (settingsButton -> backendCombo ->
+  // subDialogAccepted). activateBackendConversation() refreshes the listing unconditionally, so it
+  // is already codex's by the selection below.
   ASSERT_TRUE(dialog.onClicked("settingsButton"));
   EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 1));
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
@@ -834,7 +802,7 @@ TEST(AssistantDialogBackendSwitch, ClaudeCodexClaudeKeepsBothSessionIds) {
   ASSERT_TRUE(dialog.onSelectionChanged(
       "conversationList", {"Can you plot the vehicle speed against the steer · 2 Sep 09:00"}));
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view), "codex"), "codex_gamma");
-  // Claude's id must have survived the switch untouched.
+  // Claude's id survives the switch untouched.
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view), "claude"), "session_alpha");
 
   // Switch back to Claude: both ids must still be exactly what they were.
@@ -849,12 +817,8 @@ TEST(AssistantDialogBackendSwitch, ClaudeCodexClaudeKeepsBothSessionIds) {
   std::filesystem::remove_all(codex_home, ec);
 }
 
-// --- Settings commit switches the conversation, and the model selector -----
-//
-// Both fixtures below are prepared in SetUp() (a Claude session under the fake
-// CLAUDE_CONFIG_DIR, a Codex rollout under the fake CODEX_HOME), but neither
-// backend's ACTIVE id is persisted there — each test persists exactly the ids
-// it needs, since which one is "already active" differs per test.
+// SetUp() prepares a Claude session under the fake CLAUDE_CONFIG_DIR and a Codex rollout under the
+// fake CODEX_HOME but persists no ACTIVE id: each test persists exactly the ids it needs.
 
 class AssistantDialogSettingsSwitchTest : public ::testing::Test {
  protected:
@@ -862,9 +826,8 @@ class AssistantDialogSettingsSwitchTest : public ::testing::Test {
     home_ = makeTempDir("assistant_settings_switch_test_");
     ASSERT_FALSE(home_.empty());
     home_env_ = std::make_unique<ScopedEnv>("HOME", home_);
-    // PJ::sdk::userDataDir() reads XDG_DATA_HOME then HOME on Linux, HOME on
-    // macOS, and LOCALAPPDATA on Windows. Clearing the first and pointing the
-    // other two at this temp dir lands the work dir inside it everywhere.
+    // PJ::sdk::userDataDir() reads XDG_DATA_HOME then HOME on Linux, HOME on macOS, LOCALAPPDATA on
+    // Windows; clearing the first and pointing the others at the temp dir puts the work dir inside it.
     xdg_env_ = std::make_unique<ScopedEnv>("XDG_DATA_HOME", nullptr);
     localappdata_env_ = std::make_unique<ScopedEnv>("LOCALAPPDATA", home_);
     cfg_env_ = std::make_unique<ScopedEnv>("CLAUDE_CONFIG_DIR", nullptr);
@@ -895,10 +858,9 @@ class AssistantDialogSettingsSwitchTest : public ::testing::Test {
         "I opened a new tab plotting vehicle_speed against vehicle_steering.", "2026-09-02T09:00:05.000Z");
 
     settings_view_ = PJ::sdk::SettingsView{host_.view()};
-    // commitSettings() probes the newly-selected backend with testConnection()
-    // as its last step (a real `<cli> --version` subprocess) -- point both CLI
-    // paths at names that cannot resolve on PATH, so these tests, which are
-    // about conversation/model bookkeeping, never spawn a real CLI.
+    // commitSettings() finishes by probing the new backend with testConnection() (a real
+    // `<cli> --version` subprocess); point both CLI paths at names that cannot resolve so these
+    // tests never spawn a real CLI.
     SettingsStore store(settings_view_);
     store.setString("assistant.claude.cli_path", "assistant-agent-test-missing-claude-cli");
     store.setString("assistant.codex.cli_path", "assistant-agent-test-missing-codex-cli");
@@ -938,7 +900,7 @@ class AssistantDialogSettingsSwitchTest : public ::testing::Test {
 TEST_F(AssistantDialogSettingsSwitchTest, EveryPayloadNamingTheConversationListCarriesTheDeletableFlag) {
   auto checkPayload = [](const std::string& raw) {
     if (raw.empty()) {
-      return;  // "no update" -- steady state, nothing to check
+      return;  // "no update": steady state
     }
     const json doc = json::parse(raw, nullptr, /*allow_exceptions=*/false);
     ASSERT_TRUE(doc.is_object());
@@ -952,20 +914,17 @@ TEST_F(AssistantDialogSettingsSwitchTest, EveryPayloadNamingTheConversationListC
 
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
-  checkPayload(dialog.widget_data());  // initial render -- the drawer is always visible, so this already names it
+  checkPayload(dialog.widget_data());  // initial render; the drawer is always visible, so it already names the list
 
-  // A settings commit that does NOT switch backends: rebuildBackend() still
-  // sets controls_dirty (the status line names the backend), but nothing
-  // calls activateBackendConversation(), so drawer_dirty stays false -- this
-  // is exactly the payload shape (conversationList named via setEnabled
-  // alone) that used to drop the flag.
+  // A settings commit that does NOT switch backends: rebuildBackend() sets controls_dirty but nothing
+  // calls activateBackendConversation(), so drawer_dirty stays false: the payload names
+  // conversationList via setEnabled alone, the shape that would drop the flag.
   ASSERT_TRUE(dialog.onClicked("settingsButton"));
   EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 0));  // stays on claude
   ASSERT_TRUE(dialog.onClicked("subDialogAccepted"));
   checkPayload(dialog.widget_data());
 
-  // A controls-only refresh with no settings and no drawer touch at all:
-  // sendCurrentInput() sets transcript_dirty + controls_dirty synchronously,
+  // A controls-only refresh: sendCurrentInput() sets transcript_dirty + controls_dirty synchronously,
   // before anything reaches the (nonexistent) CLI.
   EXPECT_FALSE(dialog.onTextChanged("inputEdit", "hello"));
   ASSERT_TRUE(dialog.onClicked("sendButton"));
@@ -1002,15 +961,14 @@ TEST_F(AssistantDialogSettingsSwitchTest, SwitchingBackendLoadsThatBackendsPersi
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "claude"), "session_alpha")
       << "switching must not touch claude's persisted id";
 
-  // activateBackendConversation() refreshed the drawer unconditionally, so
-  // `snap` (above, already consumed by the transcript checks) carried codex's
-  // own listing too -- no extra open/close dance needed to see it.
+  // activateBackendConversation() refreshes the drawer unconditionally, so `snap` already carries
+  // codex's listing.
   const std::vector<std::string> items =
       entryIn(snap, "conversationList").at("list_items").get<std::vector<std::string>>();
   ASSERT_EQ(items.size(), 1u) << "the drawer listing must be codex's now, not claude's";
   EXPECT_EQ(items[0], "Can you plot the vehicle speed against the steer · 2 Sep 09:00");
 
-  // Switch back to Claude: nothing lost.
+  // Back to Claude: nothing lost.
   ASSERT_TRUE(dialog.onClicked("settingsButton"));
   EXPECT_FALSE(dialog.onIndexChanged("backendCombo", 0));
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
@@ -1025,7 +983,7 @@ TEST_F(AssistantDialogSettingsSwitchTest, SwitchingToABackendWithNothingPersiste
   {
     SettingsStore store(settings_view_);
     saveActiveSessionId(store, "session_alpha", "claude");
-    // Deliberately nothing persisted for codex.
+    // Nothing persisted for codex, deliberately.
   }
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
@@ -1045,8 +1003,7 @@ TEST_F(AssistantDialogSettingsSwitchTest, SwitchingToABackendWithNothingPersiste
   EXPECT_NE(text.find(R"(Settings saved \(backend\: codex\))"), std::string::npos);
   EXPECT_EQ(loadActiveSessionId(SettingsStore(settings_view_), "codex"), "");
 
-  // The same `snap` already carries codex's own listing -- the drawer refresh
-  // on a backend switch is unconditional now.
+  // `snap` already carries codex's listing (the refresh on a backend switch is unconditional).
   const std::vector<std::string> items =
       entryIn(snap, "conversationList").at("list_items").get<std::vector<std::string>>();
   ASSERT_EQ(items.size(), 1u) << "codex's own listing (the fixture exists, just was never made ACTIVE)";
@@ -1065,7 +1022,7 @@ TEST_F(AssistantDialogSettingsSwitchTest, ChangingOnlyTheModelKeepsTheConversati
 
   ASSERT_TRUE(dialog.onClicked("settingsButton"));
   (void)dialog.widget_data();                                  // populate claudeModelCombo, like a real Settings open
-  EXPECT_FALSE(dialog.onIndexChanged("claudeModelCombo", 2));  // "sonnet", the first listed model -- backend unchanged
+  EXPECT_FALSE(dialog.onIndexChanged("claudeModelCombo", 2));  // "sonnet", the first listed model; backend unchanged
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
 
   const std::string text = entryIn(snapshot(dialog), "transcriptText").at("plain_text").get<std::string>();
@@ -1085,8 +1042,8 @@ TEST_F(AssistantDialogSettingsSwitchTest, ChangingOnlyTheModelKeepsTheConversati
 TEST_F(AssistantDialogSettingsSwitchTest, SettingsPrefillMapsThePersistedModelOntoTheCombo) {
   {
     SettingsStore store(settings_view_);
-    store.setString("assistant.claude.model", "");              // -> CLI default
-    store.setString("assistant.codex.model", "made-up-model");  // -> not in this build's catalog -> Custom
+    store.setString("assistant.claude.model", "");              // CLI default
+    store.setString("assistant.codex.model", "made-up-model");  // not in this build's catalog: Custom
   }
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
@@ -1107,7 +1064,7 @@ TEST_F(AssistantDialogSettingsSwitchTest, SettingsPrefillMapsThePersistedModelOn
       << "a stored id this build's catalog does not list must fall back to Custom";
   EXPECT_EQ(entryIn(snap, "codexModelEdit").value("text", std::string("")), "made-up-model");
 
-  // A listed id maps onto its own row, in the order ClaudeBackend::availableModels() returns them.
+  // A listed id maps onto its own row, in ClaudeBackend::availableModels() order.
   {
     SettingsStore store(settings_view_);
     store.setString("assistant.claude.model", "opus");
@@ -1128,8 +1085,7 @@ TEST_F(AssistantDialogSettingsSwitchTest, AcceptingACustomModelPersistsTheTypedT
   ASSERT_TRUE(dialog.onClicked("settingsButton"));
   (void)dialog.widget_data();  // populate the combo before picking a row
 
-  // Mirrors the host's harvest order (every QLineEdit's current text, THEN
-  // every QComboBox's index -- see the "Host facts" note in the brief).
+  // Mirrors the host's harvest order: every QLineEdit's text, THEN every QComboBox's index.
   EXPECT_FALSE(dialog.onTextChanged("claudeModelEdit", "claude-3-7-unreleased"));
   EXPECT_FALSE(dialog.onIndexChanged("claudeModelCombo", 1));  // Custom...
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
@@ -1146,22 +1102,16 @@ TEST_F(AssistantDialogSettingsSwitchTest, PickingCustomWithAnUntouchedTextBoxPer
   }
   ASSERT_TRUE(dialog.onClicked("settingsButton"));
   (void)dialog.widget_data();
-  // The host still harvests the (hidden, never edited) text box; its shown
-  // value is empty (opus is a listed model, so the prefill put it on the
-  // combo row, not the text box) -- picking Custom without typing anything
-  // must persist that empty string, not silently keep "opus".
+  // The host still harvests the hidden, never-edited text box; it is empty (opus is a listed model, so
+  // the prefill used the combo row), so picking Custom without typing must persist "" and not keep "opus".
   EXPECT_FALSE(dialog.onTextChanged("claudeModelEdit", ""));
   EXPECT_FALSE(dialog.onIndexChanged("claudeModelCombo", 1));
   EXPECT_TRUE(dialog.onClicked("subDialogAccepted"));
   EXPECT_EQ(SettingsStore(settings_view_).getString("assistant.claude.model", "unset"), "");
 }
 
-// resolveCatalogBudgetChars (assistant_dialog.hpp): the settings-reading helper
-// sendCurrentInput() calls fresh every turn to size the catalog digest. Driven
-// directly against a SettingsStore rather than through a full AssistantDialog
-// turn, per the same reasoning AssistantSettingsStore tests use (settings_store_test.cpp)
-// -- the dialog only ever forwards this value straight into catalogDigest, so
-// there is nothing a live turn would exercise that the helper itself does not.
+// resolveCatalogBudgetChars is driven directly against a SettingsStore, not through a dialog turn:
+// the dialog only forwards its value into catalogDigest.
 TEST(AssistantDialogCatalogBudget, DefaultsToTenThousandWhenKeyIsAbsent) {
   PJ::sdk::InMemorySettingsBackend backend;
   PJ::sdk::SettingsStoreHost host{backend};
@@ -1201,10 +1151,8 @@ TEST(AssistantDialogCatalogBudget, AnUnparsableValueFallsBackToTheDefault) {
   EXPECT_EQ(resolveCatalogBudgetChars(store), 10000);
 }
 
-// The two behaviours sendCurrentInput() actually relies on: a configured
-// budget visibly shrinks+truncates the digest, and leaving the key untouched
-// reproduces catalogDigest's own default byte-for-byte -- an install that
-// never heard of this key must see no change at all.
+// A configured budget shrinks and truncates the digest; leaving the key untouched reproduces
+// catalogDigest's own default byte for byte.
 TEST(AssistantDialogCatalogBudget, FeedsCatalogDigestWithATighterBudget) {
   PJ::testing::ToolboxTestStore data_store;
   for (int i = 0; i < 400; ++i) {
@@ -1218,10 +1166,8 @@ TEST(AssistantDialogCatalogBudget, FeedsCatalogDigestWithATighterBudget) {
   SettingsStore settings{PJ::sdk::SettingsView{host.view()}};
   settings.setString("assistant.catalog_budget_chars", "1000");
 
-  // Mirrors CatalogDigest.SaysSoWhenTruncated (catalog_digest_test.cpp): the
-  // body is kept within budget_chars, but the header/footer sentences that
-  // explain the truncation are added on top of it, so the total stays well
-  // under a small multiple of the budget rather than under the budget itself.
+  // As CatalogDigest.SaysSoWhenTruncated: the body stays within budget_chars but the header/footer
+  // sentences are added on top, so the total is only under a small multiple of the budget.
   const std::string digest =
       catalogDigest(PJ::sdk::ToolboxHostView(data_store.makeHost()), resolveCatalogBudgetChars(settings));
   EXPECT_LT(digest.size(), 2000u) << "the digest must respect its (settings-derived) budget: " << digest;
@@ -1246,9 +1192,8 @@ TEST(AssistantDialogCatalogBudget, AbsentKeyReproducesTheDefaultBudgetDigestByte
   EXPECT_EQ(digest_via_settings, digest_default_arg);
 }
 
-// A host that loads the plugin but offers no pj.mcp_endpoint.v1 (registration
-// failed) binds an empty view. A turn ends — it does not hang — with a message
-// in the chat saying why.
+// A host that offers no pj.mcp_endpoint.v1 (registration failed) binds an empty view. A turn ends,
+// not hangs, with a chat message saying why.
 TEST_F(AssistantDialogSettingsSwitchTest, WithoutTheMcpEndpointServiceATurnEndsWithAMessageSayingWhy) {
   AssistantDialog dialog;
   dialog.setSettings(settings_view_);
@@ -1260,10 +1205,9 @@ TEST_F(AssistantDialogSettingsSwitchTest, WithoutTheMcpEndpointServiceATurnEndsW
   EXPECT_NE(transcript.find("offers no MCP endpoint"), std::string::npos) << transcript;
 }
 
-// Every turn acquires the endpoint on the GUI thread, and the host hands back
-// the one it holds; a turn that ends on its own never releases it (the host
-// does, on plugin destruction). (The CLI name does not resolve here, so each
-// turn ends at the CLI lookup.)
+// Every turn acquires the endpoint on the GUI thread and the host hands back the one it holds; a turn
+// that ends on its own never releases it (the host does, on plugin destruction). Each turn ends at the
+// CLI lookup since the name does not resolve.
 TEST_F(AssistantDialogSettingsSwitchTest, EveryTurnAcquiresTheEndpointAndNoneReleasesIt) {
   PJ::sdk::testing::FakeMcpEndpointHost mcp;
   AssistantDialog dialog;
@@ -1279,8 +1223,8 @@ TEST_F(AssistantDialogSettingsSwitchTest, EveryTurnAcquiresTheEndpointAndNoneRel
       << "both turns got past the endpoint to the CLI lookup: " << transcript;
 }
 
-// Stop gives the endpoint back, so PlotJuggler revokes its token and stops what
-// the turn left running there; the next turn asks for a new one.
+// Stop releases the endpoint, so PlotJuggler revokes its token and stops what the turn left running;
+// the next turn acquires a new one.
 TEST_F(AssistantDialogSettingsSwitchTest, StopReleasesTheEndpointAndTheNextTurnAcquiresAgain) {
   PJ::sdk::testing::FakeMcpEndpointHost mcp;
   AssistantDialog dialog;
@@ -1303,12 +1247,8 @@ TEST_F(AssistantDialogSettingsSwitchTest, StopWithoutTheMcpEndpointServiceDoesNo
   EXPECT_FALSE(dialog.onClicked("cancelButton"));
 }
 
-// --- Feature awareness ------------------------------------------------------
-
-// A host that omits pj.feature_catalog.v1: services.get<FeatureCatalogService>()
-// fails and assistant_toolbox.cpp binds an empty FeatureCatalogView, which is
-// exactly what this provider returns. The turn must still carry a features block --
-// the reference built into the plugin -- and nothing may crash.
+// A host that omits pj.feature_catalog.v1: assistant_toolbox.cpp binds an empty FeatureCatalogView,
+// which is what this provider returns. The turn must still carry the built-in features reference.
 TEST(AssistantDialogFeatures, WithoutTheHostServiceEveryTurnCarriesTheBuiltInReference) {
   AssistantDialog dialog;
   dialog.setFeatureCatalogProvider([]() { return PJ::sdk::FeatureCatalogView{}; });

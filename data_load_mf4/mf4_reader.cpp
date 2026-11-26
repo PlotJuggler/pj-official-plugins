@@ -25,8 +25,8 @@ bool isMaster(mdf::ChannelType type) {
   return type == mdf::ChannelType::Master || type == mdf::ChannelType::VirtualMaster;
 }
 
-/// Thrown from the CAN observer callback to abort mdflib's ReadData loop on
-/// cancel (std::exception so mdflib's internal catch handles it cleanly).
+/// Thrown from the CAN observer callback to abort mdflib's ReadData loop on cancel; a std::exception so mdflib's
+/// internal catch handles it.
 struct ReadStopRequested : std::exception {
   const char* what() const noexcept override {
     return "mf4: read stopped by consumer";
@@ -55,9 +55,8 @@ PJ::Status Mf4Reader::open(const std::string& path) {
     return PJ::unexpected(std::string("failed to read MDF metadata: ") + path);
   }
   finalized_ = reader_->IsFinalized();
-  // GetStartTime() is an unsigned ns epoch; a corrupt header near UINT64_MAX
-  // would become a negative start after the cast and then skew (or overflow)
-  // every derived timestamp. Clamp implausible values to 0 (Unix epoch).
+  // GetStartTime() is an unsigned ns epoch; a corrupt header near UINT64_MAX would turn negative in the cast and
+  // skew or overflow every derived timestamp, so implausible values clamp to 0.
   const std::uint64_t start_time = reader_->GetStartTime();
   start_time_ns_ = start_time <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
                        ? static_cast<std::int64_t>(start_time)
@@ -99,13 +98,10 @@ PJ::Status Mf4Reader::open(const std::string& path) {
 }
 
 PJ::Status Mf4Reader::checkSampleCount(std::size_t group_index) const {
-  // mdflib pre-sizes observer buffers to NofSamples x channels before reading,
-  // so a hostile header count (e.g. 2^60 in a tiny file) is an allocation DoS.
-  // A ##DZ-compressed group legitimately holds far more logical samples than
-  // the file has bytes, so only reject counts beyond a very generous
-  // samples-per-byte ceiling (well above any real compression ratio). The
-  // try/catch around observer creation is the backstop for what slips through
-  // (e.g. a forged channel array size).
+  // mdflib pre-sizes observer buffers to NofSamples x channels, so a hostile header count (e.g. 2^60 in a tiny
+  // file) is an allocation DoS. A ##DZ-compressed group legitimately holds far more samples than the file has
+  // bytes, so only counts beyond a very generous samples-per-byte ceiling are rejected. The try/catch around
+  // observer creation backstops what slips through (e.g. a forged channel array size).
   constexpr std::uint64_t kMaxSamplesPerFileByte = 1'000'000;
   const std::uint64_t count = groups_[group_index].sample_count;
   if (file_size_bytes_ > 0 && count / kMaxSamplesPerFileByte > file_size_bytes_) {
@@ -154,9 +150,8 @@ PJ::Status Mf4Reader::readGroup(std::size_t group_index, const RowCallback& cb, 
   auto* dg = data_groups_[group_index];
   auto* cg = channel_groups_[group_index];
 
-  // Observer creation sizes buffers to NofSamples x channel-array-size; a
-  // forged array dimension can exhaust memory. Fail cleanly instead of letting
-  // bad_alloc/length_error cross the plugin boundary.
+  // A forged array dimension can exhaust memory; fail cleanly instead of letting bad_alloc/length_error cross the
+  // plugin boundary.
   mdf::ChannelObserverList observers;
   try {
     mdf::CreateChannelObserverForChannelGroup(*dg, *cg, observers);
@@ -173,10 +168,8 @@ PJ::Status Mf4Reader::readGroup(std::size_t group_index, const RowCallback& cb, 
   std::vector<mdf::IChannelObserver*> value_obs;
   std::vector<PJ::PrimitiveType> value_types;
   for (auto& obs : observers) {
-    // mdflib returns a null observer for channel data types it cannot decode
-    // (e.g. Complex). Those map to kUnspecified and are skipped by
-    // valueChannelNames() too, so skipping them here keeps `value_obs` aligned
-    // with the field-name list (and avoids a null dereference).
+    // mdflib returns a null observer for undecodable channel types (e.g. Complex). valueChannelNames() skips them
+    // too, so skipping here keeps `value_obs` aligned with the field names.
     if (obs == nullptr) {
       continue;
     }
@@ -200,16 +193,12 @@ PJ::Status Mf4Reader::readGroup(std::size_t group_index, const RowCallback& cb, 
     return PJ::unexpected(std::string("mf4: channel group has no master channel"));
   }
 
-  // Absolute time = file HD start + the master channel's relative seconds. This
-  // is correct for single-measurement files (the common case: ASAP2, CANedge).
-  // KNOWN v1 LIMITATION: for *appended* files with multiple measurements at
-  // distinct start times, mdflib rewrites each measurement's master relative to
-  // its own StartMeasurement origin while GetStartTime() reflects only the first
-  // measurement, so later data groups would be anchored to the first epoch.
-  // mdflib exposes no per-DG epoch to correct this; revisit if such files appear.
+  // Absolute time = file HD start + the master channel's relative seconds. For *appended* files with several
+  // measurements at distinct start times this is wrong: mdflib makes each measurement's master relative to its own
+  // StartMeasurement origin while GetStartTime() reflects only the first, and exposes no per-DG epoch to correct it.
   const std::uint64_t n = cg->NofSamples();
   std::vector<SampleValue> row(value_obs.size());
-  // Column types are fixed for the whole group — set them once, not per sample.
+  // Column types are fixed for the whole group.
   for (std::size_t k = 0; k < value_obs.size(); ++k) {
     row[k].type = value_types[k];
   }
@@ -218,8 +207,7 @@ PJ::Status Mf4Reader::readGroup(std::size_t group_index, const RowCallback& cb, 
     const bool t_ok = master->GetEngValue(i, t_sec);
     const auto ts = t_ok ? relativeSecondsToNs(start_time_ns_, t_sec) : std::nullopt;
     if (!ts.has_value()) {
-      // No usable timestamp (invalidation bit, a truncated file's missing
-      // tail, or a NaN/out-of-range master value) — skip rather than
+      // No usable timestamp (invalidation bit, truncated tail, NaN/out-of-range master): skip rather than
       // fabricate a sample at the file start time.
       if (stats != nullptr) {
         ++stats->skipped_invalid_time;
@@ -271,14 +259,13 @@ PJ::Status Mf4Reader::readCanGroup(std::size_t group_index, const CanFrameCallba
       if (stats != nullptr) {
         ++stats->skipped_invalid_time;
       }
-      return true;  // corrupt frame timestamp — skip the frame
+      return true;  // corrupt frame timestamp: skip the frame
     }
     const std::int64_t ts_ns = *ts;
     if (!cb(ts_ns, static_cast<std::uint16_t>(msg.BusChannel()), msg.CanId(), msg.ExtendedId(), msg.DataBytes())) {
-      // mdflib's CanBusObserver discards this callback's return value, so a
-      // plain `return false` cannot abort ReadData. Throw instead: mdflib
-      // catches it inside ReadData (which then returns false) and `stopped`
-      // tells us it was a cancel, not a corrupt file.
+      // mdflib's CanBusObserver discards this callback's return value, so `return false` cannot abort ReadData.
+      // Throw instead: mdflib catches it inside ReadData (which then returns false) and `stopped` tells a cancel
+      // from a corrupt file.
       stopped = true;
       throw ReadStopRequested{};
     }

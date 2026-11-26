@@ -1,19 +1,12 @@
 #pragma once
 
-/**
- * @file mcap_dataset_metadata.hpp
- * @brief Builds the dataset-metadata JSON document for an opened MCAP file.
- *
- * One document per import: file summary facts, every file-level Metadata
- * record (in file order, repeated names preserved), plus parsed views of
- * PlotJuggler's own records — `pj.capture` (capture manifest, with the source
- * descriptor recovered from its `pj.source.v1` identity framing) and
- * `pj.recording` (recording session facts). The host renders the document
- * generically; all PJ-format knowledge lives here in the plugin.
- *
- * Extraction is defensive by contract: a malformed or oversized record is
- * skipped with a diagnostic and never fails the load.
- */
+// The dataset-metadata JSON document of an opened MCAP file: summary facts, every file-level Metadata record (in file
+// order, repeated names preserved), plus parsed views of PlotJuggler's own records: `pj.capture` (capture manifest,
+// with the source descriptor recovered from its `pj.source.v1` identity framing) and `pj.recording` (recording session
+// facts). The host renders the document generically; all PJ-format knowledge lives here.
+//
+// Extraction is defensive by contract: a malformed or oversized record is skipped with a diagnostic and never fails
+// the load.
 
 #include <algorithm>
 #include <charconv>
@@ -28,9 +21,8 @@
 
 namespace PJ::McapMetadata {
 
-/// Per-record ceiling on serialized entries. A metadata record is a fact
-/// sheet, not a payload channel; anything bigger is replaced by a stub entry
-/// plus a diagnostic so one rogue record cannot bloat the document.
+/// Per-record ceiling on serialized entries: a bigger record is replaced by a stub entry plus a diagnostic, so one
+/// rogue record cannot bloat the document.
 inline constexpr size_t kMaxRecordBytes = 256 * 1024;
 
 /// Provider id + descriptor bytes recovered from a source-cache identity
@@ -40,8 +32,7 @@ struct IdentityParts {
   std::string descriptor_json;
 };
 
-/// Parses the length-framed cache identity. Returns nullopt for any other
-/// framing (unknown version token, bad length, truncated bytes).
+/// Returns nullopt for any other framing (unknown version token, bad length, truncated bytes).
 inline std::optional<IdentityParts> parseIdentityFraming(std::string_view identity) {
   constexpr std::string_view kPrefix = "pj.source.v1|";
   if (identity.substr(0, kPrefix.size()) != kPrefix) {
@@ -67,7 +58,7 @@ inline std::optional<IdentityParts> parseIdentityFraming(std::string_view identi
   };
 }
 
-/// Summary facts about the opened file, taken from the already-read summary.
+/// Facts from the already-read summary.
 struct FileFacts {
   uint64_t message_count = 0;
   uint64_t channel_count = 0;
@@ -80,7 +71,6 @@ struct FileFacts {
   std::optional<std::string> compression;
 };
 
-/// Reads the summary-derived facts off an opened reader.
 inline FileFacts gatherFileFacts(mcap::McapReader& reader) {
   FileFacts facts;
   if (const auto& stats = reader.statistics()) {
@@ -109,12 +99,9 @@ inline FileFacts gatherFileFacts(mcap::McapReader& reader) {
   return facts;
 }
 
-/// Reads every indexed file-level Metadata record body, in file order.
-/// Records the reader cannot fetch or parse are skipped with a diagnostic.
-/// A summary that legitimately indexes no metadata yields an empty list; a
-/// valid summary that OMITS metadata indexes is indistinguishable from that
-/// here (the fallback scan only reconstructs indexes when there is no
-/// summary at all), so absence is treated as "no metadata".
+/// Every indexed file-level Metadata record body, in file order; records the reader cannot fetch or parse are skipped
+/// with a diagnostic. A valid summary that OMITS metadata indexes is indistinguishable from one with no metadata (the
+/// fallback scan only reconstructs indexes when there is no summary at all): both yield an empty list.
 inline std::vector<mcap::Metadata> collectMetadataRecords(
     mcap::McapReader& reader, std::vector<std::string>* diagnostics) {
   std::vector<mcap::Metadata> records;
@@ -123,8 +110,8 @@ inline std::vector<mcap::Metadata> collectMetadataRecords(
     return records;
   }
 
-  // The index multimap is keyed by name; re-sort by file offset so repeated
-  // names (pj.recording open/close) keep their write order.
+  // The index multimap is keyed by name: re-sort by file offset so repeated names (pj.recording open/close) keep their
+  // write order.
   std::vector<const mcap::MetadataIndex*> ordered;
   for (const auto& [name, index] : reader.metadataIndexes()) {
     ordered.push_back(&index);
@@ -150,7 +137,6 @@ inline std::vector<mcap::Metadata> collectMetadataRecords(
 
 namespace detail {
 
-/// Serialized size of a record's entries, for the per-record ceiling.
 inline size_t entriesByteSize(const mcap::KeyValueMap& entries) {
   size_t total = 0;
   for (const auto& [key, value] : entries) {
@@ -161,8 +147,7 @@ inline size_t entriesByteSize(const mcap::KeyValueMap& entries) {
 
 }  // namespace detail
 
-/// Assembles the final document from collected inputs. Pure — unit-testable
-/// without any file I/O.
+/// Pure (no file I/O), so unit-testable.
 inline nlohmann::json buildDocument(
     const FileFacts& facts, const std::vector<mcap::Metadata>& records, std::vector<std::string>* diagnostics) {
   nlohmann::json document = nlohmann::json::object();
@@ -233,8 +218,8 @@ inline nlohmann::json buildDocument(
           diagnostics->push_back("pj.capture manifest is not valid JSON; capture details unavailable");
         }
       } else {
-        // Recover the verbatim descriptor from the identity framing; the raw
-        // identity stays in place so nothing is lost if framing evolves.
+        // Recover the verbatim descriptor from the identity framing; the raw identity stays in place in case the
+        // framing is unknown.
         if (const auto identity = manifest.find("identity"); identity != manifest.end() && identity->is_string()) {
           if (const auto parts = parseIdentityFraming(identity->get<std::string>())) {
             nlohmann::json descriptor = nlohmann::json::parse(parts->descriptor_json, nullptr, false);
@@ -250,9 +235,8 @@ inline nlohmann::json buildDocument(
   return document;
 }
 
-/// Facts of a recording split across files (a rosbag2 bag): counts add up,
-/// the time envelope widens. Every split repeats the channel and schema
-/// definitions, so those take the largest file's count rather than a sum.
+/// Facts of a recording split across files (a rosbag2 bag): counts add up and the time envelope widens, except channels
+/// and schemas, which every split repeats and so take the largest file's count.
 inline FileFacts mergeFileFacts(const FileFacts& a, const FileFacts& b) {
   FileFacts merged;
   merged.message_count = a.message_count + b.message_count;
@@ -271,9 +255,8 @@ inline FileFacts mergeFileFacts(const FileFacts& a, const FileFacts& b) {
   return merged;
 }
 
-/// Full extraction off the opened reader(s) of one recording — a single MCAP,
-/// or every split of a rosbag2 bag in recording order: facts merged, metadata
-/// records concatenated, then assembled. `readers` is non-empty.
+/// `readers`: a single MCAP, or every split of a rosbag2 bag in recording order (non-empty). Facts are merged and
+/// metadata records concatenated.
 inline nlohmann::json extractDatasetMetadata(
     const std::vector<mcap::McapReader*>& readers, std::vector<std::string>* diagnostics) {
   FileFacts facts = gatherFileFacts(*readers.front());
@@ -286,9 +269,8 @@ inline nlohmann::json extractDatasetMetadata(
   return buildDocument(facts, records, diagnostics);
 }
 
-/// Delivery seam to the host (set_dataset_metadata, SDK 0.32). A host without
-/// the slot returns an error, which is deliberately ignored: the load is
-/// unaffected and that host simply shows no metadata.
+/// Delivery to the host (set_dataset_metadata, SDK 0.32). A host without the slot returns an error, deliberately
+/// ignored: the load is unaffected and that host shows no metadata.
 template <typename RuntimeHostView>
 inline void publishDatasetMetadata(const RuntimeHostView& host, const nlohmann::json& document) {
   (void)host.setDatasetMetadata(document.dump());

@@ -1,51 +1,30 @@
 # Testing Protobuf Include Folders
 
-This directory contains test cases for verifying the include folder functionality in PlotJuggler's Protobuf parser.
-
-## Test Case: robot_pose.proto with imports
-
-The `robot_pose.proto` file imports types from `common/types.proto`. This requires configuring include folders in PlotJuggler.
-
-### File Structure
+`robot_pose.proto` imports `common/types.proto`, so loading it in the Protobuf parser needs
+`test_scripts/` added as an include folder.
 
 ```
 test_scripts/
-├── robot_pose.proto          # Main proto - imports from common/
-├── common/
-│   └── types.proto           # Shared types (Vector3, Quaternion, Header)
-├── mqtt_test_robot_pose.py   # Publisher script
-└── robot_pose_pb2.py         # Generated Python module
+├── robot_pose.proto          # imports common/types.proto
+├── common/types.proto        # Vector3, Quaternion, Header
+└── mqtt_test_robot_pose.py   # publisher; compiles the protos with protoc on first run
 ```
 
-### How to Test
+## How to test
 
-1. **Start MQTT broker:**
-   ```bash
-   mosquitto -p 1883
-   ```
-
-2. **Run the publisher:**
-   ```bash
-   cd test_scripts
-   python3 mqtt_test_robot_pose.py
-   ```
-
-3. **In PlotJuggler:**
-   - Open Streaming → MQTT
-   - Configure connection (localhost:1883)
-   - Select **protobuf** encoding
-   - Click **Load .proto file** and select `robot_pose.proto`
-   - **IMPORTANT:** Click **Add folder...** in the "Include Folders" tab
-   - Select the `test_scripts/` directory (parent of `common/`)
-   - Select message type: `pj.test.RobotPose`
-   - Optionally enable "use embedded timestamp"
+1. Start a broker: `mosquitto -p 1883`
+2. Run the publisher: `cd test_scripts && python3 mqtt_test_robot_pose.py`
+3. In PlotJuggler:
+   - Open Streaming → MQTT and connect to `localhost:1883`
+   - Select **protobuf** encoding and **Load .proto file** `robot_pose.proto`
+   - In the "Include Folders" tab, **Add folder...** and select `test_scripts/` (the parent of `common/`)
+   - Select message type `pj.test.RobotPose`; optionally enable "use embedded timestamp"
    - Click OK and subscribe to topic `robot/pose`
 
-4. **Expected Result:**
-   - Without include folder: Compilation fails with "Import not found: common/types.proto"
-   - With include folder: Compilation succeeds, all fields visible in the tree
+Without the include folder, compilation fails with "Import not found: common/types.proto". With it, all
+fields appear in the tree.
 
-### Fields in RobotPose
+## Fields in RobotPose
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -59,16 +38,3 @@ test_scripts/
 | `robot_name` | string | Always "test_robot" |
 | `is_moving` | bool | Always true |
 | `battery_level` | double | Decreasing 100→0 |
-
-### Why This Test Matters
-
-This test verifies that:
-1. `setFolderPicker()` SDK API works correctly
-2. `DiskSourceTree.MapPath()` resolves imports from include folders
-3. Transitive imports are handled (if common/types.proto had its own imports)
-4. The compiled `FileDescriptorSet` includes all dependent descriptors
-
-### Related Code
-
-- `protobuf_parser_dialog.hpp:262-265` — where include folders are added to source tree
-- `sdk_file_folder_picker.md` — SDK contribution documentation

@@ -1,6 +1,5 @@
 #include "csv_dialog.hpp"
 
-// Generated at configure time
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +10,7 @@
 #include <string>
 #include <vector>
 
+// Generated at configure time.
 #include "csv_manifest.hpp"
 #include "dataload_csv_ui.hpp"
 #include "datetimehelp_ui.hpp"
@@ -80,11 +80,9 @@ std::string CsvDialog::ui_content() const {
 std::string CsvDialog::widget_data() {
   PJ::WidgetData wd;
 
-  // Delimiter: the "Detect Automatically" toggle (host-adapted into an iOS
-  // switch) gates the dropdown. Auto on -> dropdown shows the detected delimiter
-  // and is disabled; auto off (incl. the forced-off ambiguous case) -> dropdown
-  // is enabled for the user to pick. An ambiguous header also disables the
-  // toggle itself, so auto cannot be re-armed until a different file is loaded.
+  // Auto on: the dropdown shows the detected delimiter and is disabled; off (including the forced-off ambiguous
+  // case): the user picks. An ambiguous header also disables the toggle, so auto cannot be re-armed until another
+  // file is loaded.
   std::vector<std::string> delimiters = {"\",\" (comma)", "\";\" (semicolon)", "\" \" (space)", "\"\\t\" (tab)"};
   wd.setItems("comboBox", delimiters);
   wd.setCurrentIndex("comboBox", delimiterToIndex(delimiter_));
@@ -92,9 +90,7 @@ std::string CsvDialog::widget_data() {
   wd.setEnabled("checkBoxAutoDelim", !delimiter_ambiguous_);
   wd.setEnabled("comboBox", !detect_delimiter_);
 
-  // Time-axis mode dropdown (docked on the right of the "Time Axis" header).
-  // "Multiple Columns" only appears when the file has both a date-only and a
-  // time-only column, so a combined timestamp can be formed from them.
+  // "Multiple Columns" only appears when the file has both a date-only and a time-only column.
   std::vector<std::string> mode_items = {"Number of Rows", "Selected Column"};
   if (combinableAvailable()) {
     mode_items.push_back("Multiple Columns");
@@ -108,9 +104,8 @@ std::string CsvDialog::widget_data() {
   }
   wd.setCurrentIndex("timeAxisModeCombo", mode_index);
 
-  // Column list. "Selected Column" picks one time column (single-select).
-  // "Multiple Columns" multi-selects the date + time columns that form the
-  // combined timestamp; every non date/time column is greyed out.
+  // "Selected Column" single-selects the time column; "Multiple Columns" multi-selects the date + time columns,
+  // greying out every other column.
   const bool combined_mode = time_mode_ == TimeMode::Combined;
   wd.setListItems("listWidgetSeries", column_names_);
   wd.setEnabled("listWidgetSeries", time_mode_ == TimeMode::Column || combined_mode);
@@ -142,35 +137,28 @@ std::string CsvDialog::widget_data() {
     wd.setSelectedItems("listWidgetSeries", selected);
   }
 
-  // Timestamp format: the "Detect Automatically" toggle (host-adapted from the
-  // checkbox into an iOS switch) gates the custom-format row — turning it off
-  // enables the "Custom" label + format field below.
+  // Turning "Detect Automatically" off enables the "Custom" label + format field.
   wd.setChecked("checkBoxAutoTime", !use_custom_format_);
   wd.setEnabled("labelCustomFormat", use_custom_format_);
   wd.setText("lineEditDateFormat", custom_format_);
   wd.setEnabled("lineEditDateFormat", use_custom_format_);
 
-  // Preview table
   wd.setTableHeaders("tableView", column_names_);
   wd.setTableRows("tableView", preview_rows_);
 
-  // Raw-text preview (header + first 100 lines, verbatim)
   wd.setPlainText("rawText", raw_preview_);
 
-  // Preview mode: the segmented Table/Raw control (host-adapted from the two
-  // grouped radios in the Preview band) drives which preview widget is shown.
+  // The Table/Raw control picks which preview widget is shown.
   wd.setChecked("radioPreviewTable", !preview_raw_);
   wd.setChecked("radioPreviewRaw", preview_raw_);
   wd.setVisible("tableView", !preview_raw_);
   wd.setVisible("rawText", preview_raw_);
 
-  // Preview warning (shared label — text set by analyzeFile)
   wd.setVisible("labelWarning", !warning_message_.empty());
   if (!warning_message_.empty()) {
     wd.setText("labelWarning", warning_message_);
   }
 
-  // OK enabled?
   bool ok = (time_mode_ == TimeMode::RowNumber) || (time_mode_ == TimeMode::Column && selected_column_index_ >= 0) ||
             (time_mode_ == TimeMode::Combined && combined_index_ >= 0);
   wd.setOkEnabled("buttonBox", ok);
@@ -195,12 +183,10 @@ bool CsvDialog::onIndexChanged(std::string_view widget_name, int index) {
     return true;
   }
   if (widget_name == "timeAxisModeCombo") {
-    // Item order matches widget_data: 0 = row number, 1 = single column,
-    // 2 = multiple columns (present only when a date + time column exist).
+    // Item order matches widget_data: 0 = row number, 1 = single column, 2 = multiple columns (only present when
+    // a date + time column exist).
     time_mode_ = index == 1 ? TimeMode::Column : index == 2 ? TimeMode::Combined : TimeMode::RowNumber;
-    // Re-run so the preview warning is recomputed for the new mode (the
-    // non-monotonic warning only applies in single-column mode) instead of
-    // lingering from the previous mode's selection.
+    // The non-monotonic warning only applies in single-column mode, so recompute it.
     analyzeFile();
     return true;
   }
@@ -208,8 +194,7 @@ bool CsvDialog::onIndexChanged(std::string_view widget_name, int index) {
 }
 
 bool CsvDialog::onToggled(std::string_view widget_name, bool checked) {
-  // The auto-detect toggles act in both directions (unlike a radio), so they are
-  // handled before the checked-only radios below.
+  // The auto-detect toggles act in both directions (unlike the checked-only radios below).
   if (widget_name == "checkBoxAutoDelim") {
     detect_delimiter_ = checked;
     analyzeFile();
@@ -238,8 +223,7 @@ bool CsvDialog::onSelectionChanged(std::string_view widget_name, const std::vect
     return false;
   }
   if (time_mode_ == TimeMode::Combined) {
-    // Multiple Columns: from the multi-selection, take the first date-only and
-    // first time-only column and combine them into the timestamp.
+    // Multiple Columns: the first date-only and first time-only column of the selection form the timestamp.
     int date_idx = -1;
     int time_idx = -1;
     for (const auto& name : selected) {
@@ -300,8 +284,8 @@ std::string CsvDialog::saveConfig() const {
   cfg["filepath"] = filepath_;
   cfg["delimiter"] = std::string(1, delimiter_);
   cfg["time_mode"] = timeModeToString(time_mode_);
-  // The picks are restored by name: PlotJuggler pre-fills the next file's dialog with this config. The indices are
-  // for older plugin versions reading it.
+  // The picks are restored by name because PlotJuggler pre-fills the next file's dialog with this config. The
+  // indices are also written for readers that only know them.
   const auto picked = pickedColumns();
   cfg["time_column_name"] = picked.time;
   cfg["combined_date_name"] = picked.date;
@@ -360,7 +344,6 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
     return;
   }
 
-  // Read header
   std::string header_line;
   if (!std::getline(file, header_line)) {
     return;
@@ -369,10 +352,8 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
     header_line.pop_back();
   }
 
-  // Delimiter detection drives the "Detect Automatically" toggle. Ambiguity is a
-  // property of the header, so it is always recomputed. With auto on: a single
-  // clear delimiter is adopted; an ambiguous header drops to manual so the user
-  // disambiguates. With auto off, the user's chosen delimiter is respected.
+  // Ambiguity is a property of the header, so it is always recomputed. Auto on: a clear delimiter is adopted, an
+  // ambiguous header drops to manual. Auto off: the user's delimiter is kept.
   const auto detected = PJ::CSV::DetectDelimiterEx(header_line);
   delimiter_ambiguous_ = detected.ambiguous;
   if (detect_delimiter_) {
@@ -388,7 +369,7 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
     delimiter_ = detected.delimiter;
   }
 
-  // Check for duplicate column names before deduplication
+  // Duplicates must be detected before ParseHeaderLine deduplicates the names.
   {
     std::vector<std::string> raw_parts;
     PJ::CSV::SplitLine(header_line, delimiter_, raw_parts);
@@ -404,11 +385,10 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
 
   column_names_ = PJ::CSV::ParseHeaderLine(header_line, delimiter_);
 
-  // Raw-text preview mirrors the file verbatim: the header plus the first 100
-  // data lines, exactly as read (the Raw Text tab shows this).
+  // The raw preview mirrors the file verbatim: the header plus the first 100 data lines.
   raw_preview_ = header_line;
 
-  // Build preview rows: first 100 data lines (like the original)
+  // Preview rows: first 100 data lines, as the original plugin does.
   std::string line;
   std::vector<std::string> parts;
   std::vector<PJ::CSV::ColumnTypeInfo> first_row_types;
@@ -417,10 +397,8 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
     if (!line.empty() && line.back() == '\r') {
       line.pop_back();
     }
-    // The Raw tab claims to mirror the file verbatim, so a blank line has to
-    // appear there: it is the line the parser will report as skipped, and
-    // hiding it leaves that warning untraceable in the preview. It still does
-    // not become a preview row — a blank line is not a record.
+    // A blank line stays in the raw preview (the parser reports it as skipped, so hiding it leaves that warning
+    // untraceable) but is not a preview row.
     raw_preview_ += '\n';
     raw_preview_ += line;
     if (line.empty()) {
@@ -429,7 +407,6 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
     PJ::CSV::SplitLine(line, delimiter_, parts);
     preview_rows_.push_back(parts);
 
-    // Detect types from first row
     if (count == 0) {
       first_row_types.resize(column_names_.size());
       for (size_t i = 0; i < parts.size() && i < first_row_types.size(); i++) {
@@ -452,13 +429,10 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
   selected_column_index_ = repick(keep.time, keep.time_index);
   setCombinedColumns(repick(keep.date, keep.date_index), repick(keep.time_of_day, keep.time_of_day_index));
 
-  // Compute preview warning message
   warning_message_.clear();
-  // Check for duplicate column names in header
   if (has_duplicate_columns_) {
     warning_message_ = "Duplicate column names detected. Adding suffixes";
   }
-  // Check for rows with wrong column count
   if (warning_message_.empty()) {
     for (const auto& row : preview_rows_) {
       if (row.size() != column_names_.size()) {
@@ -467,7 +441,6 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
       }
     }
   }
-  // Check for non-monotonic timestamps in selected column (numeric only)
   if (warning_message_.empty() && time_mode_ == TimeMode::Column && selected_column_index_ >= 0 &&
       selected_column_index_ < static_cast<int>(column_names_.size())) {
     double prev_val = std::numeric_limits<double>::lowest();
@@ -478,7 +451,7 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
       }
       auto val = PJ::CSV::toDouble(PJ::CSV::Trim(row[col]));
       if (!val) {
-        break;  // Non-numeric timestamps: skip check
+        break;  // non-numeric timestamps: no check
       }
       if (*val < prev_val) {
         warning_message_ =
@@ -489,8 +462,7 @@ void CsvDialog::analyzeFile(const PickedColumns& keep) {
     }
   }
 
-  // Multiple-Columns mode needs a date column and a time column; drop to row
-  // number if this file has neither.
+  // Multiple Columns needs a date and a time column; fall back to row number without them.
   if (time_mode_ == TimeMode::Combined && !combinableAvailable()) {
     time_mode_ = TimeMode::RowNumber;
     combined_pairs_.clear();

@@ -1,28 +1,9 @@
 #!/usr/bin/env python3
 """
-MQTT publisher for RobotPose messages with imported types.
+MQTT publisher for RobotPose messages. robot_pose.proto imports common/types.proto,
+so this exercises the Protobuf parser's include folders (steps in README_INCLUDE_FOLDERS.md).
 
-This script tests the include folder functionality in PlotJuggler's
-Protobuf parser. The robot_pose.proto file imports common/types.proto,
-which requires configuring include folders in the parser dialog.
-
-Usage:
-    1. Start mosquitto broker: mosquitto -p 1883
-    2. Run this script: python3 mqtt_test_robot_pose.py
-    3. In PlotJuggler:
-       - Open MQTT data source
-       - Select "protobuf" encoding
-       - Load robot_pose.proto
-       - Add parent directory as include folder (test_scripts/)
-       - Select RobotPose message type
-       - Connect to localhost:1883, topic: robot/pose
-
-Requirements:
-    pip install paho-mqtt protobuf
-
-First, compile the protos:
-    cd test_scripts
-    protoc --python_out=. common/types.proto robot_pose.proto
+Requirements: pip install paho-mqtt protobuf. The protos are compiled with protoc on first run.
 """
 
 import sys
@@ -35,7 +16,7 @@ except ImportError:
     print("ERROR: paho-mqtt not installed. Run: pip install paho-mqtt")
     sys.exit(1)
 
-# Try to import generated proto - compile if missing
+# Compile the protos on first run.
 try:
     import robot_pose_pb2
 except ImportError:
@@ -97,29 +78,25 @@ def main():
         while True:
             t = time.time() - t0
 
-            # Create message with imported types
             msg = robot_pose_pb2.RobotPose()
 
-            # Header (with timestamp for embedded timestamp feature)
+            # header.timestamp is what use_embedded_timestamp reads
             msg.header.timestamp = t
             msg.header.frame_id = "world"
             msg.header.seq = seq
 
-            # Circular motion for position
             radius = 2.0
             omega = 0.5  # rad/s
             msg.position.x = radius * math.cos(omega * t)
             msg.position.y = radius * math.sin(omega * t)
             msg.position.z = 0.5 * math.sin(0.2 * t)
 
-            # Orientation (quaternion representing rotation around Z)
             angle = omega * t
             msg.orientation.w = math.cos(angle / 2)
             msg.orientation.x = 0.0
             msg.orientation.y = 0.0
             msg.orientation.z = math.sin(angle / 2)
 
-            # Velocities
             msg.linear_velocity.x = -radius * omega * math.sin(omega * t)
             msg.linear_velocity.y = radius * omega * math.cos(omega * t)
             msg.linear_velocity.z = 0.1 * math.cos(0.2 * t)
@@ -128,12 +105,10 @@ def main():
             msg.angular_velocity.y = 0.0
             msg.angular_velocity.z = omega
 
-            # Additional state
             msg.robot_name = "test_robot"
             msg.is_moving = True
             msg.battery_level = 100.0 - (t % 100)  # decreasing
 
-            # Publish
             payload = msg.SerializeToString()
             client.publish(topic, payload)
 

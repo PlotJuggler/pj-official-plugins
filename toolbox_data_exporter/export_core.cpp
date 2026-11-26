@@ -15,13 +15,12 @@
 
 namespace {
 
-// PJ3 toolbox_csv.cpp:112-118 — common serializer preconditions.
 bool canSerialize(const ExportTable& table, const std::string& path) {
   return !path.empty() && !table.time.empty() && table.cols.size() == table.names.size() &&
          table.string_cols.size() == table.string_names.size();
 }
 
-// PJ3 toolbox_csv.cpp:683,702 — QString::number replacements pinned to the C numeric locale.
+// Pinned to the C numeric locale, whatever the process locale.
 std::string formatDouble(double value, const char* format) {
   char buffer[128]{};
   const double normalized_value = (value == 0.0) ? 0.0 : value;
@@ -47,7 +46,7 @@ std::string formatDouble(double value, const char* format) {
   return buffer;
 }
 
-// PJ3 toolbox_csv.cpp:711-727 — quote only string cells that require RFC-4180 escaping.
+// Quote only string cells that require RFC-4180 escaping.
 std::string quoteStringCell(std::string_view value) {
   if (value.find_first_of(",\"\n\r") == std::string_view::npos) {
     return std::string(value);
@@ -66,7 +65,7 @@ std::string quoteStringCell(std::string_view value) {
   return escaped;
 }
 
-// PJ3 toolbox_csv.cpp:738-766 — null means missing; present NaN/Inf remain values.
+// Null means missing; present NaN/Inf remain values.
 arrow::Result<std::shared_ptr<arrow::Array>> makeDoubleArray(
     const std::vector<double>& values, const std::vector<uint8_t>& present) {
   arrow::DoubleBuilder builder;
@@ -89,7 +88,7 @@ arrow::Result<std::shared_ptr<arrow::Array>> makeDoubleArray(
   return array;
 }
 
-// PJ3 toolbox_csv.cpp:768-793 — null means missing; present empty strings remain values.
+// Null means missing; present empty strings remain values.
 arrow::Result<std::shared_ptr<arrow::Array>> makeStringArray(
     const std::vector<std::string>& values, const std::vector<uint8_t>& present) {
   arrow::StringBuilder builder;
@@ -114,7 +113,7 @@ arrow::Result<std::shared_ptr<arrow::Array>> makeStringArray(
 
 }  // namespace
 
-// PJ3 pj3_timeseries.h:151-175 — lower_bound plus strict nearest-neighbor selection.
+// lower_bound plus strict nearest-neighbor selection.
 int indexFromTime(const std::vector<double>& t, double x) {
   if (t.empty()) {
     return -1;
@@ -136,7 +135,7 @@ int indexFromTime(const std::vector<double>& t, double x) {
   return static_cast<int>(index);
 }
 
-// PJ3 toolbox_csv.cpp:342-374 — scan at most 2000 intervals for a positive local minimum.
+// Scan at most 2000 intervals for a positive local minimum.
 double estimateMinDt(const std::vector<double>& t, size_t start_idx, double t_end) {
   if (t.size() < 2 || start_idx + 1 >= t.size()) {
     return 0.0;
@@ -163,7 +162,7 @@ double estimateMinDt(const std::vector<double>& t, size_t start_idx, double t_en
   return min_dt;
 }
 
-// PJ3 toolbox_csv.cpp:380-647 — adaptive-tolerance greedy merge for numeric and string series.
+// Adaptive-tolerance greedy merge for numeric and string series.
 ExportTable buildExportTable(
     const std::vector<NumericSeriesData>& numeric, const std::vector<StringSeriesData>& strings, double t_start,
     double t_end) {
@@ -343,7 +342,7 @@ ExportTable buildExportTable(
   return table;
 }
 
-// PJ3 toolbox_csv.cpp:649-735 — text CSV with PJ3 formatting and string-cell quoting.
+// Text CSV with PJ3 formatting and string-cell quoting.
 bool serializeCSV(const ExportTable& table, const std::string& path) {
   if (!canSerialize(table, path)) {
     return false;
@@ -393,7 +392,7 @@ bool serializeCSV(const ExportTable& table, const std::string& path) {
   return true;
 }
 
-// PJ3 toolbox_csv.cpp:737-858 — Arrow table with default Parquet writer properties.
+// Arrow table with default Parquet writer properties.
 bool serializeParquet(const ExportTable& table, const std::string& path) {
   if (!canSerialize(table, path)) {
     return false;

@@ -5,9 +5,7 @@ find_package(zstd REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# --- Plugin shared library ---
-# mcap is header-only and vendored under contrib/mcap/ from the
-# parallel-reader fork. lz4 + zstd come from conan for chunk decompression.
+# mcap is header-only and vendored under contrib/mcap/ (parallel-reader fork); lz4 + zstd decompress chunks.
 add_library(mcap_source_plugin SHARED mcap_source.cpp)
 target_compile_features(mcap_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mcap_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -28,14 +26,12 @@ pj_embed_manifest(mcap_source_plugin
   VAR_NAME kMcapManifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+# Sidecar .pjmanifest.json (manifest.json + abi_major + family) the host scans before dlopen.
 pj_emit_plugin_manifest(mcap_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Unit test for MCAP helpers ---
 add_executable(mcap_helpers_test tests/mcap_helpers_test.cpp)
 target_compile_features(mcap_helpers_test PRIVATE cxx_std_20)
 target_compile_options(mcap_helpers_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -44,7 +40,6 @@ target_include_directories(mcap_helpers_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOUR
 target_link_libraries(mcap_helpers_test PRIVATE LZ4::lz4_static zstd::libzstd_static pj_utf8_path GTest::gtest_main)
 add_test(NAME mcap_helpers_test COMMAND mcap_helpers_test)
 
-# --- Unit test for MCAP dialog model/config behavior ---
 add_executable(mcap_dialog_test tests/mcap_dialog_test.cpp)
 target_compile_features(mcap_dialog_test PRIVATE cxx_std_20)
 target_compile_options(mcap_dialog_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -62,7 +57,6 @@ target_link_libraries(mcap_dialog_test PRIVATE
 )
 add_test(NAME mcap_dialog_test COMMAND mcap_dialog_test)
 
-# --- Unit test for the dataset-metadata extraction ---
 add_executable(mcap_dataset_metadata_test tests/mcap_dataset_metadata_test.cpp)
 target_compile_features(mcap_dataset_metadata_test PRIVATE cxx_std_20)
 target_compile_options(mcap_dataset_metadata_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -73,7 +67,6 @@ target_link_libraries(mcap_dataset_metadata_test PRIVATE
 )
 add_test(NAME mcap_dataset_metadata_test COMMAND mcap_dataset_metadata_test)
 
-# --- Unit test for the MessageByteStore (hot/cold lazy byte layer) ---
 find_package(Threads REQUIRED)
 add_executable(message_byte_store_test tests/message_byte_store_test.cpp)
 target_compile_features(message_byte_store_test PRIVATE cxx_std_20)
@@ -89,7 +82,6 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(mcap_source_plugin
   REQUIRED_EXPORTS PJ_get_data_source_vtable PJ_get_dialog_vtable)
 
-# --- Integration test: the built plugin importing a split rosbag2 bag ---
 add_executable(mcap_source_split_bag_test tests/mcap_source_split_bag_test.cpp)
 target_compile_features(mcap_source_split_bag_test PRIVATE cxx_std_20)
 target_compile_options(mcap_source_split_bag_test PRIVATE ${PJ_WARNING_FLAGS})

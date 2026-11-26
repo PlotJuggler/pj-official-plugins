@@ -3,7 +3,6 @@
 UDP test client for the PlotJuggler UDP Server plugin.
 
 Sends JSON data at 20 Hz (sine and cosine waves) to the configured address/port.
-Mirrors the original test client from PlotJuggler 3.x.
 
 Usage:
     python udp_client.py [--address ADDRESS] [--port PORT]

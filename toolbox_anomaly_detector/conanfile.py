@@ -14,9 +14,7 @@ class ToolboxAnomalyDetectorConan(ConanFile):
     version = "0"
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
-    # Host-driven, Luau-FREE plugin: detection runs in the HOST (the plugin submits the
-    # rule via the SDK data-processors service). The .so links only the Luau-free
-    # anomaly_helpers, so it needs neither pj_scripting_core nor a Lua VM — the engine
+    # Detection runs in the host; the .so links only the Luau-free anomaly_helpers. The engine
     # layer (anomaly_core + pj_scripting_core) is built only for the headless runner.
     requires = (
         f"plotjuggler_sdk/{_SDK_VERSION}",

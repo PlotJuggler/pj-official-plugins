@@ -75,7 +75,7 @@ TEST(PcdReader, OrganizedKeepsWidthHeight) {
 }
 
 TEST(PcdReader, BinaryCompressedRoundTrip) {
-  // Two xyz points; build the SoA (field-major) uncompressed buffer PCD expects.
+  // Two xyz points, as the field-major (SoA) uncompressed buffer PCD expects.
   const uint32_t num_points = 2, point_step = 12;
   float pts[2][3] = {{1, 2, 3}, {4, 5, 6}};
   std::string soa;  // field-major: x0 x1 | y0 y1 | z0 z1

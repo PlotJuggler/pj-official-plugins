@@ -1,14 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// Unit tests for the Luau-FREE half of the Marker Editor core. This layer is
-// shared verbatim by the GUI toolbox and the headless runner, so a regression here
-// shows up in both at once — and unlike the runner's notify_test (gated behind
-// PJ_BUILD_ANOMALY_RUNNER), this target builds with the plugin and therefore runs in CI.
-//
-// What is pinned here is the *contract* the two consumers rely on: the portable rule
-// file survives a save/load round-trip, the report's pass/fail verdict and summary
-// counts, and the "--SOURCE--" substitution the editor performs on every builtin.
+// Unit tests for the Luau-free layer shared by the GUI toolbox and the headless runner. Unlike the
+// runner's notify_test (gated behind PJ_BUILD_ANOMALY_RUNNER), this target builds with the plugin, so CI
+// runs it. Pins the contract both consumers rely on: rule-file round-trip, the report's verdict and
+// summary counts, and the "--SOURCE--" substitution.
 
 #include <gtest/gtest.h>
 
@@ -38,10 +34,6 @@ PlotMarker makeMarker(MarkerSeverity severity, MarkerStatus status) {
   m.label = "m";
   return m;
 }
-
-// ---------------------------------------------------------------------------
-// Portable rule file — the artifact the GUI saves and the runner consumes
-// ---------------------------------------------------------------------------
 
 TEST(RuleJson, RoundTripPreservesEveryField) {
   Rule original;
@@ -110,10 +102,6 @@ TEST(Severity, FromStringKnowsExactlyTheFourNames) {
   EXPECT_FALSE(anomaly_core::severityFromString("fatal").has_value());
 }
 
-// ---------------------------------------------------------------------------
-// "--SOURCE--" substitution — applied to every builtin when the user picks a series
-// ---------------------------------------------------------------------------
-
 TEST(SubstituteSource, ReplacesEveryOccurrenceNotJustTheFirst) {
   const std::string tmpl = "a = series('--SOURCE--'); b = series('--SOURCE--')";
   EXPECT_EQ(anomaly_core::substituteSource(tmpl, "t/f"), "a = series('t/f'); b = series('t/f')");
@@ -131,20 +119,12 @@ TEST(SubstituteSource, DoesNotRescanInsertedTextAndTerminates) {
   EXPECT_EQ(anomaly_core::substituteSource("x=--SOURCE--", "--SOURCE--"), "x=--SOURCE--");
 }
 
-// ---------------------------------------------------------------------------
-// JSON report — the CI-facing artifact (verdict + summary + anomaly list)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// parseSeriesRefs — what the GUI declares as generator inputs
-// ---------------------------------------------------------------------------
-
 TEST(ParseSeriesRefs, FindsLiteralCallsInOrderWithoutDuplicates) {
   const std::string code = "local a = series(\"x/1\")\nlocal b = series( 'y/2' )\nlocal c = series(\"x/1\")\n";
   EXPECT_EQ(anomaly_core::parseSeriesRefs(code), (std::vector<std::string>{"x/1", "y/2"}));
 }
 
-// colorRegions("name", ...) reads the series by name, so its literal first argument is an input too.
+// when("name", ...) reads the series by name, so its literal first argument is an input too.
 TEST(ParseSeriesRefs, CountsWhenNameArguments) {
   const std::string code =
       "when(\"mode/state\"):backgroundColor({ [0] = \"gray\" })\n"
@@ -160,9 +140,8 @@ TEST(ParseSeriesRefs, IgnoresNonLiteralArguments) {
 }
 
 TEST(ParseSeriesRefs, SkipsLineComments) {
-  // A help comment with an example call, and a line the user commented out to try
-  // something else: neither is read by the rule, so neither may be declared — the host
-  // rejects the whole rule when a declared input does not exist.
+  // A help comment with an example call and a commented-out line are not read by the rule, so neither may
+  // be declared: the host rejects the whole rule when a declared input does not exist.
   const std::string code =
       "-- series(\"topic/field\"):size() / :at(i)\n"
       "-- local old = series(\"gone/away\")\n"
@@ -294,10 +273,6 @@ TEST(MarkersToReport, EmptyMarkerSetPasses) {
   EXPECT_FALSE(report.failed);
   EXPECT_EQ(nlohmann::json::parse(report.json)["status"], "pass");
 }
-
-// ---------------------------------------------------------------------------
-// Builtin library — shared by the GUI dropdown and `--list-functions`
-// ---------------------------------------------------------------------------
 
 TEST(Builtins, AreWellFormedAndUniquelyNamed) {
   const std::vector<anomaly_core::NamedFunction>& builtins = anomaly_core::builtinFunctions();

@@ -34,9 +34,8 @@ from release_tools import SDK_VERSION_REGEX, validate_manifest_file
 ROOT = Path(__file__).resolve().parent.parent
 SDK_VERSION_FILE = ROOT / "SDK_VERSION"
 
-# A *literal* plotjuggler_sdk pin — the thing that must NOT reappear in a recipe now
-# that the version is read from SDK_VERSION. `f"plotjuggler_sdk/{_SDK_VERSION}"` is fine
-# because the quote does not immediately follow the slash.
+# A literal plotjuggler_sdk pin, which recipes must not carry (they read SDK_VERSION).
+# `f"plotjuggler_sdk/{_SDK_VERSION}"` is fine: the quote does not immediately follow the slash.
 LITERAL_PIN_RE = re.compile(r'"plotjuggler_sdk/(?:\[[^\]]*\]|[0-9][0-9A-Za-z.\-+]*)"')
 
 

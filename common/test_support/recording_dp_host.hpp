@@ -1,14 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// A data-processors host that records what it was asked to install instead of
-// installing it, so a test can assert on the exact script and inputs a plugin
-// synthesized.
-//
-// Note the limit this implies. It records INTENT — nothing here runs the script,
-// so a transform recorded as correct can still yield an empty curve in the real
-// application (e.g. inputs that do not share exact timestamps). Verifying the
-// drawn result requires the GUI pass.
+// A data-processors host that records what it was asked to install instead of installing it, so a
+// test can assert on the exact script and inputs a plugin synthesized. It records INTENT: nothing
+// here runs the script, so a transform recorded as correct can still yield an empty curve in the
+// real application (e.g. inputs that do not share exact timestamps).
 #pragma once
 
 #include <algorithm>
@@ -22,26 +18,22 @@
 
 namespace toolbox_testing {
 
-// Records the last create/validate call so tests can assert the synthesized
-// Luau script + routed inputs/outputs. Returns success unless a fail flag is set.
+// Returns success unless a fail flag is set.
 struct RecordingDpHost {
   int create_calls = 0;
-  // Persistent creates ever ATTEMPTED. Note what this is not: it never goes down,
-  // so it answers "did it call create" and not "what is the user left with". Once
-  // removal existed, those stopped being the same question — judge an outcome
-  // with liveCount() instead, and keep this for asserting a call happened at all.
+  // Persistent creates ever ATTEMPTED; it never goes down, so it answers "did it call create",
+  // not "what is the user left with" (use liveCount() for that).
   int persistent_creates = 0;
   int validate_calls = 0;
   bool fail_validate = false;
   std::string validate_error = "compile error";  // what a failing validate_data_processor_script says
-  // check_data_processor_script (0.38.0) answers what validate would (VALID / INVALID with validate_error),
+  // check_data_processor_script answers what validate would (VALID / INVALID with validate_error),
   // or UNCHECKED with check_message when check_unchecked is set. Counted in validate_calls.
   bool check_unchecked = false;
   std::string check_message = "not checked: busy";
   bool fail_create = false;
-  // Served verbatim by data_processor_config(id) (PJ::sdk::DataProcessorsHostView
-  // ::recipeOf) when non-empty; otherwise the recipe JSON is built from the
-  // last create.
+  // Served verbatim by data_processor_config(id) (PJ::sdk::DataProcessorsHostView::recipeOf) when
+  // non-empty; otherwise the recipe JSON is built from the last create.
   std::string canned_config_json;
   // The `series{topic, rows, failed, first_error, complete}` object the config of an owner's own recipe carries
   // while the host replays its history. data_processor_config serves one entry per call, in order, and repeats the
@@ -69,19 +61,17 @@ struct RecordingDpHost {
   std::vector<std::string> live_ids;  // what list() reports; the views point into this
   std::vector<std::string> resolved;  // storage the returned borrowed views point into
 
-  // --- v2 (typed request) surface: create_data_processor_v2 / submit_evaluation /
-  // poll_evaluation / release_evaluation, used by evaluate's object path and
-  // create_derived_object. Simulates an older host (slots null, so
-  // PJ_HAS_TAIL_SLOT fails) when supportsV2 is false.
+  // v2 (typed request) surface: create_data_processor_v2 / submit_evaluation / poll_evaluation /
+  // release_evaluation, used by evaluate's object path and create_derived_object. Simulates an
+  // older host (slots null, so PJ_HAS_TAIL_SLOT fails) when supports_v2 is false.
   bool supports_v2 = true;
   bool fail_submit = false;
-  // How many times poll_evaluation answers PENDING before COMPLETED, captured
-  // per handle at submit time (see EvaluateWaitsThroughPendingPolls).
+  // How many times poll_evaluation answers PENDING before COMPLETED, captured per handle at submit
+  // time.
   int pending_polls = 0;
   std::uint32_t terminal_state = PJ_EVALUATION_STATE_COMPLETED;
-  // Default report: one bundle with a "cropped" object summary and a
-  // "count" scalar value, matching the crop_box shape fake_backend.hpp's
-  // "crop <topic> at <t>" phrase asks for.
+  // Default report: one bundle with a "cropped" object summary and a "count" scalar value,
+  // matching the crop_box shape fake_backend.hpp's "crop <topic> at <t>" phrase asks for.
   std::string canned_report_json =
       R"({"coverage":{"start_ns":0,"end_ns":0,"evaluated_until_ns":null,"candidates":1,"evaluated":1,)"
       R"("cache_hits":0,"complete":true,"stopped":"complete"},"bundles":[{"requested_ns":0,"stamp_ns":0,)"
@@ -95,7 +85,6 @@ struct RecordingDpHost {
   // instead of the queued or canned report.
   std::optional<std::int64_t> first_sample_ns;
   std::string first_sample_input = "/cloud";
-  // What every submit_evaluation asked for, in order.
   struct RecordedRequest {
     std::int64_t instant_ns = 0;  // raw ns
     std::uint32_t flags = 0;
@@ -127,23 +116,19 @@ struct RecordingDpHost {
   std::uint64_t next_handle = 1;
   std::string last_poll_json;  // owned storage for the borrowed out_json view
 
-  // create_data_processor_v2's OWN snapshot of flags/time_flags/instant,
-  // taken separately from the shared last_* fields: create_derived_object
-  // installs via createV2 and then immediately submitEvaluation()s the
-  // installed node to read a finding back, and that second call's recordRequest
-  // would otherwise overwrite what the create call actually carried before a
-  // test gets to look at it.
+  // create_data_processor_v2's OWN snapshot of flags/time_flags/instant, separate from the shared
+  // last_* fields: create_derived_object installs via createV2 and then immediately
+  // submitEvaluation()s the installed node, and that second recordRequest would overwrite what
+  // the create call carried.
   std::string last_create_v2_params_json;
   std::uint32_t last_create_v2_flags = 0;
   std::uint32_t last_create_v2_time_flags = 0;
   std::int64_t last_create_v2_instant_ns = 0;
 
-  // One record per ACCEPTED persistent create, so a verdict can ask what a
-  // surviving id actually is (kind, script, declared inputs) instead of judging
-  // from last_* — which only remembers the final call and lumps three different
-  // leftovers under one shape. Removal deliberately keeps the record: history
-  // stays, and pairing `created` with `live_ids` answers "what is the user
-  // left with, and what is each thing".
+  // One record per ACCEPTED persistent create, so a test can ask what a surviving id actually is
+  // (kind, script, declared inputs); last_* only remembers the final call. Removal keeps the
+  // record: pairing `created` with `live_ids` answers "what is the user left with, and what is
+  // each thing".
   struct CreatedNode {
     std::string id;
     std::string kind;
@@ -162,12 +147,10 @@ struct RecordingDpHost {
     return nullptr;
   }
 
-  // The real host compiles a transform script in an environment where the
-  // marker-rule vocabulary does not exist, so a `series(...)` reference fails to
-  // resolve and the install is refused (verified in the application,
-  // 2026-08-14). Mirror that refusal here: without it the harness records as a
-  // success a runtime cross-read the product would reject, and the benchmark
-  // measures an outcome that cannot happen.
+  // The real host compiles a transform script in an environment where the marker-rule vocabulary
+  // does not exist, so a `series(...)` reference fails to resolve and the install is refused.
+  // Mirrored here: otherwise the harness would record as a success a cross-read the product
+  // rejects.
   static bool rejectsCrossRead(const std::string& kind, const std::string& script, PJ_error_t* err) {
     if (kind == "transform" && script.find("series(") != std::string::npos) {
       PJ::sdk::fillError(
@@ -211,9 +194,8 @@ struct RecordingDpHost {
     if (rejectsCrossRead(self->last_kind, self->last_script, err)) {
       return false;
     }
-    // The create succeeded, so from here on the host really is holding it. An
-    // ephemeral one is a dry run the host drops by itself, so it never joins the
-    // set the user is left with.
+    // An ephemeral create is a dry run the host drops by itself, so it never joins the set the
+    // user is left with.
     if ((flags & PJ_DATA_PROCESSOR_FLAG_EPHEMERAL) == 0) {
       self->live_ids.push_back(self->last_id);
       self->created.push_back(
@@ -260,9 +242,8 @@ struct RecordingDpHost {
     return true;
   }
 
-  // Ids this fake claims to have live, so the list/remove paths can be driven.
-  // Kept separate from what create() recorded: a test needs to say "the host
-  // already has these" without pretending this plugin made them here.
+  // live_ids is separate from what create() recorded: a test can say "the host already has these"
+  // without pretending this plugin made them.
   static bool tList(
       void* ctx, PJ_string_view_t* out_buffer, uint64_t capacity, uint64_t* out_count, PJ_error_t* /*err*/) noexcept {
     auto* self = static_cast<RecordingDpHost*>(ctx);
@@ -308,16 +289,14 @@ struct RecordingDpHost {
     return true;
   }
 
-  // What the user is actually left with: a plugin that probes and cleans up
-  // leaves the same count as one that got it right first time.
+  // What the user is left with: a plugin that probes and cleans up leaves the same count as one
+  // that got it right first time.
   int liveCount() const {
     return static_cast<int>(live_ids.size());
   }
 
-  // Records the typed request the same way tCreate does, then upserts it —
-  // outputs carry their declared TYPE too (last_output_types), and the time
-  // fields (time_flags/window/instant) that createTransform/createMarkers
-  // have no equivalent of.
+  // Records the typed request like tCreate, plus the declared output TYPEs (last_output_types) and
+  // the time fields (time_flags/window/instant) that createTransform/createMarkers lack.
   static bool tCreateV2(
       void* ctx, const PJ_data_processor_request_t* request, PJ_string_view_t* out_topics, uint64_t out_topics_capacity,
       uint64_t* out_topics_count, PJ_error_t* err) noexcept {
@@ -429,9 +408,7 @@ struct RecordingDpHost {
     return true;
   }
 
-  // Shared by tCreateV2/tSubmit: both take the same PJ_data_processor_request_t
-  // shape, so both record it into the same last_* fields tCreate does (plus
-  // the v2-only ones: types, time flags, window/instant).
+  // Shared by tCreateV2/tSubmit, which take the same PJ_data_processor_request_t.
   void recordRequest(const PJ_data_processor_request_t& request) {
     last_id = toStr(request.id);
     last_kind = toStr(request.kind);
@@ -471,10 +448,8 @@ struct RecordingDpHost {
       v.check_data_processor_script = &RecordingDpHost::tCheck;
       return v;
     }();
-    // struct_size stops right before create_data_processor_v2, so
-    // PJ_HAS_TAIL_SLOT fails for every v2 slot even though the pointers below
-    // it are never installed either -- either alone already fails the check,
-    // both together is what a host actually built before v2 existed reports.
+    // struct_size stops right before create_data_processor_v2, and the later slots are null:
+    // either alone fails PJ_HAS_TAIL_SLOT, both together is what a host built before v2 reports.
     static const PJ_data_processors_host_vtable_t vtable_v1_only = [] {
       PJ_data_processors_host_vtable_t v{};
       v.protocol_version = 1;

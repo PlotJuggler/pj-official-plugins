@@ -332,7 +332,7 @@ void WhepConnection::runConnect() {
     failConnect(WhepErrorKind::kBadResponse, std::string("answer rejected: ") + e.what());
     return;
   }
-  // Connected/Failed now arrives via pc_->onStateChange.
+  // Connected/Failed arrives via pc_->onStateChange.
 }
 
 EncodedFrame WhepConnection::normalizeAccessUnit(

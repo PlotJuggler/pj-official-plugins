@@ -84,7 +84,6 @@ std::string buildNestedSchema() {
   file_proto.set_name("test_nested.proto");
   file_proto.set_syntax("proto3");
 
-  // Header message
   auto* header_msg = file_proto.add_message_type();
   header_msg->set_name("Header");
   auto* seq_field = header_msg->add_field();
@@ -93,7 +92,6 @@ std::string buildNestedSchema() {
   seq_field->set_type(gp::FieldDescriptorProto::TYPE_INT32);
   seq_field->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
 
-  // Stamped message
   auto* stamped_msg = file_proto.add_message_type();
   stamped_msg->set_name("Stamped");
   auto* hdr_field = stamped_msg->add_field();
@@ -220,7 +218,6 @@ struct ProtobufParserFixture {
 
 // Helper: create a serialized message using DynamicMessage from our pool.
 std::string serializeSimple(double temperature, int32_t status) {
-  // Build pool and serialize
   gp::FileDescriptorProto file_proto;
   file_proto.set_name("test.proto");
   file_proto.set_syntax("proto3");
@@ -352,9 +349,8 @@ TEST(ProtobufParserTest, NestedMessage) {
   EXPECT_TRUE(found_val);
 }
 
-// A schema whose FileDescriptorSet lists the message's file BEFORE the file it
-// imports, as written by the MCAP C++ example (BuildFileDescriptorSet) and by
-// writers derived from it.
+// A FileDescriptorSet that lists the message's file BEFORE the file it imports, as written by the MCAP C++ example
+// (BuildFileDescriptorSet) and writers derived from it.
 TEST(ProtobufParserTest, SchemaFileBeforeItsImport) {
   ProtobufParserFixture f;
   f.setUp();
@@ -594,10 +590,6 @@ TEST(ProtobufParserTest, ManifestContainsEncoding) {
   EXPECT_NE(f.handle.manifest().find("\"protobuf\""), std::string::npos);
 }
 
-// ---------------------------------------------------------------------------
-// Embedded timestamp tests
-// ---------------------------------------------------------------------------
-
 // Build a schema with a top-level double "timestamp" field + a value field.
 std::string buildTimestampSchema(
     const std::string& ts_field_name = "timestamp", const std::string& msg_name = "TsMessage") {
@@ -627,12 +619,10 @@ std::string buildTimestampSchema(
   return out;
 }
 
-// Serialize a TsMessage using the FileDescriptorSet bytes from buildTimestampSchema.
-// Avoids building a separate DescriptorPool that might collide with the global one.
+// Serializes a TsMessage from the buildTimestampSchema bytes, in a local pool that cannot collide with the global one.
 std::string serializeTsMessage(
     const std::string& ts_field_name, double ts_seconds, double value, const std::string& msg_name = "TsMessage") {
-  // Reconstruct the schema bytes the same way buildTimestampSchema does so we
-  // can build a local pool and serialize without touching the global pool.
+  // Rebuilds the schema bytes like buildTimestampSchema so a local pool can serialize without touching the global one.
   gp::FileDescriptorProto file_proto;
   file_proto.set_name("ts_serial_" + ts_field_name + "_" + msg_name + ".proto");
   file_proto.set_syntax("proto3");
@@ -730,10 +720,8 @@ TEST(ProtobufParserTest, EmbeddedTimestampMissingFieldFallsBackToHost) {
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);
 }
 
-// ---------------------------------------------------------------------------
 // Field presence: a field the sender omitted is left out of the record (the
 // store keeps it null), instead of being written as its default value.
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -965,20 +953,13 @@ TEST(ProtobufParserTest, PresenceMapEntryWithoutValueEqualsDefaultValue) {
   EXPECT_EQ(first.count("m[0]/7/value/x"), 1u);
 }
 
-// ---------------------------------------------------------------------------
-// Canonical VideoFrame fast path
-//
-// PJ.VideoFrame and foxglove.CompressedVideo are wire-identical, so a single
-// decoder serves both. The bindSchema fast path bypasses the descriptor pool
-// and registers a SchemaHandler that decodes the canonical wire bytes
-// zero-copy. We feed serializeVideoFrame() output (the canonical writer) so the
-// test stays in lock-step with the codec's wire layout.
-// ---------------------------------------------------------------------------
+// Canonical VideoFrame fast path: PJ.VideoFrame and foxglove.CompressedVideo are wire-identical, so one decoder serves
+// both. Inputs come from serializeVideoFrame() (the canonical writer) so the tests stay in lock-step with the codec's
+// wire layout.
 
 namespace {
 
-// A small, recognizable H.264-ish payload. The exact bytes are arbitrary — we
-// only assert the decoder returns them verbatim and aliases the input buffer.
+// An arbitrary, recognizable H.264-ish payload; the decoder must return it verbatim and alias the input buffer.
 const std::vector<uint8_t> kVideoBlob = {0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1E, 0xDE, 0xAD, 0xBE, 0xEF};
 
 std::vector<uint8_t> buildVideoFrameWire(const std::string& format, PJ::Timestamp ts_ns) {
@@ -990,10 +971,8 @@ std::vector<uint8_t> buildVideoFrameWire(const std::string& format, PJ::Timestam
   return PJ::serializeVideoFrame(frame);
 }
 
-// Decode via the in-process object route. The host calls parseObject() on the
-// MessageParserPluginBase* directly (the C ABI vtable carries only the scalar
-// parse() slot); context() hands back that base pointer — same pattern as the
-// ros_parser object-route tests.
+// Decodes via the in-process object route: the host calls parseObject() on the MessageParserPluginBase* directly (the
+// C ABI vtable carries only the scalar parse() slot), and context() hands back that base pointer.
 void checkVideoFrameObjectRoute(std::string_view registered_name) {
   ProtobufParserFixture f;
   f.setUp();
@@ -1072,15 +1051,9 @@ TEST(ProtobufParserTest, VideoFrameScalarRouteEmitsSlimMetadata) {
   EXPECT_DOUBLE_EQ(data_size->numeric, static_cast<double>(kVideoBlob.size()));
 }
 
-// ---------------------------------------------------------------------------
-// foxglove.PointCloud → kPointCloud
-//
-// Mirrors how parser_ros promotes sensor_msgs/PointCloud2. We serialize a real
-// foxglove.PointCloud message with the genuine protobuf serializer (so the wire
-// layout — fixed32 stride/offset, nested timestamp/pose, repeated
-// PackedElementField, bytes payload — matches what the decoder must read) and
-// assert the canonical fields, the enum remap, and zero-copy aliasing.
-// ---------------------------------------------------------------------------
+// foxglove.PointCloud -> kPointCloud. A real foxglove.PointCloud is serialized with the genuine protobuf serializer
+// (fixed32 stride/offset, nested timestamp/pose, repeated PackedElementField, bytes payload) and the tests assert the
+// canonical fields, the enum remap, and zero-copy aliasing.
 
 namespace {
 
@@ -1202,7 +1175,6 @@ const std::vector<FoxgloveField> kCloudFields = {
     {"ring", 9, 2},       // INT8   → kInt8
 };
 
-// --- foxglove.VoxelGrid wire builder -------------------------------------
 // Builds an authentic foxglove.VoxelGrid message (counts/strides are fixed32,
 // cell_size/pose are nested messages) via DynamicMessageFactory, mirroring
 // buildFoxglovePointCloudWire.
@@ -1586,14 +1558,8 @@ TEST(ProtobufParserTest, FoxglovePointCloudScalarRoute) {
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Well-known Foxglove object decoders (foxglove_object_codecs.cpp)
-//
-// These 5 decoders had no protobuf-layer test. We build minimal but genuine
-// Foxglove-wire protobuf bytes with a tiny hand-rolled writer (exact control
-// over field numbers / wire types, matching the schemas the decoder reads) and
-// assert the canonical field mapping. Happy-path coverage for the wire reader.
-// ---------------------------------------------------------------------------
+// Well-known Foxglove object decoders (foxglove_object_codecs.cpp): minimal but genuine Foxglove-wire bytes from a tiny
+// hand-rolled writer (exact control over field numbers / wire types), asserting the canonical field mapping.
 
 namespace {
 
@@ -1720,12 +1686,10 @@ TEST(ProtobufParserTest, FoxgloveRawImageDecodes) {
 
 namespace {
 
-// Build a FileDescriptorSet for foxglove.RawImage with caller-supplied field
-// numbers. Field TYPES are irrelevant to descriptor-driven resolution (it maps
-// field NAME -> number) and to the hand-rolled decoder (which reads the wire by
-// resolved number), so we use simple scalar types and avoid pulling in the
-// google.protobuf.Timestamp dependency. This lets a test mimic a self-describing
-// .mcap whose embedded foxglove.RawImage uses NON-OFFICIAL field numbering.
+// A FileDescriptorSet for foxglove.RawImage with caller-supplied field numbers, mimicking a self-describing .mcap with
+// NON-OFFICIAL numbering. Field TYPES are irrelevant to descriptor-driven resolution (NAME -> number) and to the
+// decoder (which reads the wire by resolved number), so simple scalar types avoid the google.protobuf.Timestamp
+// dependency.
 std::string buildRawImageSchema(int width, int height, int encoding, int step, int data, int frame_id) {
   gp::FileDescriptorProto file_proto;
   file_proto.set_name("foxglove/RawImage.proto");
@@ -1756,13 +1720,10 @@ std::string buildRawImageSchema(int width, int height, int encoding, int step, i
 
 }  // namespace
 
-// Regression: a self-describing .mcap may embed a foxglove.RawImage schema whose
-// field NUMBERS differ from the official Foxglove numbering (observed in real
-// DROID-dataset files written by mcap-rs: width=2, height=3, encoding=4, step=5,
-// data=6, frame_id=7 — i.e. frame_id moved to the end, everything else shifted
-// down). The decoder must honor the embedded descriptor's field numbers, not the
-// hardcoded official ones, or every image fails to parse and renders as a blank
-// (placeholder-texture) tile.
+// A self-describing .mcap may embed a foxglove.RawImage schema whose field NUMBERS differ from the official ones (seen
+// in real DROID-dataset files written by mcap-rs: width=2, height=3, encoding=4, step=5, data=6, frame_id=7, i.e.
+// frame_id moved to the end and the rest shifted down). The decoder must follow the embedded descriptor, or every
+// image fails to parse and renders as a blank tile.
 TEST(ProtobufParserTest, FoxgloveRawImageHonorsVariantSchemaFieldNumbers) {
   ProtobufParserFixture f;
   f.setUp();
@@ -1806,10 +1767,8 @@ TEST(ProtobufParserTest, FoxgloveRawImageHonorsVariantSchemaFieldNumbers) {
 
 namespace {
 
-// Build a FileDescriptorSet for a foxglove.<message_name> with caller-supplied
-// (field name, number) pairs. Field TYPES are irrelevant to descriptor-driven
-// resolution (it maps NAME -> number) and to the hand-rolled decoders, so we use
-// scalar/bytes types and avoid pulling in message dependencies.
+// A FileDescriptorSet for foxglove.<message_name> with caller-supplied (field name, number) pairs. Field TYPES are
+// irrelevant to descriptor-driven resolution (NAME -> number), so scalar/bytes types avoid message dependencies.
 std::string buildFoxgloveSchema(
     const std::string& message_name, const std::vector<std::pair<std::string, int>>& fields) {
   gp::FileDescriptorProto file_proto;
@@ -1834,10 +1793,8 @@ std::string buildFoxgloveSchema(
 
 }  // namespace
 
-// foxglove.CompressedImage with a NON-default field numbering embedded in the
-// schema. The hardcoded numbering is { data=2, format=3, frame_id=4 }; here we
-// shuffle to { format=2, frame_id=3, data=4 }. The decoder must follow the
-// descriptor, not the hardcoded numbers.
+// foxglove.CompressedImage with a NON-default numbering in the embedded schema: the defaults are
+// { data=2, format=3, frame_id=4 }, here { format=2, frame_id=3, data=4 }. The decoder must follow the descriptor.
 TEST(ProtobufParserTest, FoxgloveCompressedImageHonorsVariantSchemaFieldNumbers) {
   ProtobufParserFixture f;
   f.setUp();
@@ -1868,9 +1825,8 @@ TEST(ProtobufParserTest, FoxgloveCompressedImageHonorsVariantSchemaFieldNumbers)
   }
 }
 
-// foxglove.CameraCalibration: the codec's hardcoded numbering is the "frame_id
-// last" variant { width=2..frame_id=9 }, so files using the OFFICIAL numbering
-// { frame_id=2, width=3..P=9 } currently fail. The descriptor must drive it.
+// foxglove.CameraCalibration: the codec's default numbering is the "frame_id last" variant { width=2..frame_id=9 }, so
+// files using { frame_id=2, width=3..P=9 } only decode through the descriptor.
 TEST(ProtobufParserTest, FoxgloveCameraCalibrationHonorsOfficialSchemaFieldNumbers) {
   ProtobufParserFixture f;
   f.setUp();
@@ -1912,9 +1868,8 @@ TEST(ProtobufParserTest, FoxgloveCameraCalibrationHonorsOfficialSchemaFieldNumbe
   EXPECT_DOUBLE_EQ(ci->K[2], 320.0);
 }
 
-// foxglove.FrameTransform with a NON-default numbering: official is { parent=2,
-// child=3, translation=4, rotation=5 }; here { translation=2, rotation=3,
-// parent=4, child=5 }. The decoder must follow the descriptor.
+// foxglove.FrameTransform with a NON-default numbering: official is { parent=2, child=3, translation=4, rotation=5 },
+// here { translation=2, rotation=3, parent=4, child=5 }.
 TEST(ProtobufParserTest, FoxgloveFrameTransformHonorsVariantSchemaFieldNumbers) {
   ProtobufParserFixture f;
   f.setUp();
@@ -1954,8 +1909,8 @@ TEST(ProtobufParserTest, FoxgloveFrameTransformHonorsVariantSchemaFieldNumbers) 
   EXPECT_DOUBLE_EQ(tfs->transforms[0].translation.z, 3.5);
 }
 
-// foxglove.LaserScan with frame_id moved to the end (official is field 2). The
-// object route projects to a kPointCloud; the resolved frame_id must survive.
+// foxglove.LaserScan with frame_id moved to the end (official is field 2): the resolved frame_id must survive the
+// object route's projection to a kPointCloud.
 TEST(ProtobufParserTest, FoxgloveLaserScanHonorsVariantSchemaFieldNumbers) {
   ProtobufParserFixture f;
   f.setUp();
@@ -1988,8 +1943,8 @@ TEST(ProtobufParserTest, FoxgloveLaserScanHonorsVariantSchemaFieldNumbers) {
   EXPECT_GT(pc->width, 0u);  // rays projected to points
 }
 
-// foxglove.ImageAnnotations with the top-level oneof-of-arrays shuffled
-// (official circles=1, points=2, texts=3). Nested annotations stay official.
+// foxglove.ImageAnnotations with the top-level arrays shuffled (official circles=1, points=2, texts=3); nested
+// annotations stay official.
 TEST(ProtobufParserTest, FoxgloveImageAnnotationsHonorsVariantSchemaFieldNumbers) {
   ProtobufParserFixture f;
   f.setUp();
@@ -2032,8 +1987,8 @@ void addProtoField(
   }
 }
 
-// foxglove.PointCloud with frame_id moved to the end AND the nested
-// PackedElementField renumbered, exercising both top-level and nested resolution.
+// foxglove.PointCloud with frame_id moved to the end AND the nested PackedElementField renumbered, exercising both
+// top-level and nested resolution.
 std::string buildPointCloudVariantSchema() {
   gp::FileDescriptorProto file;
   file.set_name("foxglove/PointCloud.proto");
@@ -2059,8 +2014,8 @@ std::string buildPointCloudVariantSchema() {
   return out;
 }
 
-// foxglove.SceneUpdate whose nested SceneEntity has frame_id renumbered (the real
-// failure mode: SceneEntity carries frame_id, so renumbering files renumber it).
+// foxglove.SceneUpdate whose nested SceneEntity has frame_id renumbered (SceneEntity carries frame_id, so renumbering
+// files renumber it).
 std::string buildSceneUpdateVariantSchema() {
   gp::FileDescriptorProto file;
   file.set_name("foxglove/SceneUpdate.proto");
@@ -2237,10 +2192,8 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodes) {
   EXPECT_EQ(r->entities[0].timestamp_ns, 3'000'000'000LL);
 }
 
-// Exercises readColor/toU8 (the [0,1]→uint8 rounding) and the readBoxLike /
-// readCylinder primitive readers — none of which had any coverage. Color
-// {1.0, 0.5, 0.0, 1.0} must round to {255, 128, 0, 255} (lround, not truncation:
-// 0.5*255 = 127.5 → 128).
+// readColor/toU8 round [0,1] to uint8 with lround, not truncation: color {1.0, 0.5, 0.0, 1.0} gives
+// {255, 128, 0, 255} (0.5*255 = 127.5 -> 128). Also covers the readBoxLike / readCylinder primitive readers.
 TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesCubeColorAndCylinderScales) {
   PW color;  // foxglove Color: double r/g/b/a in [0,1]
   color.dbl(1, 1.0);
@@ -2288,12 +2241,9 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesCubeColorAndCylinderScales) {
   EXPECT_EQ(e.cylinders[0].color, (PJ::sdk::ColorRGBA{255, 128, 0, 255}));
 }
 
-// Characterizes the lenient-reader contract the field-scanner sugar must keep:
-// a field with the RIGHT number but the WRONG wire type is SKIPPED and decoding
-// CONTINUES with the next field (it is not fatal). Here a cube's Vector3 size
-// encodes x (field 1) as a varint instead of a double; the decoder must drop x
-// (stays 0) yet still read y (field 2). A refactor that treated a wrong-wire
-// field as a hard stop would lose y too.
+// Lenient-reader contract: a field with the RIGHT number but the WRONG wire type is SKIPPED and decoding CONTINUES
+// with the next field. A cube's Vector3 size encodes x (field 1) as a varint instead of a double; x must stay 0 while y
+// (field 2) is still read.
 TEST(ProtobufParserTest, FoxgloveSceneUpdateSkipsWrongWireTypeFieldAndContinues) {
   PW cube_size;             // Vector3 with a deliberately malformed x
   cube_size.varint(1, 42);  // x: wire type varint (should be I64 double) -> skipped
@@ -2318,10 +2268,8 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateSkipsWrongWireTypeFieldAndContinues)
   EXPECT_DOUBLE_EQ(size.z, 4.0);
 }
 
-// Companion to the above at the SceneEntity level: an unknown/handled-elsewhere
-// field (here field 6, metadata, which the decoder intentionally skips) sitting
-// between two real primitives must not disturb either. Pins the catch-all skip
-// of the entity-level field loop.
+// Same contract at the SceneEntity level: an unhandled field (field 6, metadata, intentionally skipped) between two
+// real primitives must not disturb either.
 TEST(ProtobufParserTest, FoxgloveSceneUpdateSkipsUnhandledEntityFieldBetweenPrimitives) {
   PW cube_size;
   cube_size.dbl(1, 1.0);
@@ -2358,10 +2306,8 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateSkipsUnhandledEntityFieldBetweenPrim
   EXPECT_DOUBLE_EQ(r->entities[0].spheres[0].size.x, 0.5);
 }
 
-// SceneEntity.models (field 14) carries mesh assets. Pre-fix readSceneEntity let
-// field 14 fall through to skipField, so an inline glTF model was silently
-// dropped and never rendered. An inline model provides `data` tagged by
-// `media_type`; `url` stays empty (mirrors the real Waymo /marker/car entity).
+// SceneEntity.models (field 14) carries mesh assets; an inline model provides `data` tagged by `media_type` and leaves
+// `url` empty (like the real Waymo /marker/car entity). It must not fall through to skipField and be dropped.
 TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesInlineModel) {
   PW scale;  // Vector3 (2.14, 2.1, 2.1)
   scale.dbl(1, 2.14);
@@ -2391,8 +2337,7 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesInlineModel) {
   EXPECT_TRUE(e.models[0].url.empty());
 }
 
-// A model can instead reference an external resource via `url`, leaving `data`
-// empty. Confirms both source branches of ModelPrimitive decode.
+// A model can instead reference an external resource via `url`, leaving `data` empty.
 TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesUrlModel) {
   PW model;  // ModelPrimitive { url=5 }
   model.str(5, "package://meshes/car.glb");
@@ -2410,9 +2355,7 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesUrlModel) {
   EXPECT_TRUE(r->entities[0].models[0].data.empty());
 }
 
-// Regression for the field-14 fall-through: an entity carrying BOTH a cube
-// (field 8) and a model (field 14) must emit both. Proves wiring models does
-// not steal/skip the geometry and vice versa.
+// An entity carrying BOTH a cube (field 8) and a model (field 14) must emit both.
 TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesCubeAndModelTogether) {
   PW cube_size;  // Vector3
   cube_size.dbl(1, 1.0);
@@ -2443,13 +2386,9 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateDecodesCubeAndModelTogether) {
   EXPECT_EQ(e.models[0].data, glb);
 }
 
-// A corrupt `data` length must not be trusted: the varint declares 1000 bytes
-// but only 5 exist in the submessage. Pre-fix, readBytes resized to the
-// declared length BEFORE checking availability, so the model came back with a
-// 1000-byte zero-filled buffer presented as successfully decoded (and a
-// declared 4 GiB length would have allocated 4 GiB on a few bytes of input).
-// The length must be validated against the bytes remaining; on mismatch the
-// model decodes with empty data.
+// A corrupt `data` length must not be trusted: the varint declares 1000 bytes but only 5 exist in the submessage. The
+// length is validated against the bytes remaining BEFORE allocating (a declared 4 GiB would otherwise be allocated from
+// a few bytes of input); on mismatch the model decodes with empty data, not a zero-filled buffer.
 TEST(ProtobufParserTest, FoxgloveSceneUpdateRejectsOverdeclaredModelData) {
   PW model;  // ModelPrimitive { media_type=6, data=7 (malformed) }
   model.str(6, "model/gltf-binary");
@@ -2471,9 +2410,8 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateRejectsOverdeclaredModelData) {
   EXPECT_TRUE(r->entities[0].models[0].data.empty());  // not a zero-filled 1000-byte buffer
 }
 
-// proto3 omits a 0.0 scale; foxglove reads an omitted scale as 0 (collapsed
-// face), so the decoder must override the SDK's ergonomic 1.0 default. Without
-// the fix these decode to 1.0.
+// proto3 omits a 0.0 scale and foxglove reads an omitted scale as 0 (collapsed face), so the decoder must override the
+// SDK's ergonomic 1.0 default.
 TEST(ProtobufParserTest, FoxgloveCylinderOmittedScalesDecodeToZero) {
   PW cyl_size;
   cyl_size.dbl(1, 1.0);
@@ -2495,9 +2433,8 @@ TEST(ProtobufParserTest, FoxgloveCylinderOmittedScalesDecodeToZero) {
   EXPECT_DOUBLE_EQ(r->entities[0].cylinders[0].top_scale, 0.0);
 }
 
-// A 180° rotation about X is {x=1, y=0, z=0, w=0}; proto3 omits the zero fields,
-// leaving only x on the wire. The decoder must NOT fall back to the SDK's
-// identity default (w=1) — that would silently corrupt the rotation.
+// A 180° rotation about X is {x=1, y=0, z=0, w=0}; proto3 omits the zero fields, leaving only x on the wire. The
+// decoder must NOT fall back to the SDK's identity default (w=1), which would silently corrupt the rotation.
 TEST(ProtobufParserTest, FoxgloveQuaternionOmittedWDecodesToZero) {
   PW quat;
   quat.dbl(1, 1.0);  // x = 1; y, z, w omitted (proto3 zero defaults)
@@ -2517,8 +2454,8 @@ TEST(ProtobufParserTest, FoxgloveQuaternionOmittedWDecodesToZero) {
   EXPECT_DOUBLE_EQ(rot.w, 0.0);  // NOT 1.0
 }
 
-// foxglove.ImageAnnotations has no top-level timestamp; the decoder must adopt
-// the first sub-annotation's stamp so the overlay can time-align to its image.
+// foxglove.ImageAnnotations has no top-level timestamp; the first sub-annotation's stamp is adopted so the overlay can
+// time-align to its image.
 TEST(ProtobufParserTest, FoxgloveImageAnnotationsAdoptsTimestamp) {
   PW p0;
   p0.dbl(1, 10.0);
@@ -2538,11 +2475,9 @@ TEST(ProtobufParserTest, FoxgloveImageAnnotationsAdoptsTimestamp) {
   ASSERT_EQ(r->points[0].points.size(), 1u);
 }
 
-// Regression for the SubMessage desync: entity 1 ends with an unhandled wire
-// type (group-start, wire 3) that makes readSceneEntity break mid-submessage,
-// followed by trailing bytes. The SubMessage dtor must skip to the entity
-// boundary so entity 2 still decodes cleanly. Pre-fix, PopLimit alone left the
-// parent stranded mid-entity-1 and every following sibling misparsed.
+// Entity 1 ends with an unhandled wire type (group-start, wire 3) that makes readSceneEntity break mid-submessage,
+// followed by trailing bytes. The SubMessage dtor must skip to the entity boundary so entity 2 still decodes cleanly
+// (PopLimit alone would strand the parent mid-entity-1 and misparse every following sibling).
 TEST(ProtobufParserTest, FoxgloveSceneUpdateRecoversFromMalformedEntityField) {
   PW e1;
   e1.str(2, "frameA");
@@ -2567,14 +2502,12 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateRecoversFromMalformedEntityField) {
   EXPECT_EQ(r->entities[1].id, "robot");
 }
 
-// ---------------------------------------------------------------------------
 // foxglove.LaserScan → kPointCloud (eager projection via pj_laser_scan)
 //
 // Wire layout (verified against foxglove-sdk schemas/proto/foxglove/LaserScan.proto):
 //   timestamp = 1 (google.protobuf.Timestamp), frame_id = 2 (string),
 //   pose = 3 (foxglove.Pose), start_angle = 4 (double), end_angle = 5 (double),
 //   ranges = 6 (repeated double, packed), intensities = 7 (repeated double, packed).
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -2810,11 +2743,8 @@ TEST(ProtobufParserTest, FoxgloveLaserScanScalarRoute) {
   EXPECT_EQ(PJ::sdk::testing::ParserWriteRecorder::findField(row, "point_count"), nullptr);
 }
 
-// Regression: a packed-ranges LEN varint claiming 1 GiB with the buffer ending
-// right after must fail cleanly — and must never drive a giant up-front
-// reserve (the capped reserve guarantees this regardless of how the
-// CodedInputStream is constructed; the flat-array constructor's implicit
-// buffer-size limit was previously the only thing preventing it).
+// A packed-ranges LEN varint claiming 1 GiB with the buffer ending right after must fail cleanly and never drive a
+// giant up-front reserve (the capped reserve guarantees this regardless of how the CodedInputStream is constructed).
 TEST(ProtobufParserTest, FoxgloveLaserScanCorruptRangesLengthFailsCleanly) {
   PW scan;
   scan.str(2, "lidar");
@@ -2832,18 +2762,11 @@ TEST(ProtobufParserTest, FoxgloveLaserScanCorruptRangesLengthFailsCleanly) {
   EXPECT_FALSE(info.has_value());  // scalar-route walk rejects it too
 }
 
-// ---------------------------------------------------------------------------
-// foxglove.PosesInFrame / PJ.PosesInFrame -> kPosesInFrame
-//
-// foxglove.PosesInFrame is wire-identical to the canonical PJ.PosesInFrame
-// (the SDK proto mirrors it field-for-field), so the parser binds both names
-// to the same SDK codec — exactly the VideoFrame precedent. We build a genuine
-// payload with the real protobuf serializer and exercise the parser's object
-// route. Wire layout:
+// foxglove.PosesInFrame / PJ.PosesInFrame -> kPosesInFrame. The two are wire-identical, so the parser binds both names
+// to the same SDK codec. Genuine payloads from the real protobuf serializer exercise the object route. Wire layout:
 //   PosesInFrame { timestamp=1 (Timestamp), frame_id=2 (string),
 //                  poses=3 (repeated Pose) }
 //   Pose { position=1 (Vector3 x/y/z), orientation=2 (Quaternion x/y/z/w) }
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -2998,9 +2921,8 @@ TEST(ProtobufParserTest, FoxglovePosesInFrameScalarRoute) {
   const auto wire = buildPosesInFrameWire(9, 500, "map", twoSamplePoses());
   ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.data()), wire.size()), 555));
 
-  // Slim metadata row: a pose array can be huge, so the scalar route emits the
-  // header pair plus a bounded count (mirroring foxglove.FrameTransform's
-  // num_transforms), never per-pose columns.
+  // Slim metadata row: a pose array can be huge, so only the header pair plus a bounded count is emitted, never
+  // per-pose columns.
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   const auto& row = f.recorder.rows()[0];
   const auto* num_poses = PJ::sdk::testing::ParserWriteRecorder::findField(row, "num_poses");
@@ -3016,8 +2938,7 @@ TEST(ProtobufParserTest, FoxglovePosesInFrameScalarRoute) {
   EXPECT_EQ(frame_id->string_value, "map");
 }
 
-// The canonical PJ.PosesInFrame schema name binds to the same SDK codec as the
-// foxglove name (the protos are wire-identical), so a PlotJuggler-native source
+// The canonical PJ.PosesInFrame name binds to the same SDK codec as the foxglove one, so a PlotJuggler-native source
 // promotes to kPosesInFrame too.
 TEST(ProtobufParserTest, PjPosesInFrameObjectRoute) {
   ProtobufParserFixture f;
@@ -3042,13 +2963,9 @@ TEST(ProtobufParserTest, PjPosesInFrameObjectRoute) {
   expectTwoPosesDecoded(*pf, 0.7071067811865476);
 }
 
-// ---------------------------------------------------------------------------
-// foxglove.PoseInFrame (singular) -> kPosesInFrame (one pose)
-//
-// PoseInFrame { timestamp=1, frame_id=2, pose=3 (single Pose) } is wire-identical
-// to a one-element PosesInFrame (field 3, length-delimited submessage), so the
-// parser binds it to the same SDK codec — the protobuf analog of ROS PoseStamped.
-// ---------------------------------------------------------------------------
+// foxglove.PoseInFrame (singular) -> kPosesInFrame (one pose): PoseInFrame { timestamp=1, frame_id=2, pose=3 } is
+// wire-identical to a one-element PosesInFrame (field 3, length-delimited submessage), so it binds to the same SDK
+// codec.
 
 TEST(ProtobufParserTest, FoxglovePoseInFrameObjectRoute) {
   ProtobufParserFixture f;
@@ -3080,16 +2997,12 @@ TEST(ProtobufParserTest, FoxglovePoseInFrameObjectRoute) {
   EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
 }
 
-// ---------------------------------------------------------------------------
-// foxglove.Odometry -> kPosesInFrame (one pose, the protobuf analog of ROS
-// nav_msgs/Odometry).
+// foxglove.Odometry -> kPosesInFrame (one pose).
 //
 // Odometry { timestamp=1, frame_id=2, body_frame_id=3, pose=4 Pose,
 //   linear_velocity=5, angular_velocity=6, pose_covariance=7 (repeated double),
-//   velocity_covariance=8, metadata=9 }. Unlike PoseInFrame the pose sits at
-//   field 4 (field 3 is a string), so the PosesInFrame codec cannot be reused —
-//   a dedicated decoder reads timestamp/frame_id/pose and skips the rest.
-// ---------------------------------------------------------------------------
+//   velocity_covariance=8, metadata=9 }. Unlike PoseInFrame the pose sits at field 4 (field 3 is a string), so the
+//   PosesInFrame codec cannot be reused; a dedicated decoder reads timestamp/frame_id/pose and skips the rest.
 
 namespace {
 
@@ -3110,8 +3023,7 @@ PW buildPoseSubmessage(const PoseValues& pv) {
   return pose;
 }
 
-// Build a foxglove.Odometry message with velocities + a 36-element pose_covariance
-// present, so the decoder is proven to skip every field that is not the pose.
+// A foxglove.Odometry with velocities and a 36-element pose_covariance, to prove every non-pose field is skipped.
 PW buildOdometryWire(
     int64_t sec, int32_t ns, const std::string& frame_id, const std::string& body_frame_id, const PoseValues& pv) {
   PW linear_velocity;
@@ -3169,9 +3081,8 @@ TEST(ProtobufParserTest, FoxgloveOdometryScalarRoute) {
   const auto wire = buildOdometryWire(5, 0, "odom", "base_link", pv);
   ASSERT_TRUE(f.parse(std::string(reinterpret_cast<const char*>(wire.b.data()), wire.b.size()), 555));
 
-  // The scalar route keeps the single pose plottable as bounded per-axis columns
-  // (mirroring the ROS Odometry scalar flatten); it never emits the velocities or
-  // the 36-element covariances.
+  // The scalar route keeps the single pose plottable as bounded per-axis columns and never emits the velocities or the
+  // 36-element covariances.
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   const auto& row = f.recorder.rows()[0];
   const auto* px = PJ::sdk::testing::ParserWriteRecorder::findField(row, "pose/position/x");
@@ -3181,7 +3092,7 @@ TEST(ProtobufParserTest, FoxgloveOdometryScalarRoute) {
   ASSERT_NE(qw, nullptr);
   EXPECT_DOUBLE_EQ(qw->numeric, 1.0);
 
-  // …plus the header pair every promoted schema now emits.
+  // …plus the header pair every promoted schema emits.
   const auto* timestamp = PJ::sdk::testing::ParserWriteRecorder::findField(row, "timestamp");
   ASSERT_NE(timestamp, nullptr);
   EXPECT_DOUBLE_EQ(timestamp->numeric, 5.0);
@@ -3191,9 +3102,8 @@ TEST(ProtobufParserTest, FoxgloveOdometryScalarRoute) {
   EXPECT_EQ(frame_id->string_value, "odom");  // the reference frame, not body_frame_id
 }
 
-// foxglove.Odometry with a NON-default numbering: official is { frame_id=2,
-// body_frame_id=3, pose=4 }; here { pose=2, body_frame_id=3, frame_id=9 }. The
-// decoder must follow the embedded descriptor, not the hardcoded numbers.
+// foxglove.Odometry with a NON-default numbering: official is { frame_id=2, body_frame_id=3, pose=4 }, here
+// { pose=2, body_frame_id=3, frame_id=9 }.
 TEST(ProtobufParserTest, FoxgloveOdometryHonorsVariantSchemaFieldNumbers) {
   ProtobufParserFixture f;
   f.setUp();
@@ -3223,16 +3133,10 @@ TEST(ProtobufParserTest, FoxgloveOdometryHonorsVariantSchemaFieldNumbers) {
   EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
 }
 
-// ---------------------------------------------------------------------------
-// Scalar routes of the promoted Foxglove scene/image schemas.
-//
-// Every object-bearing schema emits its embedded sensor stamp (and frame_id
-// where the schema has one) as scalar series, so a promoted topic still has a
-// plottable time base: the ROW is filed under the host/log clock unless
-// use_embedded_timestamp is on, which would otherwise leave the message's own
-// stamp unreachable. These drive the real parse() path (bind → parse →
-// recorder) rather than the codecs directly.
-// ---------------------------------------------------------------------------
+// Scalar routes of the promoted Foxglove scene/image schemas. Every object-bearing schema emits its embedded sensor
+// stamp (and frame_id where the schema has one) as scalar series: the ROW is filed under the host/log clock unless
+// use_embedded_timestamp is on, which would otherwise leave the message's own stamp unreachable. These drive the real
+// parse() path (bind -> parse -> recorder) rather than the codecs directly.
 
 namespace {
 
@@ -3265,9 +3169,7 @@ void expectString(const PJ::sdk::testing::RecordedRow& row, const std::string& n
 
 }  // namespace
 
-// The FrameTransform scalar route used to decode NOTHING and hardcode
-// num_transforms=1 — an entirely synthetic row. It now reads the message (cheap:
-// no blob) and reports the real stamp and count.
+// The FrameTransform scalar route reads the message (cheap: no blob) and reports its real stamp and transform count.
 TEST(ProtobufParserTest, FoxgloveFrameTransformScalarRoute) {
   PW vec3;
   vec3.dbl(1, 1.0);
@@ -3403,10 +3305,8 @@ TEST(ProtobufParserTest, FoxgloveVoxelGridScalarRoute) {
   expectNumeric(*row, "data_size", static_cast<double>(kVoxelData.size()));
 }
 
-// foxglove.SceneUpdate has no TOP-LEVEL timestamp, but the first entity's stamp
-// is the one the object route files the record under — so it is the stamp for
-// the message, and the scalar route emits it like every other promoted schema.
-// There is still no top-level frame_id (each entity carries its own).
+// foxglove.SceneUpdate has no TOP-LEVEL timestamp, but the first entity's stamp is the one the object route files the
+// record under, so the scalar route emits it. There is no top-level frame_id (each entity carries its own).
 TEST(ProtobufParserTest, FoxgloveSceneUpdateScalarRouteEmitsFirstEntityTimestamp) {
   PW entity;
   entity.sub(1, foxgloveTimestamp(3, 250));
@@ -3439,10 +3339,8 @@ TEST(ProtobufParserTest, FoxgloveSceneUpdateScalarRouteOmitsTimestampWhenEmpty) 
   EXPECT_EQ(row->fields.size(), 1u);
 }
 
-// With use_embedded_timestamp ON, the scalar ROW must land on the same clock the
-// object route uses. These handlers previously left record.ts unset, so scalars
-// stayed on host time while the object went to sensor time — the two views of
-// one message disagreed about when it happened.
+// With use_embedded_timestamp ON, the scalar ROW must land on the same clock as the object route; otherwise the two
+// views of one message disagree about when it happened.
 TEST(ProtobufParserTest, PromotedScalarRowsAdoptEmbeddedTimestamp) {
   const std::vector<uint8_t> blob = {0xFF, 0xD8, 0xFF, 0xE0};
   PW img;
@@ -3505,9 +3403,7 @@ TEST(ProtobufParserTest, VoxelGridScalarRowAdoptsEmbeddedTimestamp) {
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 4'000'000'250LL);
 }
 
-// ---------------------------------------------------------------------------
 // foxglove.Grid -> sdk::GridMap (zero-copy view)
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -3857,7 +3753,6 @@ TEST(ProtobufParserTest, FoxgloveGridScalarRoute) {
   EXPECT_EQ(row->fields.size(), 7u);
 }
 
-// ---------------------------------------------------------------------------
 // foxglove.Log / PJ.Log -> kLog
 //
 // The object route decodes with the SDK Log codec (PJ.Log is wire-compatible
@@ -3865,7 +3760,6 @@ TEST(ProtobufParserTest, FoxgloveGridScalarRoute) {
 // it needs the real FileDescriptorSet. Wire layout (foxglove/Log.proto):
 //   Log { timestamp=1 (Timestamp), level=2 (enum), message=3, name=4,
 //         file=5, line=6 (fixed32) }
-// ---------------------------------------------------------------------------
 
 namespace {
 

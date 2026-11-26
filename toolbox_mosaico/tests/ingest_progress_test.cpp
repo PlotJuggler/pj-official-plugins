@@ -829,8 +829,7 @@ TEST(MosaicoTransport, UnstampedTopicFitsItsSyntheticCadenceToTheTopicRange) {
   EXPECT_EQ(host.messages[1].host_ts_ns, 4000);
 }
 
-// Nothing to fit: the ~30 fps default carries the axis, exactly as before the
-// range was consulted.
+// Nothing to fit: the ~30 fps default carries the axis.
 TEST(MosaicoTransport, UnstampedTopicFallsBackToTheDefaultCadence) {
   FakeIngestHost zero_span;
   pullUnstamped(zero_span, 5000, 5000, {1, 1});
@@ -1238,10 +1237,7 @@ TEST(MosaicoTransport, ObjectViewsStayCompactAcrossStampedAndUnstampedBatches) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Source capture (SDK 0.30): the request descriptor + the completion terminal.
-// ---------------------------------------------------------------------------
-
+// Source capture: the request descriptor + the completion terminal.
 // The descriptor is the byte-exact identity a re-download must reproduce:
 // alphabetical keys (nlohmann's ordering), topics sorted and deduped, and an
 // origin carrying host:port only — never a scheme, credentials, or path.
@@ -1436,7 +1432,7 @@ TEST(MosaicoSourceCapture, HostStopAfterLastPollReportsCancelled) {
 }
 
 // A pre-0.30 host still receives the descriptor but has no complete_ingest
-// slot: the download must succeed exactly as before, just uncached.
+// slot: the download must succeed, just uncached.
 TEST(MosaicoSourceCapture, HostWithoutCompleteIngestIsTolerated) {
   FakeIngestHost host;
   host.emulateHostWithoutCompleteIngest();

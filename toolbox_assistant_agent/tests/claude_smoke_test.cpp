@@ -1,11 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Live smoke for the Claude Code backend: spawns the real `claude` CLI wired to
-// a running PlotJuggler's MCP server and checks it can call a tool and answer.
-// Opt-in — runs only with ASSISTANT_CLAUDE_SMOKE=1 plus ASSISTANT_MCP_URL /
-// ASSISTANT_MCP_TOKEN (needs a logged-in Claude CLI; it consumes the user's
-// subscription). Skipped otherwise, so CI stays offline.
+// Live smoke for the Claude Code backend: spawns the real `claude` CLI wired to a running
+// PlotJuggler's MCP server and checks it can call a tool and answer. Opt-in: only with
+// ASSISTANT_CLAUDE_SMOKE=1 plus ASSISTANT_MCP_URL / ASSISTANT_MCP_TOKEN (needs a logged-in CLI and
+// consumes the user's subscription); skipped otherwise, so CI stays offline. Also holds the offline
+// fake-CLI backend tests.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -30,8 +30,8 @@ using assistant_agent::BackendEvent;
 using assistant_agent::ClaudeBackend;
 using assistant_agent::testing::runListTopicsSmoke;
 
-// Guarded like the fake-CLI cases further down: it spawns the real
-// `claude`, and runProcess() spawns only on POSIX and Windows.
+// Spawns the real `claude`; guarded like the fake-CLI cases since runProcess() spawns only on POSIX
+// and Windows.
 #if defined(__unix__) || defined(__APPLE__) || defined(_WIN32)
 TEST(ClaudeSmoke, ListTopicsThroughMcp) {
   const std::optional<std::string> enabled = PJ::sdk::getEnv("ASSISTANT_CLAUDE_SMOKE");
@@ -50,18 +50,12 @@ TEST(ClaudeSmoke, ListTopicsThroughMcp) {
 
 }  // namespace
 
-// The one thing about this backend that is not a preference.
-//
-// Headless Claude reaches the user's machine through the CLI's built-in tools —
-// Bash, Read, Write, the rest — and `--tools ""` is what withholds every one of
-// them. Take that flag away and this plugin's assistant can read any file the
-// user can. The guarantee that this plugin is structurally incapable of
-// destroying anything rests on three entries in a vector that nothing was watching.
-//
-// The pressure to relax it is real and will come with a good reason attached:
-// letting the model actually LOOK at an exported image needs `Read`, and that is
-// a genuinely useful feature. It still does not go here. A bounded MCP tool of
-// ours can hand over one image; `Read` hands over the filesystem.
+// The one non-negotiable part of this backend. Headless Claude reaches the machine through the CLI's
+// built-in tools (Bash, Read, Write, ...) and `--tools ""` withholds every one; without it the
+// assistant can read any file the user can. The guarantee that this plugin cannot destroy anything
+// rests on three entries in a vector. Relaxing it for a good reason (`Read` to look at an exported
+// image) still does not belong here: a bounded MCP tool of ours can hand over one image, `Read` hands
+// over the filesystem.
 TEST(ClaudeBackendCommandLine, WithholdsEveryBuiltInTool) {
   const std::vector<std::string> argv =
       assistant_agent::buildClaudeArgv("/usr/bin/claude", "/tmp/mcp.json", "system", "sonnet", "");
@@ -74,18 +68,15 @@ TEST(ClaudeBackendCommandLine, WithholdsEveryBuiltInTool) {
   EXPECT_NE(std::find(argv.begin(), argv.end(), "--strict-mcp-config"), argv.end())
       << "without it the CLI may load MCP servers from the user's own config";
 
-  // The isolation half of the lock: --restricted makes the CLI ignore the
-  // machine's user/project/local settings AND the user-level CLAUDE.md, so the
-  // panel's register and instructions do not depend on who installed it or on
-  // what they configured for their own coding sessions. (The project-level side
-  // is covered by running the CLI in a private cwd, which argv cannot show.)
+  // The isolation half: --restricted makes the CLI ignore the user/project/local settings AND the
+  // user-level CLAUDE.md, so the panel does not depend on the user's own coding configuration. (The
+  // project-level side is covered by the private cwd, which argv cannot show.)
   EXPECT_NE(std::find(argv.begin(), argv.end(), "--restricted"), argv.end())
       << "without it the panel inherits the machine's settings, output style and global CLAUDE.md";
 }
 
-// Whitelisting is the other half: --tools decides what EXISTS, --allowedTools
-// what may be called. The one entry names our MCP server, whose tools
-// PlotJuggler decides, so a built-in cannot be let back in through this door.
+// --tools decides what EXISTS, --allowedTools what may be called. The one entry names our MCP server
+// (whose tools PlotJuggler decides), so a built-in cannot come back through this door.
 TEST(ClaudeBackendCommandLine, AllowsOnlyTheToolsOfPlotJugglersEndpoint) {
   const std::vector<std::string> argv =
       assistant_agent::buildClaudeArgv("/usr/bin/claude", "/tmp/mcp.json", "system", "sonnet", "");
@@ -101,10 +92,8 @@ TEST(ClaudeBackendCommandLine, AllowsOnlyTheToolsOfPlotJugglersEndpoint) {
   EXPECT_EQ(*std::next(config), "/tmp/mcp.json") << "the endpoint and its token come from the file, never argv";
 }
 
-// A persisted conversation resumes on its very FIRST turn after a restart: the
-// dialog restores HarnessMemory::session_id from the settings store, and the
-// argv builder turns any non-empty id into --resume — turn number is not part
-// of the contract.
+// A persisted conversation resumes on its FIRST turn after a restart: the argv builder turns any
+// non-empty HarnessMemory::session_id into --resume, whatever the turn number.
 TEST(ClaudeBackendCommandLine, PersistedSessionIdResumesOnTheFirstTurn) {
   const std::vector<std::string> argv =
       assistant_agent::buildClaudeArgv("/usr/bin/claude", "/tmp/mcp.json", "system", "sonnet", "persisted-session-id");
@@ -115,9 +104,8 @@ TEST(ClaudeBackendCommandLine, PersistedSessionIdResumesOnTheFirstTurn) {
   EXPECT_EQ(*std::next(at), "persisted-session-id");
 }
 
-// The catalog-note rules, hash-based so only the hash needs persisting: first
-// send carries the listing without a note; a changed listing carries the note;
-// an unchanged one sends the bare text.
+// Catalog-note rules: first send carries the listing without a note; a changed listing carries the
+// note; an unchanged one sends the bare text.
 TEST(ClaudeComposePayload, CatalogNoteRules) {
   assistant_agent::HarnessMemory memory;
 
@@ -140,15 +128,13 @@ TEST(ClaudeComposePayload, CatalogNoteRules) {
   EXPECT_TRUE(no_catalog.sent_catalog_hash.empty());
 }
 
-// switchToConversation (assistant_dialog.cpp) sets resumed_pending after
-// pointing a fresh HarnessMemory at a conversation resumed off disk. The next
-// turn must re-send the catalog with the RESUME note, even in the (unlikely
-// but possible, e.g. a hash collision or a memory the caller pre-seeded)
-// case where sent_catalog_hash already equals this catalog's hash -- and
-// must do so exactly once, not on every later turn.
+// switchToConversation sets resumed_pending after pointing a fresh HarnessMemory at a conversation
+// resumed off disk. The next turn must re-send the catalog with the RESUME note even if
+// sent_catalog_hash already equals this catalog's hash (a collision or pre-seeded memory), and
+// exactly once.
 TEST(ClaudeComposePayload, ResumedPendingForcesTheResumeNoteOnceEvenIfTheHashAlreadyMatches) {
   assistant_agent::HarnessMemory memory;
-  memory.sent_catalog_hash = assistant_agent::fnv1aHex("CATALOG v1");  // as if already sent
+  memory.sent_catalog_hash = assistant_agent::fnv1aHex("CATALOG v1");  // already sent
   memory.resumed_pending = true;
 
   const std::string first = assistant_agent::composePayload("what tabs?", "", "CATALOG v1", memory);
@@ -163,16 +149,13 @@ TEST(ClaudeComposePayload, ResumedPendingForcesTheResumeNoteOnceEvenIfTheHashAlr
   EXPECT_NE(first.find("what tabs?"), std::string::npos);
   EXPECT_FALSE(memory.resumed_pending) << "consumed after the first send that actually carries it";
 
-  // The very next turn, with the same (now-current) catalog: an ordinary
-  // unchanged-listing turn, no note at all.
+  // The next turn with the same catalog is an ordinary unchanged-listing turn: no note.
   const std::string second = assistant_agent::composePayload("and now?", "", "CATALOG v1", memory);
   EXPECT_EQ(second, "and now?");
 }
 
-// The features listing (features_digest.hpp) rides ahead of the catalog
-// under its own hash: each block is re-sent only when IT changed, so loading
-// a file does not re-send the plugin list and enabling a plugin does not
-// re-send the loaded data.
+// The features listing rides ahead of the catalog under its own hash: each block is re-sent only when
+// IT changed.
 TEST(ComposePayload, FeaturesAndCatalogHaveIndependentHashes) {
   assistant_agent::HarnessMemory memory;
 
@@ -201,8 +184,7 @@ TEST(ComposePayload, FeaturesAndCatalogHaveIndependentHashes) {
       "FEATURES v3\n\n(The PlotJuggler features listing changed.)\n\nCATALOG v3\n\n(The loaded data changed; "
       "the listing above replaces the earlier one.)\n\nboth");
 
-  // An empty features block (no provider bound) is never sent and leaves the
-  // catalog rules exactly as they were.
+  // An empty features block (no provider bound) is never sent and does not affect the catalog rules.
   assistant_agent::HarnessMemory no_features;
   EXPECT_EQ(assistant_agent::composePayload("hi", "", "CATALOG v1", no_features), "CATALOG v1\n\nhi");
   EXPECT_TRUE(no_features.sent_features_hash.empty());
@@ -224,14 +206,13 @@ TEST(ComposePayload, AResumeForcesBothBlocksOnceEvenIfBothHashesMatch) {
 }
 
 TEST(ComposePayload, AResumeIsConsumedOnceEveryNonEmptyBlockHasBeenSent) {
-  // Features only (no catalog this turn): the one non-empty block went out,
-  // so the resume is consumed.
+  // Features only: the one non-empty block went out, so the resume is consumed.
   assistant_agent::HarnessMemory features_only;
   features_only.resumed_pending = true;
   EXPECT_EQ(assistant_agent::composePayload("q", "FEATURES v1", "", features_only), "FEATURES v1\n\nq");
   EXPECT_FALSE(features_only.resumed_pending);
 
-  // Catalog only (no provider bound): exactly the pre-features behaviour.
+  // Catalog only (no provider bound).
   assistant_agent::HarnessMemory catalog_only;
   catalog_only.resumed_pending = true;
   EXPECT_EQ(
@@ -246,17 +227,13 @@ TEST(ComposePayload, AResumeIsConsumedOnceEveryNonEmptyBlockHasBeenSent) {
   EXPECT_TRUE(nothing.resumed_pending);
 }
 
-// The conversation lives in the LENT memory, not in the backend object: a
-// settings change destroys and rebuilds the backend, and must not reset what
-// was said. Constructing a backend over a memory that already holds a
-// conversation is the moment a careless constructor would wipe it — this pin
-// used to live in the Ollama backend's rebuild test, the only offline coverage
-// of the invariant until that backend was retired.
+// The conversation lives in the LENT memory, not the backend object: a settings change rebuilds the
+// backend and must not reset what was said. A careless constructor would wipe the memory it is given.
 TEST(ClaudeBackend, ConversationMemorySurvivesARebuild) {
   auto memory = std::make_shared<assistant_agent::HarnessMemory>();
   {
     assistant_agent::ClaudeBackend first("claude-never-spawned", "sonnet", memory);
-    // What a completed turn leaves behind, written where the worker writes it.
+    // What a completed turn leaves behind.
     (void)assistant_agent::composePayload("hello", "", "CATALOG v1", *memory);
     memory->session_id = "sess-42";
   }  // the backend dies here; the conversation must not
@@ -264,13 +241,12 @@ TEST(ClaudeBackend, ConversationMemorySurvivesARebuild) {
   assistant_agent::ClaudeBackend second("claude-never-spawned", "sonnet", memory);
   EXPECT_EQ(memory->session_id, "sess-42");
   EXPECT_EQ(memory->sent_catalog_hash, assistant_agent::fnv1aHex("CATALOG v1"));
-  // The rebuilt backend composes over the same memory: an unchanged listing is
-  // not re-sent, exactly as if the first backend were still alive.
+  // The rebuilt backend composes over the same memory: an unchanged listing is not re-sent.
   EXPECT_EQ(assistant_agent::composePayload("again", "", "CATALOG v1", *memory), "again");
 }
 
-// A PlotJuggler that cannot serve the tools fails the turn before any CLI is
-// looked up, with the reason the dialog got when it acquired the endpoint.
+// A PlotJuggler that cannot serve the tools fails the turn before any CLI lookup, with the dialog's
+// reason.
 TEST(ClaudeBackend, ATurnWithoutAnEndpointFailsWithItsReasonAndRunsNoCli) {
   assistant_agent::TurnTools tools;
   tools.mcp = PJ::unexpected("This PlotJuggler cannot serve the Assistant's tools: test");
@@ -292,11 +268,9 @@ using assistant_agent::testing::firstError;
 using assistant_agent::testing::removeFakeCli;
 using assistant_agent::testing::writeFakeCliScript;
 
-// A stand-in for the CLI that drains its stdin and prints a canned
-// stream-json exchange. Offline: no model, no subscription — this pins how the
-// backend TRANSLATES what the CLI reports, not what the CLI does. A thin
-// wrapper over the shared writeFakeCliScript: Claude's fake CLI always emits
-// the init record first, then exits 1.
+// A stand-in CLI that drains stdin and prints a canned stream-json exchange. Offline: this pins how
+// the backend TRANSLATES what the CLI reports, not what the CLI does. Wraps writeFakeCliScript; the
+// fake always emits the init record first, then exits 1.
 std::string writeFakeCli(const std::string& result_line) {
   return writeFakeCliScript(
       {R"({"type":"system","subtype":"init","session_id":"sess-gone"})", result_line}, /*exit_code=*/1);
@@ -323,10 +297,8 @@ constexpr const char* kZeroTurnError =
 constexpr const char* kLaterError =
     R"({"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":2,"result":"boom","session_id":"sess-gone"})";
 
-// Verbatim (trimmed) shape of the real line this build was verified against:
-// an unrecognized --model value, with the CLI exiting nonzero on top (the fake
-// script always does — see writeFakeCli) to prove the generic "exited N"
-// fallback stays suppressed.
+// The real line for an unrecognized --model, with the CLI exiting nonzero on top (the fake always
+// does) to prove the generic "exited N" fallback stays suppressed.
 constexpr const char* kApiErrorZeroTokens =
     R"({"duration_api_ms":0,"stop_reason":"stop_sequence","session_id":"59c13c03-bd19-4994-a4d0-ca9016a2d7ae",)"
     R"("total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,)"
@@ -334,10 +306,8 @@ constexpr const char* kApiErrorZeroTokens =
 
 }  // namespace
 
-// Verbatim what the CLI emits for `--resume <id>` when it has no such session
-// (stderr says "No conversation found with session ID: …", but stderr is
-// discarded): an error with zero turns. That, and only that, is a failed
-// resume — the one failure where retrying the same turn cannot help.
+// What the CLI emits for `--resume <id>` with no such session (stderr says so but is discarded): an
+// error with zero turns. Only that is a failed resume, the one failure where retrying cannot help.
 TEST(ClaudeBackendResume, AZeroTurnErrorWhileResumingMeansTheSessionIsGone) {
   const auto events = runOneTurnAgainst(kZeroTurnError, /*resuming=*/true);
   const assistant_agent::BackendEvent* err = firstError(events);
@@ -361,10 +331,8 @@ TEST(ClaudeBackendResume, AnErrorAfterTurnsRanIsNotAResumeFailure) {
   EXPECT_EQ(err->text, "boom") << "the CLI's own wording is kept";
 }
 
-// terminal_reason=="api_error" paired with an all-zero usage block means the
-// CLI never reached the API at all -- neither is_error nor subtype says so on
-// this real line, so this is the one case that is not detected through the
-// ordinary `ev.is_error` branch.
+// terminal_reason=="api_error" with an all-zero usage block means the CLI never reached the API;
+// neither is_error nor subtype says so, so this is not detected through the ordinary is_error branch.
 TEST(ClaudeBackendApiError, NamesCliDefaultWhenNoModelIsConfiguredAndSuppressesTheExitLine) {
   const auto events = runOneTurnAgainst(kApiErrorZeroTokens, /*resuming=*/false, /*model=*/"");
   const assistant_agent::BackendEvent* err = firstError(events);
@@ -382,8 +350,8 @@ TEST(ClaudeBackendApiError, NamesCliDefaultWhenNoModelIsConfiguredAndSuppressesT
   EXPECT_EQ(error_count, 1) << "the generic 'exited N' fallback must not ALSO fire (fake CLI exits 1)";
 }
 
-// A tool call and its answer come back as a tool_use block and, in a later user record, the tool_result that
-// names its id: the backend reports the pair as a ToolActivity followed by a ToolResult naming the same tool.
+// A tool call comes back as a tool_use block and its answer as a later tool_result naming its id; the
+// backend reports a ToolActivity followed by a ToolResult naming the same tool.
 TEST(ClaudeBackendToolResult, AnAnsweredCallIsAToolResultNamingTheTool) {
   for (const bool failed : {false, true}) {
     const std::string cli = writeFakeCliScript(
@@ -415,7 +383,7 @@ TEST(ClaudeBackendToolResult, AnAnsweredCallIsAToolResultNamingTheTool) {
   }
 }
 
-// The live smoke's own verdict, against the stream a CLI that got an answer prints: it passes.
+// The live smoke's verdict on the stream of a CLI that got an answer: pass.
 TEST(ClaudeBackendToolResult, TheSmokeVerdictAcceptsAnAnsweredListTopicsCall) {
   const std::string cli = writeFakeCliScript(
       {R"({"type":"system","subtype":"init","session_id":"sess-tool"})",
@@ -438,10 +406,9 @@ TEST(ClaudeBackendApiError, NamesTheConfiguredModel) {
 }
 #endif
 
-// What a real turn hands the CLI, recorded by a fake one: the composed
-// payload on stdin (features block first, then the catalog, each only when
-// new) and the instructions in --append-system-prompt (the system prompt plus
-// the product policy, unless a caller measures without it).
+// What a turn hands the CLI, recorded by a fake one: the composed payload on stdin (features block,
+// then catalog, each only when new) and the instructions in --append-system-prompt (system prompt
+// plus product policy, unless a caller measures without it).
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/stat.h>
 
@@ -487,8 +454,8 @@ TEST(ClaudeBackendPayload, TheCliReceivesTheFeaturesBlockAheadOfTheCatalogAndThe
   EXPECT_NE(argv.find(assistant_agent::kSystemPrompt), std::string::npos);
 }
 
-// A first turn whose CLI exits 1 before saying anything (not logged in, say)
-// never reached the model, so the retry must carry both listings again.
+// A first turn whose CLI exits 1 before saying anything (not logged in) never reached the model, so
+// the retry must carry both listings again.
 TEST(ClaudeBackendPayload, AFailedTurnThatProducedNoAnswerLeavesTheListingsUnsent) {
   const std::string record = assistant_agent::testing::makeRecordPrefix("claude_retry");
   const std::string failing = assistant_agent::testing::writeRecordingCliScript({}, 1, record);
@@ -536,9 +503,8 @@ std::string mcpConfigPathFrom(const std::string& argv) {
   return argv.substr(begin, argv.find('\n', begin) - begin);
 }
 
-// The token reaches the CLI only through the --mcp-config file: owner-only,
-// reused while the endpoint is unchanged, replaced when it changes, and
-// removed with the backend.
+// The token reaches the CLI only through the --mcp-config file: owner-only, reused while the endpoint
+// is unchanged, replaced when it changes, removed with the backend.
 TEST(ClaudeBackendPayload, TheMcpConfigFileIsPrivateCarriesTheTokenAndGoesWithTheBackend) {
   const std::string record = assistant_agent::testing::makeRecordPrefix("claude_mcp");
   const std::string cli = assistant_agent::testing::writeRecordingCliScript(

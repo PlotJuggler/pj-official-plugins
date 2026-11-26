@@ -39,10 +39,6 @@ std::string at(const std::string& tail) {
   return kRoot + tail;
 }
 
-// ---------------------------------------------------------------------------
-// toConfigPath
-// ---------------------------------------------------------------------------
-
 TEST(DictionaryPaths, ToConfigPathBesideDataIsBareName) {
   EXPECT_EQ(toConfigPath(at("run/vehicle.dbc"), at("run/data.blf")), "vehicle.dbc");
 }
@@ -80,10 +76,6 @@ TEST(DictionaryPaths, ToConfigPathAcceptsBackslashes) {
 }
 #endif
 
-// ---------------------------------------------------------------------------
-// auxBaseDir
-// ---------------------------------------------------------------------------
-
 TEST(DictionaryPaths, AuxBaseDirIsTheAbsoluteDataDirectory) {
   EXPECT_EQ(auxBaseDir(at("run/sub/../data.blf")), at("run"));
 }
@@ -93,10 +85,6 @@ TEST(DictionaryPaths, AuxBaseDirIsEmptyWithoutAnAbsoluteFilesystemDirectory) {
   EXPECT_EQ(auxBaseDir("data.blf"), "");
   EXPECT_EQ(auxBaseDir("s3://b/d.blf"), "");
 }
-
-// ---------------------------------------------------------------------------
-// config glue: auxBaseDirToSave
-// ---------------------------------------------------------------------------
 
 TEST(DictionaryPaths, AuxBaseDirToSaveIsTheDataDirectoryWhenPathsAreStored) {
   EXPECT_EQ(auxBaseDirToSave(at("run/sub/../data.blf"), true), std::optional<std::string>(at("run")));
@@ -108,10 +96,6 @@ TEST(DictionaryPaths, AuxBaseDirToSaveIsNulloptWithoutPathsOrDirectory) {
   EXPECT_EQ(auxBaseDirToSave("data.blf", true), std::nullopt);
   EXPECT_EQ(auxBaseDirToSave("s3://b/d.blf", true), std::nullopt);
 }
-
-// ---------------------------------------------------------------------------
-// resolveAuxPath
-// ---------------------------------------------------------------------------
 
 TEST(DictionaryPaths, ResolveRelativeAgainstTheCurrentDataDirectory) {
   const AuxPathContext context{at("new/data.blf"), "", ""};
@@ -262,10 +246,6 @@ TEST(DictionaryPaths, ResolveSiblingFolderAcrossADriveChange) {
 }
 #endif
 
-// ---------------------------------------------------------------------------
-// vector helpers
-// ---------------------------------------------------------------------------
-
 TEST(DictionaryPaths, VectorHelpersMapEveryEntry) {
   const std::string data = at("run/data.log");
   EXPECT_EQ(
@@ -277,10 +257,6 @@ TEST(DictionaryPaths, VectorHelpersMapEveryEntry) {
       std::vector<std::string>({at("run/a.dbc"), at("other/b.dbc")}));
   EXPECT_TRUE(toConfigPaths({}, data).empty());
 }
-
-// ---------------------------------------------------------------------------
-// readAuxFile
-// ---------------------------------------------------------------------------
 
 TEST(DictionaryPaths, ReadAuxFileNamesAMissingFile) {
   ScratchDir scratch;

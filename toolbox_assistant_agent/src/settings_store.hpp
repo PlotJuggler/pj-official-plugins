@@ -8,11 +8,9 @@
 
 namespace assistant_agent {
 
-// Thin, QSettings-like adapter over the host's `pj.settings.v1` service
-// (PJ::sdk::SettingsView). Scalars are persisted as strings by the service;
-// reads fall back to the supplied default when the key is absent, the store is
-// unbound (optional service), or the host backend faults — preserving a
-// non-throwing contract.
+// Thin, QSettings-like adapter over the host's `pj.settings.v1` service. Never throws: reads
+// fall back to the default when the key is absent, the (optional) service is unbound, or the
+// host backend faults; writers are then silent no-ops.
 class SettingsStore {
  public:
   explicit SettingsStore(PJ::sdk::SettingsView view) : view_(view) {}
@@ -20,13 +18,9 @@ class SettingsStore {
   std::string getString(const std::string& key, const std::string& def = "") const;
   void setString(const std::string& key, const std::string& value);
 
-  // False for an absent key, an unbound store, or a host backend fault — the
-  // three cases the service cannot tell apart from the caller's side, and
-  // none of which should look like "yes, it's there" (used to gate a one-shot
-  // migration's remove(), see scrubLegacyConversationKeys).
+  // False for an absent key, an unbound store or a host backend fault: the caller cannot tell
+  // them apart, and none may read as "present" (it gates scrubLegacyConversationKeys' remove()).
   bool contains(const std::string& key) const;
-  // No-op on an unbound store or a host backend fault, like every other
-  // writer here.
   void remove(const std::string& key);
 
   std::vector<std::string> getStringList(const std::string& key) const;
