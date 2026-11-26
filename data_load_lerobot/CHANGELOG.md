@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_lerobot/`.
 
+## Upcoming
+
+### Fixed
+- On Windows, a dataset in a folder that has non-ASCII characters (Cyrillic, Chinese, accents) in its name opens, and its episodes and videos load, instead of failing with "cannot open".
+
 ## [1.0.4] - 2026-11-19
 
 ### Fixed

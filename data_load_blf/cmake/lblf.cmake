@@ -97,6 +97,20 @@ set(_lblf_jump_anchor [==[            const auto bytes_to_jump = static_cast<int
 set(_lblf_jump_fixed [==[            const auto bytes_to_jump = static_cast<std::streamoff>(ohb.objSize) - ohb.headerSize + (ohb.objSize % 4);]==])
 pj_apply_vendored_patch(_lblf_reader_cc _lblf_jump_anchor _lblf_jump_fixed "data_load_blf: lblf 64-bit object skip")
 
+# UTF-8 file names: blf_reader takes the host's UTF-8 path as a std::string and opens it with the narrow
+# fstream::open(const std::string&), which reads the name in the ANSI code page on Windows, so a path with Cyrillic,
+# CJK or accented characters fails to open. Open it through a std::filesystem::path built from the UTF-8 bytes.
+set(_lblf_include_anchor [==[#include <cstring>
+#include <iostream>]==])
+set(_lblf_include_fixed [==[#include <cstring>
+#include <filesystem>
+#include <iostream>]==])
+pj_apply_vendored_patch(_lblf_reader_cc _lblf_include_anchor _lblf_include_fixed "data_load_blf: lblf filesystem include")
+set(_lblf_open_anchor [==[    fileStream.open(filename, std::fstream::in | std::fstream::binary);]==])
+set(_lblf_open_fixed [==[    fileStream.open(std::filesystem::path(std::u8string(filename.begin(), filename.end())),
+                    std::fstream::in | std::fstream::binary);]==])
+pj_apply_vendored_patch(_lblf_reader_cc _lblf_open_anchor _lblf_open_fixed "data_load_blf: lblf UTF-8 file name")
+
 file(READ ${source_dir}/blf_reader.hh _lblf_reader_hh)
 set(_lblf_member_anchor [==[    uint32_t fileLength {0};]==])
 set(_lblf_member_fixed [==[    uint64_t fileLength {0};]==])

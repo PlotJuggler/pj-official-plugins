@@ -44,7 +44,7 @@ add_library(mf4_core STATIC mf4_reader.cpp)
 set_target_properties(mf4_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(mf4_core PRIVATE cxx_std_20)
 target_compile_options(mf4_core PRIVATE ${PJ_WARNING_FLAGS})
-target_link_libraries(mf4_core PUBLIC plotjuggler_sdk::base mdf)
+target_link_libraries(mf4_core PUBLIC plotjuggler_sdk::base mdf pj_utf8_path)
 
 # ---------------------------------------------------------------------------
 # Plugin shared library

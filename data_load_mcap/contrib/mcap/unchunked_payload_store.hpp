@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "internal.hpp"
+#include "local_utf8_path.hpp"
 
 namespace mcap {
 
@@ -74,7 +75,7 @@ class UnchunkedPayloadStore {
     if (file_.is_open()) {
       return true;
     }
-    file_.open(filepath_, std::ios::binary);
+    file_.open(internal::pathFromUtf8(filepath_), std::ios::binary);  // PJ4 local patch: UTF-8 name
     if (!file_.is_open()) {
       std::fprintf(stderr, "[data_load_mcap] lazy payload open failed for '%s'\n", filepath_.c_str());
       openFailed_ = true;

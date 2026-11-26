@@ -26,6 +26,7 @@
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <set>
 #include <sstream>
 #include <string>
@@ -1450,7 +1451,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     if (widget_name == "buttonLoadFunctions") {
       // Import: merge the chosen library into the current one (additive, so the
       // user's other snippets survive) and persist so it outlives a restart.
-      if (auto loaded = loadSnippetsFromPath(std::filesystem::path(path))) {
+      if (auto loaded = loadSnippetsFromPath(PJ::utf8_path::pathFromUtf8(path))) {
         if (loaded->empty()) {
           io_status_ = "The selected file contains no functions.";
         } else {
@@ -1465,7 +1466,7 @@ class TransformEditorDialog : public PJ::DialogPluginTyped {
     }
     if (widget_name == "buttonSaveFunctions") {
       // Export: write the current library to the chosen file.
-      const bool ok = saveSnippetsToPath(snippets_, std::filesystem::path(path));
+      const bool ok = saveSnippetsToPath(snippets_, PJ::utf8_path::pathFromUtf8(path));
       io_status_ =
           ok ? "Exported " + std::to_string(snippets_.size()) + " function(s)." : "Could not write the selected file.";
       return true;

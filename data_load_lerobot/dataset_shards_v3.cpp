@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -28,6 +29,10 @@
 #include "dataset_model.hpp"
 
 namespace lerobot {
+
+using PJ::utf8_path::pathFromUtf8;
+using PJ::utf8_path::pathToUtf8;
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -118,18 +123,18 @@ std::vector<std::string> stringListAt(const arrow::ChunkedArray& col, int64_t i)
 
 /// Read a single `meta/episodes/.../*.parquet` shard into an Arrow table.
 PJ::Expected<std::shared_ptr<arrow::Table>> readShardTable(const fs::path& shard_path) {
-  auto fs_or = arrow::io::ReadableFile::Open(shard_path.string());
+  auto fs_or = arrow::io::ReadableFile::Open(pathToUtf8(shard_path));
   if (!fs_or.ok()) {
-    return PJ::unexpected("cannot open " + shard_path.string() + ": " + fs_or.status().message());
+    return PJ::unexpected("cannot open " + pathToUtf8(shard_path) + ": " + fs_or.status().message());
   }
   auto reader_or = parquet::arrow::OpenFile(*fs_or, arrow::default_memory_pool());
   if (!reader_or.ok()) {
-    return PJ::unexpected("cannot read parquet " + shard_path.string() + ": " + reader_or.status().message());
+    return PJ::unexpected("cannot read parquet " + pathToUtf8(shard_path) + ": " + reader_or.status().message());
   }
   std::unique_ptr<parquet::arrow::FileReader> reader = std::move(*reader_or);
   auto table_or = reader->ReadTable();
   if (!table_or.ok()) {
-    return PJ::unexpected("cannot read table " + shard_path.string() + ": " + table_or.status().message());
+    return PJ::unexpected("cannot read table " + pathToUtf8(shard_path) + ": " + table_or.status().message());
   }
   return std::move(table_or).ValueUnsafe();
 }
@@ -165,7 +170,7 @@ std::vector<fs::path> findEpisodeShards(const fs::path& root) {
 PJ::Status loadV3EpisodeShards(const fs::path& root, DatasetModel& model) {
   const std::vector<fs::path> shards = findEpisodeShards(root);
   if (shards.empty()) {
-    return PJ::unexpected("v3.0 dataset missing meta/episodes/*.parquet under " + root.string());
+    return PJ::unexpected("v3.0 dataset missing meta/episodes/*.parquet under " + pathToUtf8(root));
   }
 
   for (const fs::path& shard_path : shards) {
@@ -242,8 +247,8 @@ PJ::Status loadV3EpisodeShards(const fs::path& root, DatasetModel& model) {
 
       EpisodeShard shard;
       shard.parquet_path =
-          model.root /
-          expandPathTemplate(model.data_path_tmpl, {{"chunk_index", data_chunk}, {"file_index", data_file}});
+          model.root / pathFromUtf8(expandPathTemplate(
+                           model.data_path_tmpl, {{"chunk_index", data_chunk}, {"file_index", data_file}}));
       shard.row_from = row_from;
       shard.row_to = row_to;
       if (tasks_col != nullptr) {
@@ -256,9 +261,9 @@ PJ::Status loadV3EpisodeShards(const fs::path& root, DatasetModel& model) {
         const int64_t v_file = int64At(*cc.file_index, i);
         const double from_s = doubleAt(*cc.from_ts, i);
         const double to_s = doubleAt(*cc.to_ts, i);
-        vs.mp4_path = model.root / expandPathTemplate(
+        vs.mp4_path = model.root / pathFromUtf8(expandPathTemplate(
                                        model.video_path_tmpl, {{"chunk_index", v_chunk}, {"file_index", v_file}},
-                                       {{"video_key", cam}, {"camera_key", cam}});
+                                       {{"video_key", cam}, {"camera_key", cam}}));
         vs.start_ns = static_cast<int64_t>(std::llround(from_s * 1e9));
         vs.end_ns = static_cast<int64_t>(std::llround(to_s * 1e9));
         shard.videos[cam] = std::move(vs);

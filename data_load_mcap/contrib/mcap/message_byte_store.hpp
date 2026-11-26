@@ -36,6 +36,7 @@
 
 #pragma once
 
+#include "local_utf8_path.hpp"
 #include "parallel_reader.hpp"  // ParallelMessageView, McapReader, RecordReader, ChunkIndex, MessageView, Status
 #include <atomic>
 #include <cstddef>
@@ -311,7 +312,7 @@ public:
         detail::ColdChunkStore::ChunkMeta{ci.chunkLength});
     }
     if (onProblem) {
-      std::ifstream probe(cold_->filepath_, std::ios::binary);
+      std::ifstream probe(internal::pathFromUtf8(cold_->filepath_), std::ios::binary);  // PJ4 local patch: UTF-8 name
       if (!probe.is_open()) {
         onProblem(Status{StatusCode::OpenFailed,
                          "MCAP file not readable for lazy reads: " + cold_->filepath_});

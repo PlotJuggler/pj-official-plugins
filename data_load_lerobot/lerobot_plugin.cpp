@@ -10,6 +10,7 @@
 #include <optional>
 #include <pj_base/builtin/video_frame_codec.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <pj_video_demux/video_demux.hpp>
 #include <string>
 #include <unordered_map>
@@ -246,7 +247,7 @@ class LeRobotSource : public PJ::FileSourceBase {
       return PJ::unexpected(topic.error());
     }
 
-    const std::string path = model->episodeParquet(ep).string();
+    const std::string path = PJ::utf8_path::pathToUtf8(model->episodeParquet(ep));
     auto opened = openParquetReader(path);
     if (!opened) {
       return PJ::unexpected(opened.error());
@@ -529,7 +530,7 @@ class LeRobotSource : public PJ::FileSourceBase {
 
     int64_t total_frames = 0;
     for (const std::string& cam : model.camera_names) {
-      const std::string path = model.episodeVideo(ep, cam).string();
+      const std::string path = PJ::utf8_path::pathToUtf8(model.episodeVideo(ep, cam));
       auto idx_or = indexVideoCached(path);
       if (!idx_or) {
         return PJ::unexpected(idx_or.error());

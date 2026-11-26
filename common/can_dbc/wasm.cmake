@@ -5,6 +5,7 @@ include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/PjWasmPlugin.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/dbc_parser.cmake")
 
+pj_wasm_common_library(utf8_path)
 pj_add_dbc_parser_library(pj_wasm_dbc_parser "${dbc_parser_cpp_SOURCE_DIR}" "${dbc_fast_float_SOURCE_DIR}")
 add_library(pj_can_dbc STATIC
   "${CMAKE_CURRENT_LIST_DIR}/can_decoder.cpp"
@@ -13,5 +14,5 @@ add_library(pj_can_dbc STATIC
   "${CMAKE_CURRENT_LIST_DIR}/signal_row.cpp")
 target_compile_features(pj_can_dbc PUBLIC cxx_std_20)
 target_include_directories(pj_can_dbc PUBLIC "${CMAKE_CURRENT_LIST_DIR}/include")
-target_link_libraries(pj_can_dbc PUBLIC plotjuggler_sdk::base PRIVATE pj_wasm_dbc_parser)
+target_link_libraries(pj_can_dbc PUBLIC plotjuggler_sdk::base PRIVATE pj_wasm_dbc_parser pj_utf8_path)
 pj_wasm_finalize_target(pj_can_dbc)

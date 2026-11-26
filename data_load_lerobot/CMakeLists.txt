@@ -23,6 +23,7 @@ target_link_libraries(lerobot_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json
   Arrow::arrow_static Parquet::parquet_static
   pj_arrow_helpers
+  pj_utf8_path
   pj_video_demux  # lazy per-frame VideoFrame emission (pulls ffmpeg transitively)
 )
 pj_embed_ui(lerobot_source_plugin
@@ -53,7 +54,7 @@ target_compile_options(lerobot_dataset_model_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_dataset_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dataset_model_test PRIVATE
   plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json
-  Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
+  Arrow::arrow_static Parquet::parquet_static pj_utf8_path GTest::gtest_main
 )
 add_test(NAME lerobot_dataset_model_test COMMAND lerobot_dataset_model_test)
 
@@ -65,7 +66,7 @@ target_compile_options(lerobot_dataset_model_v3_test PRIVATE ${PJ_WARNING_FLAGS}
 target_include_directories(lerobot_dataset_model_v3_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dataset_model_v3_test PRIVATE
   plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json
-  Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
+  Arrow::arrow_static Parquet::parquet_static pj_utf8_path GTest::gtest_main
 )
 add_test(NAME lerobot_dataset_model_v3_test COMMAND lerobot_dataset_model_v3_test)
 
@@ -102,7 +103,7 @@ target_compile_options(lerobot_dialog_fanout_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(lerobot_dialog_fanout_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lerobot_dialog_fanout_test PRIVATE
   plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host nlohmann_json::nlohmann_json
-  Arrow::arrow_static Parquet::parquet_static GTest::gtest_main
+  Arrow::arrow_static Parquet::parquet_static pj_utf8_path GTest::gtest_main
 )
 # Pull in the generated headers (dialog_lerobot_ui.hpp, lerobot_manifest.hpp)
 # that lerobot_dialog.hpp transitively includes.

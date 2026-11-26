@@ -63,6 +63,10 @@ TEST_F(CandumpLayoutPaths, SiblingDictionaryFolderFollowsCopy) {
   checkCopiedLayoutUsesTheCopysDbc("data", "dbc");
 }
 
+TEST_F(CandumpLayoutPaths, NonAsciiFolderImports) {
+  checkNonAsciiFolderImports();
+}
+
 TEST_F(CandumpLayoutPaths, MissingDbcReportsNotFoundWarning) {
   checkMissingDbcReportsNotFoundWarning();
 }

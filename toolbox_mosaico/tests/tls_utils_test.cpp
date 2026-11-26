@@ -68,6 +68,22 @@ TEST(TlsUtils, PrintableAsciiRejectsNonAscii) {
   EXPECT_FALSE(isPrintableAscii("\x7f"));        // DEL is excluded (> 0x7E)
 }
 
+// --- hasNoControlChars (the cert path: a file name, so non-ASCII is fine) ---
+
+TEST(TlsUtils, NoControlCharsAcceptsNonAsciiPaths) {
+  EXPECT_TRUE(hasNoControlChars(""));
+  EXPECT_TRUE(hasNoControlChars("/home/user/cert.pem"));
+  const std::u8string windows_path = u8"C:\\Users\\\u0418\u0432\u0430\u043d\\\u8bc1\u4e66\\caf\u00e9.pem";
+  EXPECT_TRUE(hasNoControlChars(std::string(windows_path.begin(), windows_path.end())));
+}
+
+TEST(TlsUtils, NoControlCharsRejectsControlBytes) {
+  EXPECT_FALSE(hasNoControlChars("cert\r\n.pem"));
+  EXPECT_FALSE(hasNoControlChars(std::string("cert\0.pem", 9)));
+  EXPECT_FALSE(hasNoControlChars("cert\t.pem"));
+  EXPECT_FALSE(hasNoControlChars("cert\x7f.pem"));
+}
+
 TEST(TlsUtils, PrintableAsciiBoundaryBytes) {
   // 0x20 (space) and 0x7E (~) are the inclusive printable bounds.
   EXPECT_TRUE(isPrintableAscii(" ~"));

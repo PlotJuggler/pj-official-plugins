@@ -31,7 +31,7 @@ add_library(data_load_3d_plugin SHARED loader_3d.cpp)
 target_compile_features(data_load_3d_plugin PRIVATE cxx_std_20)
 target_compile_options(data_load_3d_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(data_load_3d_plugin PRIVATE
-  plotjuggler_sdk::plugin_sdk pj_3d_readers nlohmann_json::nlohmann_json)
+  plotjuggler_sdk::plugin_sdk pj_3d_readers nlohmann_json::nlohmann_json pj_utf8_path)
 
 pj_embed_manifest(data_load_3d_plugin
   HEADER   ${CMAKE_CURRENT_BINARY_DIR}/generated/data_load_3d_manifest.hpp

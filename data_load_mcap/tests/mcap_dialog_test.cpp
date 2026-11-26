@@ -8,6 +8,7 @@
 #include <fstream>
 #include <mcap/writer.hpp>
 #include <nlohmann/json.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <set>
 #include <string>
 
@@ -246,6 +247,27 @@ TEST(McapDialogTest, AnalyzeErrorLabelStaysHiddenForAHealthyRecording) {
   const auto data = nlohmann::json::parse(dialog.widget_data());
   ASSERT_TRUE(data.contains("labelAnalyzeError"));
   EXPECT_FALSE(data["labelAnalyzeError"].value("visible", true));
+}
+
+// The host hands the dialog the path as UTF-8; on Windows a narrow open reads it in the ANSI code page.
+TEST(McapDialogTest, AnalyzesARecordingInAFolderWithNonAsciiName) {
+  namespace fs = std::filesystem;
+  const fs::path dir =
+      fs::temp_directory_path() / fs::path(u8"pj_mcap_dialog_utf8_\u043f\u0443\u0442\u044c_\u98db\u884c");
+  fs::create_directories(dir);
+  const fs::path file = dir / fs::path(u8"\u0437\u0430\u043f\u0438\u0441\u044c_\u8a18\u9332.mcap");
+  fs::copy_file(
+      fs::path(MCAP_TEST_DATA_DIR) / "test_publish_vs_log_time.mcap", file, fs::copy_options::overwrite_existing);
+
+  McapDialog dialog;
+  nlohmann::json cfg;
+  cfg["filepath"] = PJ::utf8_path::pathToUtf8(file);
+  ASSERT_TRUE(dialog.loadConfig(cfg.dump()));
+  EXPECT_TRUE(dialog.analyzeError().empty()) << dialog.analyzeError();
+  EXPECT_EQ(dialog.selectedTopics(), (std::unordered_set<std::string>{"/sensor/value"}));
+
+  std::error_code ec;
+  fs::remove_all(dir, ec);
 }
 
 // The encoding combo box was removed from dialog_mcap.ui because message

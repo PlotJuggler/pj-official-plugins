@@ -17,6 +17,7 @@
 // single-buffer "valid until next read()" semantics, per-thread). Do not hold a
 // returned pointer across another read() on the same thread.
 //
+#include "local_utf8_path.hpp"  // PJ4 local patch
 #include "reader.hpp"  // IReadable, Status, StatusCode
 #include <algorithm>
 #include <string>
@@ -56,7 +57,8 @@ public:
 #if defined(_WIN32)
     // FILE_FLAG_OVERLAPPED so each read can specify its own offset and the file
     // cursor is never shared -> safe for concurrent reads.
-    handle_ = ::CreateFileA(p.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    // PJ4 local patch (not upstream): CreateFileA reads the UTF-8 name in the ANSI code page.
+    handle_ = ::CreateFileW(internal::pathFromUtf8(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
     if (handle_ == INVALID_HANDLE_VALUE) {
       return Status{StatusCode::OpenFailed, "failed to open " + p};

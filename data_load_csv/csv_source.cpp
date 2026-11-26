@@ -3,6 +3,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <vector>
 
@@ -61,8 +62,7 @@ class CsvSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("no filepath configured"));
     }
 
-    // Paths from the host are UTF-8; use a Unicode filesystem path on Windows.
-    std::ifstream file(std::filesystem::path(std::u8string(filepath.begin(), filepath.end())));
+    std::ifstream file(PJ::utf8_path::pathFromUtf8(filepath));
     if (!file.is_open()) {
       return PJ::unexpected(std::string("cannot open file: ") + filepath);
     }

@@ -10,6 +10,7 @@ below; for earlier releases see the git history of `data_load_mf4/`.
 
 ### Fixed
 - A signed 64-bit DBC signal is read as two's complement. A negative value used to show as a huge positive one.
+- A file in a folder or with a name that has non-ASCII characters (Cyrillic, Chinese, accents) opens instead of failing with "cannot open MDF file", on Windows and on the Linux release builds.
 
 ## [0.1.5] - 2026-11-09
 

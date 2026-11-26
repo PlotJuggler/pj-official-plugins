@@ -37,6 +37,8 @@ target_link_libraries(pj_video_demux PUBLIC
   ffmpeg::avcodec
   ffmpeg::avutil
 )
+# Header-only; the lazy reader opens the host's UTF-8 path through it.
+target_link_libraries(pj_video_demux PRIVATE pj_utf8_path)
 
 # ffmpeg/8.1.2's ConanCenter recipe compiles avformat with the udp/tcp protocol
 # and the Windows Schannel TLS backend unconditionally on Windows (the
@@ -63,6 +65,6 @@ if(TARGET GTest::gtest_main)
   # Committed h264/hevc/av1 fixtures drive the per-codec index+read e2e tests.
   target_compile_definitions(pj_video_demux_test PRIVATE
     PJ_VIDEO_DEMUX_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
-  target_link_libraries(pj_video_demux_test PRIVATE pj_video_demux GTest::gtest_main)
+  target_link_libraries(pj_video_demux_test PRIVATE pj_video_demux pj_utf8_path GTest::gtest_main)
   add_test(NAME pj_video_demux_test COMMAND pj_video_demux_test)
 endif()

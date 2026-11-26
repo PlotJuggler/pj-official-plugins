@@ -14,6 +14,7 @@ target_compile_options(mcap_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(mcap_source_plugin SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_source_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static pj_always_included
+  pj_utf8_path
 )
 
 pj_embed_ui(mcap_source_plugin
@@ -40,7 +41,7 @@ target_compile_features(mcap_helpers_test PRIVATE cxx_std_20)
 target_compile_options(mcap_helpers_test PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(mcap_helpers_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(mcap_helpers_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
-target_link_libraries(mcap_helpers_test PRIVATE LZ4::lz4_static zstd::libzstd_static GTest::gtest_main)
+target_link_libraries(mcap_helpers_test PRIVATE LZ4::lz4_static zstd::libzstd_static pj_utf8_path GTest::gtest_main)
 add_test(NAME mcap_helpers_test COMMAND mcap_helpers_test)
 
 # --- Unit test for MCAP dialog model/config behavior ---
@@ -57,7 +58,7 @@ target_include_directories(mcap_dialog_test PRIVATE
 target_include_directories(mcap_dialog_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_dialog_test PRIVATE
   plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json LZ4::lz4_static zstd::libzstd_static GTest::gtest_main
-  pj_always_included
+  pj_always_included pj_utf8_path
 )
 add_test(NAME mcap_dialog_test COMMAND mcap_dialog_test)
 
@@ -97,7 +98,7 @@ target_compile_definitions(mcap_source_split_bag_test PRIVATE
 )
 target_include_directories(mcap_source_split_bag_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
 target_link_libraries(mcap_source_split_bag_test PRIVATE
-  plotjuggler_sdk::plugin_host LZ4::lz4_static zstd::libzstd_static GTest::gtest_main
+  plotjuggler_sdk::plugin_host LZ4::lz4_static zstd::libzstd_static pj_utf8_path GTest::gtest_main
 )
 add_dependencies(mcap_source_split_bag_test mcap_source_plugin)
 add_test(NAME mcap_source_split_bag_test COMMAND mcap_source_split_bag_test)
