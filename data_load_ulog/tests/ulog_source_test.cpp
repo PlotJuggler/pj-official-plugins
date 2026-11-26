@@ -760,25 +760,24 @@ TEST(ULogFlattenTest, DuplicatePaddingNamesDoNotAdmitTruncatedTimestamp) {
   // once. The timestamp still occupies bytes 8-15 in the ordered layout.
   builder.writeFormat("duplicate:float value;uint8_t[4] _padding0;uint64_t timestamp;uint8_t[4] _padding0");
   builder.writeSubscription(1, 0, "duplicate");
-  for (size_t size : {12u, 15u, 16u, 20u}) {
+  // The valid record first: after a rejected one, ulog_cpp's resync may skip the records that follow.
+  for (size_t size : {16u, 12u, 15u, 20u}) {
     builder.writeData(1, std::vector<uint8_t>(size, 0));
   }
 
   auto container = parseBuilder(builder);
   ASSERT_FALSE(container->hadFatalError());
-  ASSERT_TRUE(container->parsingErrors().empty());
   auto sub = container->subscription("duplicate");
   ASSERT_NE(sub, nullptr);
   const auto minimum_size = ulog_flatten::loggedSizeBytes(*sub->format());
   EXPECT_EQ(minimum_size, 16u);
   EXPECT_EQ(ulog_flatten::findTimestampOffset(*sub->format()), 8u);
 
+  // ulog_cpp keeps only records between its minimum wire size and sizeBytes(), both 16 here: the truncated records
+  // and the 20-byte one are dropped as corruption before they reach the container.
   const auto& samples = sub->rawSamples();
-  ASSERT_EQ(samples.size(), 4u);
-  EXPECT_LT(samples[0].data().size(), minimum_size);
-  EXPECT_LT(samples[1].data().size(), minimum_size);
-  EXPECT_GE(samples[2].data().size(), minimum_size);
-  EXPECT_GE(samples[3].data().size(), minimum_size);
+  ASSERT_EQ(samples.size(), 1u);
+  EXPECT_EQ(samples[0].data().size(), minimum_size);
 }
 
 TEST(ULogFlattenTest, NestedArrayPaddingStillCountsTowardLoggedSize) {
@@ -1658,6 +1657,28 @@ TEST(ULogImportTest, InfoAndParametersBecomeTopicsAndDatasetMetadata) {
   const auto version = fieldSamples(host.rows["_info"], "ver_sw_release");
   ASSERT_EQ(version.size(), 1u);
   EXPECT_EQ(version[0].second.number, static_cast<double>(0x010E00FF));
+}
+
+// PX4 logs carry empty string info (`char[0] perf_top_preflight-23`, no value bytes): ulog_cpp 1.0.1 read the empty
+// value through a null pointer and crashed the import (PlotJuggler#1748).
+TEST(ULogImportTest, EmptyStringInfoImportsAsAnEmptyString) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeInfo("char[0] empty", {});
+  builder.writeInfo("char[3] sys_name", {'P', 'X', '4'});
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+
+  const auto document = nlohmann::json::parse(host.metadata, nullptr, false);
+  ASSERT_TRUE(document.is_object()) << host.metadata;
+  EXPECT_EQ(document["info"]["empty"], "");
+  EXPECT_EQ(document["info"]["sys_name"], "PX4");
 }
 
 TEST(ULogImportTest, InitialParametersAndInfoHoldFromTheEarliestRecord) {

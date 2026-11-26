@@ -5,7 +5,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
 CPMAddPackage(
   NAME ulog_cpp
-  URL https://github.com/PX4/ulog_cpp/archive/refs/tags/v1.0.1.zip
+  URL https://github.com/PX4/ulog_cpp/archive/refs/tags/v1.1.0.zip
 )
 
 # Ensure ulog_cpp is statically linked into the plugin .so.
