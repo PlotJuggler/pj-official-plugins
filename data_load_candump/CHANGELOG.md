@@ -2,7 +2,10 @@
 
 One entry per released version (newest first).
 
-## Upcoming
+## [0.2.0] - 2026-11-26
+
+### Changed
+- Requires PlotJuggler 4.2.0 or newer (earlier hosts keep 0.1.2).
 
 ### Added
 

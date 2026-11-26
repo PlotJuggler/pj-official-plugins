@@ -1,7 +1,7 @@
 {
   "id": "toolbox-anomaly-detector",
   "name": "Marker Editor",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Write Lua rules that draw markers on your plots: shade regions (for example, color the background by a series' value), flag moments, draw value bands.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",

@@ -3,7 +3,7 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `parser_protobuf/`.
 
-## Upcoming
+## [1.3.2] - 2026-11-26
 
 ### Fixed
 - On Windows, a .proto file in a folder or with a name that has non-ASCII characters (Cyrillic, Chinese, accents) compiles instead of failing with "Could not open file".

@@ -1,7 +1,7 @@
 {
   "id": "pointcloud-3d-loader",
   "name": "3D Loader (PLY/PCD/LAS)",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Open static 3D files: .pcd files, LiDAR .las files and vertex-only .ply files load as point clouds, .ply files with faces load as meshes. Each file is a single snapshot, not a time series.",
   "author": "PlotJuggler Team",
   "publisher": "PlotJuggler",
