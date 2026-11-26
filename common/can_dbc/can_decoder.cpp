@@ -48,6 +48,8 @@ std::int64_t normalizeValueKey(std::uint32_t raw_key, bool is_signed, std::uint3
 constexpr std::uint32_t kExtendedFlag = 0x8000'0000u;
 /// Highest standard (11-bit) CAN id.
 constexpr std::uint32_t kMaxStandardId = 0x7FFu;
+/// Highest extended (29-bit) CAN id.
+constexpr std::uint32_t kMaxExtendedId = 0x1FFF'FFFFu;
 /// A signal's value must fit in 64 bits.
 constexpr std::uint32_t kMaxSignalBits = 64;
 /// Classic CAN payload size: frames up to this long decode through the pinned
@@ -216,7 +218,9 @@ struct CanDecoder::Impl {
   // Keyed by the DBC message id exactly as stored (raw, possibly with the
   // extended flag). Lookup handles both the raw and Vector-flagged forms.
   std::unordered_map<std::uint32_t, std::size_t> id_to_index;
-  // The 29-bit messages by PGN, for CanProtocol::kJ1939 / kNmea2000 (first loaded wins).
+  // The 29-bit messages for CanProtocol::kJ1939 / kNmea2000, first loaded wins in both: by id
+  // without priority (the message written for one sender) and by PGN (any sender).
+  std::unordered_map<std::uint32_t, std::size_t> sender_to_index;
   std::unordered_map<std::uint32_t, std::size_t> pgn_to_index;
   CanProtocol protocol = CanProtocol::kRaw;
 
@@ -243,8 +247,12 @@ struct CanDecoder::Impl {
       }
       assignLabelNames(meta);
       // 29-bit: the Vector flag set, or a raw id above the 11-bit range (as find() reads it).
-      if ((msg.id() & kExtendedFlag) != 0 || msg.id() > kMaxStandardId) {
-        pgn_to_index.emplace(pgnFromCanId(msg.id() & ~kExtendedFlag), messages.size());
+      // An id that does not fit in 29 bits is no CAN id and would claim PGN 0: Vector's
+      // VECTOR__INDEPENDENT_SIG_MSG placeholder for orphan signals is 0xC0000000.
+      const std::uint32_t id29 = msg.id() & ~kExtendedFlag;
+      if (((msg.id() & kExtendedFlag) != 0 || msg.id() > kMaxStandardId) && id29 <= kMaxExtendedId) {
+        sender_to_index.emplace(withoutPriority(id29), messages.size());
+        pgn_to_index.emplace(pgnFromCanId(id29), messages.size());
       }
       id_to_index[msg.id()] = messages.size();
       messages.push_back(MessageEntry{msg, std::move(meta)});
@@ -256,6 +264,11 @@ struct CanDecoder::Impl {
       return it == id_to_index.end() ? nullptr : &messages[it->second];
     };
     if (extended && protocol != CanProtocol::kRaw) {
+      // The message written for this very sender wins over the PGN's first one: an OEM DBC
+      // may define one PGN once per source, each with its own layout.
+      if (const auto sender = sender_to_index.find(withoutPriority(can_id)); sender != sender_to_index.end()) {
+        return &messages[sender->second];
+      }
       const auto it = pgn_to_index.find(pgnFromCanId(can_id));
       return it == pgn_to_index.end() ? nullptr : &messages[it->second];
     }
@@ -370,14 +383,13 @@ std::vector<DecodedSignal> CanDecoder::decode(
   }
 
   const auto& signals = entry->signals;  // cached name/unit/labels/layout, no per-frame copy
-  // One entry per signal; nullopt for a signal past the end of a variable-length payload.
-  std::vector<std::optional<double>> values;
+  std::vector<double> values;            // one per signal
+  // Variable length only: false for a signal past the payload's end, which is left out of the result.
+  std::vector<bool> fits;
   if (!variable_length && data.size() <= kClassicPayloadBytes) {
-    std::vector<double> parsed;
-    if (msg.parse_signals(data, parsed) != Libdbc::Message::ParseSignalsStatus::Success) {
+    if (msg.parse_signals(data, values) != Libdbc::Message::ParseSignalsStatus::Success) {
       return out;  // matched but undecodable
     }
-    values.assign(parsed.begin(), parsed.end());
   } else {
     values.reserve(signals.size());
     for (const SignalMeta& meta : signals) {
@@ -385,10 +397,13 @@ std::vector<DecodedSignal> CanDecoder::decode(
       if (!raw && !variable_length) {
         return out;  // matched, but a signal reaches past the payload
       }
-      values.push_back(raw ? std::optional<double>(physicalValue(*raw, meta)) : std::nullopt);
+      values.push_back(raw ? physicalValue(*raw, meta) : 0.0);
+      if (variable_length) {
+        fits.push_back(raw.has_value());
+      }
     }
-    if (std::none_of(values.begin(), values.end(), [](const auto& value) { return value.has_value(); })) {
-      return out;  // variable length, but not even the first signal fits
+    if (variable_length && std::find(fits.begin(), fits.end(), true) == fits.end()) {
+      return out;  // not even the first signal fits
     }
   }
   result = DecodeResult::kDecoded;
@@ -396,17 +411,17 @@ std::vector<DecodedSignal> CanDecoder::decode(
   const std::size_t count = signals.size() < values.size() ? signals.size() : values.size();
   out.reserve(count);
   for (std::size_t k = 0; k < count; ++k) {
-    if (!values[k]) {
+    if (!fits.empty() && !fits[k]) {
       continue;
     }
     const SignalMeta& meta = signals[k];
-    DecodedSignal decoded{.name = meta.name, .value = *values[k], .unit = meta.unit};
+    DecodedSignal decoded{.name = meta.name, .value = values[k], .unit = meta.unit};
     if (!meta.labels.empty()) {
       decoded.label_name = meta.label_name;
       // Recover the raw integer value from the physical value (inverse of
       // dbc_parser_cpp's `value = raw * factor + offset`); factor == 0 was
       // already excluded from having any labels at load time (buildLabels).
-      const std::int64_t raw = std::llround((*values[k] - meta.offset) / meta.factor);
+      const std::int64_t raw = std::llround((values[k] - meta.offset) / meta.factor);
       decoded.raw = raw;
       const auto it = std::lower_bound(
           meta.labels.begin(), meta.labels.end(), raw,

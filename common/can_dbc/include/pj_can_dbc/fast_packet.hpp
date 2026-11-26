@@ -27,7 +27,8 @@ class FastPacketAssembler {
   /// `can_id` (the whole 29-bit id, so each source assembles on its own).
   /// Returns the message this frame completes, if any. A frame that does not
   /// continue its id's message in order (a different sequence counter, a
-  /// skipped or repeated index, no frame 0 seen) drops that message.
+  /// skipped or repeated index, no frame 0 seen), or that brings fewer bytes
+  /// than it owes, drops that message.
   std::optional<Message> add(std::uint32_t can_id, const std::vector<std::uint8_t>& data, std::int64_t timestamp_ns);
 
   /// Frames that never became part of a complete message: those of a dropped
@@ -35,6 +36,10 @@ class FastPacketAssembler {
   std::uint64_t droppedFrames() const {
     return dropped_frames_;
   }
+
+  /// Frames of messages still waiting for their next frame. Once the input has
+  /// ended they never complete: add them to droppedFrames() for the total.
+  std::uint64_t pendingFrames() const;
 
  private:
   struct Session {

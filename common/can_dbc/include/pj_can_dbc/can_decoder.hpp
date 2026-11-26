@@ -67,9 +67,10 @@ class CanDecoder {
   /// How frames find their message; kRaw (the default) matches the whole CAN
   /// id. kJ1939 and kNmea2000 match an extended frame by its PGN (see
   /// j1939.hpp), so one DBC message decodes that PGN from any source address
-  /// and priority; when two DBC messages share a PGN, the first loaded wins.
-  /// Standard (11-bit) frames still match by id. Set it any time; it applies
-  /// to the next lookup.
+  /// and priority. When several DBC messages share a PGN, the one whose id
+  /// names the frame's source address (and PDU1 destination) wins, else the
+  /// first loaded. Standard (11-bit) frames still match by id. Set it any
+  /// time; it applies to the next lookup.
   void setProtocol(CanProtocol protocol);
   CanProtocol protocol() const;
 
@@ -97,8 +98,10 @@ class CanDecoder {
   /// DBC extended-frame flag (0x80000000, Vector convention) set; if absent it
   /// falls back to the raw id, but only when the id is above the 11-bit range
   /// (J1939-style DBCs store 29-bit ids raw) — a low id never silently decodes
-  /// an extended frame with a standard message's layout. `result` reports
-  /// match/decoded/undecodable; the returned signals are empty unless kDecoded.
+  /// an extended frame with a standard message's layout. Under kJ1939 /
+  /// kNmea2000 an extended frame is matched by PGN instead (setProtocol()).
+  /// `result` reports match/decoded/undecodable; the returned signals are
+  /// empty unless kDecoded.
   ///
   /// `data` may be longer than 8 bytes (a CAN FD frame, or a payload
   /// reassembled from several frames): signals are then read past byte 7 with

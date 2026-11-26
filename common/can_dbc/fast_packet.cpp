@@ -15,6 +15,14 @@ void FastPacketAssembler::drop(std::unordered_map<std::uint32_t, Session>::itera
   sessions_.erase(it);
 }
 
+std::uint64_t FastPacketAssembler::pendingFrames() const {
+  std::uint64_t frames = 0;
+  for (const auto& [can_id, session] : sessions_) {
+    frames += session.frames;
+  }
+  return frames;
+}
+
 std::optional<FastPacketAssembler::Message> FastPacketAssembler::add(
     std::uint32_t can_id, const std::vector<std::uint8_t>& data, std::int64_t timestamp_ns) {
   if (data.size() < 2) {
@@ -39,7 +47,11 @@ std::optional<FastPacketAssembler::Message> FastPacketAssembler::add(
     session.length = length;
     session.message.timestamp_ns = timestamp_ns;
     session.message.payload.reserve(length);
-    const std::size_t take = std::min({length, kFirstFrameBytes, data.size() - 2});
+    const std::size_t take = std::min(length, kFirstFrameBytes);
+    if (data.size() - 2 < take) {
+      ++dropped_frames_;  // fewer bytes than it owes: the next frames would land at the wrong offsets
+      return std::nullopt;
+    }
     session.message.payload.assign(data.begin() + 2, data.begin() + 2 + static_cast<std::ptrdiff_t>(take));
     if (session.message.payload.size() == length) {
       return std::move(session.message);  // fits in frame 0
@@ -53,13 +65,14 @@ std::optional<FastPacketAssembler::Message> FastPacketAssembler::add(
     return std::nullopt;
   }
   Session& session = it->second;
-  if (sequence != session.sequence || index != session.next_index) {
+  auto& payload = session.message.payload;
+  const std::size_t take = std::min(session.length - payload.size(), kNextFrameBytes);
+  // Out of order, or fewer bytes than it owes (the next frames would land at the wrong offsets).
+  if (sequence != session.sequence || index != session.next_index || data.size() - 1 < take) {
     drop(it);
     ++dropped_frames_;
     return std::nullopt;
   }
-  auto& payload = session.message.payload;
-  const std::size_t take = std::min({session.length - payload.size(), kNextFrameBytes, data.size() - 1});
   payload.insert(payload.end(), data.begin() + 1, data.begin() + 1 + static_cast<std::ptrdiff_t>(take));
   ++session.frames;
   ++session.next_index;

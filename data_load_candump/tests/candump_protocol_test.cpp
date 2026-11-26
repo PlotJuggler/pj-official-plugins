@@ -94,6 +94,15 @@ TEST(CandumpProtocolImport, Nmea2000DecodesByPgnPerSource) {
       PJ_DATA_SOURCE_MESSAGE_INFO,
       "Decoded 7 CAN frame(s) into 6 message topic(s) (2 of them NMEA 2000 fast-packet messages"));
   EXPECT_TRUE(capture.hasMessage(PJ_DATA_SOURCE_MESSAGE_INFO, "2 NMEA 2000 fast-packet frame(s) dropped"));
+  // LateStart reassembles, but its 1-byte payload ends before the only signal: undecodable, not a decoded message.
+  EXPECT_TRUE(capture.hasMessage(PJ_DATA_SOURCE_MESSAGE_INFO, "1 matched frame(s) could not be decoded"));
+
+  // A fast packet is recorded at its first frame's time: 2 ms after its source's first VesselHeading
+  // (frames 3 and 1 for source 0x10, frames 4 and 2 for 0x04), not at its last frame's (frames 7 and 6).
+  const auto& heading_10 = capture.timestamps.at("CAN/vcan0/VesselHeading/0x10");
+  const auto& heading_04 = capture.timestamps.at("CAN/vcan0/VesselHeading/0x04");
+  EXPECT_EQ(capture.timestamps.at("CAN/vcan0/PositionLike/0x10").front() - heading_10.front(), 2'000'000);
+  EXPECT_EQ(capture.timestamps.at("CAN/vcan0/PositionLike/0x04").front() - heading_04.front(), 2'000'000);
 }
 
 TEST(CandumpProtocolImport, J1939MatchesByPgnWithoutFastPackets) {
@@ -103,7 +112,7 @@ TEST(CandumpProtocolImport, J1939MatchesByPgnWithoutFastPackets) {
   EXPECT_EQ(capture.rows.at("CAN/vcan0/ISORequest/0x10/0x23"), 1u);
   // J1939 has no fast packets: each 8-byte frame is too short for the 20-byte message.
   EXPECT_FALSE(capture.hasTopic("CAN/vcan0/PositionLike/0x10"));
-  EXPECT_TRUE(capture.hasMessage(PJ_DATA_SOURCE_MESSAGE_INFO, "7 matched frame(s) could not be decoded"));
+  EXPECT_TRUE(capture.hasMessage(PJ_DATA_SOURCE_MESSAGE_INFO, "8 matched frame(s) could not be decoded"));
 }
 
 TEST(CandumpProtocolImport, RawNeedsTheExactId) {

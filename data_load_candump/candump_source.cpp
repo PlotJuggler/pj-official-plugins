@@ -39,10 +39,6 @@ struct InterfaceTopics {
   pj_can_dbc::FastPacketAssembler fast_packets;  // NMEA 2000 interfaces only
 };
 
-/// Bits of a 29-bit id that a J1939/NMEA 2000 topic keeps: all but the 3 priority bits, so
-/// PGN, PDU1 destination and source address -- see pj_can_dbc::pgnTopicName().
-constexpr std::uint32_t kPgnTopicIdMask = 0x03FF'FFFFu;
-
 std::uint64_t frameKey(std::uint32_t can_id, bool extended) {
   return (static_cast<std::uint64_t>(can_id) << 1) | (extended ? 1u : 0u);
 }
@@ -284,7 +280,6 @@ class CandumpSource : public PJ::FileSourceBase {
           if (!message) {
             continue;
           }
-          ++fast_packet_messages;
           record_ns = message->timestamp_ns;
           signals = current_topics->decoder->decode(
               parsed.can_id, parsed.extended, message->payload, result, /*variable_length=*/true);
@@ -295,7 +290,10 @@ class CandumpSource : public PJ::FileSourceBase {
 
       if (result == pj_can_dbc::DecodeResult::kDecoded && !signals.empty()) {
         ++decoded_frames;
-        const std::uint64_t decoded_key = by_pgn ? frameKey(parsed.can_id & kPgnTopicIdMask, true) : key;
+        if (fast_packet) {
+          ++fast_packet_messages;
+        }
+        const std::uint64_t decoded_key = by_pgn ? frameKey(pj_can_dbc::withoutPriority(parsed.can_id), true) : key;
         auto it = current_topics->decoded.find(decoded_key);
         if (it == current_topics->decoded.end()) {
           const std::string message_name = current_topics->decoder->messageName(parsed.can_id, parsed.extended);
@@ -357,7 +355,9 @@ class CandumpSource : public PJ::FileSourceBase {
     }
     std::uint64_t dropped_fast_packet_frames = 0;
     for (const auto& [iface, interface_topics] : topics_by_interface) {
-      dropped_fast_packet_frames += interface_topics.fast_packets.droppedFrames();
+      // Frames of a message the capture ends in the middle of are lost too.
+      dropped_fast_packet_frames +=
+          interface_topics.fast_packets.droppedFrames() + interface_topics.fast_packets.pendingFrames();
     }
     if (dropped_fast_packet_frames > 0) {
       summary += "; " + std::to_string(dropped_fast_packet_frames) +

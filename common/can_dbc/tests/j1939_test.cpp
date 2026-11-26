@@ -182,6 +182,81 @@ TEST(CanDecoderPgn, VariableLengthPayloadLongerThanTheMessage) {
   EXPECT_DOUBLE_EQ(find(sigs, "Tail")->value, 4660.0);
 }
 
+// An OEM-style J1939 DBC.
+//  - VECTOR__INDEPENDENT_SIG_MSG: the placeholder a Vector export keeps orphan
+//    signals in. Its id, 0xC0000000, is no CAN id; with the extended flag
+//    stripped it would read as PGN 0.
+//  - TSC1, id 0x0C000003: the real PGN 0 message.
+//  - PropB_Engine / PropB_Body, ids 0x18FF1011 / 0x18FF1022: one proprietary
+//    PGN (0xFF10) written once per sender, with a different layout each.
+//  - NoSignals: a 12-byte standard message that defines no signal.
+const char* const kOemDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ENG BODY
+
+BO_ 3221225472 VECTOR__INDEPENDENT_SIG_MSG: 0 Vector__XXX
+ SG_ Orphan : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 2348810243 TSC1: 8 ENG
+ SG_ RequestedSpeed : 8|16@1+ (0.125,0) [0|8031.875] "rpm" ENG
+
+BO_ 2566852625 PropB_Engine: 8 ENG
+ SG_ OilPressure : 0|16@1+ (1,0) [0|65535] "kPa" BODY
+
+BO_ 2566852642 PropB_Body: 8 BODY
+ SG_ DoorState : 0|8@1+ (1,0) [0|255] "" ENG
+ SG_ CabinTemp : 8|8@1+ (1,-40) [-40|215] "degC" ENG
+
+BO_ 200 NoSignals: 12 ENG
+)DBC";
+
+TEST(CanDecoderPgn, PlaceholderMessageIsNotAPgn) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kOemDbc).has_value());
+  dec.setProtocol(CanProtocol::kJ1939);
+  // TSC1 from source 0x0B at priority 4: PGN 0, which the placeholder (loaded first) must not claim.
+  EXPECT_EQ(dec.messageName(0x1000000Bu, true), "TSC1");
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(0x1000000Bu, true, {0x01, 0x40, 0x1F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* speed = find(sigs, "RequestedSpeed");
+  ASSERT_NE(speed, nullptr);
+  EXPECT_DOUBLE_EQ(speed->value, 1000.0);  // 0x1F40 * 0.125
+}
+
+TEST(CanDecoderPgn, MessageWrittenForTheFramesSourceWins) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kOemDbc).has_value());
+  dec.setProtocol(CanProtocol::kJ1939);
+  EXPECT_EQ(dec.messageName(0x18FF1011u, true), "PropB_Engine");
+  EXPECT_EQ(dec.messageName(0x18FF1022u, true), "PropB_Body");
+  EXPECT_EQ(dec.messageName(0x0CFF1022u, true), "PropB_Body");    // priority is not part of the match
+  EXPECT_EQ(dec.messageName(0x18FF1033u, true), "PropB_Engine");  // a source no message names: the PGN's first
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(0x18FF1022u, true, {0x02, 0x3C, 0, 0, 0, 0, 0, 0}, result);
+  ASSERT_EQ(result, DecodeResult::kDecoded);
+  const auto* door = find(sigs, "DoorState");
+  const auto* temp = find(sigs, "CabinTemp");
+  ASSERT_NE(door, nullptr);
+  ASSERT_NE(temp, nullptr);
+  EXPECT_DOUBLE_EQ(door->value, 2.0);
+  EXPECT_DOUBLE_EQ(temp->value, 20.0);  // 0x3C - 40
+}
+
+TEST(CanDecoderPgn, LongFrameOnAMessageWithoutSignalsDecodesToNothing) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kOemDbc).has_value());
+  // Nothing to read is not a failed read: only a variable-length payload needs one signal to fit.
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(200, false, std::vector<std::uint8_t>(12, 0), result);
+  EXPECT_EQ(result, DecodeResult::kDecoded);
+  EXPECT_TRUE(sigs.empty());
+}
+
 TEST(PgnTopicName, AddsSourceAndPdu1Destination) {
   EXPECT_EQ(pj_can_dbc::pgnTopicName("can0", "VesselHeading", 0x09F11210u), "CAN/can0/VesselHeading/0x10");
   EXPECT_EQ(pj_can_dbc::pgnTopicName("can0", "ISORequest", 0x18EA2305u), "CAN/can0/ISORequest/0x05/0x23");
@@ -307,6 +382,51 @@ TEST(FastPacket, MalformedFramesAreDropped) {
   EXPECT_FALSE(assembler.add(1, {0x00, 0x00, 1, 2, 3}, 0).has_value());          // zero length
   EXPECT_FALSE(assembler.add(1, {0x00, 224, 1, 2, 3, 4, 5, 6}, 0).has_value());  // over 223 bytes
   EXPECT_EQ(assembler.droppedFrames(), 3u);
+}
+
+TEST(FastPacket, ShortFrameBeforeTheLastDropsTheMessage) {
+  FastPacketAssembler assembler;
+  const auto frames = fastPacketFrames(1, counting(20));
+  EXPECT_FALSE(assembler.add(1, frames[0], 0).has_value());
+  // Frame 1 owes 7 bytes and brings 3: the bytes after it would land at the wrong offsets.
+  const std::vector<std::uint8_t> cut(frames[1].begin(), frames[1].begin() + 4);
+  EXPECT_FALSE(assembler.add(1, cut, 0).has_value());
+  EXPECT_EQ(assembler.droppedFrames(), 2u);
+  EXPECT_FALSE(assembler.add(1, frames[2], 0).has_value());  // continues nothing
+  EXPECT_EQ(assembler.droppedFrames(), 3u);
+}
+
+TEST(FastPacket, ShortFrameZeroIsDropped) {
+  FastPacketAssembler assembler;
+  const auto frames = fastPacketFrames(1, counting(20));
+  EXPECT_FALSE(assembler.add(1, {frames[0][0], 20, 1, 2}, 0).has_value());  // announces 20 bytes, brings 2 of its 6
+  EXPECT_EQ(assembler.droppedFrames(), 1u);
+  EXPECT_FALSE(assembler.add(1, frames[1], 0).has_value());  // continues nothing
+  EXPECT_EQ(assembler.droppedFrames(), 2u);
+}
+
+TEST(FastPacket, UnfinishedMessageIsPending) {
+  FastPacketAssembler assembler;
+  const auto frames = fastPacketFrames(1, counting(20));
+  EXPECT_FALSE(assembler.add(1, frames[0], 0).has_value());
+  EXPECT_FALSE(assembler.add(1, frames[1], 0).has_value());
+  // Not dropped yet, but lost if the input ends here: the importer adds these to its dropped count.
+  EXPECT_EQ(assembler.droppedFrames(), 0u);
+  EXPECT_EQ(assembler.pendingFrames(), 2u);
+  EXPECT_TRUE(assembler.add(1, frames[2], 0).has_value());
+  EXPECT_EQ(assembler.pendingFrames(), 0u);
+}
+
+TEST(FastPacket, LastFrameMayBeShort) {
+  FastPacketAssembler assembler;
+  const auto frames = fastPacketFrames(1, counting(8));
+  ASSERT_EQ(frames.size(), 2u);
+  EXPECT_FALSE(assembler.add(1, frames[0], 0).has_value());
+  // The last frame owes 2 bytes; a sender need not pad it to 8.
+  const std::vector<std::uint8_t> last(frames[1].begin(), frames[1].begin() + 3);
+  const auto done = assembler.add(1, last, 0);
+  ASSERT_TRUE(done.has_value());
+  EXPECT_EQ(done->payload, counting(8));
 }
 
 }  // namespace

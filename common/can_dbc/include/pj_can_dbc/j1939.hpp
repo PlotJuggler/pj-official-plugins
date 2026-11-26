@@ -44,4 +44,11 @@ constexpr std::uint32_t pgnFromCanId(std::uint32_t can_id) {
   return (can_id >> 8) & (isPdu1(can_id) ? 0x3FF00u : 0x3FFFFu);
 }
 
+/// The id without its 3 priority bits: PGN, PDU1 destination and source
+/// address. It tells two senders of one PGN (and their topics) apart, while a
+/// priority change leaves it unchanged.
+constexpr std::uint32_t withoutPriority(std::uint32_t can_id) {
+  return can_id & 0x03FF'FFFFu;
+}
+
 }  // namespace pj_can_dbc

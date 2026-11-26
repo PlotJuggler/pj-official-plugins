@@ -27,5 +27,8 @@ BO_ 2381841918 PositionLike: 20 ECU
  SG_ Count : 56|8@1+ (1,0) [0|255] "" ECU
  SG_ Tail : 136|16@1+ (1,0) [0|65535] "" ECU
 
+BO_ 2381906174 LateStart: 12 ECU
+ SG_ Late : 16|8@1+ (1,0) [0|255] "" ECU
+
 BO_ 256 StdMsg: 8 ECU
  SG_ Value : 0|8@1+ (1,0) [0|255] "" ECU
