@@ -3,25 +3,15 @@ find_package(nlohmann_json REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
-# ---------------------------------------------------------------------------
-# Internal static lib: candump line parsing (log + screen format) and the
-# ARUS-CSV -> DBC translator, shared by the plugin + tests. No vendored/CPM
-# dependency of its own -- unlike data_load_blf/data_load_mf4 it does not
-# parse a binary container format, so there is nothing to vendor here; CAN
-# decoding itself is the shared pj_can_dbc library.
-# ---------------------------------------------------------------------------
+# Candump line parsing and the ARUS-CSV -> DBC translator, shared by the plugin and tests.
 add_library(candump_core STATIC candump_parser.cpp csv_dictionary.cpp)
 set_target_properties(candump_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(candump_core PUBLIC cxx_std_20)
 target_compile_options(candump_core PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(candump_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-# pj_can_dbc: csv_dictionary.cpp reuses its hexId() (message-id hex text) --
-# same convention as the plugin's own raw-topic fallback naming.
+# csv_dictionary.cpp reuses pj_can_dbc's hexId().
 target_link_libraries(candump_core PUBLIC plotjuggler_sdk::base PRIVATE pj_can_dbc)
 
-# ---------------------------------------------------------------------------
-# Plugin shared library
-# ---------------------------------------------------------------------------
 add_library(candump_source_plugin SHARED candump_source.cpp candump_dialog.cpp)
 target_compile_features(candump_source_plugin PRIVATE cxx_std_20)
 target_compile_options(candump_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -48,9 +38,6 @@ pj_embed_ui(candump_source_plugin
   VAR_NAME kCandumpDialogUi
 )
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 add_executable(candump_source_test
   tests/candump_parser_test.cpp
   tests/csv_dictionary_test.cpp

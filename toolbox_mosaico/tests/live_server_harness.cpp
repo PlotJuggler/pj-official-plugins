@@ -1,11 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// live_server_harness — Task 0.1 diagnostic harness.
-//
-// A standalone, Qt-free executable that proves the live Mosaico download path
-// works end-to-end and captures the real Arrow schema of an RGB image topic.
-// It is the prerequisite that unblocks the rest of the image-MVP work.
+// live_server_harness: proves the live Mosaico download path works end-to-end and captures the real Arrow schema
+// of an RGB image topic.
 //
 // Steps (all printed to stdout):
 //   1. Read MOSAICO_API_KEY from the environment. If absent, print
@@ -262,7 +259,6 @@ int run(const std::string& api_key) {
   }
   std::cout << "[harness] connected — server version " << version.ValueOrDie().version << "\n";
 
-  // --- listSequences -------------------------------------------------------
   auto sequences = client.listSequences(nullptr, nullptr);
   if (!sequences.ok()) {
     std::cerr << "[harness] ERROR: listSequences failed: " << sequences.status().ToString() << "\n";
@@ -294,7 +290,7 @@ int run(const std::string& api_key) {
     }
   }
 
-  // --- find best RGB image topic across the prioritised sequences ----------
+  // Find the best RGB image topic across the prioritised sequences.
   std::string chosen_seq;
   std::string chosen_topic;
   std::string chosen_ontology;
@@ -302,10 +298,8 @@ int run(const std::string& api_key) {
   int64_t chosen_max_ts = 0;
   int best_score = -1;
 
-  // First sequence we successfully list topics for: we print its full topic
-  // list with ontology tags (the task asks for the topic list of the bonirob
-  // sequence). Capture it so we can print it even if the RGB topic comes from
-  // there (which it should).
+  // First sequence we successfully list topics for: its full topic list with ontology tags is printed (the bonirob
+  // sequence's list is the one of interest), so capture it even if the RGB topic comes from there.
   bool printed_topic_list = false;
 
   int sequences_scanned = 0;
@@ -370,7 +364,6 @@ int run(const std::string& api_key) {
   std::cout << "[harness] chosen RGB topic: sequence='" << chosen_seq << "' topic='" << chosen_topic << "' ontology='"
             << chosen_ontology << "' (score " << best_score << ")\n";
 
-  // --- pull the chosen topic over its full time range ----------------------
   // Capture the first batch + schema via callbacks so we don't depend on the
   // whole pull completing before we can inspect it. We still let pullTopic run
   // to completion (it returns the full PullResult).
@@ -445,7 +438,6 @@ int run(const std::string& api_key) {
   printIntColumnRow0(first_batch, "recording_timestamp_ns");
   printBinaryColumnRow0Size(first_batch, "data");
 
-  // --- write the first batch to an Arrow IPC file fixture ------------------
   namespace fs = std::filesystem;
   const fs::path fixtures_dir = fs::path(__FILE__).parent_path() / "fixtures";  // tests/fixtures
   std::error_code ec;

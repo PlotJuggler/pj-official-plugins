@@ -16,8 +16,8 @@ using pj_can_dbc::DecodedSignal;
 using pj_can_dbc::DecodeResult;
 using pj_can_dbc::FastPacketAssembler;
 
-// An NMEA 2000-style DBC: 29-bit ids with the Vector flag, each written with
-// one sample priority and source address 0xFE, as exporters do.
+// An NMEA 2000-style DBC: 29-bit ids with the Vector flag, each written with one sample priority and source
+// address 0xFE, as exporters do.
 //  - VesselHeading, PGN 127250 (PDU2), id 0x09F112FE: 8 bytes.
 //  - ISORequest, PGN 59904 (PDU1, destination 0xFF), id 0x18EAFFFE.
 //  - PositionLike, PGN 129029 (PDU2), id 0x0DF805FE: 20 bytes, a fast packet.
@@ -132,7 +132,7 @@ TEST(CanDecoderPgn, StandardFramesStillMatchById) {
 TEST(CanDecoderPgn, FastPacketOnlyForLongMessagesUnderNmea2000) {
   CanDecoder dec;
   ASSERT_TRUE(dec.loadDbcString(kN2kDbc).has_value());
-  EXPECT_FALSE(dec.isFastPacket(0x0DF80510u, true));  // kRaw
+  EXPECT_FALSE(dec.isFastPacket(0x0DF80510u, true));
   dec.setProtocol(CanProtocol::kJ1939);
   EXPECT_FALSE(dec.isFastPacket(0x0DF80510u, true));  // J1939 has no fast packets
   dec.setProtocol(CanProtocol::kNmea2000);
@@ -183,12 +183,11 @@ TEST(CanDecoderPgn, VariableLengthPayloadLongerThanTheMessage) {
 }
 
 // An OEM-style J1939 DBC.
-//  - VECTOR__INDEPENDENT_SIG_MSG: the placeholder a Vector export keeps orphan
-//    signals in. Its id, 0xC0000000, is no CAN id; with the extended flag
-//    stripped it would read as PGN 0.
+//  - VECTOR__INDEPENDENT_SIG_MSG: the placeholder a Vector export keeps orphan signals in. Its id, 0xC0000000,
+//    is no CAN id; with the extended flag stripped it would read as PGN 0.
 //  - TSC1, id 0x0C000003: the real PGN 0 message.
-//  - PropB_Engine / PropB_Body, ids 0x18FF1011 / 0x18FF1022: one proprietary
-//    PGN (0xFF10) written once per sender, with a different layout each.
+//  - PropB_Engine / PropB_Body, ids 0x18FF1011 / 0x18FF1022: one proprietary PGN (0xFF10) written once per
+//    sender, with a different layout each.
 //  - NoSignals: a 12-byte standard message that defines no signal.
 const char* const kOemDbc = R"DBC(VERSION "1.0.0"
 
@@ -265,8 +264,6 @@ TEST(PgnTopicName, AddsSourceAndPdu1Destination) {
       pj_can_dbc::pgnTopicName("can0", "VesselHeading", 0x09F11210u),
       pj_can_dbc::pgnTopicName("can0", "VesselHeading", 0x19F11210u));
 }
-
-// --- FastPacketAssembler ---
 
 /// The frames of one fast-packet message: frame 0 = {seq|0, len, 6 bytes}, then {seq|i, 7 bytes}, padded with 0xFF.
 std::vector<std::vector<std::uint8_t>> fastPacketFrames(

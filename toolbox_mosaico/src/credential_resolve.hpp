@@ -1,8 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Shared per-server credential resolution, hoisted from mosaico_dialog.cpp so
-// the dialog's connect paths and the descriptor-import provider resolve
+// Shared per-server credential resolution: the dialog's connect paths and the descriptor-import provider resolve
 // credentials through ONE implementation.
 //
 // THREADING CONTRACT — MAIN THREAD ONLY. Every function here takes a

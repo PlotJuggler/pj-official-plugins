@@ -36,22 +36,16 @@ class Descriptor;
 
 namespace pj_protobuf {
 
-// ---------------------------------------------------------------------------
 // Descriptor-driven field numbers.
 //
-// The decoders below are hand-rolled zero-copy scanners that read the protobuf
-// wire by field NUMBER. The well-known Foxglove schemas have official numbers,
-// but a self-describing .mcap is free to embed a schema that renumbers them
-// (observed in real DROID-dataset files written by mcap-rs, which move `frame_id`
-// to the end and shift the others down). The dispatcher keys off the schema NAME
-// only, so without honoring the embedded descriptor the scanner mis-reads every
-// message of such a file.
+// The decoders below are hand-rolled zero-copy scanners that read the protobuf wire by field NUMBER. A self-describing
+// .mcap may embed a schema that renumbers the official numbers (seen in real DROID-dataset files written by mcap-rs,
+// which move `frame_id` to the end and shift the others down). The dispatcher keys off the schema NAME only, so
+// without honoring the embedded descriptor the scanner mis-reads every message of such a file.
 //
-// Each `*FieldNumbers` struct defaults to that codec's historical hardcoded
-// numbering (so schemaless streams with no descriptor behave exactly as before),
-// and `resolve*FieldNumbers(descriptor)` overrides any field whose NAME is found
-// in the embedded message descriptor. A null descriptor yields all defaults.
-// ---------------------------------------------------------------------------
+// Each `*FieldNumbers` struct holds the codec's default numbering (used by schemaless streams with no descriptor), and
+// `resolve*FieldNumbers(descriptor)` overrides any field whose NAME is found in the embedded message descriptor. A
+// null descriptor yields all defaults.
 
 /// Field numbers for foxglove.RawImage (defaults = official Foxglove numbering).
 struct RawImageFieldNumbers {
@@ -76,9 +70,8 @@ struct CompressedImageFieldNumbers {
 [[nodiscard]] CompressedImageFieldNumbers resolveCompressedImageFieldNumbers(
     const google::protobuf::Descriptor* descriptor);
 
-/// Field numbers for foxglove.CameraCalibration. Defaults mirror the codec's
-/// historical hardcoded numbering (frame_id last); the descriptor overrides them,
-/// so official-numbered files (frame_id=2) now decode too.
+/// Field numbers for foxglove.CameraCalibration. Defaults put frame_id last; the descriptor overrides them, so files
+/// that number frame_id=2 also decode.
 struct CameraCalibrationFieldNumbers {
   int timestamp = 1;
   int width = 2;

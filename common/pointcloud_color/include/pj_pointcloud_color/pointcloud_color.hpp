@@ -2,23 +2,21 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// Canonical point-cloud colour normalization, shared by parser_ros and
-// parser_protobuf so both emit the SAME canonical colour representation and the
-// host (pj_scene3D) never has to know per-source byte order.
+// Canonical point-cloud colour normalization, shared by parser_ros and parser_protobuf so both
+// emit the SAME colour representation and the host (pj_scene3D) never has to know per-source
+// byte order.
 //
-// Canonical contract:
-//   colour, when present, is a SINGLE PointField{ name:"rgba", datatype:kUint32 }
-//   (or "rgb" when the source has no alpha). The 4 bytes at the field's offset are
-//   R, G, B, A in increasing address order — i.e. a little-endian uint32 read gives
-//   R in the low byte. The host reads r=v&0xFF, g=(v>>8)&0xFF, b=(v>>16)&0xFF,
-//   a=(v>>24)&0xFF, and forces alpha=255 for an "rgb" field.
+// Canonical contract: colour, when present, is a SINGLE PointField{ name:"rgba",
+// datatype:kUint32 } (or "rgb" when the source has no alpha). The 4 bytes at the field's offset
+// are R, G, B, A in increasing address order, i.e. a little-endian uint32 read gives R in the
+// low byte. The host reads r=v&0xFF, g=(v>>8)&0xFF, b=(v>>16)&0xFF, a=(v>>24)&0xFF, and forces
+// alpha=255 for an "rgb" field.
 //
 // Two source shapes converge here:
-//   * Foxglove: four separate uint8 channels red/green/blue/alpha, already laid out
-//     R,G,B,A — collapseSeparateColorChannels() does a pure metadata rewrite (zero-copy).
-//   * ROS PCL: a single packed FLOAT32 "rgb" / UINT32 "rgba" in 0x00RRGGBB order
-//     (B in the low byte) — that repack lives in parser_ros (it owns the buffer); this
-//     header only carries the shared field-name + the separate-channel collapse.
+//   * Foxglove: four separate uint8 channels red/green/blue/alpha, already laid out R,G,B,A;
+//     collapseSeparateColorChannels() is a pure metadata rewrite (zero-copy).
+//   * ROS PCL: a single packed FLOAT32 "rgb" / UINT32 "rgba" in 0x00RRGGBB order (B in the low
+//     byte); repackPclPackedColor() reorders the bytes in a copy of the buffer.
 
 #include <cstdint>
 #include <memory>
@@ -29,20 +27,18 @@
 
 namespace pj::pointcloud_color {
 
-// Canonical packed-colour field names (alpha present vs. absent).
 inline constexpr const char* kCanonicalRgbaField = "rgba";
 inline constexpr const char* kCanonicalRgbField = "rgb";
 
-// Collapse separate uint8 colour channels (red/green/blue[/alpha]) into one packed
-// uint32 colour field WITHOUT touching the point buffer: the bytes are already R,G,B,A
-// in increasing address, so this is a pure field-metadata rewrite that preserves
-// zero-copy. The packed field is named "rgba" (alpha present) or "rgb" (no alpha; the
-// host forces alpha=255) and appended after the surviving fields.
+// Collapses separate uint8 colour channels (red/green/blue[/alpha]) into one packed uint32 colour
+// field WITHOUT touching the point buffer (the bytes are already R,G,B,A in increasing address).
+// The packed field is named "rgba" (alpha present) or "rgb" (no alpha) and appended after the
+// surviving fields.
 //
-// Leaves the fields unchanged (returns false) unless red, green, blue are all present,
-// all uint8, and contiguous (offsets o, o+1, o+2), and either alpha is uint8 at o+3, or
-// there is no alpha field at all AND the point has a 4th byte to read (o+4 <= point_step).
-// An unusual alpha layout (present but not at o+3) is left for the host's defensive path.
+// Leaves the fields unchanged (returns false) unless red, green, blue are all present, all
+// uint8, and contiguous (offsets o, o+1, o+2), and either alpha is uint8 at o+3, or there is no
+// alpha field at all AND the point has a 4th byte to read (o+4 <= point_step). An unusual alpha
+// layout (present but not at o+3) is left for the host's defensive path.
 inline bool collapseSeparateColorChannels(PJ::sdk::PointCloud& cloud) {
   using DT = PJ::sdk::PointField::Datatype;
   const PJ::sdk::PointField* red = nullptr;
@@ -97,14 +93,13 @@ inline bool collapseSeparateColorChannels(PJ::sdk::PointCloud& cloud) {
   return true;
 }
 
-// Repack a PCL-style packed colour field — a single FLOAT32 "rgb" or UINT32 "rgba"
-// whose bytes are 0x00RRGGBB little-endian (B in the low byte) — into the canonical
-// R,G,B,A byte order. Because the byte order differs from canonical, this rewrites the
-// point buffer: it allocates a fresh copy (which the cloud's anchor then owns) and
-// reorders the 4 colour bytes per point, then rewrites the field to {name:"rgba",
-// datatype:kUint32}. Zero-copy is sacrificed ONLY for colour clouds; plain clouds never
-// reach here. No-op (returns false) when there is no packed colour field, the cloud is
-// big-endian, the field doesn't fit the point, or the geometry is malformed.
+// Repacks a PCL-style packed colour field (a single FLOAT32 "rgb" or UINT32 "rgba" whose bytes
+// are 0x00RRGGBB little-endian, B in the low byte) into the canonical R,G,B,A byte order. The
+// byte order differs, so this allocates a copy of the point buffer (owned by the cloud's anchor),
+// reorders the 4 colour bytes per point, and rewrites the field to {name:"rgba",
+// datatype:kUint32}. Zero-copy is lost ONLY for colour clouds. No-op (returns false) when there
+// is no packed colour field, the cloud is big-endian, the field doesn't fit the point, or the
+// geometry is malformed.
 inline bool repackPclPackedColor(PJ::sdk::PointCloud& cloud) {
   using DT = PJ::sdk::PointField::Datatype;
   PJ::sdk::PointField* packed = nullptr;
@@ -150,9 +145,8 @@ inline bool repackPclPackedColor(PJ::sdk::PointCloud& cloud) {
   return true;
 }
 
-// Normalize any recognized colour representation to the canonical packed "rgba"/"rgb"
-// field. Tries the zero-copy separate-channel collapse first, then the PCL packed-colour
-// repack. The single entry point both parsers call. Returns true when colour was found.
+// The entry point both parsers call: tries the zero-copy separate-channel collapse first, then
+// the PCL repack. Returns true when colour was found.
 inline bool normalizeCanonicalColor(PJ::sdk::PointCloud& cloud) {
   return collapseSeparateColorChannels(cloud) || repackPclPackedColor(cloud);
 }

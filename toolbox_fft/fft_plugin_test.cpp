@@ -155,7 +155,7 @@ TEST(FftAlgorithmTest, RejectsInvalidSamplingAndValues) {
 }
 
 TEST(FftAlgorithmTest, PrimeHalfLengthStaysFastAndAccurate) {
-  // n/2 = 100003 is prime: an O(n*p) backend (the old kissfft) took ~14 s here.
+  // n/2 = 100003 is prime: an O(n*p) backend would take ~14 s here.
   constexpr std::size_t count = 200006;
   constexpr std::size_t bin = 20001;
   auto timestamps = regularTimestamps(count);

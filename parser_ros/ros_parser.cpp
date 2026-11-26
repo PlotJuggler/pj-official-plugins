@@ -21,32 +21,18 @@ namespace ros_parser_detail {
 
 namespace {
 
-// Port of the legacy PJ::ParseDouble helper (PJ3
-// `plotjuggler-ros-plugins/src/parser_configuration.cpp:115-153`). Same
-// three-stage semantics, PJ::parseNumber (locale-independent, like the
-// original boost::spirit) in place of boost::spirit:
-//
-//   1. Strict full-string double parse: success only when the entire `str`
-//      is a valid number.
-//   2. If that fails and `remove_suffix` is on, scan a numeric prefix
-//      consisting of {digit, '+', '-', '.'} characters, stop at the first
-//      character outside that set, and re-parse the prefix. PJ3 quirks are
-//      preserved verbatim — scientific-notation 'e' is treated as a
-//      non-numeric terminator, so "1e3km" yields 1 not 1000.
-//   3. If still unparsed and `parse_boolean` is on, match a case-insensitive
-//      "true"/"false" of length 4-5 to 1.0/0.0.
-//
-// Returns true and writes to `value` on success; returns false (leaving
-// `value` unchanged from the caller's perspective) otherwise.
+// Three stages, matching PlotJuggler 3's ParseDouble:
+//   1. Whole-string double parse.
+//   2. With `remove_suffix`: parse the longest prefix of {digit, '+', '-', '.'}
+//      characters. Scientific notation is not handled ('e' ends the prefix), so
+//      "1e3km" yields 1, not 1000.
+//   3. With `parse_boolean`: case-insensitive "true"/"false" -> 1.0/0.0.
 bool parseStringAsDouble(const std::string& str, double& value, bool remove_suffix, bool parse_boolean) {
   if (str.empty()) {
     return false;
   }
 
-  // PJ::parseNumber keeps the strict whole-string semantics of the previous
-  // strtod call but ignores LC_NUMERIC, so "3.14" parses under comma-decimal
-  // locales too (strtod stopped at the '.' and failed the full-consumption
-  // check there).
+  // parseNumber ignores LC_NUMERIC, so "3.14" parses under comma-decimal locales (strtod does not).
   if (auto parsed = PJ::parseNumber<double>(str)) {
     value = *parsed;
     return true;
@@ -182,30 +168,13 @@ std::string ros2IdlDefinition(const std::string& root_name, const std::string& b
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Class-level catalog of every ROS schema this parser recognizes.
-//
-// What the catalog IS: pure data — pointers to member functions, no `this`
-// capture, populated once per process via the static-local map. Adding a
-// schema = one new entry here.
-//
-// What an INSTANCE does with it: bindSchema looks up the entry for the
-// bound type and registers a single SchemaHandler tailored to it on this
-// instance. If the bound type is not in the catalog, bindSchema registers
-// a generic flatten handler under the bound type name. Either way, the
-// per-instance handlers_ table ends up with exactly one entry — honest
-// about the fact that one RosParser instance binds to one schema.
-//
-// Field naming mirrors PJ::sdk::SchemaHandler: object_type / parse_scalars /
-// parse_object. Type difference for parse_scalars (raw void member fn vs.
-// the std::function the SchemaHandler expects) is intentional — bindSchema
-// adapts via wrapVoidHandler at registration time.
-// ---------------------------------------------------------------------------
+// Every ROS schema this parser recognizes: member-function pointers, no `this` capture.
+// bindSchema registers a single SchemaHandler for the bound type's entry (the generic
+// flatten handler when it has none), so an instance's handler table holds one entry.
 
 const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catalog() {
   using ObjectType = PJ::sdk::BuiltinObjectType;
   static const std::unordered_map<std::string, CatalogEntry> kMap = {
-      // ----- Builtin-object schemas -----
       {"sensor_msgs/Image",
        {.object_type = ObjectType::kImage,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
@@ -214,44 +183,36 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kImage,  // unified Image distinguishes by encoding string.
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCompressedImage}},
-      // CameraInfo is consumed as a calibration object (intrinsics + distortion)
-      // so the 2D image view can rectify frames and line up annotation overlays;
-      // the consumer pairs it with the image by frame_id. The scalar route keeps
-      // the small matrices (K/D/R/P, width, height) plottable.
+      // Calibration object (intrinsics + distortion) for rectifying frames and aligning
+      // annotation overlays; the consumer pairs it with the image by frame_id. The scalar
+      // route keeps the small matrices (K/D/R/P, width, height) plottable.
       {"sensor_msgs/CameraInfo",
        {.object_type = ObjectType::kCameraInfo,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCameraInfo}},
-      // foxglove_msgs/CompressedVideo — a single compressed video frame
-      // (h264/h265/vp9/av1). The scalar route is included so the object-ingest
-      // path runs (an object-only entry would abort the push before the object
-      // route fires); it discards the large data[] blob and keeps frame_id /
-      // format as plottable columns, mirroring the Image entries.
+      // One compressed video frame (h264/h265/vp9/av1). The scalar route exists so the
+      // object-ingest path runs (an object-only entry aborts the push before the object
+      // route fires); it drops the data[] blob and keeps frame_id / format.
       {"foxglove_msgs/CompressedVideo",
        {.object_type = ObjectType::kVideoFrame,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseCompressedVideo}},
-      // A promoted cloud is consumed as a 3D object; its scalar route exists to
-      // keep the message plottable on a time axis, not to mirror the message.
-      // parseScalarsDiscardingLargeArrays would run a full introspection walk
-      // per message to yield mostly per-PointField noise, so the route is a slim
-      // hand-written read of the header + the measured point count instead.
+      // The scalar route is a slim read of the header + the measured point count:
+      // parseScalarsDiscardingLargeArrays would walk the whole introspection tree per
+      // message for mostly per-PointField noise.
       {"sensor_msgs/PointCloud2",
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parsePointCloud2Scalars,
         .parse_object = &RosParser::parsePointCloud}},
-      // sensor_msgs/LaserScan — eagerly projected to a canonical PointCloud via
-      // the shared pj_laser_scan projector (cos/sin LUT cached per scanner
-      // config, so the trig runs once per recording). The scalar route keeps
-      // the pre-promotion generic flatten: angle_*/ranges[i] columns still
-      // appear, subject to the user-configured array policy.
+      // Eagerly projected to a PointCloud by the shared pj_laser_scan projector. The scalar
+      // route stays the generic flatten: angle_*/ranges[i] columns, subject to the array policy.
       {"sensor_msgs/LaserScan",
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsGeneric,
         .parse_object = &RosParser::parseLaserScan}},
-      // Log messages feed the log viewer as sdk::Log objects; the scalar route
-      // keeps the generic flatten so level/line/... stay plottable. Keys are
-      // normalised ("/msg/" stripped), so rcl_interfaces/msg/Log matches too.
+      // Log messages feed the log viewer as sdk::Log objects; the scalar route keeps the
+      // generic flatten so level/line/... stay plottable. Keys are normalized ("/msg/"
+      // stripped), so rcl_interfaces/msg/Log matches too.
       {"rcl_interfaces/Log",
        {.object_type = ObjectType::kLog,
         .parse_scalars = &RosParser::parseScalarsGeneric,
@@ -277,50 +238,41 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kLog,
         .parse_scalars = &RosParser::parseScalarsGeneric,
         .parse_object = &RosParser::parsePx4MavlinkLogObject}},
-      // foxglove_msgs/CompressedPointCloud — opaque compressed cloud (draco/cloudini/…).
-      // The parser repackages the blob + format; it does not decode. Its scalar
-      // route reads the BARE builtin_interfaces/Time head (this schema has no
-      // std_msgs/Header) and emits /timestamp + /frame_id; the compressed wire
-      // format carries no point count.
+      // Opaque compressed cloud (draco/cloudini/...): blob and format are repackaged, not
+      // decoded. The scalar route reads the BARE builtin_interfaces/Time head (no
+      // std_msgs/Header) and emits /timestamp + /frame_id; the wire has no point count.
       {"foxglove_msgs/CompressedPointCloud",
        {.object_type = ObjectType::kCompressedPointCloud,
         .parse_scalars = &RosParser::parseFoxgloveCompressedPointCloudScalars,
         .parse_object = &RosParser::parseFoxgloveCompressedPointCloud}},
-      // point_cloud_interfaces/CompressedPointCloud2 — the point_cloud_transport
-      // canonical compressed message. Header-only scalar route: the payload is a
-      // compressed blob, so no point count can be MEASURED from it (compressed
-      // size / point_step is meaningless), and the declared width * height would
-      // be a claim, not a measurement.
+      // point_cloud_transport's compressed message. Header-only scalar route: no point count
+      // can be measured from a compressed blob, and width * height is the producer's claim.
       {"point_cloud_interfaces/CompressedPointCloud2",
        {.object_type = ObjectType::kCompressedPointCloud,
         .parse_scalars = &RosParser::parseHeaderOnlyScalars,
         .parse_object = &RosParser::parseCompressedPointCloud2}},
-      // TF keeps its specialized scalar flattening (handleTFMessage) AND emits a
-      // canonical FrameTransforms object for the 3D scene's TF buffer.
+      // Keeps its specialized scalar flattening (handleTFMessage) AND emits a FrameTransforms
+      // object for the 3D scene's TF buffer.
       {"tf2_msgs/TFMessage",
        {.object_type = ObjectType::kFrameTransforms,
         .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTFMessage>,
         .parse_object = &RosParser::parseFrameTransforms}},
-      // A map/costmap is consumed as a grid object; parseScalarsDiscardingLargeArrays
-      // keeps the metadata (resolution, size, origin) plottable while discarding the
-      // large data[] array. The scalar handler is also required by the ingest path —
-      // an object-only entry (no parse_scalars) aborts the message push before the
-      // object route runs, so nothing reaches the ObjectStore.
+      // parseScalarsDiscardingLargeArrays keeps the metadata (resolution, size, origin)
+      // plottable and drops data[]. An object-only entry (no parse_scalars) would abort the
+      // push before the object route runs, so nothing would reach the ObjectStore.
       {"nav_msgs/OccupancyGrid",
        {.object_type = ObjectType::kOccupancyGrid,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseOccupancyGrid}},
-      // The incremental delta-patch counterpart to OccupancyGrid (e.g.
-      // costmap_updates). Same dual route: x/y/width/height stay plottable, the
-      // large data[] patch is discarded by the scalar handler.
+      // Delta patch for OccupancyGrid (e.g. costmap_updates). Same dual route: x/y/width/height
+      // stay plottable, the data[] patch is dropped.
       {"map_msgs/OccupancyGridUpdate",
        {.object_type = ObjectType::kOccupancyGridUpdate,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseOccupancyGridUpdate}},
-      // grid_map_msgs/GridMap (elevation maps, layered costmaps) becomes a
-      // canonical GridMap through the pj_grid_map transcoder. The slim scalar
-      // route keeps the header + GridMapInfo + layer/size counts plottable
-      // without walking the per-layer float arrays.
+      // Elevation maps, layered costmaps: transcoded through pj_grid_map. The slim scalar
+      // route keeps the header, GridMapInfo and layer/size counts plottable without
+      // walking the per-layer float arrays.
       {"grid_map_msgs/GridMap",
        {.object_type = ObjectType::kGridMap,
         .parse_scalars = &RosParser::parseGridMapScalars,
@@ -331,17 +283,13 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kGridMap,
         .parse_scalars = &RosParser::parseFoxgloveGridScalars,
         .parse_object = &RosParser::parseFoxgloveGrid}},
-      // Markers are 3D scene content with no meaningful scalar columns, but they
-      // still need a slim parse_scalars: an object-only entry makes the host's
-      // eager-scalar ingest abort the push on any non-kPureLazy policy (e.g. live
-      // streams, which set no override), silently dropping the object.
-      // parseScalarsObjectOnly returns an empty row so the SceneEntities object
-      // ingests under ANY policy. One SceneEntity per Marker (ADD/MODIFY) or a
-      // SceneEntityDeletion (DELETE/DELETEALL) — see MARKER_NOTES.md.
+      // Markers have no meaningful scalar columns, but an object-only entry makes the host's
+      // eager-scalar ingest abort the push on any non-kPureLazy policy (e.g. live streams,
+      // which set no override), silently dropping the object. parseScalarsObjectOnly returns
+      // an empty row so the object ingests under ANY policy. See MARKER_NOTES.md.
       //
-      // A single Marker DOES lead with a std_msgs/Header, so its scalar route
-      // reads it and emits the header series (a MarkerArray has no top-level
-      // header — only its elements do — and keeps the empty route).
+      // A single Marker leads with a std_msgs/Header, so its scalar route emits the header
+      // series; a MarkerArray has no top-level header and keeps the empty route.
       {"visualization_msgs/Marker",
        {.object_type = ObjectType::kSceneEntities,
         .parse_scalars = &RosParser::parseHeaderOnlyScalars,
@@ -350,44 +298,35 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kSceneEntities,
         .parse_scalars = &RosParser::parseScalarsObjectOnly,
         .parse_object = &RosParser::parseMarkerArray}},
-      // YOLO detections become 2D image overlays (boxes + labels + mask outline +
-      // keypoints). The slim parse_scalars emits num_detections so the overlay
-      // ingests under any policy (same ingest reason as the markers above) and
-      // yields a plottable count. Third-party message, net-new — see YOLO_NOTES.md.
+      // 2D image overlays (boxes, labels, mask outline, keypoints). The slim parse_scalars
+      // emits num_detections so the overlay ingests under any policy (see the markers above).
+      // Third-party message; see YOLO_NOTES.md.
       {"yolo_msgs/DetectionArray",
        {.object_type = ObjectType::kImageAnnotations,
         .parse_scalars = &RosParser::parseYoloScalars,
         .parse_object = &RosParser::parseYoloDetectionArray}},
-      // A pose array becomes a canonical PosesInFrame object (poses only —
-      // rendering style is viewer-side). Pose arrays can be huge (an AMCL
-      // particle cloud carries 1000s of poses), so the scalar route applies the
-      // large-array discard policy: small arrays stay plottable, big ones don't
-      // explode into thousands of columns.
+      // Poses only; rendering style is viewer-side. Pose arrays can be huge (an AMCL particle
+      // cloud carries 1000s of poses), so the scalar route discards large arrays instead of
+      // exploding into thousands of columns.
       {"geometry_msgs/PoseArray",
        {.object_type = ObjectType::kPosesInFrame,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parsePoseArray}},
-      // Foxglove's own ROS message: a bare Time + frame_id + Pose[]. Same
-      // canonical target and large-array scalar policy as PoseArray.
+      // Bare Time + frame_id + Pose[]; same target and scalar policy as PoseArray.
       {"foxglove_msgs/PosesInFrame",
        {.object_type = ObjectType::kPosesInFrame,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseFoxglovePosesInFrame}},
-      // A path is a trajectory of stamped poses; emit them as one PosesInFrame
-      // in the path's frame (per-pose stamps dropped — see parsePath).
+      // One PosesInFrame in the path's frame (per-pose stamps dropped; see parsePath).
       {"nav_msgs/Path",
        {.object_type = ObjectType::kPosesInFrame,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parsePath}},
 
-      // ----- Specialized scalar schemas -----
-      // wrapVoidHandler<Handler> is a member-fn-template; its address is a
-      // member-fn-ptr matching parse_scalars, so it slots in directly.
       {"std_msgs/Empty", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleEmpty>}},
       {"geometry_msgs/Pose", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePose>}},
-      // Dual route: a single stamped pose flattens to per-axis scalars AND
-      // emits a one-element PosesInFrame object (like TransformStamped does for
-      // FrameTransforms).
+      // Dual route: per-axis scalars AND a one-element PosesInFrame object (as
+      // TransformStamped does for FrameTransforms).
       {"geometry_msgs/PoseStamped",
        {.object_type = ObjectType::kPosesInFrame,
         .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePoseStamped>,
@@ -398,9 +337,9 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
         .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTransformStamped>,
         .parse_object = &RosParser::parseTransformStampedObject}},
       {"sensor_msgs/Imu", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleImu>}},
-      // Dual route: the pose (of child_frame_id, in the header frame) emits a
-      // one-element PosesInFrame for the 3D view, alongside the per-axis scalar
-      // flatten (handleOdometry) of pose + twist + covariances.
+      // Dual route: the pose (of child_frame_id, in the header frame) as a one-element
+      // PosesInFrame, alongside the per-axis scalar flatten (handleOdometry) of pose + twist
+      // + covariances.
       {"nav_msgs/Odometry",
        {.object_type = ObjectType::kPosesInFrame,
         .parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleOdometry>,
@@ -421,22 +360,14 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
       {"tsl_msgs/TSLDefinition", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTSLDefinition>}},
       {"tsl_msgs/TSLValues", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleTSLValues>}},
 
-      // ----- Default entry -----
-      // Used by bindSchema for any ROS schema not matched above.
-      // Drives the generic rosx_introspection walker that flattens
-      // nested messages into one column per primitive field.
+      // Any schema not matched above: the generic rosx_introspection walker, one column
+      // per primitive field.
       {CatalogEntry::kDefault, {.parse_scalars = &RosParser::parseScalarsGeneric}},
   };
   return kMap;
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) {
-  // The schema arrives as raw bytes; rosx_introspection consumes it as a
-  // std::string (the textual .msg or IDL definition).
   type_name_ = std::string(type_name);
   schema_definition_.assign(reinterpret_cast<const char*>(schema.data()), schema.size());
   schema_bound_ = true;
@@ -445,35 +376,29 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
   has_header_ = false;
   quaternions_.clear();
 
-  // Let the SDK base class record the bound type and run its own bind
-  // bookkeeping (host registration, dialog config, …). We hand it the
-  // ORIGINAL type_name (with the "/msg/" segment if present), so that
-  // bound_type_name_ matches what the host will pass to classifySchema /
-  // parseScalars / parseObject later. The internal `msg_type` is used only
-  // for catalog lookup below.
+  // The base class gets the ORIGINAL type_name (with its "/msg/" segment, if any) so that
+  // bound_type_name_ matches what the host passes to classifySchema / parseScalars /
+  // parseObject later; the normalized msg_type is for catalog lookup only.
   if (auto status = PJ::MessageParserPluginBase::bindSchema(type_name_, schema); !status) {
     return status;
   }
 
-  // Generic scalar handler first, so a schema that fails to compile below
-  // still binds; the compile error then resurfaces through loadConfig() or the
-  // first parse, which recompile — exactly the pre-existing failure surface.
+  // Generic handler first, so a schema that fails to compile below still binds; the error
+  // then resurfaces through loadConfig() or the first parse, which recompile.
   registerBoundSchemaHandler(catalog().at(CatalogEntry::kDefault));
 
   if (schema_format_configured_) {
     return compileBoundSchema(true);
   }
 
-  // No config yet — but classify_schema must already be correct right after
-  // bind_schema (see message_parser_protocol.h; the demand-subscription host
-  // classifies advertised topics through a throwaway bind→classify handle with
-  // no parser_config_json). The schema encoding only travels in loadConfig(),
-  // so infer the format from the inputs' shape — OMG IDL uses scoped
-  // "pkg::Type" names and `module` blocks — and compile eagerly, best-effort:
-  // try the inferred format, then the other. If both fail, stay bound on the
-  // generic handler. A later loadConfig() with a different explicit encoding
-  // recompiles via its format_changed path, so a mis-inference self-corrects
-  // before any payload is parsed.
+  // No config yet, but classify_schema must already be correct right after bind_schema
+  // (see message_parser_protocol.h): the demand-subscription host classifies advertised
+  // topics through a throwaway bind->classify handle with no parser_config_json. The schema
+  // encoding only travels in loadConfig(), so infer the format from the inputs' shape (OMG
+  // IDL uses scoped "pkg::Type" names and `module` blocks) and compile eagerly, best-effort:
+  // the inferred format, then the other. If both fail, the generic handler stays bound. A
+  // later loadConfig() with a different explicit encoding recompiles (format_changed path),
+  // so a mis-inference self-corrects before any payload is parsed.
   const bool looks_idl =
       type_name_.find("::") != std::string::npos || schema_definition_.find("module ") != std::string::npos;
   const RosMsgParser::SchemaFormat first = looks_idl ? RosMsgParser::DDS_IDL : RosMsgParser::ROS_MSG;
@@ -491,21 +416,11 @@ PJ::Status RosParser::bindSchema(std::string_view type_name, PJ::Span<const uint
 }
 
 void RosParser::registerBoundSchemaHandler(const CatalogEntry& entry) {
-  // Bind the catalog entry's member-function pointers to `this` and
-  // register a single SchemaHandler with the host. The per-instance
-  // handler table ends up with exactly one entry for this bound schema.
-  //
-  // The catalog still stores handlers that return the bare field vector /
-  // BuiltinObject (the pre-0.3 shape). The SchemaHandler callables now return
-  // ScalarRecord / ObjectRecord, which wrap that payload with an optional
-  // parser-controlled timestamp. We bridge the two here: run the handler,
-  // then wrap its result. When use_embedded_timestamp_ is on we carry
-  // current_timestamp_ as the record's ts — the handlers resolve that member
-  // to the payload-embedded Header stamp (readHeader / flattenGeneric), so
-  // exposing it through the record makes the host honor it on the
-  // pure-functional parseScalars / parseObject path, not just the legacy
-  // parse() route. When the option is off ts stays nullopt and the host uses
-  // the message receive time, exactly as before.
+  // Catalog scalar handlers fill fields_; the SchemaHandler callable wraps them in a
+  // ScalarRecord. With use_embedded_timestamp_ the record carries current_timestamp_, which
+  // the handlers resolve to the payload's Header stamp (readHeader / flattenGeneric), so the
+  // host honors it on the parseScalars path too. Otherwise ts stays nullopt and the host
+  // uses the message receive time.
   PJ::sdk::SchemaHandler handler;
   handler.object_type = entry.object_type;
   if (entry.parse_scalars) {
@@ -524,24 +439,19 @@ void RosParser::registerBoundSchemaHandler(const CatalogEntry& entry) {
     };
   }
   if (entry.parse_object) {
-    // Object handlers already return a fully-formed ObjectRecord (the embedded
-    // Header stamp is exposed via ObjectRecord::ts inside each handler), so the
-    // catalog entry binds straight onto the SchemaHandler with no adapter.
+    // Object handlers return a full ObjectRecord (each sets ObjectRecord::ts from the
+    // embedded Header stamp), so they bind directly.
     handler.parse_object = std::bind_front(entry.parse_object, this);
   }
-  // Register under the original type_name (matches the key the host uses
-  // when calling classifySchema / parseScalars / parseObject — keeps lookups
-  // symmetric regardless of "/msg/" presence).
+  // Under the original type_name: the key the host uses in classifySchema / parseScalars /
+  // parseObject, with or without "/msg/".
   registerSchemaHandler(type_name_, std::move(handler));
-  // Only once the handler is registered, so parse() never runs a route the
-  // base class does not have.
+  // Set only once the handler is registered, so parse() never runs a route the base class lacks.
   scalar_route_ = entry.parse_scalars;
 }
 
 RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_type) const {
-  // Catalog lookup: exact match for this schema, otherwise the kDefault
-  // entry (generic introspection fallback). kDefault is guaranteed to be
-  // present in the catalog, so the second find always hits.
+  // Exact match, otherwise the kDefault entry (always present in the catalog).
   const std::string catalog_type = normalizedMessageType(msg_type, RosMsgParser::ROS_MSG);
   auto it = catalog().find(catalog_type);
   // A DiagnosticArray layout handleDiagnosticArray cannot follow decodes generically.
@@ -550,18 +460,14 @@ RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_typ
   }
   CatalogEntry entry = it->second;
 
-  // Topic-conditional override: a std_msgs/String on a robot_description topic
-  // carries a URDF/SDF/MJCF model, not a generic string. The catalog keys on
-  // type name, which can't distinguish this — so dispatch here by topic name.
-  // Matches the bare topic and any namespace-prefixed "<ns>/robot_description"
-  // (e.g. "/my_robot/robot_description").
+  // A std_msgs/String on a robot_description topic (bare or "<ns>/robot_description")
+  // carries a URDF/SDF/MJCF model; the catalog keys on type name and cannot tell it
+  // apart, so this dispatches on the topic name.
   const bool robot_description_topic =
       topic_name_ == "robot_description" || topic_name_.ends_with("/robot_description");
   if (catalog_type == "std_msgs/String" && robot_description_topic) {
-    // Object-only: the URDF/SDF/MJCF text is consumed as a model, not stored
-    // as a giant string column in the datastore. The empty scalar route is
-    // still required, as for markers: without parse_scalars the host's
-    // eager-scalar ingest aborts the push and the model never reaches the store.
+    // Object-only: the text is consumed as a model, not stored as a giant string column.
+    // The empty scalar route is still required, as for markers.
     entry = CatalogEntry{
         .object_type = PJ::sdk::BuiltinObjectType::kRobotDescription,
         .parse_scalars = &RosParser::parseScalarsObjectOnly,
@@ -583,13 +489,10 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
   }
   const std::string msg_type = normalizedMessageType(type_name_, schema_format_);
 
-  // Normalize root names to the conventions used by rosx_introspection. ROS 2
-  // .msg schemas use "pkg/msg/Type" externally and "pkg/Type" internally;
-  // IDL schemas retain module scopes internally, such as "pkg::msg/Type".
-  // Compile the message definition once and keep the rosx_introspection
-  // parser cached on this instance — it is reused for every message of
-  // this type. The array policy controls how variable-length fields are
-  // truncated by the generic introspection walker.
+  // Root names follow rosx_introspection's conventions: ROS 2 .msg schemas are
+  // "pkg/msg/Type" externally and "pkg/Type" internally; IDL schemas keep module
+  // scopes internally ("pkg::msg/Type"). The compiled parser is cached for every
+  // message of this type.
   try {
     const auto definition = schema_format_ == RosMsgParser::DDS_IDL && schema_definition_.starts_with("====")
                                 ? ros2IdlDefinition(type_name_, schema_definition_)
@@ -603,13 +506,11 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
     return PJ::unexpected(std::string("failed to parse ROS schema: ") + e.what());
   }
 
-  // Cache schema-derived flags (has_header_, quaternion prefixes, …) and
-  // prepare the wire-format deserializer (ROS 1 binary vs ROS 2 CDR).
   detectSchemaFeatures();
   ensureDeserializer();
 
-  // Humble+ Marker adds texture and mesh fields. Inspect the parsed Marker
-  // fields so comments or unrelated bundled definitions cannot change its layout.
+  // Humble+ Marker adds texture and mesh fields. Inspects the parsed Marker fields, so comments
+  // or unrelated bundled definitions cannot change the detected layout.
   const std::string ros_type = normalizedMessageType(msg_type, RosMsgParser::ROS_MSG);
   if (ros_type == "visualization_msgs/Marker" || ros_type == "visualization_msgs/MarkerArray") {
     marker_has_texture_block_ = false;
@@ -632,10 +533,9 @@ PJ::Status RosParser::compileBoundSchema(bool register_specialized_handler) {
     registerBoundSchemaHandler(selectCatalogEntry(msg_type));
   }
 
-  // Flip the flag only after the handler is registered: if registration throws
-  // (e.g. bad_alloc), schema_compiled_ stays false so the next compile — the
-  // eager-inference loop's second format, or a later loadConfig()/parse —
-  // recompiles cleanly instead of early-returning on a half-compiled schema.
+  // Set only after the handler is registered: if registration throws (e.g. bad_alloc),
+  // the next compile (the inference loop's second format, a later loadConfig()/parse)
+  // recompiles instead of early-returning on a half-compiled schema.
   schema_compiled_ = true;
 
   return PJ::okStatus();
@@ -801,13 +701,6 @@ PJ::Status RosParser::parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> 
   return bound_field_cache_.append(writeHost(), ts, fields_.span(), fields_.nameIds());
 }
 
-// ---------------------------------------------------------------------------
-// Generic scalar route. Walks any ROS message whose schema rosx_introspection
-// understands, honoring the user-configured array policy. Used as the
-// default-handler scalar route; also reused as the building block for
-// parseScalarsDiscardingLargeArrays below.
-// ---------------------------------------------------------------------------
-
 PJ::Status RosParser::parseScalarsGeneric(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   if (auto status = compileBoundSchema(false); !status) {
     return PJ::unexpected(std::move(status).error());
@@ -821,14 +714,8 @@ PJ::Status RosParser::parseScalarsGeneric(PJ::Timestamp ts, PJ::Span<const uint8
   return flattenGeneric(payload);
 }
 
-// ---------------------------------------------------------------------------
-// Scalar route for builtin-object schemas. Delegates to parseScalarsGeneric
-// after flipping the parser to DISCARD_LARGE_ARRAYS so the bulk byte payload
-// (Image::data, PointCloud2::data, …) is dropped automatically while small
-// metadata (height, width, encoding, fields[].name, …) survives as scalars.
-// The user-configured array policy is restored on exit.
-// ---------------------------------------------------------------------------
-
+// parseScalarsGeneric with the parser flipped to DISCARD_LARGE_ARRAYS; the configured
+// policy is restored on exit.
 PJ::Status RosParser::parseScalarsDiscardingLargeArrays(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   if (auto status = compileBoundSchema(false); !status) {
     return PJ::unexpected(std::move(status).error());
@@ -844,27 +731,11 @@ PJ::Status RosParser::parseScalarsDiscardingLargeArrays(PJ::Timestamp ts, PJ::Sp
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Slim scalar route for object-only schemas (markers): no meaningful scalar
-// columns, but a non-null parse_scalars is required so the host's eager-scalar
-// ingest path (RosParser::parse -> parseScalars) succeeds and the canonical
-// object reaches the ObjectStore under ANY ObjectIngestPolicy, not only
-// kPureLazy. Returns an empty field set (parse() short-circuits to ok on empty
-// fields, so no scalar row is written). Decodes nothing — zero cost, zero risk.
-// ---------------------------------------------------------------------------
-
 PJ::Status RosParser::parseScalarsObjectOnly(PJ::Timestamp ts, PJ::Span<const uint8_t> /*payload*/) {
   current_timestamp_ = ts;
   fields_.clear();
   return PJ::okStatus();
 }
-
-// ---------------------------------------------------------------------------
-// Shared plumbing for the slim direct-CDR scalar routes (the hand-written
-// header/metadata walkers that back the object-bearing schemas). Same setup and
-// harvest halves as wrapVoidHandler, minus the introspection parser: these
-// routes never need a compiled schema, only the deserializer.
-// ---------------------------------------------------------------------------
 
 void RosParser::beginDirectScalarRead(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   ensureDeserializer();
@@ -872,22 +743,6 @@ void RosParser::beginDirectScalarRead(PJ::Timestamp ts, PJ::Span<const uint8_t> 
   current_timestamp_ = ts;
   deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.data(), payload.size()));
 }
-
-// ---------------------------------------------------------------------------
-// Header-only scalar route, for object-bearing schemas whose payload has nothing
-// plottable of its own but does lead with a std_msgs/Header:
-//
-//   visualization_msgs/Marker                       — pure 3D scene content.
-//   point_cloud_interfaces/CompressedPointCloud2    — the cloud is an opaque
-//       compressed blob, so no point count can be measured from it: the
-//       compressed byte size divided by point_step is meaningless, and
-//       width * height would be the producer's claim rather than a measurement
-//       (the uncompressed PointCloud2 route emits a real count instead).
-//
-// The route also has to exist at all: an object-only entry (no parse_scalars)
-// makes the host's eager-scalar ingest abort the push on any non-kPureLazy
-// policy, and the canonical object never reaches the ObjectStore.
-// ---------------------------------------------------------------------------
 
 PJ::Status RosParser::parseHeaderOnlyScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
@@ -898,10 +753,6 @@ PJ::Status RosParser::parseHeaderOnlyScalars(PJ::Timestamp ts, PJ::Span<const ui
     return PJ::unexpected(std::string("header scalars: CDR read error: ") + e.what());
   }
 }
-
-// ---------------------------------------------------------------------------
-// Setup helpers
-// ---------------------------------------------------------------------------
 
 void RosParser::ensureDeserializer() {
   bool need_create = !deserializer_ || (use_ros1_ == deserializer_->isROS2());
@@ -915,15 +766,12 @@ void RosParser::ensureDeserializer() {
 }
 
 RosMsgParser::Span<const uint8_t> RosParser::readByteSequence() {
-  // End of the payload, captured before the read: the check is on the span's
-  // end pointer, so the CDR alignment padding consumed before the length word
-  // cannot give the declared length any slack.
+  // Captured before the read and compared against the span's end pointer, so the CDR
+  // alignment padding before the length word cannot give the declared length any slack.
   const uint8_t* end = deserializer_->getCurrentPtr() + deserializer_->bytesLeft();
   const auto span = deserializer_->deserializeByteSequence();
   if (!span.empty() && span.data() + span.size() > end) {
-    // The declared length ran past the payload. deserializeByteSequence has already
-    // advanced the cursor past the end, so both this span AND any field the handler
-    // reads next would be out of bounds; abort now (caught upstream -> Expected error).
+    // The cursor is already past the end, so this span AND every later read are out of bounds.
     throw std::runtime_error("CDR byte sequence length exceeds message payload (truncated or corrupt message)");
   }
   return span;
@@ -977,10 +825,6 @@ void RosParser::findQuaternionPrefixes(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Field accumulation helpers
-// ---------------------------------------------------------------------------
-
 void RosParser::addField(std::string_view name, double value) {
   fields_.add(name, PJ::sdk::ValueRef{value});
 }
@@ -993,31 +837,18 @@ void RosParser::addStringField(std::string_view name, std::string_view value) {
   fields_.addString(name, value);
 }
 
-// ---------------------------------------------------------------------------
-// Emit record
-// ---------------------------------------------------------------------------
-
 PJ::Status RosParser::emitRecord(PJ::Timestamp ts) {
   return bound_field_cache_.append(writeHost(), ts, fields_.span(), fields_.nameIds());
 }
-
-// ---------------------------------------------------------------------------
-// Header helpers
-// ---------------------------------------------------------------------------
 
 const RosParser::HeaderData& RosParser::readHeader() {
   // Read into the member, so frame_id keeps its capacity from message to message.
   HeaderData& h = header_;
   h.seq = 0;
-  // The stamp's `sec` word has a DIFFERENT SIGNEDNESS on the two wires, and the
-  // raw 4 bytes are identical either way — only the interpretation differs:
-  //   ROS 1  std_msgs/Header { uint32 seq; time stamp; ... }
-  //          ros::Time.sec is UINT32.
-  //   ROS 2  std_msgs/Header { builtin_interfaces/Time stamp; ... }  (no seq)
-  //          builtin_interfaces/Time.sec is INT32.
-  // Reading the ROS 2 word as unsigned turned any negative stamp into ~4.29e9
-  // (a 2106-ish date), which is not a rounding artifact but a wholly wrong
-  // value: negative stamps are legal and do occur (pre-epoch or relative clocks).
+  // The stamp's `sec` word has a different signedness on the two wires (same 4 bytes):
+  //   ROS 1  Header { uint32 seq; time stamp; ... }, ros::Time.sec is UINT32.
+  //   ROS 2  Header { builtin_interfaces/Time stamp; ... } (no seq), Time.sec is INT32.
+  // Read unsigned, a ROS 2 negative stamp (legal: pre-epoch or relative clocks) becomes ~4.29e9.
   if (!deserializer_->isROS2()) {
     h.seq = deserializer_->deserializeUInt32();
     h.sec = static_cast<int64_t>(deserializer_->deserializeUInt32());
@@ -1028,9 +859,8 @@ const RosParser::HeaderData& RosParser::readHeader() {
 
   if (use_embedded_timestamp_) {
     const int64_t ts_ns = h.sec * 1000000000LL + static_cast<int64_t>(h.nsec);
-    // A non-positive stamp means "unset" (or a pre-epoch clock we cannot file
-    // rows under), so the embedded clock is not adopted — unchanged behavior,
-    // and it is what keeps a now-correctly-negative sec from being adopted.
+    // A non-positive stamp means "unset" (or a pre-epoch clock rows cannot be filed under):
+    // the embedded clock is not adopted.
     if (ts_ns > 0) {
       current_timestamp_ = ts_ns;
     }
@@ -1041,10 +871,8 @@ const RosParser::HeaderData& RosParser::readHeader() {
 }
 
 int64_t RosParser::readBareTime() {
-  // The foxglove_msgs schemas lead with a bare stamp whose `sec` word has the
-  // same wire-dependent signedness as the Header stamp: ROS 2
-  // builtin_interfaces/Time.sec is int32 (negative stamps are legal), ROS 1
-  // `time`.sec is uint32 (its upper half would go negative if read signed).
+  // Same wire-dependent `sec` signedness as the Header stamp: int32 on ROS 2, uint32 on
+  // ROS 1 (read signed, its upper half would go negative).
   const uint32_t raw_sec = deserializer_->deserializeUInt32();
   const int64_t sec =
       deserializer_->isROS2() ? static_cast<int64_t>(static_cast<int32_t>(raw_sec)) : static_cast<int64_t>(raw_sec);
@@ -1064,10 +892,6 @@ void RosParser::emitHeader(const HeaderData& h) {
     addField("/header/seq", static_cast<double>(h.seq));
   }
 }
-
-// ---------------------------------------------------------------------------
-// Generic path
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -1103,10 +927,8 @@ class FlattenWriter final : public RosMsgParser::MessageWriter {
   void writeString(const RosMsgParser::FieldLeaf& leaf, const std::string& text) override {
     const auto& name = parser_.leafName(count_++, leaf);
     double numeric = 0.0;
-    // Apply the string-to-number toggles before falling back to the string
-    // representation. parseStringAsDouble returns false when either both
-    // toggles are off or no rule matches; in that case we keep the string
-    // verbatim, copied into fields_ (ValueRef holds a non-owning string_view).
+    // String-to-number toggles first; otherwise the string is kept verbatim, copied into
+    // fields_ (ValueRef holds a non-owning string_view).
     if ((parser_.boolean_strings_to_number_ || parser_.remove_suffix_from_strings_) &&
         parseStringAsDouble(text, numeric, parser_.remove_suffix_from_strings_, parser_.boolean_strings_to_number_)) {
       parser_.fields_.add(name.name, PJ::sdk::ValueRef{numeric}, name.name_id);
@@ -1153,14 +975,12 @@ const RosParser::CachedLeaf& RosParser::leafName(size_t index, const RosMsgParse
 }
 
 PJ::Status RosParser::flattenGeneric(PJ::Span<const uint8_t> payload) {
-  // Combined /header/stamp (seconds) for ROS 2, whose std_msgs/Header flattens
-  // to split sec/nanosec leaves: the single plottable stamp series the
-  // specialized handlers emit via emitHeader(), a diagnostic aid for clock
-  // offset/skew against the message (log/publish) time. Independent of the
-  // use_embedded_timestamp toggle. ROS 1 must NOT get it: its `time` builtin
-  // already flattens to one /header/stamp leaf in seconds, and a second column
-  // of the same name makes the datastore reject the whole record.
-  // It comes first in the record; its slot is filled after the walk.
+  // ROS 2 flattens std_msgs/Header to split sec/nanosec leaves, so this adds the combined
+  // /header/stamp (seconds) that emitHeader() gives the specialized handlers, a diagnostic of
+  // clock offset against the message time, independent of use_embedded_timestamp. ROS 1 must
+  // NOT get it: its `time` already flattens to one /header/stamp leaf, and a second column of
+  // the same name makes the datastore reject the record. It comes first in the record; its
+  // slot is filled after the walk.
   const bool combined_stamp = has_header_ && deserializer_->isROS2();
   const size_t stamp_slot = fields_.size();
   if (combined_stamp) {

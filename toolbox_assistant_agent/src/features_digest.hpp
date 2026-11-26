@@ -9,42 +9,35 @@
 
 namespace assistant_agent {
 
-// Default character budget for the features block, and the lowest value the
-// "assistant.features_budget_chars" setting is clamped to
-// (resolveFeaturesBudgetChars, assistant_dialog.hpp). The minimum is above the
-// length of the built-in reference (fallback_features.hpp, pinned by a
-// static_assert in features_digest.cpp), which is sent whole and never
-// trimmed: a smaller budget could not be honoured.
+// Default character budget for the features block, and the floor the
+// "assistant.features_budget_chars" setting is clamped to (resolveFeaturesBudgetChars).
+// The floor exceeds the built-in reference's length (static_assert in
+// features_digest.cpp): that reference is sent whole, so a smaller budget could not
+// be honoured.
 inline constexpr std::size_t kDefaultFeaturesBudgetChars = 20000;
 inline constexpr std::size_t kMinFeaturesBudgetChars = 5000;
 
 // Renders the host's pj.feature_catalog.v1 document (schema 1) as the plain
-// "PlotJuggler features" block prefixed to the user's message. Sections, in
-// order: built in, known limitations, plugins loaded, installed but not
-// active, available in the Marketplace; then a registry line when the
-// Marketplace list was not fetched, and a fixed sentence on where plugins come
-// from.
+// "PlotJuggler features" block prefixed to the user's message: built in, known
+// limitations, plugins loaded, installed but not active, available in the
+// Marketplace, then a registry line if the Marketplace list was not fetched.
 //
-// Follows the document's extensibility rules: unknown fields are ignored, a
-// missing optional field is unknown (it is left out, never rendered as "no"),
-// and a `schema` above 1 or a document that does not parse yields the built-in
-// reference (fallback_features.hpp) with a one-line note saying why. Host
-// strings are flattened to one line each, because the block must never
-// contain a blank line (stripCatalogPrefix, session_text.hpp, ends it at the
-// first one).
+// Unknown fields are ignored and a missing optional field is left out, never
+// rendered as "no". A `schema` above 1 or an unparsable document yields the built-in
+// reference (fallback_features.hpp) with a one-line note. Host strings are flattened
+// to one line: the block must never contain a blank line (stripCatalogPrefix ends it
+// at the first one).
 //
-// Over `budget_chars`, Marketplace summaries go first, then Marketplace
-// entries from the end, with a count of what was left out. Built-in features,
-// limitations and plugins already installed are never dropped silently: if
-// they alone exceed the budget the block is cut with "(list truncated)".
-// Deterministic: plugin lists are sorted by name, so the same document always
-// renders the same text (and the same dedup hash, harness_memory.hpp).
+// Over `budget_chars`, Marketplace summaries go first, then Marketplace entries from
+// the end, with a count of what was left out. Built-in features, limitations and
+// installed plugins are never dropped silently; if they alone exceed the budget the
+// block is cut with "(list truncated)". Deterministic (lists sorted by name), so the
+// same document gives the same text and the same dedup hash (harness_memory.hpp).
 [[nodiscard]] std::string featuresDigest(std::string_view json, std::size_t budget_chars = kDefaultFeaturesBudgetChars);
 
-// The block for one turn: the host's document when the service is bound and
-// answers, the built-in reference otherwise (a host that omits the optional
-// service leaves the view unbound; one whose document cannot be read gets the
-// reference with a note). GUI thread only, like every host view.
+// The block for one turn: the host's document, or the built-in reference when the
+// optional service is unbound (no note) or its document cannot be read (with a note).
+// GUI thread only.
 [[nodiscard]] std::string featuresBlock(const PJ::sdk::FeatureCatalogView& view, std::size_t budget_chars);
 
 }  // namespace assistant_agent

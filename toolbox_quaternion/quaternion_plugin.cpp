@@ -18,10 +18,6 @@
 #include "quaternion_manifest.hpp"
 #include "quaternion_to_rpy.hpp"
 
-// ---------------------------------------------------------------------------
-// QuaternionDialog
-// ---------------------------------------------------------------------------
-
 namespace {
 
 constexpr double kDegPerRad = QuaternionToRPYConverter::kDegPerRad;
@@ -51,10 +47,8 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
         .setText("status_label", status_msg_)
         .setEnabled("save_button", isValid());
 
-    // Empty-state hint shown as a centered overlay while the chart has no series.
     wd.setChartPlaceholder("chart_preview", "Drag and Drop Quaternion values in the frames above.");
 
-    // Compute and attach preview chart if inputs are valid.
     if (isValid()) {
       auto preview = computePreview();
       if (!preview.empty()) {
@@ -91,13 +85,12 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
 
   bool onClicked(std::string_view name) override {
     if (name == "save_button" && isValid()) {
-      // The toolbox hosts its dialog in a non-modal PanelEngine, which ignores
-      // requestAccept(); so apply directly through the callback the toolbox
-      // installs (it owns the host write surface this dialog cannot reach).
+      // The non-modal PanelEngine ignores requestAccept(), so apply through the toolbox's callback (it owns the
+      // host write surface).
       if (on_save_) {
         on_save_();
       }
-      return true;  // refresh widget_data so the status label / preview update
+      return true;
     }
     return false;
   }
@@ -116,7 +109,6 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
     std::string prefix = dropped.substr(0, last_slash + 1);
     std::string suffix = dropped.substr(last_slash + 1);
 
-    // Try known quaternion component naming patterns.
     static constexpr std::array<std::array<const char*, 4>, 2> kPatterns = {{
         {{"x", "y", "z", "w"}},
         {{"qx", "qy", "qz", "qw"}},
@@ -143,12 +135,10 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
       std::string fz = prefix + pattern[2];
       std::string fw = prefix + pattern[3];
 
-      // available_fields_ is only filled when the dialog opens (getDialog), and
-      // the toolbox's onDataChanged() is not invoked on file load, so a toolbox
-      // opened BEFORE any data was loaded would have an empty list and reject
-      // every drop. Validate the four siblings only when the list is populated;
-      // otherwise accept the best-effort match — applyTransform() re-checks the
-      // fields against the live catalog when the user clicks Save.
+      // available_fields_ is filled only in getDialog() and onDataChanged() is not invoked on file load, so a
+      // toolbox opened before any data was loaded has an empty list and would reject every drop. Validate the four
+      // siblings only when the list is populated; otherwise accept the best-effort match (applyTransform()
+      // re-checks against the live catalog on Save).
       const bool list_known = !available_fields_.empty();
       if (!list_known || (field_exists(fx) && field_exists(fy) && field_exists(fz) && field_exists(fw))) {
         input_x_ = fx;
@@ -157,10 +147,8 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
         input_w_ = fw;
         output_prefix_ = prefix + "rpy/";
         status_msg_.clear();
-        // The dialog's data snapshot is taken once in getDialog(); if the
-        // toolbox was opened before the data was loaded it is stale/empty. The
-        // drop is the moment we know which series the preview needs, so ask the
-        // toolbox to (re-)read them from the catalog now. No periodic polling.
+        // The data snapshot is taken in getDialog() and may be empty; the drop is when the preview's series become
+        // known, so re-read them now. No periodic polling.
         if (on_refresh_) {
           on_refresh_();
         }
@@ -242,15 +230,12 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
     series_data_ = std::move(data);
   }
 
-  // Installed by the owning toolbox: invoked when the user clicks Save so the
-  // transform is applied (the dialog has no host write surface of its own).
+  // Set by the toolbox, which owns the host write surface the dialog lacks.
   void setOnSave(std::function<void()> cb) {
     on_save_ = std::move(cb);
   }
 
-  // Installed by the owning toolbox: invoked from onTick() so the toolbox can
-  // refresh the field list / preview data from the catalog while the panel is
-  // open (the dialog has no catalog access of its own).
+  // Set by the toolbox (the dialog has no catalog access): re-reads the field list and preview data on drop.
   void setOnRefresh(std::function<void()> cb) {
     on_refresh_ = std::move(cb);
   }
@@ -287,7 +272,7 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
     pitch_s.points.reserve(count);
     yaw_s.points.reserve(count);
 
-    // Use relative time (seconds from first timestamp) for the X axis.
+    // X axis: seconds from the first sample (timestamps are ns).
     double t0 = sx->timestamps.front();
 
     for (size_t i = 0; i < count; ++i) {
@@ -318,16 +303,10 @@ class QuaternionDialog : public PJ::DialogPluginTyped {
   std::unordered_map<std::string, SeriesData> series_data_;
 };
 
-// ---------------------------------------------------------------------------
-// QuaternionToolbox
-// ---------------------------------------------------------------------------
-
 class QuaternionToolbox : public PJ::ToolboxPluginBase {
  public:
   QuaternionToolbox() {
-    // Wire the dialog's Save button to (re)install the transform. Non-modal toolbox
-    // panels don't round-trip accept()/loadConfig() on Save, so this is the path
-    // that hands the host the Luau class when the user clicks Save.
+    // Non-modal toolbox panels don't round-trip accept()/loadConfig() on Save, so Save installs the transform here.
     dialog_.setOnSave([this]() {
       if (!dialog_.isValid()) {
         return;
@@ -338,10 +317,8 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
       }
     });
 
-    // A toolbox opened *before* the data is loaded snapshots an empty catalog
-    // in getDialog(), so its preview has no series to plot. There is no periodic
-    // toolbox tick to lean on; instead, re-read the catalog when the user drops
-    // curves (the moment the needed series become known). One fetch per drop.
+    // A toolbox opened before the data loads snapshots an empty catalog and there is no toolbox tick, so re-read
+    // the catalog on each drop (when the needed series become known).
     dialog_.setOnRefresh([this]() { refreshDialogFromCatalog(); });
   }
 
@@ -354,9 +331,8 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     if (!status) {
       return status;
     }
-    // Request the data-processors host bridge: the plugin hands the host a Luau
-    // class (4 inputs -> 3 outputs) run live as a DerivedEngine node instead of
-    // computing RPY itself. Optional — an older host simply won't expose it.
+    // The host runs the plugin's Luau class (4 inputs -> 3 outputs) live as a DerivedEngine node. Optional: an
+    // older host does not expose the service.
     if (auto dp = services.get<PJ::sdk::DataProcessorsHostService>()) {
       dp_view_ = *dp;
     }
@@ -364,8 +340,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
   }
 
   PJ_borrowed_dialog_t getDialog() override {
-    // Populate the dialog's field list + preview data from the catalog before
-    // opening; subsequent refreshes are driven by the dialog's onTick (see ctor).
+    // Snapshot the catalog before opening; later refreshes happen on drop (see ctor).
     refreshDialogFromCatalog();
     return PJ::borrowDialog(dialog_);
   }
@@ -383,10 +358,8 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
       created_ = false;  // options changed -> the node must be rebuilt
     }
     if (dialog_.isValid() && dp_view_.valid()) {
-      // Best-effort: if the inputs are not resolvable yet (a layout restored before
-      // its data loaded), this is NOT a config-load failure — onDataChanged reinstalls
-      // once the data arrives (created_ stays false on a failed apply). Swallow the
-      // error so the layout still loads cleanly.
+      // Best-effort: inputs may not resolve yet (layout restored before its data loaded). That is not a
+      // config-load failure: onDataChanged reinstalls once the data arrives (created_ stays false on failure).
       (void)applyTransform();
     }
     return PJ::okStatus();
@@ -396,11 +369,9 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     if (!dialog_.isValid() || !dp_view_.valid()) {
       return;
     }
-    // The host node recomputes live once installed, so usually there is nothing to
-    // do. Two cases still need a (re)install: the config arrived before the data (so
-    // the inputs could not be resolved at loadConfig time), and a session clear /
-    // dataset reload that tore the node down while created_ stayed set. Detect the
-    // latter by checking the node is still among the host's live processors.
+    // The installed node recomputes live. Two cases still need a (re)install: the config arrived before the data,
+    // and a session clear / dataset reload tore the node down while created_ stayed set (detected via the host's
+    // live processor list).
     if (created_ && nodeStillInstalled()) {
       return;
     }
@@ -410,11 +381,8 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
   }
 
  private:
-  // True when the node we last installed is still among the host's live processors.
-  // Lets onDataChanged notice a teardown (session clear / dataset reload) and
-  // reinstall. list() is optional in the ABI; if the host does not expose it we
-  // cannot observe a teardown, so assume the node persists (the created_-only
-  // behavior) rather than rebuilding the script on every data change.
+  // list() is optional in the ABI; without it a teardown is unobservable, so assume the node persists rather than
+  // rebuilding the script on every data change.
   [[nodiscard]] bool nodeStillInstalled() const {
     if (last_id_.empty()) {
       return false;
@@ -426,11 +394,8 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     return std::find(ids->begin(), ids->end(), last_id_) != ids->end();
   }
 
-  // Pull the catalog into the dialog: the field names it validates drops
-  // against and the per-series data the preview chart plots. Called at two
-  // discrete moments — when the dialog opens (getDialog) and when the user
-  // drops curves (onItemsDropped via the on_refresh_ callback) — so a toolbox
-  // opened before the data was loaded still gets fresh series for its preview.
+  // Pulls the field names drops are validated against and the series the preview plots. Called on dialog open and
+  // on each drop, so a toolbox opened before the data loaded still gets fresh series.
   void refreshDialogFromCatalog() {
     if (!toolboxHostBound()) {
       return;
@@ -451,7 +416,6 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
         std::string name = topic_name + "/" + std::string(PJ::sdk::toStringView(f.name));
         names.push_back(name);
 
-        // Read series data for the preview chart.
         auto series = host.readSeries(f.handle);
         if (series && series->type() == PJ::PrimitiveType::kFloat64) {
           auto ts = series->timestamps();
@@ -482,16 +446,13 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
       return PJ::unexpected("host did not expose pj.data_processors.v1");
     }
 
-    // Inputs are FIELD names ("quat/w", "quat/x", ...); the host resolves each to a
-    // topic column (field-level binding). The order is w, x, y, z so the script's
+    // Inputs are FIELD names ("quat/w", ...) the host binds to topic columns. Order is w, x, y, z so the script's
     // calculate(time, value, v1, v2, v3) reads value=w, v1=x, v2=y, v3=z.
     const std::array<std::string, 4> input_names = {
         dialog_.inputW(), dialog_.inputX(), dialog_.inputY(), dialog_.inputZ()};
 
-    // Output: ONE topic with named columns roll/pitch/yaw (single-topic parity). The
-    // host's grouped-output convention is a single structured "<topic>:f1,f2,..."
-    // entry — the prefix (sans trailing '/') is the topic, the script returns the 3
-    // values that fill the 3 columns.
+    // ONE topic with roll/pitch/yaw columns, as a grouped-output entry "<topic>:f1,f2,...": the prefix without its
+    // trailing '/' is the topic.
     std::string topic = dialog_.outputPrefix();
     while (!topic.empty() && topic.back() == '/') {
       topic.pop_back();
@@ -507,8 +468,7 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     const std::string id = topic;  // host namespaces it under the plugin id
     const std::string grouped_output = topic + ":roll,pitch,yaw";
 
-    // Re-target: drop a node whose id changed (the output prefix was edited) so the
-    // old output does not linger orphaned alongside the new one.
+    // An edited output prefix changes the id: drop the old node so its output does not linger.
     if (!last_id_.empty() && last_id_ != id) {
       (void)dp_view_.remove(last_id_);
     }
@@ -540,14 +500,8 @@ class QuaternionToolbox : public PJ::ToolboxPluginBase {
     }
   }
 
-  // Build a self-describing Luau filter class (4 inputs -> 3 outputs) that the host
-  // compiles and runs live as a DerivedEngine node. It ports QuaternionToRPYConverter:
-  // normalize the quaternion, derive roll/pitch/yaw from the rotation matrix (asin
-  // clamped at the gimbal-lock poles), then optionally unwrap each angle into a
-  // continuous signal. The per-instance unwrap state lives in the factory closure,
-  // so it persists across the host's per-sample calculate() calls (the engine drives
-  // calculate in ascending timestamp order). `degrees` bakes the rad->deg scale into
-  // the script; `unwrap` toggles the +/-2*pi continuity correction.
+  // Luau class mirroring QuaternionToRPYConverter. The unwrap state lives in the factory closure and relies on the
+  // engine calling calculate() in ascending timestamp order. `degrees` bakes the rad->deg scale into the script.
   static std::string buildScript(const std::string& id, bool degrees, bool unwrap) {
     std::string s;
     s += "-- pj-script: luau\n";

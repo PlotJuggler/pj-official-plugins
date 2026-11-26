@@ -20,11 +20,11 @@ N = 2001  # 0 .. 20 s inclusive
 
 def base_value(t: float) -> float:
     v = 0.4 * math.sin(2.0 * math.pi * 1.0 * t)
-    if 5.0 <= t < 8.0:          # out-of-range plateau
+    if 5.0 <= t < 8.0:
         v = 1.2
-    if 12.0 <= t < 15.0:        # flatline
+    if 12.0 <= t < 15.0:
         v = 0.3
-    if t >= 16.0:               # permanent step
+    if t >= 16.0:
         v += 1.0
     return v
 

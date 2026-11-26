@@ -1,8 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Qt-free, FFmpeg-free, libdatachannel-free consumer-conformance core for the
-// data_stream_webrtc plugin. Everything here is unit-testable headlessly.
+// FFmpeg- and libdatachannel-free consumer-conformance core, unit-testable headlessly.
 //
 // Consumer contract this satisfies (pj_scene2D/core h264_utils.cpp +
 // streaming_video_decoder.cpp):

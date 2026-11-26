@@ -23,14 +23,11 @@ std::string timestampFieldNameOrDefault(std::string_view name) {
   return std::string(name.substr(first, last - first + 1));
 }
 
-/// Dialog plugin for the JSON Parser options.
-/// Allows users to configure embedded timestamp extraction.
+/// Options dialog of the JSON parser.
 class JsonParserDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  // --- Dialog protocol ---
-
   std::string manifest() const override {
     return kJsonManifest;
   }
@@ -42,18 +39,15 @@ class JsonParserDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Array-size policy
     wd.setValue("spinBoxArraySize", static_cast<int>(array_limit_.max_size));
     wd.setChecked("radioMaxClamp", array_limit_.clamp());
     wd.setChecked("radioMaxDiscard", !array_limit_.clamp());
 
-    // Embedded timestamp controls
     wd.setChecked("checkBoxUseEmbeddedTimestamp", use_embedded_timestamp_);
     wd.setText("lineEditTimestampField", timestamp_field_name_);
     wd.setEnabled("lineEditTimestampField", use_embedded_timestamp_);
     wd.setEnabled("labelTimestampField", use_embedded_timestamp_);
 
-    // Label-keyed arrays checkbox
     wd.setChecked("checkBoxLabelKeyedArrays", label_keyed_arrays_);
     return wd.toJson();
   }

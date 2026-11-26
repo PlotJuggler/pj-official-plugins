@@ -17,12 +17,10 @@
 
 namespace pj::parser_arrow::test {
 
-/// Return the absolute path of one checked-in Arrow IPC fixture.
 [[nodiscard]] inline std::filesystem::path fixturePath(std::string_view filename) {
   return std::filesystem::path(PJ_ARROW_TEST_DATA_DIR) / filename;
 }
 
-/// Read a complete binary fixture or throw when the path cannot be read.
 [[nodiscard]] inline std::vector<uint8_t> readFile(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary | std::ios::ate);
   if (!input) {
@@ -65,7 +63,6 @@ namespace pj::parser_arrow::test {
   return std::move(*decoded);
 }
 
-/// Read a stream schema or throw its stream diagnostic.
 [[nodiscard]] inline PJ::sdk::ArrowSchemaHolder readSchema(PJ::sdk::ArrowStreamHolder& stream) {
   PJ::sdk::ArrowSchemaHolder schema;
   const int result = stream.get()->get_schema(stream.get(), schema.out());
@@ -75,7 +72,6 @@ namespace pj::parser_arrow::test {
   return schema;
 }
 
-/// Pull the next batch or throw its stream diagnostic or an unexpected-EOS error.
 [[nodiscard]] inline PJ::sdk::ArrowArrayHolder readBatch(PJ::sdk::ArrowStreamHolder& stream) {
   PJ::sdk::ArrowArrayHolder batch;
   const int result = stream.get()->get_next(stream.get(), batch.out());
@@ -88,7 +84,6 @@ namespace pj::parser_arrow::test {
   return batch;
 }
 
-/// Initialize and bind an RAII array view or throw nanoarrow's diagnostic.
 [[nodiscard]] inline nanoarrow::UniqueArrayView bindArrayView(const ArrowSchema* schema, const ArrowArray* array) {
   nanoarrow::UniqueArrayView view;
   ArrowError error{};

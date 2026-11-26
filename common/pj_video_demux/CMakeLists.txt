@@ -3,11 +3,8 @@
 # data_load_lerobot to emit per-frame PJ.VideoFrame entries without ever
 # buffering the whole video.
 #
-# Skipped gracefully when ffmpeg is unavailable, mirroring common/arrow_helpers:
-# builds that exercise only non-ffmpeg plugins still configure this subdir from
-# the top-level CMakeLists.txt but have no ffmpeg Conan dep. A real consumer
-# does its own find_package(ffmpeg REQUIRED), so it never silently runs without
-# the target.
+# Skipped when ffmpeg is unavailable (same pattern as common/arrow_helpers): a real consumer
+# does its own find_package(ffmpeg REQUIRED).
 
 if(NOT TARGET ffmpeg::avformat)
   find_package(ffmpeg QUIET CONFIG)
@@ -23,38 +20,32 @@ if(DEFINED PJ_WARNING_FLAGS)
   target_compile_options(pj_video_demux PRIVATE ${PJ_WARNING_FLAGS})
 endif()
 
-# Static lib goes inside SHARED plugin .so files → must be position-independent.
+# Linked into SHARED plugin .so files: must be position-independent.
 set_target_properties(pj_video_demux PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(pj_video_demux PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# PJ::Span / PJ::Expected come from plugin_sdk; libav* used only for indexing.
 target_link_libraries(pj_video_demux PUBLIC
   plotjuggler_sdk::plugin_sdk
   ffmpeg::avformat
   ffmpeg::avcodec
   ffmpeg::avutil
 )
-# Header-only; the lazy reader opens the host's UTF-8 path through it.
+# The lazy reader opens the host's UTF-8 path through it.
 target_link_libraries(pj_video_demux PRIVATE pj_utf8_path)
 
-# ffmpeg/8.1.2's ConanCenter recipe compiles avformat with the udp/tcp protocol
-# and the Windows Schannel TLS backend unconditionally on Windows (the
-# `disable_all_protocols=True` option is honoured for the on-disk demuxer
-# selection but not for the linker symbol footprint). Consumers therefore
-# have to bring the Windows system libraries those objects reference:
-#   - avformat.lib(udp.o)         -> Winsock:            ws2_32
-#   - avformat.lib(tls_schannel.o) -> Schannel + CNG:     secur32, crypt32,
-#                                                        bcrypt, ncrypt
-# Link them explicitly on Windows; noop on other platforms.
+# ffmpeg/8.1.2's ConanCenter recipe compiles avformat with the udp/tcp protocol and the
+# Windows Schannel TLS backend unconditionally on Windows (`disable_all_protocols=True` only
+# affects demuxer selection, not the linker symbol footprint). Consumers must link the system
+# libraries those objects reference:
+#   - avformat.lib(udp.o)          -> Winsock:       ws2_32
+#   - avformat.lib(tls_schannel.o) -> Schannel + CNG: secur32, crypt32, bcrypt, ncrypt
 if(WIN32)
   target_link_libraries(pj_video_demux PUBLIC ws2_32 secur32 crypt32 bcrypt ncrypt)
 endif()
 
-# --- Unit tests: pure byte-rewrite cases + committed h264/hevc/av1 fixtures
-#     (+ an env-gated external e2e via PJ_TEST_VIDEO) ---
 find_package(GTest QUIET CONFIG)
 if(TARGET GTest::gtest_main)
   add_executable(pj_video_demux_test tests/video_demux_test.cpp)
@@ -62,7 +53,6 @@ if(TARGET GTest::gtest_main)
   if(DEFINED PJ_WARNING_FLAGS)
     target_compile_options(pj_video_demux_test PRIVATE ${PJ_WARNING_FLAGS})
   endif()
-  # Committed h264/hevc/av1 fixtures drive the per-codec index+read e2e tests.
   target_compile_definitions(pj_video_demux_test PRIVATE
     PJ_VIDEO_DEMUX_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
   target_link_libraries(pj_video_demux_test PRIVATE pj_video_demux pj_utf8_path GTest::gtest_main)

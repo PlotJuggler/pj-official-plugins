@@ -3,14 +3,13 @@ import math
 import robot_state_pb2
 from time import sleep
 
-# The callback for when the client receives a CONNACK response from the server.
 def on_connect(client, userdata, flags, rc):
     print("Connected with result code "+str(rc))
 
 client = mqtt.Client()
 client.on_connect = on_connect
 
-client = mqtt.Client("PlotJuggler-test") #create new instance
+client = mqtt.Client("PlotJuggler-test")
 
 client.connect("127.0.0.1", 1883, 60)
 

@@ -1,20 +1,15 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// End-to-end regression on REAL server data. Loads the Arrow IPC batch
-// captured from demo.mosaico.dev (`/camera/jai/rgb/image`, ontology `image`)
-// and runs it through the real producer (`pushImageRowsToHost`), then
-// deserializes every pushed blob with the pj_base canonical codec and asserts
-// it reconstructs a valid per-frame PJ::Image.
+// End-to-end check on REAL server data: the Arrow IPC batch captured from demo.mosaico.dev
+// (`/camera/jai/rgb/image`, ontology `image`) goes through the object decoder, and every serialized blob must
+// deserialize to a valid per-frame PJ::Image.
 //
-// This guards the seam that unit tests approximate with synthetic tables: the
-// actual on-wire layout uses Arrow `*_view` columns (BINARY_VIEW / STRING_VIEW)
-// and ships a PNG-wrapped Bayer mosaic (format=png, encoding=bayer_rggb8,
-// 1296x966, stride=1296). It is the layout that previously broke the download
-// ("missing usable encoding/width/height" / empty data from BINARY readers).
+// Synthetic tables do not cover the real on-wire layout: Arrow `*_view` columns (BINARY_VIEW / STRING_VIEW) carrying a
+// PNG-wrapped Bayer mosaic (format=png, encoding=bayer_rggb8, 1296x966, stride=1296).
 //
-// The fixture is ~31 MB and is NOT committed; the test SKIPS when it is absent
-// (CI), and runs locally after `toolbox_mosaico_live_harness` regenerates it.
+// The fixture is ~31 MB and NOT committed; the test SKIPS when it is absent (CI) and runs locally after
+// `toolbox_mosaico_live_harness` regenerates it.
 
 #include <arrow/api.h>
 #include <arrow/array/array_binary.h>
@@ -36,10 +31,6 @@
 
 namespace {
 
-// Recording fake toolbox host: captures registerObjectTopic + pushOwnedObject
-// so the test can inspect the topic metadata and every serialized blob.
-
-// Locate the captured fixture relative to this source file's tests/ dir.
 std::string fixturePath() {
   std::filesystem::path here(__FILE__);
   return (here.parent_path() / "fixtures" / "bonirob_2016_04_20_16_31_15_21_camera_jai_rgb_image_batch.arrow").string();

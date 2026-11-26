@@ -5,7 +5,6 @@ find_package(GTest REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# --- Plugin shared library ---
 add_library(lsl_source_plugin SHARED lsl_source.cpp)
 target_compile_features(lsl_source_plugin PRIVATE cxx_std_20)
 target_compile_options(lsl_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -29,7 +28,6 @@ pj_emit_plugin_manifest(lsl_source_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Unit tests for the pure conversion helpers ---
 add_executable(lsl_source_test tests/lsl_source_test.cpp)
 target_compile_features(lsl_source_test PRIVATE cxx_std_20)
 target_include_directories(lsl_source_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

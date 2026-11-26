@@ -12,26 +12,20 @@
 
 namespace assistant_agent::testing {
 
-// A toolbox host that serves a catalog with SEVERAL data sources.
+// A toolbox host that serves a catalog with SEVERAL data sources. The SDK's ToolboxTestStore cannot:
+// it stamps every topic with source handle 1 and returns a snapshot with `data_sources = nullptr,
+// data_source_count = 0`, which leaves the multi-dataset branch (two runs of the same robot)
+// untestable.
 //
-// The SDK's ToolboxTestStore cannot express this: it stamps every topic with
-// source handle 1 and hands back a snapshot with `data_sources = nullptr,
-// data_source_count = 0`. That is fine for the scalar read path it exists for,
-// but it makes the multi-dataset case — two runs of the same robot, the reason
-// any of this exists — untestable, and an untested branch that only fires when a
-// user loads a second file is a branch that fires for the first time in front of
-// the user.
-//
-// Deliberately catalog-only: `acquire_catalog_snapshot` is the single slot the
-// digest and describe_topic need. A read records which topic it asked for, so a test
-// can check a same-named series resolved to the right dataset, and fails unless
-// servedBy() gave that topic samples; creating a data source records the name and
-// fails. Every other slot stays null so a test that wanders off fails loudly.
+// Deliberately catalog-only: `acquire_catalog_snapshot` is the single slot the digest and
+// describe_topic need. A read records which topic it asked for, so a test can check a same-named
+// series resolved to the right dataset, and fails unless servedBy() gave that topic samples;
+// creating a data source records the name and fails. Every other slot stays null so a test that
+// wanders off fails loudly.
 class FakeMultiDatasetHost {
  public:
-  // Add a dataset and its topics. Topics must be added per source, in order:
-  // the ABI lays them out contiguously (first_topic/topic_count) and this
-  // mirrors that layout rather than pretending it does not exist.
+  // Topics must be added per source, in order: the ABI lays them out contiguously
+  // (first_topic/topic_count) and this mirrors that.
   FakeMultiDatasetHost& addDataset(const std::string& name, const std::vector<std::string>& topics) {
     Source src;
     src.name = name;
@@ -170,9 +164,8 @@ class FakeMultiDatasetHost {
   std::vector<Source> sources_;
   std::vector<std::string> topics_;
   std::vector<std::string> fields_;
-  // ABI mirrors, rebuilt per acquire and kept alive by this object — the views
-  // above point into the strings, so neither may be reallocated while a
-  // snapshot is live.
+  // ABI mirrors, rebuilt per acquire; the views above point into the strings, so neither may be
+  // reallocated while a snapshot is live.
   std::vector<PJ_data_source_info_t> src_abi_;
   std::vector<PJ_topic_info_t> topic_abi_;
   std::vector<PJ_field_info_t> field_abi_;

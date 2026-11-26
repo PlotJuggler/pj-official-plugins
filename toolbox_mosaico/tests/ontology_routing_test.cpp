@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Routing is driven purely by the server ontology tag (mosaico:properties),
-// never by guessing at the column structure. This guards the fix for
-// `/laser/.../points`: point clouds carry data + width + height just like raw
-// images, so any structural heuristic false-positives. The rule here is simple
-// — read the tag; if it isn't an image tag, it isn't routed to the 2D view.
+// Routing is driven purely by the server ontology tag (mosaico:properties), never by guessing at the column
+// structure: point clouds (e.g. `/laser/.../points`) carry data + width + height just like raw images, so any
+// structural heuristic false-positives. Read the tag; if it isn't an image tag, it isn't routed to the 2D view.
 
 #include "../src/ontology_routing.h"
 

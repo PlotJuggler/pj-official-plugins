@@ -40,13 +40,8 @@ namespace mosaico {
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Info-panel / table formatting helpers (ported from PJ3 data_view_panel.cpp
-// and format_utils.h). The Info panel is rendered as monospaced plain text.
-//
-// formatBytes (1024-based, PJ3 parity) lives in src/format_utils.h so it can be
-// unit-tested without the Arrow/Flight link.
-// ---------------------------------------------------------------------------
+// Info-panel / table formatting helpers. The Info panel is rendered as monospaced plain text. formatBytes lives in
+// src/format_utils.h so it can be unit-tested without the Arrow/Flight link.
 
 std::string isoFromNs(std::int64_t ts_ns) {
   if (ts_ns <= 0) {
@@ -66,7 +61,7 @@ std::string dateTimeUtc(std::int64_t ts_ns) {
   return PJ::formatDateTimeUtc(ts_ns);
 }
 
-// --- Query-assist helpers (Key/Op/Value dropdowns) ---
+// Query-assist helpers (Key/Op/Value dropdowns).
 
 // Clamp a (possibly -1 / unset) caret offset into [0, text.size()]; a negative
 // value means "end of text".
@@ -126,8 +121,8 @@ std::string formatMetadata(const MapType& metadata, std::string_view indent = {}
   return text;
 }
 
-// Recursively format an Arrow field with vertical indentation for structs and
-// lists, exactly like PJ3 data_view_panel::formatFieldType.
+// Recursively formats an Arrow field with vertical indentation for structs and lists (output matches PJ3
+// formatFieldType).
 void formatFieldType(const std::shared_ptr<arrow::Field>& field, const std::string& indent, std::string& out) {
   auto type = field->type();
   if (type->id() == arrow::Type::STRUCT) {
@@ -290,9 +285,8 @@ void MosaicoDialog::setSettings(PJ::sdk::SettingsView settings) {
 }
 
 void MosaicoDialog::initFromSettings() {
-  // Restore persisted UI state and auto-connect to the last server (PJ3
-  // parity). Runs at bind time, before the tick loop or any worker result can
-  // touch state_, so the unlocked access here is safe.
+  // Restore persisted UI state and auto-connect to the last server. Runs at bind time, before the tick loop or any
+  // worker result can touch state_, so the unlocked access here is safe.
   SettingsStore settings(settings_);
   const std::vector<std::string> history = settings.getStringList("mosaico/server_history");
   if (!history.empty()) {
@@ -302,29 +296,26 @@ void MosaicoDialog::initFromSettings() {
   state_.range_lower = std::clamp(settings.getInt("mosaico/range_lower", 0), 0, DialogState::kSliderSteps);
   state_.range_upper =
       std::clamp(settings.getInt("mosaico/range_upper", DialogState::kSliderSteps), 0, DialogState::kSliderSteps);
-  // PJ3 parity: stage the last selection for re-selection once the matching
-  // sequence/topic list arrives from the auto-connect below.
+  // Stage the last selection for re-selection once the matching sequence/topic list arrives from the auto-connect
+  // below.
   state_.restore_selected_sequence = settings.getString("mosaico/selected_sequence");
   state_.restore_selected_topics = settings.getStringList("mosaico/selected_topics");
 
   if (!history.empty()) {
     const std::string uri = state_.uri;
     const ServerCredentials creds = resolveCredentials(settings_, uri);
-    // Same gate as the explicit Connect handler (PJ3 connectToServer
-    // validates both paths): printable ASCII for the URI and API key, no
-    // control characters in the certificate path. On auto-connect PJ3 shows no
-    // popup, so a malformed persisted value silently aborts the auto-connect
-    // rather than handing control bytes to gRPC.
+    // Same gate as the explicit Connect handler: printable ASCII for the URI and API key, no control characters in
+    // the certificate path. Auto-connect shows no popup, so a malformed persisted value silently aborts it rather
+    // than handing control bytes to gRPC.
     if (isPrintableAscii(uri) && hasNoControlChars(creds.cert_path) && isPrintableAscii(creds.api_key)) {
       state_.connecting = true;
-      state_.suppress_connect_error = true;  // PJ3 AutoConnect: no error notification on failure.
+      state_.suppress_connect_error = true;  // auto-connect: no error notification on failure.
       postCommand([w = worker_.get(), uri, creds] { w->connectAsync(uri, creds); });
     }
   }
 }
 
 MosaicoDialog::~MosaicoDialog() {
-  // Persist the Lua query + slider proportions for next open (PJ3 parity).
   persistState();
   // Signal the SDK's mid-stream cancel flag before joining; otherwise the
   // worker could block indefinitely while pullTopics is in flight.
@@ -339,12 +330,10 @@ MosaicoDialog::~MosaicoDialog() {
   if (worker_thread_.joinable()) {
     worker_thread_.join();
   }
-  // A close mid-fetch (the hosting banner's close — the only close path) skips
-  // onAllFetchesComplete, which owns the batch's notifyDataChanged. Topics that
-  // finished before the close have ALREADY written into the shared store (the
-  // [C1] streaming-write design), so flush them into the catalog here — the
-  // same "keep what landed" semantics as Cancel — instead of stranding data
-  // that exists in the store but never appears in the dataset tree.
+  // A close mid-fetch (the hosting banner's close, the only close path) skips onAllFetchesComplete, which owns the
+  // batch's notifyDataChanged. Topics that finished before the close have ALREADY written into the shared store,
+  // so flush them into the catalog here (same "keep what landed" semantics as Cancel) instead of stranding data
+  // that never appears in the dataset tree.
   bool flush_partial = false;
   {
     std::lock_guard<std::mutex> lock(state_.mu);
@@ -437,7 +426,7 @@ std::string MosaicoDialog::widget_data() {
   // the Info panel during a fetch.
   wd.setText("comboUri", state_.uri);
 
-  // PJ3 parity: combo always lists the MRU history + the demo server pin.
+  // The combo always lists the MRU history + the demo server pin.
   {
     static const std::string kDemoServer = "grpc+tls://demo.mosaico.dev:6726";
     std::vector<std::string> items;
@@ -455,15 +444,12 @@ std::string MosaicoDialog::widget_data() {
     wd.setItems("comboUri", items);
   }
 
-  // Query editor (plain QPlainTextEdit, code-edit mode). The Lua query language
-  // lives entirely in the plugin: we push the persisted text ONCE to restore it,
-  // then validate edits via the plugin's engine and surface the result through
-  // the generic field-validity indicator.
+  // Query editor (plain QPlainTextEdit, code-edit mode). The Lua query language lives entirely in the plugin: the
+  // persisted text is pushed ONCE to restore it, then edits are validated via the plugin's engine and surfaced
+  // through the generic field-validity indicator.
   {
-    // One-shot text restore. Pushing query_text every tick would clobber the
-    // editor's own edits the instant the user types (the stale-echo race that
-    // broke the previous split design). After the first push the editor owns the
-    // text; edits return via onCodeChanged.
+    // One-shot text restore. Pushing query_text every tick would clobber the editor's own edits the instant the
+    // user types (stale-echo race). After the first push the editor owns the text; edits return via onCodeChanged.
     if (!state_.query_text_pushed || state_.query_push_pending) {
       wd.setCodeContent("lua_queryBar", state_.query_text);
       wd.setCodeCursor("lua_queryBar", state_.query_cursor);
@@ -483,15 +469,9 @@ std::string MosaicoDialog::widget_data() {
       wd.setFieldValid("lua_queryBar", valid, valid ? "" : "invalid syntax");
     }
 
-    // Key/Op/Value assist dropdowns + PLUS, driven entirely by the pure
-    // computeAssist() model (query_assist.h) against the query-assist contract:
-    //   REPLACE — caret ON a token: that ONE dropdown is active and edits the
-    //     token in place, live, no PLUS; its title syncs to the token.
-    //   ADD — caret off a token: the dropdowns STAGE a clause (staged_*); the
-    //     Key disables once picked, Op pre-shows "==", and PLUS is the ONLY way
-    //     the staged clause reaches the editor.
-    // Each dropdown's title becomes a currentIndex into its item list (signals
-    // are blocked while widget_data is applied, so this never re-fires a pick).
+    // Key/Op/Value assist dropdowns + PLUS, driven entirely by computeAssist() (query_assist.h, see
+    // docs/query-assist-contract.md). Each dropdown's title becomes a currentIndex into its item list (signals are
+    // blocked while widget_data is applied, so this never re-fires a pick).
     ensureQuerySchemaLocked();
     const int cursor = clampQueryCursor(state_.query_cursor, state_.query_text);
     const AssistView assist = computeAssist(
@@ -518,9 +498,8 @@ std::string MosaicoDialog::widget_data() {
     wd.setEnabled("buttonAddClause", assist.plus_enabled);
   }
 
-  // RangeSlider: bounds + handle values. Once a sequence with a known time
-  // span is selected, enable it and turn on the duration floating labels
-  // (handle = offset from start, center = selected duration) — PJ3 parity.
+  // RangeSlider: bounds + handle values. Once a sequence with a known time span is selected, enable it and turn on
+  // the duration floating labels (handle = offset from start, center = selected duration).
   wd.setRangeSliderBounds("rangeSlider", 0, DialogState::kSliderSteps);
   wd.setRangeSliderValues("rangeSlider", state_.range_lower, state_.range_upper);
   {
@@ -546,15 +525,13 @@ std::string MosaicoDialog::widget_data() {
         state_.global_max_ts_ns > 0 ? PJ::formatDateOnlyIso(state_.global_max_ts_ns) : "");
   }
 
-  // Button enable/disable (PJ3 parity): Connect is inert while a connect or a
-  // fetch is in flight; Download needs a sequence + topic(s) and an idle
-  // worker; Cancel is live only during a fetch.
+  // Button enable/disable: Connect is inert while a connect or a fetch is in flight; Download needs a sequence +
+  // topic(s) and an idle worker; Cancel is live only during a fetch.
   wd.setEnabled("buttonConnect", !state_.connecting && !state_.fetch_active);
   wd.setEnabled(
       "buttonFetch",
       state_.connected && !state_.selected_sequence.empty() && !state_.selected_topics.empty() && !state_.fetch_active);
-  // Per-column reload buttons re-list without a disconnect/reconnect (PJ3
-  // main_window.cpp:933-945): live only while connected and idle. The topic
+  // Per-column reload buttons re-list without a disconnect/reconnect: live only while connected and idle. The topic
   // reload additionally needs a selected sequence (its topics are what reload).
   const bool reload_live = state_.connected && !state_.connecting && !state_.fetch_active;
   wd.setEnabled("buttonReloadSeq", reload_live);
@@ -604,12 +581,10 @@ std::string MosaicoDialog::widget_data() {
         }
       }
 
-      // Visible-row set via the shared helper. PJ3 validity-gating: an INVALID
-      // metadata query never hides rows (toolbox_mosaico.cpp `if (!valid)
-      // return;`); only valid, non-empty queries are evaluated per sequence.
-      // Name and date filters always apply regardless of query validity.
-      // pj_query's filter takes nullopt for "unknown/unbounded"; Mosaico's
-      // sequence records and date pickers use 0 as that sentinel — translate.
+      // Visible-row set via the shared helper. An INVALID metadata query never hides rows (PJ3 behavior); only
+      // valid, non-empty queries are evaluated per sequence. Name and date filters always apply regardless of query
+      // validity. pj_query's filter takes nullopt for "unknown/unbounded"; Mosaico's sequence records and date
+      // pickers use 0 as that sentinel, so translate.
       const auto ns_or_unset = [](std::int64_t ns) { return ns == 0 ? std::nullopt : std::optional<std::int64_t>(ns); };
       std::vector<PJ::query::FilterSequence> filter_seqs;
       filter_seqs.reserve(state_.sequences.size());
@@ -690,9 +665,8 @@ std::string MosaicoDialog::widget_data() {
   {
     std::string info_text;
     std::string header = "Info";
-    // During a fetch the Info panel doubles as the per-topic progress view
-    // (PJ3 DownloadStatsDialog content), since the panel model has no separate
-    // progress window. Shows each selected topic's bytes + status.
+    // During a fetch the Info panel doubles as the per-topic progress view (the panel model has no separate
+    // progress window): each selected topic's bytes + status.
     if (state_.fetch_active) {
       header = "Download progress";
       info_text += state_.fetch_status + "\n\n";
@@ -706,9 +680,8 @@ std::string MosaicoDialog::widget_data() {
             it != state_.topic_fetch_status.end() && !it->second.empty()) {
           status = it->second;
         }
-        // Per-topic rolling speed over the same 5 s window the aggregate uses,
-        // surfacing PJ3 DownloadStatsDialog's per-topic Speed column. Only shown
-        // while the topic is still transferring (Done/Failed/Cancelled are static).
+        // Per-topic rolling speed over the same 5 s window the aggregate uses. Only shown while the topic is still
+        // transferring (Done/Failed/Cancelled are static).
         double topic_bps = 0.0;
         if (auto sit = state_.speed_samples.find(tname); sit != state_.speed_samples.end()) {
           topic_bps = sit->second.bytesPerSecond();
@@ -761,21 +734,15 @@ std::string MosaicoDialog::widget_data() {
 
   if (state_.open_cert_pending) {
     state_.open_cert_pending = false;
-    // Pre-fill the cert sub-dialog with the saved credentials for this server
-    // (PJ3 CertDialog parity). PanelEngine applies these to the sub-dialog's
-    // certPath / apiKey / allowInsecure inputs before showing it. We surface
-    // the *saved* values, not the MOSAICO_API_KEY env
-    // fallback, so the dialog reflects what's actually persisted.
+    // Pre-fill the cert sub-dialog with the saved credentials for this server: PanelEngine applies them to its
+    // certPath / apiKey / allowInsecure inputs before showing it. The *saved* values are shown, not the
+    // MOSAICO_API_KEY env fallback, so the dialog reflects what's actually persisted.
     const ServerCredentials saved = loadCredentialsForUri(settings_, state_.uri);
     wd.setText("certPath", saved.cert_path);
     wd.setText("apiKey", saved.api_key);
     wd.setChecked("allowInsecure", saved.allow_insecure);
-    // Open the embedded cert_dialog.ui as a read-only modal popup. The
-    // existing requestSubDialog mechanism in dialog_protocol only surfaces
-    // the UI — there's no roundtrip of user edits back to the plugin yet.
-    // PJ3-parity persistence reads cert path + api key from the settings store
-    // (loadCredentialsForUri) on next Connect; the Cert dialog surface here
-    // gives the user a way to inspect/initiate that flow.
+    // Open the embedded cert_dialog.ui as a modal popup; its edits come back through onTextChanged/onToggled and
+    // the synthetic subDialogAccepted click.
     wd.requestSubDialog(kCertDialogUi);
   }
 
@@ -809,10 +776,8 @@ bool MosaicoDialog::onTextChanged(std::string_view widget_name, std::string_view
     state_.query_text = std::string(text);
     return true;
   }
-  // Cert sub-dialog input widgets: panel_engine fires onTextChanged for
-  // each text/checkable child after the user clicks OK,
-  // followed by an onClicked("subDialogAccepted") to commit. We just
-  // stage the value; commit happens in onClicked below.
+  // Cert sub-dialog input widgets: panel_engine fires onTextChanged for each text/checkable child after the user
+  // clicks OK, then onClicked("subDialogAccepted") to commit. Only stage the value here.
   if (widget_name == "certPath") {
     state_.pending_cert_path = std::string(text);
     state_.has_pending_cert_edit = true;
@@ -824,10 +789,8 @@ bool MosaicoDialog::onTextChanged(std::string_view widget_name, std::string_view
     return true;
   }
   if (widget_name == "allowInsecure") {
-    // Checkable values arrive through the typed `checked` channel as
-    // booleans (onToggled), not through onTextChanged. The legacy
-    // string-encoded "true"/"false" path is kept for cases where the
-    // event arrives as text — defensive only.
+    // Checkable values arrive through the typed `checked` channel as booleans (onToggled), not onTextChanged; the
+    // string "true"/"false" path is defensive only.
     state_.pending_allow_insecure = (text == "true");
     state_.has_pending_allow_insecure_edit = true;
     return true;
@@ -842,15 +805,13 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
       std::lock_guard<std::mutex> lock(state_.mu);
       uri = state_.uri;
     }
-    // Pull saved credentials keyed by the normalized server URI (PJ3 parity:
-    // dedupes "grpc+tls://X:6726", "GRPC+TLS://X:6726", and "x:6726" to the
-    // same cache entry), with MOSAICO_API_KEY env fallback.
+    // Saved credentials are keyed by the normalized server URI (dedupes "grpc+tls://X:6726", "GRPC+TLS://X:6726" and
+    // "x:6726" to one cache entry), with MOSAICO_API_KEY env fallback.
     auto creds = resolveCredentials(settings_, uri);
 
-    // Printable-ASCII gate (PJ3 main_window.cpp:947-1013). The host/cert/api-key
-    // are headers/URIs handed straight into gRPC, which asserts-and-aborts on
-    // control bytes (CR/LF/NUL). Reject here — before the worker is dispatched —
-    // and abort the connect so the worst outcome is a visible notification.
+    // Printable-ASCII gate. The host/cert/api-key are headers/URIs handed straight into gRPC, which
+    // asserts-and-aborts on control bytes (CR/LF/NUL). Reject here, before the worker is dispatched, and abort the
+    // connect so the worst outcome is a visible notification.
     if (!isPrintableAscii(uri)) {
       notify(PJ::ToolboxMessageLevel::kError, "Server URI contains invalid characters (control or non-ASCII bytes).");
       return true;
@@ -874,10 +835,9 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     return true;
   }
   if (widget_name == "buttonReloadSeq") {
-    // Re-list sequences without a disconnect/reconnect (PJ3 onRefreshClicked,
-    // main_window.cpp:933-945). When a sequence is selected (its topics are
-    // showing), also re-list that sequence's topics so the right column refreshes
-    // alongside the left. No-op unless connected and idle.
+    // Re-list sequences without a disconnect/reconnect. When a sequence is selected (its topics are showing), also
+    // re-list that sequence's topics so the right column refreshes alongside the left. No-op unless connected and
+    // idle.
     std::string seq;
     {
       std::lock_guard<std::mutex> lock(state_.mu);
@@ -1003,9 +963,8 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
           topics.push_back(tname);
         }
       }
-      // Step 7: convert proportional 0..100 % into absolute nanoseconds
-      // against the selected sequence's [min_ts, max_ts]. Falls back to
-      // unbounded if we don't have time bounds (e.g. metadata stripped).
+      // Convert proportional 0..100 % into absolute nanoseconds against the selected sequence's [min_ts, max_ts].
+      // Falls back to unbounded if we don't have time bounds (e.g. metadata stripped).
       const SequenceRecord* rec = nullptr;
       for (const auto& s : state_.sequences) {
         if (s.name == state_.selected_sequence) {
@@ -1027,8 +986,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
         notify(PJ::ToolboxMessageLevel::kWarning, "Select a sequence + topic(s) first");
         return true;
       }
-      // Reset the per-batch fetch ledger (PJ3 parity: a batch completes via
-      // allFetchesComplete, not per-topic).
+      // Reset the per-batch fetch ledger (a batch completes via allFetchesComplete, not per-topic).
       state_.fetch_active = true;
       state_.cancelling = false;
       state_.fetch_total = static_cast<int>(topics.size());
@@ -1042,9 +1000,7 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     }
     worker_->resetCancel();
     notify(PJ::ToolboxMessageLevel::kInfo, fmt::format("Fetching {} topic(s)…", topics.size()));
-    // Multi-topic parallel pull (Step 10.2). Single topic still goes
-    // via this path — the SDK handles the degenerate 1-topic case fine
-    // and the per-topic completion signals are uniform.
+    // Multi-topic parallel pull; a single topic takes the same path so completion signals are uniform.
     postCommand([w = worker_.get(), seq, topics = std::move(topics), start, end]() mutable {
       w->pullTopicsAsync(seq, std::move(topics), start, end);
     });
@@ -1056,9 +1012,8 @@ bool MosaicoDialog::onClicked(std::string_view widget_name) {
     {
       std::lock_guard<std::mutex> lock(state_.mu);
       state_.cancelling = true;
-      // Reflect the cancel in the Info-panel progress header immediately, and
-      // mark every not-yet-finished topic "Cancelling…" so the per-topic view
-      // updates without waiting for allFetchesComplete (PJ3 parity).
+      // Reflect the cancel in the Info-panel progress header immediately, and mark every not-yet-finished topic
+      // "Cancelling…" so the per-topic view updates without waiting for allFetchesComplete.
       state_.fetch_status = "Cancelling…";
       for (const std::string& tname : state_.selected_topics) {
         auto it = state_.topic_fetch_status.find(tname);
@@ -1288,9 +1243,8 @@ void MosaicoDialog::onConnectFinished(ConnectResult result) {
     state_.connected = ok;
     uri = state_.uri;
 
-    // PJ3 plaintext-fallback: TLS connect failed, user allowed insecure
-    // fallback, no custom cert in use, and we haven't tried plaintext
-    // yet for this URI. Switch grpc+tls:// → grpc:// and retry once.
+    // Plaintext fallback: TLS connect failed, user allowed insecure fallback, no custom cert in use, and we haven't
+    // tried plaintext yet for this URI. Switch grpc+tls:// -> grpc:// and retry once.
     if (!ok) {
       auto creds = loadCredentialsForUri(settings_, uri);
       const bool no_custom_cert = creds.cert_path.empty();
@@ -1313,8 +1267,8 @@ void MosaicoDialog::onConnectFinished(ConnectResult result) {
   }
 
   if (ok) {
-    // PJ3 parity: promote a successful URI to the head of the MRU history
-    // (cap 20) and persist via the settings store ("mosaico/server_history").
+    // Promote a successful URI to the head of the MRU history (cap 20) and persist via the settings store
+    // ("mosaico/server_history").
     SettingsStore settings(settings_);
     std::vector<std::string> history = settings.getStringList("mosaico/server_history");
     history = promoteToHead(history, uri, /*cap=*/20);
@@ -1331,7 +1285,7 @@ void MosaicoDialog::onConnectFinished(ConnectResult result) {
     insecure_creds.allow_insecure = true;
     postCommand([w = worker_.get(), plaintext_uri, insecure_creds] { w->connectAsync(plaintext_uri, insecure_creds); });
   } else if (!suppress_error) {
-    // PJ3 AutoConnect context shows no popup; explicit connects do.
+    // Auto-connect shows no popup; explicit connects do.
     notify(PJ::ToolboxMessageLevel::kError, fmt::format("Mosaico connection failed: {}", error));
   }
 }
@@ -1347,9 +1301,8 @@ void MosaicoDialog::persistState() {
     query = state_.query_text;
     lower = state_.range_lower;
     upper = state_.range_upper;
-    // PJ3 parity: remember the last selection so the next connect can re-select
-    // it (selection state is already name-keyed; names are stable across
-    // re-fetch).
+    // Remember the last selection so the next connect can re-select it (selection state is name-keyed; names are
+    // stable across re-fetch).
     selected_sequence = state_.selected_sequence;
     selected_topics = state_.selected_topics;
   }
@@ -1382,9 +1335,8 @@ void MosaicoDialog::populateSequencesLocked(std::vector<SequenceInfo>& seqs, boo
     rec.min_ts_ns = s.min_ts_ns;
     rec.max_ts_ns = s.max_ts_ns;
     rec.total_size_bytes = s.total_size_bytes;
-    // Mosaico SDK's user_metadata is std::unordered_map<string, string>;
-    // convert into the std::map<string, string, std::less<>> used by the
-    // ported PJ3 Lua engine.
+    // Mosaico SDK's user_metadata is std::unordered_map<string, string>; convert into the
+    // std::map<string, string, std::less<>> the Lua engine uses.
     for (const auto& kv : s.user_metadata) {
       rec.metadata.emplace(kv.first, kv.second);
     }
@@ -1392,9 +1344,8 @@ void MosaicoDialog::populateSequencesLocked(std::vector<SequenceInfo>& seqs, boo
     state_.sequences.push_back(std::move(rec));
   }
 
-  // Compute the global [min, max] timestamp span and (final result only) seed
-  // the date-range picker with it (PJ3 shows the data's full range, e.g.
-  // 29/04/2016 → 08/04/2020). "All" filter ⇒ the span passes every sequence.
+  // Compute the global [min, max] timestamp span and (final result only) seed the date-range picker with it.
+  // "All" filter => the span passes every sequence.
   std::int64_t gmin = 0;
   std::int64_t gmax = 0;
   for (const auto& s : state_.sequences) {
@@ -1561,12 +1512,10 @@ void MosaicoDialog::onSequenceListStarted(std::vector<SequenceInfo> seqs) {
 
 void MosaicoDialog::onSequenceInfoReady(SequenceInfo seq) {
   std::lock_guard<std::mutex> lock(state_.mu);
-  // Fill in this one sequence's detail in place (min/max ts → Date, size →
-  // Size, metadata → query schema) so the columns populate incrementally as
-  // the server streams detail, instead of snapping in all at once at the final
-  // sequencesReady (PJ3 parity). Keyed by name; positions are left as-is
-  // (re-sorting per row would make the list jump during load — the final
-  // sequencesReady re-sorts once).
+  // Fill in this one sequence's detail in place (min/max ts -> Date, size -> Size, metadata -> query schema) so the
+  // columns populate incrementally as the server streams detail, instead of snapping in all at once at the final
+  // sequencesReady. Keyed by name; positions are left as-is (re-sorting per row would make the list jump during
+  // load; the final sequencesReady re-sorts once).
   for (auto& rec : state_.sequences) {
     if (rec.name != seq.name) {
       continue;
@@ -1592,10 +1541,9 @@ void MosaicoDialog::onSequencesReady(std::vector<SequenceInfo> seqs) {
     sortSequencesLocked();
     count = state_.sequences.size();
 
-    // PJ3 parity: re-select the persisted sequence if it's present in the
-    // freshly-listed sequences and the user hasn't already picked one this
-    // session. One-shot — clear the restore slot once consumed so a later
-    // manual selection / refresh doesn't snap back.
+    // Re-select the persisted sequence if it's present in the freshly-listed sequences and the user hasn't already
+    // picked one this session. One-shot: clear the restore slot once consumed so a later manual selection / refresh
+    // doesn't snap back.
     if (!state_.restore_selected_sequence.empty() && state_.selected_sequence.empty()) {
       if (std::find(state_.sequence_names.begin(), state_.sequence_names.end(), state_.restore_selected_sequence) !=
           state_.sequence_names.end()) {
@@ -1671,8 +1619,7 @@ void MosaicoDialog::onTopicMetadataReady(TopicRef topic, TopicInfo info) {
 
 void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
   std::lock_guard<std::mutex> lock(state_.mu);
-  // Per-topic byte ledger + rolling 5 s speed sample (PJ3 DownloadStatsDialog
-  // parity). "done" is the count of topics that have fully completed
+  // Per-topic byte ledger + rolling 5 s speed sample. "done" is the count of topics that have fully completed
   // (pullFinished), not those merely streaming.
   state_.bytes_by_topic[topic_name] = bytes;
   state_.speed_samples[topic_name].add(static_cast<std::uint64_t>(bytes));
@@ -1681,9 +1628,8 @@ void MosaicoDialog::onPullProgress(std::string topic_name, std::int64_t bytes) {
   for (const auto& kv : state_.bytes_by_topic) {
     total_bytes += kv.second;
   }
-  // Aggregate download rate from the trailing-window samples (sum of per-topic
-  // rates) — PJ3 DownloadStatsDialog surfaced this; here it rides the status
-  // line since the panel has no separate progress window.
+  // Aggregate download rate from the trailing-window samples (sum of per-topic rates); it rides the status line
+  // since the panel has no separate progress window.
   double bytes_per_sec = 0.0;
   for (const auto& [topic, rate] : state_.speed_samples) {
     bytes_per_sec += rate.bytesPerSecond();
@@ -1707,23 +1653,19 @@ void MosaicoDialog::onPullFinished(PullResultEvent result) {
     std::lock_guard<std::mutex> lock(state_.mu);
     const std::string& topic_name = result.topic.topic_name;
     const bool ok = result.ok;
-    // PJ3 parity: tally per-topic results into the batch ledger. The panel does
-    // NOT close here — that happens once in onAllFetchesComplete after the whole
-    // batch lands. Closing on the first topic (the old behaviour) tore down the
-    // worker mid-stream and dropped every remaining topic.
+    // Tally per-topic results into the batch ledger. The panel does NOT close here: it closes once in
+    // onAllFetchesComplete after the whole batch lands (closing on the first topic would tear down the worker
+    // mid-stream and drop every remaining topic).
     ++state_.fetch_done;
     if (ok) {
       state_.imported_any = true;
       state_.topic_fetch_status[topic_name] = "Done";
-      // Progressive reveal: this topic's rows are already written into the
-      // shared store (the [C1] streaming-write design), so surface them now
-      // instead of at batch completion. Skipped while cancelling, and skipped
-      // for the batch's LAST topic — onAllFetchesComplete's terminal notify
-      // arrives right behind it and would refresh the host twice back-to-back.
-      // The worker flag is checked for the same reason the Cancelled branch
-      // below checks it: on a HOST-initiated stop the atomic fires immediately
-      // while the queued hostStopRequested event that sets state_.cancelling
-      // can land after this completion was enqueued.
+      // Progressive reveal: this topic's rows are already written into the shared store, so surface them now
+      // instead of at batch completion. Skipped while cancelling, and skipped for the batch's LAST topic:
+      // onAllFetchesComplete's terminal notify arrives right behind it and would refresh the host twice
+      // back-to-back. The worker flag is checked for the same reason the Cancelled branch below checks it: on a
+      // HOST-initiated stop the atomic fires immediately while the queued hostStopRequested event that sets
+      // state_.cancelling can land after this completion was enqueued.
       reveal = !state_.cancelling && !(worker_ != nullptr && worker_->isCancelled()) &&
                state_.fetch_done < state_.fetch_total;
       // A successful topic may still have dropped rows; surface that as a warning
@@ -1807,7 +1749,7 @@ void MosaicoDialog::onAllFetchesComplete(std::string sequence_name) {
         state_.error_counts);
     state_.cancelling = false;
     if (summary.should_close) {
-      state_.close_pending = true;  // PJ3 parity: panel closes after a successful batch.
+      state_.close_pending = true;  // the panel closes after a successful batch.
     }
   }
   // The terminal notify below reveals everything; drop any pending mid-fetch one.
@@ -1817,27 +1759,15 @@ void MosaicoDialog::onAllFetchesComplete(std::string sequence_name) {
     notify(PJ::ToolboxMessageLevel::kError, fmt::format("Mosaico fetch errors:\n{}", summary.error_summary));
   }
 
-  // Flush buffered writer chunks into the engine and rebuild the catalog once
-  // for the whole batch. The scalar arrow-ipc pushes and pushOwnedObject only
-  // buffer data into the shared DataWriter/ObjectStore — without
+  // Flush buffered writer chunks into the engine and rebuild the catalog once for the whole batch. The scalar
+  // arrow-ipc pushes and pushOwnedObject only buffer data into the shared DataWriter/ObjectStore: without
   // notifyDataChanged the imported topics never appear in the dataset tree.
   //
-  // CANCEL SEMANTICS — DELIBERATE DIVERGENCE FROM PJ3 (gap #10):
-  // PJ3 DISCARDS all partial data on cancel (toolbox_mosaico.cpp:227-230): it
-  // could do so freely because PJ3 stages every batch in a LOCAL
-  // PlotDataMapRef (imported_data_) and only emits importData() into the live
-  // store at onAllFetchesComplete — so a cancel just drops the unimported
-  // buffer.
-  // PJ4 has no such staging buffer: each topic's data is written DIRECTLY into
-  // the shared host DataWriter / ObjectStore in pullTopicsAsync's on_done as it
-  // completes (the [C1] streaming-write design). By the time Cancel is observed,
-  // topics that already finished have ALREADY written into the live store, and
-  // the ToolboxHostView ABI exposes no removeDataSource / removeTopic to roll
-  // those writes back. So we KEEP the topics that finished before the cancel and
-  // flush them here — surfacing real, already-landed data is strictly safer than
-  // a fake "discard" that would leave the catalog/store inconsistent. The user
-  // is told exactly what happened via the "kept the topics that finished first"
-  // notification below.
+  // CANCEL KEEPS what already landed. PJ3 discards partial data on cancel because it stages each batch locally and
+  // imports only at completion; here each topic is written DIRECTLY into the shared store as it completes, and the
+  // ToolboxHostView ABI has no removeDataSource / removeTopic to roll those writes back. Flushing the finished
+  // topics is safer than a fake "discard" that would leave catalog and store inconsistent; the "kept the topics
+  // that finished first" notification below tells the user.
   if (imported_any && runtime_host_provider_) {
     auto runtime = runtime_host_provider_();
     if (runtime.valid()) {

@@ -15,7 +15,7 @@ extern "C" {
 namespace pj3d {
 namespace {
 
-// Map (TYPE letter, SIZE bytes) to a canonical datatype. kUnknown if unsupported.
+// (TYPE letter, SIZE bytes) -> datatype; kUnknown if unsupported.
 Datatype toDatatype(char type, uint32_t size) {
   switch (type) {
     case 'I':
@@ -53,8 +53,7 @@ Datatype toDatatype(char type, uint32_t size) {
   }
 }
 
-// Parse a whole token as an unsigned 32-bit int. nullopt on any junk / overflow
-// / trailing characters, so callers can surface a clean error instead of throwing.
+// Whole token as uint32; nullopt on junk, overflow or trailing characters.
 std::optional<uint32_t> parseU32(const std::string& tok) {
   uint32_t value = 0;
   const char* first = tok.data();
@@ -76,15 +75,14 @@ std::vector<std::string> tokenize(const std::string& line) {
   return out;
 }
 
-// Decode a PCD binary_compressed body (uint32 compressed_size, uint32
-// uncompressed_size, then the LZF blob). `body` is the bytes at/after the DATA
-// line. Validates the declared uncompressed size against the layout BEFORE
-// allocating (decompression-bomb guard), then transposes SoA -> AoS.
+// `body` is (uint32 compressed_size, uint32 uncompressed_size, LZF blob) from the DATA line on. The declared
+// uncompressed size is validated against the layout BEFORE allocating (decompression-bomb guard); the
+// decompressed field-major (SoA) data is transposed to packed points (AoS).
 PJ::Expected<PJ::sdk::PointCloud> decodeBinaryCompressed(
     const std::vector<ParsedField>& fields, uint32_t width, uint32_t height, std::string frame_id,
     PJ::Span<const uint8_t> body) {
-  constexpr size_t kU32 = 4;                     // one little-endian uint32
-  constexpr size_t kSizeHeaderBytes = 2 * kU32;  // compressed_size + uncompressed_size
+  constexpr size_t kU32 = 4;
+  constexpr size_t kSizeHeaderBytes = 2 * kU32;
 
   auto layout_or = computeLayout(fields);
   if (!layout_or) {
@@ -92,13 +90,12 @@ PJ::Expected<PJ::sdk::PointCloud> decodeBinaryCompressed(
   }
   const uint32_t point_step = layout_or->point_step;
   const uint64_t n = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
-  // A positive point count with zero stride (e.g. an all-COUNT-0 field set)
-  // is malformed. buildPointCloud rejects it, but only AFTER our transpose
-  // loop would spin width*height times — reject it here first.
+  // Zero stride with points (e.g. all-COUNT-0 fields) is malformed; buildPointCloud rejects it only after the
+  // transpose loop would have spun width*height times.
   if (point_step == 0 && n > 0) {
     return PJ::unexpected("PCD binary_compressed: points but zero stride (no fields)");
   }
-  // Bound the expected packed size BEFORE trusting the header (guards the alloc).
+  // Bound the packed size BEFORE trusting the header.
   if (point_step != 0 && n > kMaxCloudBytes / static_cast<uint64_t>(point_step)) {
     return PJ::unexpected("PCD binary_compressed: cloud too large");
   }
@@ -113,8 +110,7 @@ PJ::Expected<PJ::sdk::PointCloud> decodeBinaryCompressed(
   uint32_t uncomp_size = 0;
   std::memcpy(&comp_size, p, kU32);
   std::memcpy(&uncomp_size, p + kU32, kU32);
-  // Reject a declared uncompressed size that disagrees with the layout BEFORE
-  // allocating, so a hostile header can't force a huge allocation.
+  // BEFORE allocating, so a hostile header can't force a huge allocation.
   if (static_cast<uint64_t>(uncomp_size) != expected) {
     return PJ::unexpected("PCD binary_compressed: uncompressed size mismatch");
   }
@@ -126,7 +122,6 @@ PJ::Expected<PJ::sdk::PointCloud> decodeBinaryCompressed(
   if (got != uncomp_size) {
     return PJ::unexpected("PCD binary_compressed: LZF decompress failed");
   }
-  // Transpose SoA (field-major) -> AoS packed points.
   std::vector<uint8_t> aos(static_cast<size_t>(expected));
   size_t soa_off = 0;
   for (const auto& pf : layout_or->fields) {
@@ -220,8 +215,7 @@ PJ::Expected<PJ::sdk::PointCloud> readPcd(PJ::Span<const uint8_t> file_bytes, st
     return PJ::unexpected("PCD DATA mode not recognized: " + data_mode);
   }
 
-  // COUNT is optional: absent entirely -> default 1 per field. But if present,
-  // it must have one entry per field (same arity rule as SIZE/TYPE).
+  // COUNT is optional (default 1 per field); if present it needs one entry per field, like SIZE/TYPE.
   const bool have_counts = !counts_tok.empty();
   if (have_counts && counts_tok.size() != names.size()) {
     return PJ::unexpected("PCD header: COUNT count does not match FIELDS");

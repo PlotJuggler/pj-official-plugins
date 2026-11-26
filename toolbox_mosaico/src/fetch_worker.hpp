@@ -45,18 +45,14 @@ class FetchWorker {
   FetchWorker();
   ~FetchWorker();
 
-  /// Provide a callback that returns the toolbox host. Set once on the GUI
-  /// thread; reads happen on the worker thread, so the callback must be
-  /// thread-safe or always return a stable view.
+  /// Returns the toolbox host. Set once on the GUI thread, read on the worker thread: the callback must be
+  /// thread-safe or return a stable view.
   void setHostProvider(std::function<PJ::sdk::ToolboxHostView()> provider) {
     host_provider_ = std::move(provider);
   }
 
-  /// Provide the toolbox runtime host (progress + parser-ingest tail slots).
-  /// Same contract as setHostProvider: set once at bind, read from worker/pool
-  /// threads, so the callback must be thread-safe or return a stable view.
-  /// Optional — when unset (or the host predates the tail slots), Downloads run
-  /// exactly as before, just without host-side progress/stop integration.
+  /// Toolbox runtime host (progress + parser-ingest tail slots). Same contract as setHostProvider. Optional: when
+  /// unset (or the host predates the tail slots), Downloads run without host-side progress/stop integration.
   void setRuntimeHostProvider(std::function<PJ::ToolboxRuntimeHostView()> provider) {
     runtime_host_provider_ = std::move(provider);
   }
@@ -92,26 +88,20 @@ class FetchWorker {
   /// metadata) on demand for the Info panel. Calls topicMetadataReady.
   void fetchTopicMetadataAsync(TopicRef topic);
 
-  /// Pull several topics of the same sequence in parallel via the SDK's
-  /// connection pool. Each topic emits its own pullProgress / pullFinished
-  /// callback; the per-topic host-write section is serialized by host_write_mu_
-  /// so the plugin's bookkeeping is safe regardless of SDK-internal locking.
-  /// After all topics complete, allFetchesComplete fires once.
+  /// Pull several topics of the same sequence in parallel via the SDK's connection pool. Each topic emits its own
+  /// pullProgress / pullFinished callback; per-topic host writes are serialized by host_write_mu_. After all
+  /// topics complete, allFetchesComplete fires once.
   void pullTopicsAsync(
       std::string sequence_name, std::vector<std::string> topic_names, std::int64_t start_ns, std::int64_t end_ns);
 
   std::function<void(ConnectResult result)> connectFinished;
-  /// Full SequenceInfo entries, including user_metadata (used by the Lua
-  /// metadata filter). The name-only callback is kept
-  /// for code paths that only want names.
+  /// Full SequenceInfo entries, including user_metadata (used by the Lua metadata filter).
   std::function<void(std::vector<SequenceInfo> sequences)> sequencesReady;
   std::function<void(std::vector<std::string> names)> sequenceNamesReady;
-  // Progressive discovery (PJ3 parity): the initial list, so the table can
-  // populate before per-sequence detail finishes streaming in...
+  // Progressive discovery: the initial list lets the table populate before per-sequence detail streams in...
   std::function<void(std::vector<SequenceInfo> sequences)> sequenceListStarted;
-  // ...and one callback per sequence as the server fills in its detail
-  // (min/max timestamp, size, metadata), so Date/Size columns populate
-  // incrementally rather than snapping in all at once.
+  // ...then one callback per sequence as the server fills in its detail (min/max timestamp, size, metadata), so
+  // Date/Size columns populate incrementally.
   std::function<void(SequenceInfo sequence)> sequenceInfoReady;
   std::function<void(std::string sequence_name, std::vector<std::string> topic_names)> topicsReady;
   /// Full TopicInfo list from listTopics (name + size + timestamp range +
@@ -136,16 +126,12 @@ class FetchWorker {
   std::function<void()> datasetDiscarded;
   std::function<void(PullResultEvent result)> pullFinished;
   std::function<void(std::string sequence_name)> allFetchesComplete;
-  /// Surfaced for non-fatal RPC failures that don't map to a topic/pull
-  /// callback (e.g. listTopics returning a real server error rather than
-  /// NotImplemented). Routed to the app notification bell (PJ3 parity:
-  /// fetch_worker.cpp:105-117 emits errorOccurred for these statuses).
+  /// Non-fatal RPC failures that don't map to a topic/pull callback (e.g. listTopics returning a real server error
+  /// rather than NotImplemented). Routed to the app notification bell.
   std::function<void(std::string message)> errorOccurred;
-  /// The HOST asked this download to stop (title-bar Stop → the ingest Stop
-  /// flag, or progress_update returning false). requestCancel() has already
-  /// been called when this fires; the dialog uses it to flip its own
-  /// "Cancelling…" UI state exactly as if the in-panel Cancel button had been
-  /// pressed. Fired at most once per Download, from a background thread.
+  /// The HOST asked this download to stop (title-bar Stop -> the ingest Stop flag, or progress_update returning
+  /// false). requestCancel() has already been called; the dialog flips its "Cancelling..." UI state as if the
+  /// in-panel Cancel button had been pressed. Fired at most once per Download, from a background thread.
   std::function<void()> hostStopRequested;
 
  private:
@@ -191,9 +177,8 @@ class FetchWorker {
   /// focused test). Safe when no client/pull is active.
   void cancelActivePulls();
 
-  /// True only when the runtime host can roll back an eager provisional data
-  /// source. Older hosts keep the original lazy-on-first-importable-topic
-  /// behavior.
+  /// True only when the runtime host can roll back an eager provisional data source. Older hosts create it lazily
+  /// on the first importable topic.
   [[nodiscard]] bool supportsProvisionalIngestDiscard() const;
 
   /// Invoke the optional discard tail slot across both the released SDK view
@@ -259,12 +244,10 @@ class FetchWorker {
   PJ::sdk::source::IngestOutcomeLedger outcome_ledger_{{}};
   // Cumulative decoded bytes per topic, published as a batch-wide sum.
   std::map<std::string, std::int64_t, std::less<>> progress_bytes_by_topic_;
-  // [C1] Serializes the ENTIRE host-write critical section in pullTopicsAsync's
-  // per-topic on_done callback (datasetForFetch + register/append/push), which
-  // runs on SDK connection-pool worker threads against a host DataWriter that
-  // has no internal mutex. Self-owned: the plugin no longer relies on the SDK
-  // serializing on_done. Lock order is always host_write_mu_ -> fetch_dataset_mu_
-  // (the latter taken inside datasetForFetch), never the reverse.
+  // Serializes the ENTIRE host-write critical section in pullTopicsAsync's per-topic on_done callback
+  // (datasetForFetch + register/append/push), which runs on SDK connection-pool worker threads against a host
+  // DataWriter that has no internal mutex. Lock order is always host_write_mu_ -> fetch_dataset_mu_ (the latter
+  // taken inside datasetForFetch), never the reverse.
   std::mutex host_write_mu_;
 };
 

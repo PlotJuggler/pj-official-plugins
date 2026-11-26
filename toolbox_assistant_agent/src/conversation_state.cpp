@@ -11,23 +11,15 @@ namespace assistant_agent {
 
 namespace {
 
-// Persisted key, next to the assistant.* settings keys (assistant_dialog.cpp)
-// in the same shared store. `key` is the backend ("claude"/"codex"); the
-// "claude" form is unchanged from the pre-Codex, pre-harness-store design: it
-// already meant "the session to resume", just alongside two keys this build
-// no longer writes (see scrubLegacyConversationKeys).
+// `key` is the backend ("claude"/"codex").
 std::string activeSessionIdKey(const std::string& key) {
   return "assistant.conv." + key + ".session_id";
 }
 
-// What an older build of this plugin persisted and this one does not: the
-// full transcript, copied into settings on every completed turn, and the
-// catalog hash that rode along with it. Both are superseded by reading the
-// harness's own session store on demand (claude_sessions.hpp).
+// Keys older builds wrote and this build no longer does; see scrubLegacyConversationKeys.
 constexpr const char* kKeyLegacyTranscript = "assistant.conv.transcript";
 constexpr const char* kKeyLegacyCatalogHash = "assistant.conv.claude.catalog_hash";
 
-// Persisted key for the custom-name map, next to activeSessionIdKey above.
 std::string conversationTitlesKey(const std::string& key) {
   return "assistant.conv." + key + ".titles";
 }
@@ -53,7 +45,7 @@ ConversationTitles loadConversationTitles(const SettingsStore& store, const std:
   }
   const nlohmann::json doc = nlohmann::json::parse(raw, nullptr, /*allow_exceptions=*/false);
   if (!doc.is_object()) {
-    return {};  // corrupt store, or a shape this build doesn't recognize -- no names beats throwing
+    return {};
   }
   ConversationTitles titles;
   for (const auto& [id, name] : doc.items()) {
@@ -66,7 +58,7 @@ ConversationTitles loadConversationTitles(const SettingsStore& store, const std:
 
 void saveConversationTitles(SettingsStore& store, const std::string& key, const ConversationTitles& titles) {
   if (titles.empty()) {
-    // Mirrors clearActiveSessionId's convention: an empty string, not remove().
+    // Empty string, not remove(), like clearActiveSessionId.
     store.setString(conversationTitlesKey(key), "");
     return;
   }
@@ -94,7 +86,7 @@ void removeConversationTitle(SettingsStore& store, const std::string& key, const
 void pruneConversationTitles(SettingsStore& store, const std::string& key, const std::vector<std::string>& live_ids) {
   ConversationTitles titles = loadConversationTitles(store, key);
   if (titles.empty()) {
-    return;  // nothing to prune, nothing to write
+    return;
   }
   bool changed = false;
   for (auto it = titles.begin(); it != titles.end();) {
@@ -119,9 +111,8 @@ void scrubLegacyConversationKeys(SettingsStore& store) {
 }
 
 void scrubRetiredOllamaKeys(SettingsStore& store) {
-  // What the retired Ollama backend left behind: its settings and up to 256 KB
-  // of dead conversation. Gated on the current values, so a scrubbed store —
-  // or one that never saw Ollama — costs three reads and writes nothing.
+  // Up to 256 KB of dead history; gated on the current values so a clean store
+  // costs three reads and no writes.
   for (const char* key : {"assistant.ollama.url", "assistant.ollama.model", "assistant.conv.ollama.history"}) {
     if (!store.getString(key, "").empty()) {
       store.setString(key, "");

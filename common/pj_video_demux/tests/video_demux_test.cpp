@@ -1,8 +1,6 @@
-// Unit tests for pj_video_demux. The byte-rewrite core (avccToAnnexB,
-// prependAv1SeqHeader) is fixture-free; per-codec index+read e2e tests run
-// against the committed h264/hevc/av1 fixtures in tests/data/ (path injected via
-// PJ_VIDEO_DEMUX_TEST_DATA_DIR). An optional PJ_TEST_VIDEO env var points the
-// e2e at an external file instead.
+// The byte-rewrite core (avccToAnnexB, prependAv1SeqHeader) is fixture-free; per-codec index+read
+// e2e tests run against the committed fixtures in tests/data/ (PJ_VIDEO_DEMUX_TEST_DATA_DIR).
+// PJ_TEST_VIDEO points the e2e at an external file instead.
 #include "pj_video_demux/video_demux.hpp"
 
 #include <gtest/gtest.h>
@@ -70,10 +68,8 @@ TEST(VideoDemuxTest, Av1PassesNonKeyframeThrough) {
   EXPECT_EQ(out, sample);
 }
 
-// Index a committed fixture, then read its first access unit. The first AU must
-// be a keyframe, and (since keyframes carry the parameter sets / seq header) the
-// assembled bytes must begin with `param_sets` — the codec-agnostic proxy for a
-// self-decodable keyframe.
+// The first AU must be a keyframe and its assembled bytes must begin with `param_sets`: the
+// codec-agnostic proxy for a self-decodable keyframe.
 void indexAndReadFixture(const std::string& path, const std::string& expected_format) {
   auto idx = PJ::video_demux::indexFile(path);
   ASSERT_TRUE(idx.has_value()) << idx.error();

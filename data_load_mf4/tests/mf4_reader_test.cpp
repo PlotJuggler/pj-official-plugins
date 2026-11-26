@@ -268,8 +268,7 @@ TEST(Mf4Reader, UnsupportedChannelIsSkippedWithoutCrash) {
       path, 2,
       [](mdf::IChannelGroup* cg) {
         auto* ok = addChannel(cg, "ok", mdf::ChannelDataType::FloatLe, 8);
-        // Complex is unsupported in v1; mdflib returns a null observer for it,
-        // which the reader must skip (not dereference).
+        // Complex is unsupported; mdflib returns a null observer for it, which the reader must skip.
         addChannel(cg, "cplx", mdf::ChannelDataType::ComplexLe, 16);
         return std::vector<mdf::IChannel*>{ok};
       },
@@ -468,8 +467,7 @@ TEST(Mf4Reader, ReadCanGroupStopsEarlyWhenCallbackReturnsFalse) {
 }
 
 TEST(Mf4Reader, ReadsMdf3File) {
-  // Older MDF v3 (.mf3) via the same mdflib reader API. mdflib supports v3;
-  // this guards that the version-agnostic Mf4Reader path handles it too.
+  // MDF v3 (.mf3) through the same version-agnostic reader path.
   const auto p = std::filesystem::temp_directory_path() / "mf4rtest_v3.mf3";
   std::error_code ec;
   std::filesystem::remove(p, ec);

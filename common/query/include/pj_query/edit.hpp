@@ -14,20 +14,18 @@
 
 namespace PJ::query {
 
-// What a dropdown action would do at this cursor position.
 enum class Action {
   kDisabled,  // dropdown should be greyed out
   kInsert,    // append new text at cursor (no existing token to replace)
   kReplace,   // overwrite the token the cursor is on
 };
 
-// Full analysis of what the cursor position means for the UI.
-// Computed once per cursor move, used by all three dropdowns.
+// What the cursor position means for the UI; computed once per cursor move, used by all three
+// dropdowns.
 struct CursorContext {
   int cursor = 0;
 
-  // The token the cursor is on or touching.
-  // -1 if cursor is in whitespace between tokens.
+  // The token the cursor is on or touching; -1 in whitespace between tokens.
   int token_index = -1;
   Token active_token;  // valid only when token_index >= 0
 
@@ -36,12 +34,10 @@ struct CursorContext {
   std::string context_key;
   int suggestion_count = 0;
 
-  // What each dropdown would do.
   Action key_action = Action::kDisabled;
   Action op_action = Action::kDisabled;
   Action val_action = Action::kDisabled;
 
-  // Convenience: is the dropdown usable at all?
   [[nodiscard]] bool canPickKey() const {
     return key_action != Action::kDisabled;
   }
@@ -53,11 +49,9 @@ struct CursorContext {
   }
 };
 
-// Find the token whose span touches the cursor.
-// Cursor at position P is "on" a token if P is in [start, end].
-// This means the cursor right after a token (P == end) is still on it —
-// the common case when the user just finished typing a word.
-// Returns token index, or -1 if cursor is in whitespace.
+// Index of the token whose span touches the cursor, or -1 in whitespace. The cursor is "on" a
+// token if it is in [start, end], so right after a token (P == end), when the user just finished
+// typing a word, it is still on it.
 [[nodiscard]] inline int findActiveToken(const std::vector<Token>& tokens, int cursor) {
   for (int index = 0; index < static_cast<int>(tokens.size()); ++index) {
     if (cursor >= tokens[static_cast<std::size_t>(index)].start &&
@@ -68,13 +62,11 @@ struct CursorContext {
   return -1;
 }
 
-// Compute the full cursor context for a position in the query text.
 [[nodiscard]] inline CursorContext analyze(std::string_view text, int cursor, const Schema& schema) {
   CursorContext ctx;
   ctx.cursor = cursor;
 
-  // Tokenize the FULL text once; both the active-token lookup and complete()
-  // consume slices of this stream.
+  // The FULL text is tokenized once; both the active-token lookup and complete() consume slices.
   Lexer lex(text);
   auto tokens = lex.tokenize();
 
@@ -83,9 +75,8 @@ struct CursorContext {
     ctx.active_token = tokens[static_cast<std::size_t>(ctx.token_index)];
   }
 
-  // Slice the stream at the cursor: everything up to and including the active
-  // token (which the Lexer saw in full — "rob|ot" analyzes as "robot"), or
-  // just the tokens fully before a cursor sitting in whitespace.
+  // Everything up to and including the active token (which the Lexer saw in full: "rob|ot"
+  // analyzes as "robot"), or just the tokens fully before a cursor sitting in whitespace.
   std::vector<Token> before_cursor;
   if (ctx.token_index >= 0) {
     before_cursor.assign(tokens.begin(), tokens.begin() + ctx.token_index + 1);
@@ -101,10 +92,8 @@ struct CursorContext {
   ctx.context_key = comp.current_key;
   ctx.suggestion_count = static_cast<int>(comp.suggestions.size());
 
-  // --- Derive actions ---
-  // Replace: cursor is on an existing token of the matching type.
-  // Insert:  expect says this token type goes next.
-  // Both can be true (cursor on key → key=Replace AND op=Insert).
+  // Replace: cursor is on an existing token of the matching type. Insert: expect says this token
+  // type goes next. Both can hold (cursor on a key: key=Replace AND op=Insert).
 
   bool on_key = ctx.token_index >= 0 && ctx.active_token.type == TokenType::kKey;
   bool on_op = ctx.token_index >= 0 && ctx.active_token.type == TokenType::kOperator;
@@ -139,8 +128,6 @@ struct CursorContext {
 
   return ctx;
 }
-
-// --- String formatting for debug display ---
 
 [[nodiscard]] inline const char* actionStr(Action first) {
   switch (first) {
@@ -192,7 +179,6 @@ struct CursorContext {
   return "?";
 }
 
-// Format the cursor context as a two-line debug string.
 [[nodiscard]] inline std::string formatDebug(const CursorContext& ctx) {
   std::string line1 = "pos:" + std::to_string(ctx.cursor);
 
@@ -229,10 +215,8 @@ struct CursorContext {
   return line1 + "\n" + line2;
 }
 
-// --- Applying a dropdown completion to the query text ---
-
-// Result of applying a completion: the new query text and the cursor offset
-// just past the inserted token (after its trailing space).
+// The new query text and the cursor offset just past the inserted token (after its trailing
+// space).
 struct EditResult {
   std::string text;
   int cursor = 0;
@@ -242,14 +226,13 @@ struct EditResult {
   return character == ' ' || character == '\t' || character == '\n' || character == '\r';
 }
 
-// Format a schema value for insertion into the query. The Lexer classifies a
-// bare word as a Key and a quoted word as a Value (token.hpp), so a string value
-// like `cloudy` MUST be quoted to land as `weather == "cloudy"` — otherwise it
-// lexes as a second key and the whole clause falls apart. Numeric values lex as
-// Value bare, so they're left unquoted; embedded quotes/backslashes are escaped.
+// The Lexer classifies a bare word as a Key and a quoted word as a Value (token.hpp), so a string
+// value like `cloudy` MUST be quoted to land as `weather == "cloudy"`; otherwise it lexes as a
+// second key and the clause falls apart. Numeric values lex as Value bare and stay unquoted;
+// embedded quotes/backslashes are escaped.
 [[nodiscard]] inline std::string quoteValueForQuery(std::string_view value) {
   if (PJ::parseNumber<double>(value)) {
-    return std::string(value);  // parses fully as a number → insert bare
+    return std::string(value);
   }
   std::string out;
   out.reserve(value.size() + 2);
@@ -264,25 +247,21 @@ struct EditResult {
   return out;
 }
 
-// Splice the chosen dropdown `item` into `text` using the cursor context.
-// `action` is the action of the dropdown that fired (ctx.key_action /
-// op_action / val_action):
-//   - Insert  → `item` is inserted at the cursor.
-//   - Replace → the active token's [start, end) span is overwritten.
-// Spacing mirrors PJ3 QueryBar::applyInsert / applyEdit: a leading space is
-// added when the preceding char isn't whitespace; a trailing space is always
-// added on Insert, and on Replace unless the span is already followed by
-// whitespace. The returned cursor lands just past the inserted text.
+// Splices the chosen dropdown `item` into `text`. `action` is the action of the dropdown that
+// fired (ctx.key_action / op_action / val_action): Insert inserts `item` at the cursor, Replace
+// overwrites the active token's [start, end) span. Spacing mirrors PJ3 QueryBar::applyInsert /
+// applyEdit: a leading space is added when the preceding char isn't whitespace; a trailing space
+// is always added on Insert, and on Replace unless the span is already followed by whitespace.
+// The returned cursor lands just past the inserted text.
 [[nodiscard]] inline EditResult applyCompletion(
     std::string_view text, const CursorContext& ctx, Action action, std::string_view item) {
   std::string out(text);
   const int length = static_cast<int>(out.size());
 
   const bool replace = (action == Action::kReplace && ctx.token_index >= 0);
-  // Insert: when the caret sits on a token, splice in *after* that token rather
-  // than at the raw caret — a mid-token caret would otherwise cut the word in
-  // half (e.g. picking "==" at "wea|ther" → "wea == ther"). In whitespace
-  // (no active token), insert at the caret. Replace: overwrite the token span.
+  // Insert on a token splices in *after* that token: a mid-token caret would otherwise cut the
+  // word in half (picking "==" at "wea|ther" would give "wea == ther"). In whitespace, insert at
+  // the caret.
   int from;
   int to;
   if (replace) {
@@ -293,7 +272,7 @@ struct EditResult {
   } else {
     from = to = ctx.cursor;
   }
-  // Clamp defensively against a stale cursor / token span.
+  // Clamp against a stale cursor / token span.
   from = from < 0 ? 0 : (from > length ? length : from);
   to = to < from ? from : (to > length ? length : to);
 

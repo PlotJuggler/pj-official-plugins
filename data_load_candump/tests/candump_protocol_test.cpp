@@ -1,5 +1,5 @@
-// J1939 / NMEA 2000 interfaces: the protocol saved per interface, and imports
-// of test_data/n2k.log (see test_data/README.md) through the BUILT plugin.
+// J1939 / NMEA 2000 interfaces: the protocol saved per interface, and imports of test_data/n2k.log (see
+// test_data/README.md) through the BUILT plugin.
 #include <gtest/gtest.h>
 
 #include <nlohmann/json.hpp>
@@ -44,7 +44,7 @@ TEST(CandumpProtocolConfig, RoundTripsAndSkipsBadEntries) {
 }
 
 TEST(CandumpProtocolConfig, AllRawSavesNoKey) {
-  // Raw is the default: a config from before protocols existed stays byte-for-byte the same shape.
+  // Raw is the default: nothing is saved for it.
   CandumpDialog dialog;
   ASSERT_TRUE(dialog.loadConfig(json{{"filepath", ""}}.dump()));
   EXPECT_FALSE(json::parse(dialog.saveConfig()).contains("iface_protocols"));

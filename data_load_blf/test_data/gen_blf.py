@@ -9,9 +9,8 @@ Writes 3 known CAN frames on two channels (lblf reports channels 1-based):
   ch1 std 0x100  data D0 07 00 00 00 00 00 00   @ +10 ms
   ch2 ext 0x18FEF100 (J1939) data 01..08        @ +20 ms
 
-The committed .blf is checked in (250 bytes); its absolute measurement-start
-time is whatever "now" was when generated, so tests assert only on the frame
-contents and relative timestamp spacing.
+The measurement-start time is whatever "now" was when generated, so tests assert only on the frame contents and
+relative timestamp spacing.
 """
 import can
 

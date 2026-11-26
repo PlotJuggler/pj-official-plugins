@@ -12,8 +12,6 @@
 
 namespace PJ::query {
 
-// --- AST node types ---
-
 enum class NodeType {
   kCompare,  // key op value       (e.g., robot == "humanoid")
   kBinary,   // left and/or right  (e.g., A and B)
@@ -26,7 +24,7 @@ enum class NodeType {
 struct Expr;
 using ExprPtr = std::unique_ptr<Expr>;
 
-// Base expression node. All AST nodes carry their source range.
+// Base expression node; every node carries its source range.
 struct Expr {
   NodeType type;
   int start = 0;  // source offset of first token
@@ -41,7 +39,6 @@ struct Expr {
   Expr& operator=(Expr&&) = default;
 };
 
-// key op value
 struct CompareExpr : Expr {
   Token key;
   Token op;
@@ -57,7 +54,6 @@ struct CompareExpr : Expr {
   }
 };
 
-// left (and|or) right
 struct BinaryExpr : Expr {
   ExprPtr left;
   Token connective;  // the "and" / "or" token
@@ -70,7 +66,6 @@ struct BinaryExpr : Expr {
   }
 };
 
-// not expr
 struct NotExpr : Expr {
   Token not_token;
   ExprPtr operand;
@@ -81,7 +76,6 @@ struct NotExpr : Expr {
   }
 };
 
-// ( expr )
 struct GroupExpr : Expr {
   Token open;
   ExprPtr inner;
@@ -97,7 +91,7 @@ struct GroupExpr : Expr {
   }
 };
 
-// Bare key — incomplete clause (user is still typing).
+// Incomplete clause: the user is still typing.
 struct KeyExpr : Expr {
   Token key;
 
@@ -107,7 +101,7 @@ struct KeyExpr : Expr {
   }
 };
 
-// key op — missing value (user is still typing).
+// Missing value: the user is still typing.
 struct PartialExpr : Expr {
   Token key;
   Token op;
@@ -119,8 +113,6 @@ struct PartialExpr : Expr {
   }
 };
 
-// --- Parser ---
-//
 // Parses a token stream into an AST. Handles:
 //   - Full clauses: key op value
 //   - Partial clauses: bare key, key op (missing value)
@@ -150,7 +142,6 @@ class Parser {
     pos_ = 0;
     auto expr = parseOr();
 
-    // If there are leftover tokens, the parse is incomplete.
     bool leftover = pos_ < static_cast<int>(tokens_.size());
 
     bool all_complete = expr && checkComplete(expr.get());
@@ -159,7 +150,6 @@ class Parser {
   }
 
  private:
-  // or-level: lowest precedence
   ExprPtr parseOr() {
     auto left = parseAnd();
     if (!left) {
@@ -179,7 +169,6 @@ class Parser {
     return left;
   }
 
-  // and-level: higher precedence than or
   ExprPtr parseAnd() {
     auto left = parseUnary();
     if (!left) {
@@ -198,7 +187,6 @@ class Parser {
     return left;
   }
 
-  // not-level
   ExprPtr parseUnary() {
     if (pos_ < size() && tok(pos_).type == TokenType::kNot) {
       auto not_tok = tok(pos_++);
@@ -212,66 +200,56 @@ class Parser {
     return parsePrimary();
   }
 
-  // Primary: group, comparison, shorthand value, or bare key
   ExprPtr parsePrimary() {
     if (pos_ >= size()) {
       return nullptr;
     }
 
-    // Grouped expression: ( expr )
     if (tok(pos_).type == TokenType::kOpenParen) {
       auto open = tok(pos_++);
       auto inner = parseOr();
       if (pos_ < size() && tok(pos_).type == TokenType::kCloseParen) {
         auto close = tok(pos_++);
         if (!inner) {
-          // Empty parens — create a group with no inner.
           return std::make_unique<GroupExpr>(std::move(open), nullptr, std::move(close));
         }
         return std::make_unique<GroupExpr>(std::move(open), std::move(inner), std::move(close));
       }
-      // Unclosed paren — return inner or null.
+      // Unclosed paren: keep what was parsed.
       return inner;
     }
 
-    // Shorthand value: a bare value after connective inherits last_key + last_op.
-    // e.g., robot == "a" or "b" → the "b" is parsed here as a shorthand compare.
+    // Shorthand: a bare value after a connective inherits last_key + last_op, so in
+    // `robot == "a" or "b"` the "b" is parsed here.
     if (tok(pos_).type == TokenType::kValue && !last_key_.text.empty()) {
       auto val = tok(pos_++);
       return std::make_unique<CompareExpr>(last_key_, last_op_, std::move(val));
     }
 
-    // Key — start of a comparison or bare key.
     if (tok(pos_).type == TokenType::kKey) {
       auto key = tok(pos_++);
 
-      // Key + operator?
       if (pos_ < size() && tok(pos_).type == TokenType::kOperator) {
         auto op = tok(pos_++);
 
-        // Key + operator + value?
         if (pos_ < size() && tok(pos_).type == TokenType::kValue) {
           auto val = tok(pos_++);
 
-          // Remember for shorthand expansion.
           last_key_ = key;
           last_op_ = op;
 
           return std::make_unique<CompareExpr>(std::move(key), std::move(op), std::move(val));
         }
 
-        // Key + operator, no value yet (partial).
         last_key_ = key;
         last_op_ = op;
         return std::make_unique<PartialExpr>(std::move(key), std::move(op));
       }
 
-      // Bare key.
       return std::make_unique<KeyExpr>(std::move(key));
     }
 
-    // Unexpected token — skip it to avoid infinite loop.
-    ++pos_;
+    ++pos_;  // unexpected token: skip it, or the caller loops forever
     return nullptr;
   }
 
@@ -297,8 +275,8 @@ class Parser {
     return false;
   }
 
-  // Centralizes the int → size_type cast so -Wsign-conversion stays clean
-  // (positions are int end-to-end: they mirror Qt cursor offsets).
+  // Centralizes the int -> size_type cast (-Wsign-conversion); positions are int end-to-end
+  // because they mirror Qt cursor offsets.
   [[nodiscard]] const Token& tok(int index) const {
     return tokens_[static_cast<std::size_t>(index)];
   }
@@ -310,14 +288,12 @@ class Parser {
   std::vector<Token> tokens_;
   int pos_ = 0;
 
-  // Last seen key+op for shorthand expansion.
+  // For shorthand expansion.
   Token last_key_;
   Token last_op_;
 };
 
-// --- Helpers ---
-
-// Serialize an AST back to a Lua-compatible string (with shorthand expanded).
+// Serializes an AST back to a Lua-compatible string (shorthand expanded).
 inline std::string serialize(const Expr* expr) {
   if (!expr) {
     return {};

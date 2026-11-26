@@ -19,7 +19,7 @@ namespace {
 
 using nlohmann::json;
 
-// The highest document schema (a major version) this renderer understands.
+// Highest document schema (major version) this renderer understands.
 constexpr int kSupportedSchema = 1;
 
 constexpr std::string_view kMarketplace = "File → Extensions Marketplace…";
@@ -31,15 +31,13 @@ constexpr std::string_view kTruncated = "(list truncated)";
 constexpr std::string_view kUnreadableNote =
     "(This PlotJuggler's own feature listing could not be read, so this reference is used instead.)";
 
-// The built-in reference is returned whole whatever the budget, so the
-// smallest budget the setting allows must hold it with its header, reference
-// line and note (the margin; FeaturesBudget.TheMinimumHoldsTheBuiltInReference
+// The built-in reference is returned whole whatever the budget; the +400 margin covers
+// its header, reference line and note (FeaturesBudget.TheMinimumHoldsTheBuiltInReference
 // checks the exact length).
 static_assert(kFallbackFeaturesBody.size() + 400 <= kMinFeaturesBudgetChars);
 
-// Collapses every run of whitespace or control characters into one space and
-// trims: a host string can then never add a line, let alone the blank line
-// that would end the block early.
+// Collapses whitespace/control runs into one space and trims, so a host string can
+// never add the blank line that would end the block early.
 std::string oneLine(std::string_view s) {
   std::string out;
   out.reserve(s.size());
@@ -59,14 +57,12 @@ std::string oneLine(std::string_view s) {
   return out;
 }
 
-// A string field, flattened; empty when missing or not a string (unknown).
 std::string text(const json& obj, const char* key) {
   const auto it = obj.find(key);
   return it != obj.end() && it->is_string() ? oneLine(it->get_ref<const std::string&>()) : std::string{};
 }
 
-// Ends a summary with a full stop unless it already ends a sentence, so the
-// next part ("Start: ...") reads as a new one.
+// Ends with a full stop unless already a sentence end, so the next part reads as new.
 std::string sentence(std::string s) {
   if (s.empty()) {
     return s;
@@ -107,15 +103,15 @@ struct Entry {
   [[nodiscard]] bool isParser() const {
     return category == "message_parser";
   }
-  // A parser always gets its no-panel sentence, even with no entry point:
-  // without it the model goes looking for the parser's own window.
+  // Always given, even with no entry point: otherwise the model looks for the
+  // parser's own window.
   [[nodiscard]] std::string parserRoute() const {
     return entry_point.empty() ? std::string(kNoPanel) : entry_point;
   }
 };
 
-// nullopt when the list is missing or not an array: unknown, so its section
-// is left out rather than rendered as empty.
+// nullopt when the list is missing or not an array: unknown, so its section is left
+// out rather than rendered as empty.
 std::optional<std::vector<Entry>> readEntries(const json& doc, const char* key) {
   const auto it = doc.find(key);
   if (it == doc.end() || !it->is_array()) {
@@ -136,9 +132,8 @@ std::optional<std::vector<Entry>> readEntries(const json& doc, const char* key) 
   return out;
 }
 
-// Name order (case-insensitive, id as tie-break) and the precedence the
-// document promises (loaded > installed_not_loaded > available): an id
-// already rendered in a higher list is skipped, should a host ever repeat it.
+// Name order (case-insensitive, id as tie-break); an id already rendered in a
+// higher-precedence list (loaded > installed_not_loaded > available) is skipped.
 void sortAndDedup(std::vector<Entry>& list, std::set<std::string>& seen) {
   std::stable_sort(list.begin(), list.end(), [](const Entry& a, const Entry& b) {
     const std::string la = PJ::sdk::lowerAscii(a.name);
@@ -172,13 +167,10 @@ void append(std::string& line, const std::string& part) {
   }
 }
 
-// " Start: <entry point>" style tail, empty without an entry point.
 std::string startSuffix(const Entry& e, std::string_view label) {
   return e.entry_point.empty() ? std::string{} : std::string(label) + e.entry_point;
 }
 
-// A parser always gets its route sentence; any other entry its entry point
-// behind `label`.
 std::string routeSuffix(const Entry& e, std::string_view label) {
   return e.isParser() ? e.parserRoute() : startSuffix(e, label);
 }
@@ -262,7 +254,7 @@ std::string registryReasonWords(const std::string& reason) {
   return {};
 }
 
-// The line saying the Marketplace list was not fetched; empty when it was.
+// Empty when the Marketplace list was fetched.
 std::string registryLine(const json& doc) {
   std::string state;
   std::string reason;
@@ -312,10 +304,9 @@ void addSection(std::vector<std::string>& out, const char* heading, const std::v
   out.insert(out.end(), lines.begin(), lines.end());
 }
 
-// One section of the listing from the document list `key`. A missing list
-// leaves the section out. `line` renders an entry, or returns an empty string
-// to skip it. With `seen` the list is first sorted and deduplicated against
-// the ids already rendered above it.
+// A missing list leaves the section out. `line` returns an empty string to skip an
+// entry. With `seen` the list is first sorted and deduplicated against ids rendered
+// above it.
 template <typename LineFn>
 void addListSection(
     std::vector<std::string>& out, const json& doc, const char* key, const char* heading, LineFn line,
@@ -355,8 +346,7 @@ std::string featuresDigest(std::string_view json_text, std::size_t budget_chars)
 
   const std::string header = featuresHostHeader(text(doc, "host_version"));
 
-  // Everything that is never dropped: built in, limitations, and what is
-  // installed (loaded or not).
+  // Never dropped: built in, limitations, installed plugins.
   std::vector<std::string> fixed;
   std::set<std::string> seen;
   addListSection(
@@ -374,8 +364,8 @@ std::string featuresDigest(std::string_view json_text, std::size_t budget_chars)
   if (auto list = readEntries(doc, "available")) {
     sortAndDedup(*list, seen);
     available = std::move(*list);
-    // An empty list says "none" only when the Marketplace was actually
-    // checked; otherwise the registry line below speaks for it.
+    // "none" only when the Marketplace was actually checked; otherwise the registry
+    // line speaks for it.
     show_available = fetched || !available.empty();
   }
   constexpr const char* kAvailableHeading = "Available in the Marketplace (not installed):";
@@ -405,7 +395,7 @@ std::string featuresDigest(std::string_view json_text, std::size_t budget_chars)
       entries.push_back(availableLine(available[i], with_summary));
     }
     if (keep == 0 && !available.empty()) {
-      lines.emplace_back(kAvailableHeading);  // every entry dropped: the count below, not "none"
+      lines.emplace_back(kAvailableHeading);  // every entry dropped: the count follows, not "none"
     } else {
       addSection(lines, kAvailableHeading, entries);
     }
@@ -429,8 +419,7 @@ std::string featuresDigest(std::string_view json_text, std::size_t budget_chars)
       return joinLines(all);
     }
   }
-  // 4. What is never dropped silently does not fit on its own: cut it, and
-  //    say so, keeping the header and the footer.
+  // 4. The never-dropped part alone does not fit: cut it and say so, keeping header and footer.
   std::vector<std::string> all{header};
   std::size_t used = textSize(all) + textSize(footer) + kTruncated.size() + 1;
   for (const auto& line : fixed) {

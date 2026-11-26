@@ -9,10 +9,8 @@
 
 namespace assistant_agent {
 
-// One meaningful thing extracted from a `codex exec --json` stdout record.
-// Unlike Claude's stream-json (one record can carry several content blocks),
-// each Codex line maps to exactly one event, so this parser returns a single
-// CodexEvent rather than a vector (see stream_json.hpp for the Claude shape).
+// One meaningful thing extracted from a `codex exec --json` stdout record. Unlike Claude's
+// stream-json, each Codex line maps to exactly one event.
 struct CodexEvent {
   enum class Kind {
     ThreadStarted,      // "thread.started"; session_id set
@@ -48,12 +46,9 @@ struct CodexEvent {
   return "the tool reported an error";
 }
 
-// Parse one `codex exec --json` stdout line. Malformed JSON, or a shape this
-// build has never heard of, yields Kind::Ignored — never throws. Whether an
-// ErrorItem is actually a failure is the BACKEND's call, not the parser's: a
-// startup notice ("Code Mode is unavailable...") arrives as the same
-// item.completed/error shape as a genuine mid-turn failure, and the only thing
-// that tells them apart is whether turn.started has been seen yet
+// Malformed JSON or an unknown shape yields Kind::Ignored; never throws. Whether an
+// ErrorItem is a failure is the BACKEND's call: a startup notice has the same shape as a
+// mid-turn failure and only whether turn.started was seen tells them apart
 // (codex_backend.cpp's `in_turn`).
 [[nodiscard]] inline CodexEvent parseCodexLine(const std::string& line) {
   CodexEvent out;

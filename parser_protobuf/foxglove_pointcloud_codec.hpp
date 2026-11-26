@@ -39,10 +39,9 @@ class Descriptor;
 
 namespace pj_protobuf {
 
-// Descriptor-driven field numbers (see foxglove_object_codecs.hpp for the full
-// rationale): a self-describing .mcap may embed a schema that renumbers these,
-// so resolve them by NAME from the embedded descriptor. Defaults = official
-// Foxglove numbering, so schemaless streams behave exactly as before.
+// Field numbers are resolved by NAME from the embedded descriptor (see foxglove_object_codecs.hpp), because a
+// self-describing .mcap may renumber them. Defaults are the official Foxglove numbering, used when no descriptor is
+// available.
 
 /// Field numbers for foxglove.PointCloud and its nested PackedElementField (pef_*).
 struct PointCloudFieldNumbers {
@@ -71,11 +70,8 @@ struct LaserScanFieldNumbers {
 };
 [[nodiscard]] LaserScanFieldNumbers resolveLaserScanFieldNumbers(const google::protobuf::Descriptor* descriptor);
 
-/// Result of decoding a foxglove.PointCloud message. The `pose` field has no
-/// home in sdk::PointCloud (which expresses geometry in `frame_id` and relies
-/// on an external TF tree, exactly like sensor_msgs/PointCloud2); we surface
-/// its presence so the caller can warn when a non-identity pose is silently
-/// dropped.
+/// sdk::PointCloud has no home for `pose` (geometry lives in `frame_id` plus an external TF tree, like
+/// sensor_msgs/PointCloud2), so its presence is surfaced for the caller to warn when a non-identity pose is dropped.
 struct FoxglovePointCloudDecode {
   PJ::sdk::PointCloud cloud;
   bool has_pose = false;         ///< field 3 (pose) was present on the wire.

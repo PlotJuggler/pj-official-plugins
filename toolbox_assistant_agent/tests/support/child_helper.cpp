@@ -1,15 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// A standalone helper process spawned by subprocess_test.cpp, cli_locator_test.cpp
-// and the fake-CLI backend tests (via backend_test_helpers.hpp's
-// writeFakeCliScript) — never linked into any of this plugin's own binaries,
-// so it is deliberately dependency-free (no gtest, no plotjuggler_sdk): just
-// the C++ standard library plus, on Windows, kernel32/msvcrt for the
-// UTF-8/UTF-16 conversion and the console-mode calls no standard header
-// covers. Selects a mode from argv[1], EXCEPT that a "fake CLI" mode
-// (writeFakeCliScript's own use) takes over first, before any mode dispatch —
-// see runFakeCliIfScripted below.
+// A standalone helper process spawned by subprocess_test.cpp, cli_locator_test.cpp and the fake-CLI
+// backend tests (via writeFakeCliScript). Deliberately dependency-free (no gtest, no SDK): the C++
+// standard library plus, on Windows, kernel32/msvcrt. Selects a mode from argv[1], except that the
+// "fake CLI" mode takes over first (see runFakeCliIfScripted).
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -24,11 +19,8 @@
 #include <io.h>
 #include <windows.h>
 
-// Windows-only: on this platform platform_util.hpp includes only <windows.h>
-// plus std headers (its POSIX branch is the one that needs pj_base), so
-// reusing its utf8ToWide/wideToUtf8 here does not add an SDK dependency to
-// this deliberately dependency-free helper. src/ is on this target's include
-// path via CMakeLists.txt.
+// On Windows platform_util.hpp needs only <windows.h> and std headers (its POSIX branch needs
+// pj_base), so this adds no SDK dependency.
 #include "platform_util.hpp"  // assistant_agent::detail::utf8ToWide/wideToUtf8
 #else
 #include <unistd.h>
@@ -36,12 +28,9 @@
 
 namespace {
 
-// If `<own_exe_path>.script` exists, this process IS a fake CLI: drain stdin
-// (so a payload writer never blocks/SIGPIPEs on an unread pipe), then read
-// the script -- line 1 is the exit code, every remaining line is printed
-// verbatim to stdout -- and exit with it. Returns -1 (and does nothing else)
-// when no such file exists, the signal to fall through to ordinary mode
-// dispatch.
+// If `<own_exe_path>.script` exists, this process IS a fake CLI: drain stdin (so a payload writer
+// never blocks on an unread pipe), print every script line after line 1 verbatim to stdout, and exit
+// with line 1 as the code. Returns -1, doing nothing, when no such file exists.
 int runFakeCliIfScripted(const std::string& own_exe_path) {
   std::ifstream script(own_exe_path + ".script");
   if (!script) {
@@ -152,10 +141,8 @@ int modeSleep(const std::vector<std::string>& args) {
 }
 
 #if defined(_WIN32)
-// Spawns a grandchild (this same exe, "sleep 60") that inherits this
-// process's stdio, prints its PID, then exits -- so a test can check that
-// killing the immediate child does not leave a grandchild holding the
-// output pipe open (see subprocess.hpp's job-object handling).
+// Spawns a grandchild (this exe, "sleep 60") that inherits stdio, prints its PID, then exits, so a
+// test can check that the grandchild does not keep the output pipe open (subprocess.hpp's job object).
 int modeSpawnGrandchild(const std::string& own_exe_path) {
   const std::wstring app = assistant_agent::detail::utf8ToWide(own_exe_path);
   std::wstring cmdline = L"\"" + app + L"\" sleep 60";
@@ -224,9 +211,8 @@ int run(const std::vector<std::string>& args) {
 #if defined(_WIN32)
 
 int wmain(int argc, wchar_t** argv) {
-  // Binary mode: the text-mode CRLF<->LF translation Windows applies by
-  // default would corrupt an exact byte round trip (RoundTripsStdin,
-  // ArgvSurvivesExactly) the moment a 0x0D byte appears anywhere in the data.
+  // Binary mode: Windows' default CRLF<->LF translation would corrupt the exact byte round trip
+  // (RoundTripsStdin, ArgvSurvivesExactly) whenever a 0x0D byte appears.
   _setmode(_fileno(stdin), _O_BINARY);
   _setmode(_fileno(stdout), _O_BINARY);
 

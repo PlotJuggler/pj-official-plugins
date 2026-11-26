@@ -2,12 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 // clang-format off
-// Arrow's c/abi.h must be included BEFORE any plotjuggler_core header that
-// pulls in plugin_data_api.h. Both headers define struct ArrowArrayStream
-// under different guard macros (Arrow uses ARROW_C_STREAM_INTERFACE, pj_base
-// uses only ARROW_C_DATA_INTERFACE for the whole block). Including Arrow
-// first sets both guards so pj_base's #ifndef block becomes a no-op.
-// Order is load-bearing — keep clang-format from sorting these.
+// Arrow's c/abi.h must be included BEFORE any SDK header that pulls in plugin_data_api.h. Both headers define
+// struct ArrowArrayStream under different guard macros (Arrow uses ARROW_C_STREAM_INTERFACE, pj_base uses only
+// ARROW_C_DATA_INTERFACE for the whole block). Including Arrow first sets both guards so pj_base's #ifndef block
+// becomes a no-op. Order is load-bearing: keep clang-format from sorting these.
 #include <arrow/c/abi.h>     // must come first
 #include <arrow/c/bridge.h>  // transitively re-pulls abi.h, fine
 
@@ -52,10 +50,8 @@ namespace {
 constexpr auto kHostStopPollInterval = std::chrono::milliseconds(50);
 
 #if !defined(PJ_TOOLBOX_HAS_DISCARD_PARSER_INGEST)
-// Compatibility layout for SDK 0.20: the paired host appends this slot after
-// release_parser_ingest. Keeping it local lets this plugin negotiate the new
-// capability while the public SDK package catches up; struct_size preserves
-// ABI safety with every older host.
+// Layout of the host's tail slot appended after release_parser_ingest, declared locally because the public SDK
+// package does not carry it yet; struct_size keeps it ABI-safe with every older host.
 struct ToolboxRuntimeHostDiscardExtension {
   PJ_toolbox_runtime_host_vtable_t base;
   bool (*discard_parser_ingest)(void* ctx, std::uint32_t data_source_id, PJ_error_t* out_error) PJ_NOEXCEPT;
@@ -338,14 +334,13 @@ void FetchWorker::reportIngestCompletion() {
 }
 
 void FetchWorker::connectAsync(std::string uri, ServerCredentials creds) {
-  // creds.allow_insecure is intentionally not consulted here: the plaintext
-  // fallback is driven by the caller (onConnectFinished, Step 10.1), which
-  // retries with a grpc:// URI. connectAsync always honors the scheme it is given.
+  // creds.allow_insecure is intentionally not consulted here: the plaintext fallback is driven by the caller
+  // (onConnectFinished), which retries with a grpc:// URI. connectAsync always honors the scheme it is given.
   try {
     server_origin_ = originFromUri(uri);
     client_ = std::make_unique<MosaicoClient>(
         uri,
-        // PJ3 parity (main_window.cpp:48): 30 s connection timeout for slow links.
+        // 30 s connection timeout for slow links (as in PJ3).
         /*timeout_seconds=*/30,
         /*pool_size=*/4, creds.cert_path, creds.api_key);
     auto v = client_->version();
@@ -382,11 +377,10 @@ void FetchWorker::listSequencesAsync() {
     }
     return;
   }
-  // Progressive discovery (PJ3 parity): on_list_started delivers the initial
-  // list so the table can populate immediately, and on_sequence_info reports a
-  // completed/total counter as per-sequence detail fills in. Both fire on this
-  // worker thread; the dialog routes callbacks to its GUI-thread event queue
-  // so the panel updates incrementally during the call.
+  // Progressive discovery: on_list_started delivers the initial list so the table can populate immediately, and
+  // on_sequence_info reports a completed/total counter as per-sequence detail fills in. Both fire on this worker
+  // thread; the dialog routes callbacks to its GUI-thread event queue so the panel updates incrementally during the
+  // call.
   auto on_started = [this](const std::vector<SequenceInfo>& seqs) {
     if (sequenceListStarted) {
       sequenceListStarted(seqs);
@@ -430,11 +424,9 @@ void FetchWorker::listTopicsAsync(std::string sequence_name) {
   }
   auto result = client_->listTopics(sequence_name);
   if (!result.ok()) {
-    // PJ3 parity (fetch_worker.cpp:105-117): NotImplemented means the server
-    // doesn't expose topic listing for this sequence — treat as an empty list
-    // and let the user pick topics manually. Any other status is a real error
-    // (auth, transport, server fault) and MUST be surfaced rather than silently
-    // collapsed to "no topics".
+    // NotImplemented means the server doesn't expose topic listing for this sequence: treat it as an empty list and
+    // let the user pick topics manually. Any other status is a real error (auth, transport, server fault) and MUST
+    // be surfaced rather than silently collapsed to "no topics".
     if (result.status().IsNotImplemented()) {
       if (topicsReady) {
         topicsReady(std::move(sequence_name), {});
@@ -593,11 +585,9 @@ void FetchWorker::pullTopicsAsync(
     }
   }
 
-  // Use the SDK's parallel pullTopics. Per-topic completion (on_done) fires on
-  // SDK connection-pool worker threads; the host-write critical section there
-  // is serialized by our own host_write_mu_ ([C1]) rather than relying on the
-  // SDK's internal mutex. pullFinished etc. route to the GUI thread through
-  // the dialog's event queue.
+  // Use the SDK's parallel pullTopics. Per-topic completion (on_done) fires on SDK connection-pool worker threads;
+  // the host-write critical section there is serialized by host_write_mu_. pullFinished etc. route to the GUI
+  // thread through the dialog's event queue.
   std::vector<std::string> topic_names_std = std::move(topic_names);
   TimeRange range;
   range.start_ns = start_ns;
@@ -663,12 +653,10 @@ void FetchWorker::pullTopicsAsync(
     }
   };
 
-  // Hand the batch to the host as an arrow-ipc message. Runs on
-  // the pool thread that received the batch — or, for a timestamp-less topic,
-  // on the one that completed it; the host-write section is
-  // serialized by host_write_mu_ ([C1]) and the ingest fat pointer by
-  // progress_mu_ (same order as ensureIngestProgress), so the context is only
-  // ever driven by one caller at a time as its contract requires.
+  // Hand the batch to the host as an arrow-ipc message. Runs on the pool thread that received the batch, or, for a
+  // timestamp-less topic, on the one that completed it; the host-write section is serialized by host_write_mu_ and
+  // the ingest fat pointer by progress_mu_ (same order as ensureIngestProgress), so the context is only ever driven
+  // by one caller at a time as its contract requires.
   auto push_message = [this, sequence_name, imported_any](
                           PerTopic& topic, const std::string& topic_name, const arrow::RecordBatch& batch) {
     if (!topic.error.empty() || batch.num_rows() == 0) {
@@ -825,15 +813,12 @@ void FetchWorker::pullTopicsAsync(
       finish(true, {}, "no data in the requested range");
       return;
     }
-    // A stamped topic streamed batch by batch through push_batch and
-    // leaves nothing buffered. A timestamp-less one waited here: its cadence
-    // is fitted to the topic's [min,max] range over the WHOLE row count, so
-    // the timestamp column and every host timestamp need the total first.
-    // Batches that never reached this point (cancel, transport failure) are
-    // dropped, exactly as when the whole topic was written at on_done. So a
-    // cancelled Download is asymmetric BY DESIGN: a stamped topic keeps the
-    // batches already pushed, a timestamp-less one keeps nothing, because a
-    // partial row count would fit a cadence the rest of the topic contradicts.
+    // A stamped topic streamed batch by batch through push_batch and leaves nothing buffered. A timestamp-less one
+    // waited here: its cadence is fitted to the topic's [min,max] range over the WHOLE row count, so the timestamp
+    // column and every host timestamp need the total first. Batches that never reached this point (cancel,
+    // transport failure) are dropped, so a cancelled Download is asymmetric BY DESIGN: a stamped topic keeps the
+    // batches already pushed, a timestamp-less one keeps nothing, because a partial row count would fit a cadence
+    // the rest of the topic contradicts.
     if (topic.error.empty() && !topic.batches.empty()) {
       std::int64_t total_rows = 0;
       for (const auto& buffered : topic.batches) {
@@ -892,13 +877,10 @@ void FetchWorker::pullTopicsAsync(
       route(it->second, topic_name);
     }
   };
-  // [I6] Real progress bytes. The SDK already computes the TRUE decoded batch
-  // size (decodedRecordBatchBytes) and delivers the running cumulative `bytes`
-  // here per topic — far more accurate than the old rows*cols*8 estimate, which
-  // was meaningless for variable-length / image columns. Forward that value
-  // straight into the existing pullProgress callback (shape unchanged). The SDK
-  // does NOT serialize this callback (topics report concurrently), but the
-  // dialog's event enqueue is thread-safe, so this is fine.
+  // Progress bytes: the SDK computes the TRUE decoded batch size (decodedRecordBatchBytes) and delivers the running
+  // cumulative `bytes` per topic (an rows*cols*8 estimate would be meaningless for variable-length / image columns).
+  // The SDK does NOT serialize this callback (topics report concurrently), but the dialog's event enqueue is
+  // thread-safe.
   auto on_progress =
       [this](const std::string& topic_name, std::int64_t /*rows*/, std::int64_t bytes, std::int64_t /*total_bytes*/) {
         if (pullProgress) {
@@ -925,13 +907,11 @@ void FetchWorker::pullTopicsAsync(
         }
       };
 
-  // Cancel is owned/reset by the dialog at fetch start (buttonFetch handler, on
-  // the GUI thread). We deliberately do NOT resetCancel() here: this method runs
-  // on the worker thread after the queued fetch post, so a reset here would
-  // race a Cancel clicked in that window and clear the just-set flag. [B1]
-  // Always emit allFetchesComplete, even if pullTopics throws unexpectedly:
-  // the dialog clears fetch_active (and re-enables Close) only on that signal,
-  // so a swallowed completion would strand the panel with Close disabled.
+  // Cancel is owned/reset by the dialog at fetch start (buttonFetch handler, GUI thread). Do NOT resetCancel() here:
+  // this method runs on the worker thread after the queued fetch post, so a reset would race a Cancel clicked in
+  // that window and clear the just-set flag.
+  // Always emit allFetchesComplete, even if pullTopics throws unexpectedly: the dialog clears fetch_active (and
+  // re-enables Close) only on that signal, so a swallowed completion would strand the panel with Close disabled.
   try {
     // A real DataSource may be created before the first byte only when the
     // paired host can roll it back. Older hosts have no remove operation, so
@@ -960,13 +940,10 @@ void FetchWorker::pullTopicsAsync(
       ensureIngestProgress(*ds, sequence_name);
     }
 
-    // A silent transport still has a live control plane: the ingest context's
-    // Stop flag is thread-safe and does not depend on progress callbacks.
-    // StoppableThread rather than std::jthread + std::stop_token: neither exists
-    // in Apple's libc++, which is why 1.1.0 shipped with no macOS artifacts. Same
-    // two properties as before -- the destructor stops and joins on every exit
-    // path, and the wait returns the moment stop is requested instead of sitting
-    // out the remaining poll interval.
+    // A silent transport still has a live control plane: the ingest context's Stop flag is thread-safe and does not
+    // depend on progress callbacks. StoppableThread rather than std::jthread + std::stop_token (neither exists in
+    // Apple's libc++): the destructor stops and joins on every exit path, and the wait returns the moment stop is
+    // requested instead of sitting out the remaining poll interval.
     StoppableThread host_stop_poller([this](StoppableThread& poller) {
       while (!poller.stopRequested()) {
         if (isStopRequestedByHost()) {

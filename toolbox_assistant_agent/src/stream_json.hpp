@@ -11,9 +11,8 @@
 
 namespace assistant_agent {
 
-// Splits a byte stream into newline-delimited JSON records, buffering a partial
-// trailing line across feeds. The `claude --output-format stream-json` stdout
-// is one JSON object per line; a single read() may straddle line boundaries.
+// Splits a byte stream into newline-delimited JSON records, buffering a partial trailing
+// line across feeds (a single read() may straddle line boundaries).
 class NdjsonSplitter {
  public:
   void feed(const std::string& chunk, const std::function<void(const std::string&)>& on_line) {
@@ -33,7 +32,7 @@ class NdjsonSplitter {
     buffer_.erase(0, start);
   }
 
-  // Flush any buffered trailing line without a newline (end of stream).
+  // Emits a buffered trailing line that lacks a newline (end of stream).
   void flush(const std::function<void(const std::string&)>& on_line) {
     if (!buffer_.empty()) {
       on_line(buffer_);
@@ -62,22 +61,18 @@ struct ClaudeEvent {
   std::string tool_id;  // ToolUse / ToolResult: pairs a result with the call it answers
   std::string session_id;
   bool is_error = false;
-  // Result only: how many model turns ran. 0 on an error means the CLI never
-  // reached the model — with --resume, that the session it was asked to
-  // continue does not exist. -1 when the record does not say.
+  // Result only: how many model turns ran. 0 on an error means the CLI never reached the
+  // model (with --resume: the session does not exist). -1 when the record does not say.
   int num_turns = -1;
   TurnMetrics metrics;
-  // Result only: the CLI's own "why did this turn end" tag, e.g. "api_error"
-  // when it could not reach the API at all (verified: paired with an
-  // all-zero usage block, with neither is_error nor subtype set on the real
-  // line -- is_error above is derived from this pairing, see parseClaudeLine).
-  // Empty when the record carries none.
+  // Result only: the CLI's "why did this turn end" tag, e.g. "api_error" when it could not
+  // reach the API. That record has an all-zero usage block and neither is_error nor
+  // subtype, so is_error above is derived from the pairing (see parseClaudeLine).
   std::string terminal_reason;
 };
 
-// Parse one stream-json line into zero or more events. One assistant record can
-// carry several content blocks (text + tool_use), so this returns a vector.
-// Malformed JSON yields an empty vector (never throws).
+// One assistant record can carry several content blocks (text + tool_use), hence a
+// vector. Malformed JSON yields an empty vector; never throws.
 [[nodiscard]] inline std::vector<ClaudeEvent> parseClaudeLine(const std::string& line) {
   std::vector<ClaudeEvent> out;
   auto j = nlohmann::json::parse(line, nullptr, /*allow_exceptions=*/false);
@@ -127,8 +122,8 @@ struct ClaudeEvent {
     return out;
   }
 
-  // A tool's result comes back as a user record made of tool_result blocks; is_error is present on failures
-  // (an MCP result with isError set) and may be absent otherwise.
+  // A tool's result comes back as a user record of tool_result blocks; is_error is present
+  // on failures (an MCP result with isError set) and may be absent otherwise.
   if (type == "user" && j.contains("message") && j["message"].is_object()) {
     const auto& content = j["message"].value("content", nlohmann::json::array());
     if (content.is_array()) {
@@ -148,26 +143,24 @@ struct ClaudeEvent {
     return out;
   }
 
-  // The usage window is announced out of band. Surfacing it lets a long batch
-  // stop deliberately instead of turning into a run of confusing failures.
+  // The usage window is announced out of band; surfacing it lets a long batch stop
+  // deliberately.
   if (type == "rate_limit_event") {
     ClaudeEvent e;
     e.kind = ClaudeEvent::Kind::RateLimit;
     e.session_id = session_id;
     const auto& info = j.value("rate_limit_info", nlohmann::json::object());
     e.text = info.is_object() ? info.value("status", std::string{}) : std::string{};
-    // The status is a family, not a flag: "allowed" and "allowed_warning" both
-    // mean requests still go through — the second is only a heads-up that the
-    // window is filling. Treating any non-"allowed" value as a block stops a
-    // run that could have kept going, which is exactly what happened here.
+    // The status is a family, not a flag: "allowed" and "allowed_warning" both mean requests
+    // still go through. Treating any non-"allowed" value as a block would stop a run that
+    // could continue.
     e.is_error = !e.text.empty() && e.text.rfind("allowed", 0) != 0;
     out.push_back(std::move(e));
     return out;
   }
 
-  // The final record. `subtype` is absent on some builds, so only treat it as a
-  // failure signal when it is present and not "success" — otherwise every turn
-  // would be reported as an error.
+  // The final record. `subtype` is absent on some builds, so it signals failure only when
+  // present and not "success".
   if (type == "result" || (type.empty() && j.contains("total_cost_usd"))) {
     ClaudeEvent e;
     e.kind = ClaudeEvent::Kind::Result;
@@ -177,8 +170,7 @@ struct ClaudeEvent {
     if (const auto& turns = j.value("num_turns", nlohmann::json{}); turns.is_number_integer()) {
       e.num_turns = turns.get<int>();
     }
-    // "result" carries the final assistant text on success; on error it may
-    // carry an error string under the same key (or nothing at all: a missing
+    // The final assistant text on success; on error an error string or nothing (a missing
     // --resume session yields `"result": null`).
     if (const auto& result = j.value("result", nlohmann::json{}); result.is_string()) {
       e.text = result.get<std::string>();
@@ -195,13 +187,9 @@ struct ClaudeEvent {
     }
     m.valid = m.cost_usd > 0.0 || m.api_ms > 0 || m.output_tokens > 0;
     e.metrics = m;
-    // terminal_reason=="api_error" paired with an all-zero (invalid) usage
-    // block means the CLI never reached the API at all -- verified live: an
-    // unrecognized --model value produces exactly this shape, and neither
-    // is_error nor subtype says so on that real line. Folded into is_error
-    // here, same precedent as the rate-limit event's status family above, so
-    // callers (ClaudeBackend) only have to react to is_error + terminal_reason,
-    // not re-derive the "did we even reach the API" condition themselves.
+    // terminal_reason=="api_error" with an all-zero (invalid) usage block means the CLI never
+    // reached the API (an unrecognized --model produces exactly this) while neither is_error
+    // nor subtype says so. Folded into is_error so callers need not re-derive it.
     e.is_error = j.value("is_error", false) || (!subtype.empty() && subtype != "success") ||
                  (e.terminal_reason == "api_error" && !m.valid);
     out.push_back(std::move(e));

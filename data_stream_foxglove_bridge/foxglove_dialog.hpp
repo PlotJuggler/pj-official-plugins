@@ -21,15 +21,11 @@
 
 namespace {
 
-/// Smart dialog plugin for the Foxglove Bridge streamer.
-/// Owns the WebSocket connection for channel discovery during the dialog session.
-/// The connection half (one ws:// / wss:// URL line, Connect / Cancel, retry with backoff, status
-/// line, the remembered last URL, handoff on OK) is the one the PlotJuggler Bridge dialog uses.
-/// Select All / Deselect All act on the rows the filter shows; transform channels are locked
-/// rows (PJ::AlwaysIncluded's locked table): shown selected and tooltipped, never saved with the
-/// selection.
-/// Foxglove sends "advertise" messages automatically upon connection — no explicit
-/// request needed. The dialog populates the channel table and lets the user select.
+/// Owns the WebSocket connection used for channel discovery while the dialog is open. The connection half (URL line,
+/// Connect / Cancel, retry with backoff, status line, remembered last URL, handoff on OK) is shared with the
+/// PlotJuggler Bridge dialog. Select All / Deselect All act on the rows the filter shows; transform channels are
+/// locked rows (PJ::AlwaysIncluded's locked table): shown selected, never saved with the selection.
+/// Foxglove sends "advertise" on connect without a request.
 class FoxgloveDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
@@ -37,7 +33,6 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   explicit FoxgloveDialog(PJ::WebSocket::DialogConnectionOptions options = {})
       : link_(
             options, {
-                         // Foxglove sends "advertise" automatically on open — no request needed.
                          .on_open = [this](const std::string& url) { endpoint_.remember(url); },
                          .on_text = [this](const std::string& text) { onServerMessage(text); },
                          .on_lost = [this] { clearChannels(); },
@@ -47,8 +42,8 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     disconnect();
   }
 
-  /// Transfer the connection to the caller (source plugin); its socket is null when the dialog
-  /// never connected. Events not yet drained by onTick() stay queued for the new owner.
+  /// Its socket is null when the dialog never connected. Events not yet drained by onTick() stay queued for the new
+  /// owner.
   PJ::WebSocket::Handoff takeConnection() {
     return link_.take();
   }
@@ -61,18 +56,13 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     return endpoint_;
   }
 
-  /// Full catalog of channels discovered so far during this dialog's connection
-  /// session (thread-safe snapshot), regardless of what the user selected. When
-  /// the source adopts an already-open connection (see takeConnection()), the server's
-  /// one-time "advertise" burst has already happened and will not repeat — this
-  /// is the only way the source learns about topics the user did NOT select, so
-  /// it can advertise the full set to the host instead of just the selection.
+  /// Thread-safe snapshot of every channel discovered, regardless of the selection. A source that adopts the open
+  /// connection (takeConnection()) missed the server's one-time "advertise" burst, so this is its only way to learn
+  /// about unselected topics and advertise the full set to the host.
   std::vector<PJ::FoxgloveProtocol::ChannelInfo> allDiscoveredChannels() const {
     std::lock_guard<std::mutex> lock(channels_mutex_);
     return channels_;
   }
-
-  // --- Dialog protocol ---
 
   std::string manifest() const override {
     return kFoxgloveManifest;
@@ -87,7 +77,6 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
 
     link_.toWidgets(wd, endpoint_);
 
-    // Parser options
     wd.setValue("spinBoxArraySize", max_array_size_);
     wd.setChecked("radioClamp", clamp_large_arrays_);
     wd.setChecked("radioSkip", !clamp_large_arrays_);
@@ -98,12 +87,8 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     wd.setTableHeaders("topicsList", {"Topic", "Type", "Encoding"});
     PJ::AlwaysIncluded::tableToWidgets(wd, "topicsList", visibleRows(), selected_topic_names_);
 
-    // OK button: connected-only. The channel selection below is no longer a
-    // subscribe requirement — see the "channels" config key's dual role in
-    // FoxgloveSource (buildAvailableTopics): on a host that supports demand
-    // subscriptions it becomes an OPTIONAL advertise filter (empty = advertise
-    // everything); on a legacy host it keeps its original meaning, the
-    // subscribe list.
+    // Connected-only: the selection is not required (see the "channels" key's dual role in FoxgloveSource's
+    // buildAvailableTopics).
     wd.setOkEnabled(link_.connected());
 
     return wd.toJson();
@@ -176,7 +161,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
   }
 
   void onAccepted(std::string_view /*json*/) override {
-    // Do NOT disconnect — the source's onStart() adopts the open connection.
+    // Do not disconnect: the source's onStart() adopts the open connection.
     snapshotSelectedChannels();
   }
   void onRejected() override {
@@ -189,7 +174,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     PJ::sdk::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
     cfg["use_timestamp"] = use_timestamp_;
 
-    // Use the snapshot — channels_ may be cleared by disconnect()
+    // Snapshot: channels_ may be cleared by disconnect().
     nlohmann::json channels_json = nlohmann::json::array();
     for (const auto& ch : selected_channels_snapshot_) {
       channels_json.push_back({
@@ -232,7 +217,6 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     clamp_large_arrays_ = array_limit.clamp();
     use_timestamp_ = cfg.value("use_timestamp", false);
 
-    // Restore previously selected topic names and snapshot
     if (cfg.contains("channels") && cfg["channels"].is_array()) {
       selected_topic_names_.clear();
       selected_channels_snapshot_.clear();
@@ -311,7 +295,7 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
       if (ch.topic.empty() || ch.encoding.empty()) {
         continue;
       }
-      // Avoid duplicates (Foxglove may re-advertise)
+      // Foxglove may re-advertise.
       const bool exists =
           std::any_of(channels_.begin(), channels_.end(), [&ch](const auto& existing) { return existing.id == ch.id; });
       if (!exists) {
@@ -332,7 +316,6 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     }
   }
 
-  // --- State ---
   PJ::WebSocket::Endpoint endpoint_{"127.0.0.1", kDefaultPort};
   int max_array_size_ = 500;
   bool clamp_large_arrays_ = true;

@@ -44,8 +44,6 @@ struct InputBinding {
 // words. A name that is not a builtin object type stays as it is.
 [[nodiscard]] std::string objectTypeLabel(const std::string& type);
 
-// --- code tokens -----------------------------------------------------------
-
 // What a stretch of script text is, for the helpers that must not touch strings or comments.
 enum class CodeTokenKind {
   kWord,     // a run of letters, digits and '_' (keywords, names, numbers)
@@ -107,8 +105,6 @@ struct CodeToken {
 [[nodiscard]] BuiltScript buildOnDemandScript(
     const std::string& body, const std::string& globals, const std::vector<InputBinding>& bindings,
     const ResolvedEvalInputs& resolved, std::string_view language);
-
-// --- on-demand output types ------------------------------------------------
 
 [[nodiscard]] bool isObjectOutputType(const std::string& type);
 // Which scene tab shows an output of this type: "2d" for image-like types, "3d" otherwise.

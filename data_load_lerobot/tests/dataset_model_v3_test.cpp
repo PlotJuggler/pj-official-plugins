@@ -1,16 +1,7 @@
-// End-to-end test for LeRobot v3.0 dataset loading.
-//
-// Builds a minimal but real v3.0 dataset on disk (info.json + meta/episodes
-// chunked parquet + data chunked parquet + an empty mp4 placeholder) using
-// Arrow's writer, then loads it via `loadDatasetModel` and asserts that
-// `model.version == V3_0`, `episodes` and `episode_shards` are populated
-// with the expected boundaries, and `episodeParquet/Video` route to the
-// consolidated shard paths (not to per-episode files like v2.x).
-//
-// This is the v3.0 equivalent of `dataset_model_test.cpp::ParsesInfoEpisodesAndTasks`.
-// Uses Arrow because v3.0 metadata is itself Parquet, so building the
-// fixture with raw bytes isn't realistic — and the v3.0 reader exercises
-// the same Arrow path the production importer uses against HF Hub datasets.
+// End-to-end v3.0 loading: builds a real v3.0 dataset on disk with Arrow's writer (info.json, chunked
+// meta/episodes and data parquet, an empty mp4 placeholder), loads it via `loadDatasetModel`, and checks that
+// `model.version == V3_0`, `episodes` and `episode_shards` hold the expected boundaries, and
+// `episodeParquet/Video` route to the shared shard paths rather than per-episode files.
 
 #include <arrow/api.h>
 #include <arrow/io/api.h>
@@ -31,9 +22,7 @@ using namespace lerobot;  // NOLINT(build/namespaces) — test-local convenience
 
 namespace {
 
-// Single source of truth for the fake episode boundaries used by the
-// fixture. The math also feeds the `videos/.../from_timestamp` /
-// `to_timestamp` doubles (length / fps).
+// The fake episode boundaries; they also feed the `videos/.../from_timestamp` / `to_timestamp` doubles (length / fps).
 constexpr double kFps = 10.0;
 constexpr int64_t kEp0Len = 5;
 constexpr int64_t kEp1Len = 7;
@@ -43,17 +32,15 @@ constexpr int64_t kEp0To = kEp0Len;
 constexpr int64_t kEp1From = kEp0To;
 constexpr int64_t kEp1To = kEp0To + kEp1Len;
 
-// Writes an Arrow table to <path> as a Parquet file. Crashes (via ASSERT_*)
-// on any Arrow error — fixture builders shouldn't recover.
+// Fails the test (ASSERT_*) on any Arrow error.
 void writeParquet(const std::shared_ptr<arrow::Table>& table, const fs::path& path) {
   auto outfile_or = arrow::io::FileOutputStream::Open(path.string());
   ASSERT_TRUE(outfile_or.ok()) << outfile_or.status().message();
   ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), *outfile_or, /*chunk_size=*/65536).ok());
 }
 
-// Build the per-episode shard parquet (`meta/episodes/chunk-000/file-000.parquet`).
-// Columns mirror what we observed in lerobot/example_hil_serl_dataset; we
-// keep only the ones the reader actually consumes (stats/* are skipped).
+// `meta/episodes/chunk-000/file-000.parquet`, with the columns of lerobot/example_hil_serl_dataset that the reader
+// consumes (stats/* are skipped).
 std::shared_ptr<arrow::Table> buildEpisodesShardTable() {
   arrow::Int64Builder ep_idx;
   EXPECT_TRUE(ep_idx.AppendValues({0, 1}).ok());
@@ -245,7 +232,7 @@ TEST(LoadDatasetModelV3, AcceptsCodebaseVersionAndPopulatesShards) {
   ASSERT_TRUE(v1.end_ns.has_value());
   EXPECT_EQ(*v1.end_ns, 1'200'000'000LL);  // 1.2s
 
-  // episodeParquet/Video now resolve via episode_shards, not templates.
+  // episodeParquet/Video resolve via episode_shards, not templates.
   EXPECT_EQ(model.episodeParquet(0), s0.parquet_path);
   EXPECT_EQ(model.episodeParquet(1), s1.parquet_path);
   EXPECT_EQ(model.episodeVideo(0, "observation.images.top"), v0.mp4_path);

@@ -37,16 +37,14 @@ pj_embed_manifest(toolbox_data_exporter_plugin
   VAR_NAME kDataExporterManifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+# Emit the sidecar .pjmanifest.json (manifest.json + {abi_major, family}) the host scans before dlopen.
 pj_emit_plugin_manifest(toolbox_data_exporter_plugin
   FAMILY        toolbox
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Shared test library: the production TUs compiled once for all tests ---
-# The plugin target above keeps its own compilation of the same sources so the
-# pj_emit_plugin_manifest visibility/flags applied to the DSO stay untouched.
+# Shared test library: the production TUs compiled once for all tests. The plugin target keeps its own
+# compilation so the visibility/flags pj_emit_plugin_manifest applies to the DSO stay untouched.
 add_library(data_exporter_testcore STATIC
   arrow_series_reader.cpp
   data_exporter.cpp
@@ -65,11 +63,10 @@ target_link_libraries(data_exporter_testcore PUBLIC
   Arrow::arrow_static
   Parquet::parquet_static
 )
-# The generated ui/manifest headers are produced by custom commands attached to
-# the plugin target; order the shared test compilation after them.
+# The generated ui/manifest headers come from custom commands on the plugin target; order the test
+# compilation after them.
 add_dependencies(data_exporter_testcore toolbox_data_exporter_plugin)
 
-# --- Unit test for the host-free export pipeline ---
 add_executable(data_exporter_core_test export_core_test.cpp)
 target_compile_features(data_exporter_core_test PRIVATE cxx_std_20)
 target_compile_options(data_exporter_core_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -79,7 +76,6 @@ target_link_libraries(data_exporter_core_test PRIVATE
 )
 add_test(NAME data_exporter_core_test COMMAND data_exporter_core_test)
 
-# --- Unit test for validity-aware Arrow series decoding ---
 add_executable(data_exporter_arrow_reader_test arrow_series_reader_test.cpp)
 target_compile_features(data_exporter_arrow_reader_test PRIVATE cxx_std_20)
 target_compile_options(data_exporter_arrow_reader_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -89,10 +85,8 @@ target_link_libraries(data_exporter_arrow_reader_test PRIVATE
 )
 add_test(NAME data_exporter_arrow_reader_test COMMAND data_exporter_arrow_reader_test)
 
-# --- Milestone 4 dialog-state + bound-host integration tests ---
-# One binary is registered under two filtered ctest names so both required
-# targets are discoverable through `ctest -R data_exporter` without compiling
-# the Arrow-heavy production translation units twice.
+# One binary registered under two filtered ctest names so `ctest -R data_exporter` finds both without
+# compiling the Arrow-heavy production TUs twice.
 add_executable(
   data_exporter_milestone4_test
   data_exporter_dialog_test.cpp
@@ -114,7 +108,7 @@ add_test(
   COMMAND data_exporter_milestone4_test --gtest_filter=DataExporterHostTest.*
 )
 
-# --- Milestone 5 dual-plugin load / static-Arrow symbol-isolation test ---
+# Dual-plugin load / static-Arrow symbol-isolation test.
 set(DATA_LOAD_PARQUET_PLUGIN_PATH
   "${CMAKE_SOURCE_DIR}/build/data_load_parquet/${CMAKE_BUILD_TYPE}/bin/${CMAKE_SHARED_LIBRARY_PREFIX}parquet_source_plugin${CMAKE_SHARED_LIBRARY_SUFFIX}"
   CACHE FILEPATH "Path to the separately built data_load_parquet plugin DSO"
@@ -141,10 +135,9 @@ if(TARGET parquet_source_plugin)
   add_dependencies(data_exporter_isolation_test parquet_source_plugin)
 endif()
 add_test(NAME data_exporter_isolation_test COMMAND data_exporter_isolation_test)
-# The test GTEST_SKIP()s when the data_load_parquet DSO is absent (single-plugin
-# builds); surface that as ***Skipped in ctest instead of a false Passed. The
-# property is binary-granular (any skipped gtest marks the whole entry Skipped) —
-# acceptable here because the DSO gate skips this binary all-or-nothing.
+# The test GTEST_SKIP()s when the data_load_parquet DSO is absent (single-plugin builds); surface that as
+# Skipped in ctest instead of a false Passed. The property is binary-granular, which is fine because the
+# DSO gate skips this binary all-or-nothing.
 set_tests_properties(data_exporter_isolation_test PROPERTIES
   SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
 )

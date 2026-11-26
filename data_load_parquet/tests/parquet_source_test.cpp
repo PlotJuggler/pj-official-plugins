@@ -109,8 +109,8 @@ std::string importParquet(const arrow::Table& table, RecordingHost& host) {
   return error;
 }
 
-// Issue #371: MATLAB writes a timetable's time column as Parquet TIME(MICROS), read by Arrow as
-// time64[us]. Every row used to land at timestamp 0, so the file plotted as a single point.
+// MATLAB writes a timetable's time column as Parquet TIME(MICROS), read by Arrow as time64[us]; it must drive the
+// time axis (not leave every row at timestamp 0).
 TEST(ParquetSourceTest, Time64MicroColumnSetsTheTimeAxis) {
   constexpr int64_t kRows = 100;
   std::vector<int64_t> micros;
@@ -138,7 +138,7 @@ TEST(ParquetSourceTest, Time64MicroColumnSetsTheTimeAxis) {
 }
 
 // Arrow 26 writes zstd pages by default from several writers (here parquet-cpp-arrow 26.0.1: time
-// snappy, value zstd). The import used to fail with a bare "failed to create batch reader".
+// snappy, value zstd), so the plugin must build the zstd codec.
 TEST(ParquetSourceTest, ImportsZstdCompressedColumns) {
   RecordingHost host;
   const auto error = runImport(std::filesystem::path(PARQUET_TEST_DATA_DIR) / "zstd_values.parquet", host);
@@ -208,7 +208,7 @@ TEST(ParquetTimeColumnRestore, SameColumnsKeepTheColumn) {
   EXPECT_EQ(next.value("time_column_index", -1), 1);
 }
 
-// The column was restored by position, so a file with the columns in another order got "b" as time axis.
+// The column is restored by name, not position: a file with the columns in another order keeps "stamp".
 TEST(ParquetTimeColumnRestore, ReorderedColumnsFindTheColumnByName) {
   const auto next = loadAndSave(*tableWithColumns({"stamp", "b", "a"}), pickedTimeColumnStamp());
   EXPECT_EQ(next.value("time_mode", ""), "column");
@@ -228,7 +228,7 @@ TEST(ParquetTimeColumnRestore, FileWithoutTheColumnPicksNone) {
   EXPECT_EQ(next.value("time_column_index", -1), -1);
 }
 
-// A config saved before the column name was (an older plugin, an older layout) still restores by index.
+// A config with only an index (no column name) restores by index.
 TEST(ParquetTimeColumnRestore, ConfigWithOnlyAnIndexKeepsTheIndex) {
   const auto saved = pickedTimeColumnStamp();
   EXPECT_EQ(saved.value("time_mode", ""), "column");

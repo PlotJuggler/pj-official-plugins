@@ -88,9 +88,7 @@ TEST(UniqueTopicNames, GloballyUniqueAcrossGroups) {
 }
 
 TEST(ChannelLabels, EnforcesUniqueness) {
-  // Two channels share the label "sig"; the third is unlabeled and falls back
-  // to "channel_2", which happens to also be provided explicitly on channel 0
-  // of a second scenario. Here: duplicate explicit labels must be suffixed.
+  // Duplicate explicit labels must be suffixed.
   lsl::stream_info info("Dup", "EEG", 3, 100.0, lsl::cf_float32, "src");
   lsl::xml_element channels = info.desc().append_child("channels");
   channels.append_child("channel").append_child_value("label", "sig");

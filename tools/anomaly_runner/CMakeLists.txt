@@ -1,10 +1,9 @@
-# anomaly_runner — headless Anomaly Detection CLI (Task F). Links the SDK plugin
-# host (to load a DataSource plugin and capture its series in-memory) + the shared
-# anomaly_core engine. SDK-only: no pj_datastore, no Qt.
+# anomaly_runner: headless CLI. Links the SDK plugin host (to load a DataSource plugin and capture its
+# series in memory) and the shared anomaly_core engine. No Qt.
 
-# Pull in the shared engine, which lives under the sibling toolbox plugin. Guarded
-# so the aggregate build (where the toolbox already added it) doesn't add it twice.
-# Building the runner implies the engine layer, so enable it for the core subdir below
+# anomaly_core lives under the sibling toolbox plugin; guarded so the aggregate build (where the toolbox
+# already added it) doesn't add it twice. PJ_BUILD_ANOMALY_RUNNER enables the engine layer in that subdir;
+# the GUI-only/aggregate build leaves it OFF and stays Luau-free.
 # (the GUI-only / aggregate build leaves PJ_BUILD_ANOMALY_RUNNER OFF and stays Luau-free).
 set(PJ_BUILD_ANOMALY_RUNNER ON)
 if(NOT TARGET anomaly_core)

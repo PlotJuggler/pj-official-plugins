@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 """
-Generate MCAP test files for the data_load_mcap verification plan.
-
-Each generated file targets one verification case; the case each exercises is
-described inline with its generator function below.
-
-Files generated:
-  test_publish_vs_log_time.mcap  -- Test 1: publish_time != log_time (offset 500ms)
-  test_embedded_timestamp.mcap   -- Test 2: Header.stamp differs from MCAP timestamp (+2s)
-  test_dialog_whitelist.mcap     -- Test: always-include whitelist (tf2_msgs/TFMessage +
+Generate the MCAP files used to verify data_load_mcap by hand; each targets one case:
+  test_publish_vs_log_time.mcap  -- publish_time != log_time (offset 500ms)
+  test_embedded_timestamp.mcap   -- Header.stamp differs from MCAP timestamp (+2s)
+  test_dialog_whitelist.mcap     -- always-include whitelist (tf2_msgs/TFMessage +
                                      foxglove.FrameTransform matches, empty channel, near
                                      miss, and ordinary channel)
-  test_large_arrays.mcap         -- Test 3: float64[1000] arrays for clamp/skip testing
-  test_empty_channel.mcap        -- Test 6: one channel with 0 messages
-  test_unsupported_encoding.mcap -- Test 7: channel with encoding "protobuf" (no parser)
-  test_bad_schema.mcap           -- Test 8: channel with malformed schema definition
-  test_large_file.mcap           -- Test 9: 50000 messages for cancellation testing
+  test_large_arrays.mcap         -- float64[1000] arrays for clamp/skip testing
+  test_empty_channel.mcap        -- one channel with 0 messages
+  test_unsupported_encoding.mcap -- channel with encoding "protobuf" (no parser)
+  test_bad_schema.mcap           -- channel with malformed schema definition
+  test_large_file.mcap           -- 50000 messages for cancellation testing
 
 Requires: pip install mcap
 """
@@ -26,10 +21,6 @@ from pathlib import Path
 
 from mcap.writer import Writer
 
-
-# ---------------------------------------------------------------------------
-# CDR helpers
-# ---------------------------------------------------------------------------
 
 def cdr_float64(value: float) -> bytes:
     """Single float64 field as ROS2 CDR LE (with encapsulation header)."""
@@ -103,10 +94,6 @@ SCHEMA_FOXGLOVE_FRAME_TRANSFORM_PROTO = (
 OUT = Path(__file__).parent
 
 
-# ---------------------------------------------------------------------------
-# Test 1: Publish time vs log time
-# ---------------------------------------------------------------------------
-
 def gen_publish_vs_log_time():
     path = OUT / "test_publish_vs_log_time.mcap"
     n_msgs = 50
@@ -137,10 +124,6 @@ def gen_publish_vs_log_time():
         w.finish()
     print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
 
-
-# ---------------------------------------------------------------------------
-# Test 2: Embedded timestamp
-# ---------------------------------------------------------------------------
 
 def gen_embedded_timestamp():
     path = OUT / "test_embedded_timestamp.mcap"
@@ -175,10 +158,6 @@ def gen_embedded_timestamp():
         w.finish()
     print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
 
-
-# ---------------------------------------------------------------------------
-# Test: always-include whitelist (schema + encoding based, not topic name)
-# ---------------------------------------------------------------------------
 
 def gen_dialog_whitelist():
     path = OUT / "test_dialog_whitelist.mcap"
@@ -242,10 +221,6 @@ def gen_dialog_whitelist():
     print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
 
 
-# ---------------------------------------------------------------------------
-# Test 3: Large arrays
-# ---------------------------------------------------------------------------
-
 def gen_large_arrays():
     path = OUT / "test_large_arrays.mcap"
     n_msgs = 30
@@ -278,10 +253,6 @@ def gen_large_arrays():
         w.finish()
     print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
 
-
-# ---------------------------------------------------------------------------
-# Test 6: Empty channel
-# ---------------------------------------------------------------------------
 
 def gen_empty_channel():
     path = OUT / "test_empty_channel.mcap"
@@ -321,10 +292,6 @@ def gen_empty_channel():
         w.finish()
     print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
 
-
-# ---------------------------------------------------------------------------
-# Test 7: Unsupported encoding
-# ---------------------------------------------------------------------------
 
 def gen_unsupported_encoding():
     path = OUT / "test_unsupported_encoding.mcap"
@@ -368,10 +335,6 @@ def gen_unsupported_encoding():
     print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
 
 
-# ---------------------------------------------------------------------------
-# Test 8: Bad schema
-# ---------------------------------------------------------------------------
-
 def gen_bad_schema():
     path = OUT / "test_bad_schema.mcap"
     n_msgs = 10
@@ -413,10 +376,6 @@ def gen_bad_schema():
     print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
 
 
-# ---------------------------------------------------------------------------
-# Test 9: Large file (50k messages)
-# ---------------------------------------------------------------------------
-
 def gen_large_file():
     path = OUT / "test_large_file.mcap"
     n_msgs = 50_000
@@ -443,8 +402,6 @@ def gen_large_file():
         w.finish()
     print(f"[OK] {path.name:45s} {path.stat().st_size:>8} bytes")
 
-
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     print("Generating verification MCAPs...\n")

@@ -87,7 +87,6 @@ inline bool parseBinaryFrame(const uint8_t* data, size_t size, BinaryFrame& out)
   return true;
 }
 
-/// Build a JSON subscribe message for given subscription IDs and channel IDs.
 inline std::string buildSubscribeMessage(const std::vector<std::pair<uint32_t, uint64_t>>& subscriptions) {
   std::string json = R"({"op":"subscribe","subscriptions":[)";
   for (size_t i = 0; i < subscriptions.size(); i++) {
@@ -101,7 +100,6 @@ inline std::string buildSubscribeMessage(const std::vector<std::pair<uint32_t, u
   return json;
 }
 
-/// Build a JSON unsubscribe message.
 inline std::string buildUnsubscribeMessage(const std::vector<uint32_t>& subscription_ids) {
   std::string json = R"({"op":"unsubscribe","subscriptionIds":[)";
   for (size_t i = 0; i < subscription_ids.size(); i++) {
@@ -122,47 +120,34 @@ struct ChannelRoute {
   bool label_keyed_arrays = false;  ///< parser config: key {label, value} object arrays by label.
 };
 
-/// Classify a Foxglove channel into a parser route.
-///
-/// The Foxglove WebSocket protocol is multi-encoding. Unlike the ROS2 streamer
-/// (CDR-native by construction), this bridge dispatches per channel:
+/// The Foxglove protocol is multi-encoding, so channels are routed per channel (unlike the CDR-native ROS 2 streamer):
 ///   - CDR + ros2msg/omgidl -> parser_ros (text schema, passed verbatim)
-///   - protobuf             -> parser_protobuf (binary FileDescriptorSet schema,
-///                             base64-encoded in the advertise JSON)
-///   - json                 -> parser_json (JSON-Schema text or schemaless;
-///                             e.g. LeRobot 0.6.0 joint/action channels)
-///
-/// NOTE: this intentionally extends beyond the upstream PlotJuggler plugin,
-/// which was CDR/ros2msg-only. The protobuf and json routes are additive
-/// enhancements (see data_stream_foxglove_bridge/README.md). Future encodings
-/// (flatbuffer) are a single new branch each.
+///   - protobuf             -> parser_protobuf (binary FileDescriptorSet schema, base64-encoded in the advertise JSON)
+///   - json                 -> parser_json (JSON-Schema text or schemaless; e.g. LeRobot joint/action channels)
+/// The protobuf and json routes go beyond the original PlotJuggler 3 plugin, which was CDR/ros2msg-only.
 inline ChannelRoute classifyChannel(const ChannelInfo& ch) {
   if (ch.topic.empty()) {
     return {};
   }
-  // Text-schema, CDR-serialized ROS 2 (the original behaviour).
+  // Text-schema, CDR-serialized ROS 2.
   if (ch.encoding == "cdr" && (ch.schema_encoding == "ros2msg" || ch.schema_encoding == "omgidl") &&
       !ch.schema_name.empty() && !ch.schema.empty()) {
     return ChannelRoute{.supported = true, .parser_encoding = ch.schema_encoding};
   }
-  // Protobuf wire messages with a base64 FileDescriptorSet schema. The schema
-  // MAY be empty for the well-known foxglove.* types, which parser_protobuf
+  // Base64 FileDescriptorSet schema. It may be empty for the well-known foxglove.* types, which parser_protobuf
   // recognizes by name and decodes without a descriptor.
   if (ch.encoding == "protobuf" && ch.schema_encoding == "protobuf" && !ch.schema_name.empty()) {
     return ChannelRoute{.supported = true, .parser_encoding = "protobuf", .schema_is_base64 = true};
   }
-  // JSON payloads, self-describing. The advertised JSON-Schema (plain text,
-  // never base64) is informational only — parser_json flattens by content, so
-  // schemaless channels (no schema, no schema_name) work too. label_keyed_arrays
-  // is safe to force: json channels were never routed before, so no saved
-  // layout can depend on index-based names from this bridge.
+  // The advertised JSON-Schema (plain text, never base64) is informational only: parser_json flattens by content, so
+  // schemaless channels work too. Forcing label_keyed_arrays is safe: no saved layout depends on index-based names
+  // for json channels of this bridge.
   if (ch.encoding == "json" && (ch.schema_encoding == "jsonschema" || ch.schema_encoding.empty())) {
     return ChannelRoute{.supported = true, .parser_encoding = "json", .label_keyed_arrays = true};
   }
   return {};
 }
 
-/// Convenience predicate retained for call sites that only need yes/no.
 inline bool isUsableChannel(const ChannelInfo& ch) {
   return classifyChannel(ch).supported;
 }

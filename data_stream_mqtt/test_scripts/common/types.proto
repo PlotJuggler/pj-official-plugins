@@ -2,8 +2,7 @@ syntax = "proto3";
 
 package pj.common;
 
-// Base types shared across multiple message definitions.
-// This file is in a subdirectory to test include folder functionality.
+// Lives in a subdirectory to test include folders.
 
 message Vector3 {
   double x = 1;

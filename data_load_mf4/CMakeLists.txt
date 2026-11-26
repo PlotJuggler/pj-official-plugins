@@ -16,12 +16,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
-# ---------------------------------------------------------------------------
-# mdflib (ihedvall/mdflib, MIT) via CPM — DOWNLOAD_ONLY.
-#
-# Built as the `mdf` static library by cmake/mdflib.cmake (which says why).
-# Pinned to the exact commit validated in Phase 0 (untagged upstream HEAD).
-# ---------------------------------------------------------------------------
+# mdflib (ihedvall/mdflib, MIT), DOWNLOAD_ONLY, built as the `mdf` static library by cmake/mdflib.cmake. Pinned to
+# an exact commit (upstream has no tag).
 CPMAddPackage(
   NAME mdflib
   URL https://github.com/ihedvall/mdflib/archive/5ad85af2c943a1ab810d0768d3873246a3920ebf.tar.gz
@@ -32,23 +28,16 @@ CPMAddPackage(
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/mdflib.cmake)
 pj_add_mdflib_library(mdf ${mdflib_SOURCE_DIR})
 
-# The CAN/DBC decoder now lives in the shared common/can_dbc lib (target
-# pj_can_dbc), added by the root CMakeLists for its consumers.
+# The CAN/DBC decoder is the shared common/can_dbc lib (target pj_can_dbc), added by the root CMakeLists.
 
-# ---------------------------------------------------------------------------
-# Internal static lib: mdflib reader logic shared by the plugin .so and the
-# test executable. PUBLIC-links the SDK base (Status, PrimitiveType) and mdf so
-# consumers inherit their include paths.
-# ---------------------------------------------------------------------------
+# mdflib reader logic shared by the plugin and the tests; PUBLIC-links the SDK base and mdf so consumers inherit
+# their include paths.
 add_library(mf4_core STATIC mf4_reader.cpp)
 set_target_properties(mf4_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(mf4_core PRIVATE cxx_std_20)
 target_compile_options(mf4_core PRIVATE ${PJ_WARNING_FLAGS})
 target_link_libraries(mf4_core PUBLIC plotjuggler_sdk::base mdf pj_utf8_path)
 
-# ---------------------------------------------------------------------------
-# Plugin shared library
-# ---------------------------------------------------------------------------
 add_library(mf4_source_plugin SHARED mf4_source.cpp mf4_dialog.cpp)
 target_compile_features(mf4_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mf4_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -66,7 +55,7 @@ pj_embed_manifest(mf4_source_plugin
   VAR_NAME kMf4Manifest
 )
 
-# v4 plugin discovery: sidecar .pjmanifest.json scanned pre-dlopen.
+# Sidecar .pjmanifest.json that the host scans before dlopen.
 pj_emit_plugin_manifest(mf4_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
@@ -78,9 +67,6 @@ pj_embed_ui(mf4_source_plugin
   VAR_NAME kMf4DialogUi
 )
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 add_executable(mf4_source_test
   tests/mf4_source_test.cpp
   tests/mf4_value_test.cpp

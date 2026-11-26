@@ -7,21 +7,15 @@
 
 namespace mosaico {
 
-/// A portable stand-in for the `std::jthread` + `std::stop_token` pair.
+/// A portable stand-in for `std::jthread` + `std::stop_token`, which Apple's libc++ lacks (Xcode 15.4 and 16.4), so
+/// code using them fails on macOS. Provides the two properties the codebase relies on:
 ///
-/// Apple's libc++ does not provide either (verified on Xcode 15.4 and 16.4), so
-/// code using them compiles on Linux and Windows and fails on macOS. This offers
-/// the two properties the codebase actually relies on:
+///   1. the destructor requests stop and then joins, so the thread is bounded by the enclosing scope on every exit
+///      path (normal, early return, exception);
+///   2. `waitForStop()` returns as soon as stop is requested rather than sitting out the remaining timeout.
 ///
-///   1. the destructor requests stop and then joins, so the thread is bounded by
-///      the enclosing scope on every exit path -- normal, early return, or an
-///      exception unwinding through it;
-///   2. `waitForStop()` returns as soon as stop is requested rather than sitting
-///      out the remaining timeout, which is what the `std::condition_variable_any`
-///      stop_token-aware `wait_for` overload provided.
-///
-/// The body receives the owning object, so it can poll `stopRequested()` and park
-/// in `waitForStop()` without needing its own synchronisation.
+/// The body receives the owning object, so it can poll `stopRequested()` and park in `waitForStop()` without
+/// needing its own synchronisation.
 class StoppableThread {
  public:
   template <typename Body>

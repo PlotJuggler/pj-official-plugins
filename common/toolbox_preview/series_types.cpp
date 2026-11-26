@@ -6,8 +6,7 @@
 namespace toolbox_preview {
 namespace {
 
-/// Arrow validity bitmap lookup. A null bitmap means "no nulls" per the Arrow spec — the
-/// host omits buffers[0] entirely when null_count is 0, so this is the common path.
+/// A null bitmap means "no nulls": the host omits buffers[0] entirely when null_count is 0.
 [[nodiscard]] bool isValidAt(const std::uint8_t* validity, std::int64_t index) noexcept {
   if (validity == nullptr) {
     return true;
@@ -17,9 +16,8 @@ namespace {
   return ((validity[byte] >> bit) & 1U) != 0U;
 }
 
-/// The ten numeric columns: a contiguous array of the matching C type, widened per
-/// sample. `offset` indexes the value buffer; `timestamps` already points at sample 0
-/// (see the header contract).
+/// The ten numeric columns: a contiguous array of the matching C type. `offset` indexes the value
+/// buffer; `timestamps` already points at sample 0.
 template <typename T>
 void appendNumeric(
     const void* values, const std::uint8_t* validity, std::int64_t offset, const std::int64_t* timestamps,
@@ -35,10 +33,8 @@ void appendNumeric(
   }
 }
 
-/// Arrow BOOL: a PACKED bitmap, one bit per sample — not an array of `bool`. `offset` is
-/// therefore a bit offset, so a sliced array shifts which bit within the byte a sample
-/// lives at. Reading this as `static_cast<const bool*>` is the tempting mistake and it
-/// silently yields garbage.
+/// Arrow BOOL is a PACKED bitmap, one bit per sample, not an array of `bool` (reading it as
+/// `static_cast<const bool*>` silently yields garbage). `offset` is therefore a bit offset.
 void appendBool(
     const void* values, const std::uint8_t* validity, std::int64_t offset, const std::int64_t* timestamps,
     std::size_t count, std::vector<double>& out_timestamps, std::vector<double>& out_values) {
@@ -64,19 +60,16 @@ bool decodeSeriesAsDouble(
   if (values == nullptr || timestamps == nullptr) {
     return false;
   }
-  // Reserve for the no-nulls case; a sparse column simply under-fills these.
   out_timestamps.reserve(count);
   out_values.reserve(count);
 
-  // One place to state the argument list, so a change to appendNumeric's signature cannot
-  // be applied to ten of the eleven call sites.
+  // One place for the argument list, so a signature change cannot miss some call sites.
   const auto numeric = [&](auto sample) {
     appendNumeric<decltype(sample)>(values, validity, offset, timestamps, count, out_timestamps, out_values);
     return true;
   };
 
-  // Exhaustive switch with no default, same rule as isPlottableType: a new PrimitiveType
-  // must fail to compile here rather than silently decode as nothing.
+  // Exhaustive switch with no default, as in isPlottableType.
   switch (type) {
     case PJ::PrimitiveType::kFloat64:
       return numeric(double{});
@@ -103,8 +96,8 @@ bool decodeSeriesAsDouble(
       return true;
     case PJ::PrimitiveType::kString:
     case PJ::PrimitiveType::kUnspecified:
-      // Unreachable through SeriesCatalog (isPlottableType filters these out first), but
-      // the contract is "returns false, writes nothing" rather than a partial decode.
+      // Unreachable through SeriesCatalog (isPlottableType filters these first); the contract is
+      // "returns false, writes nothing".
       return false;
   }
   return false;

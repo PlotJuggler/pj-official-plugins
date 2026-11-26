@@ -22,7 +22,7 @@ TEST(CandumpDialogKeys, ValidatesInterfaceKeys) {
   EXPECT_FALSE(CandumpDialog::isValidInterfaceKey(""));
   EXPECT_FALSE(CandumpDialog::isValidInterfaceKey("this-name-is-too-long"));  // > 15 chars
   EXPECT_FALSE(CandumpDialog::isValidInterfaceKey("vcan0/1"));                // '/'
-  // Exactly 15 chars is still valid (boundary).
+  // Boundary: exactly 15 chars.
   EXPECT_TRUE(CandumpDialog::isValidInterfaceKey("exactly15chars0"));
 }
 

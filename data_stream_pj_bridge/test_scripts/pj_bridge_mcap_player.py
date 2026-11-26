@@ -117,8 +117,7 @@ def read_messages(path: str):
 def read_message_chunks(path: str, max_msgs: int = 200, max_bytes: int = 32 * 1024 * 1024):
     """Generator: yields read_messages() output in lists bounded by message
     count AND payload bytes. The play loop streams these through a small queue
-    so a multi-gigabyte mcap never materializes in RAM (a 17 GB bag as one
-    list() OOM-killed an entire session)."""
+    so a multi-gigabyte mcap never materializes in RAM."""
     chunk: list = []
     chunk_bytes = 0
     for item in read_messages(path):
@@ -250,7 +249,6 @@ class PjBridgeMcapPlayer:
                 pass
 
     async def play_loop(self):
-        # Build topic name lookup
         ch_topic = {ch_id: ch["name"] for ch_id, ch in self.channels.items()}
 
         loop_count = 0
@@ -263,12 +261,9 @@ class PjBridgeMcapPlayer:
                 # fine for protocol tests, wrong for TF/3D rendering.
                 print("   (looping rewinds bag time — non-monotonic for live consumers)")
 
-            # STREAM the bag through a bounded producer thread — never
-            # materialize it (list(read_messages(...)) on a 17 GB bag OOM-killed
-            # the whole session). The queue bounds memory to
-            # ~maxsize × max_bytes (~128 MB) and the thread keeps file I/O +
-            # decompression off the event loop so control-plane requests
-            # (subscribe/unsubscribe/heartbeat) stay responsive.
+            # Stream the bag through a bounded producer thread; never materialize it (a 17 GB bag OOMs). The queue
+            # bounds memory to ~maxsize x max_bytes (~128 MB) and the thread keeps file I/O and decompression off the
+            # event loop so control-plane requests (subscribe/unsubscribe/heartbeat) stay responsive.
             chunk_queue: queue.Queue = queue.Queue(maxsize=4)
 
             def produce(q=chunk_queue):
@@ -284,7 +279,6 @@ class PjBridgeMcapPlayer:
             wall_start = time.monotonic()
             messages_seen = 0
 
-            # Group messages by timestamp bucket (~100ms) for efficient frames
             bucket_ms = 100
             bucket: list = []
             bucket_ts = 0
@@ -307,7 +301,6 @@ class PjBridgeMcapPlayer:
                     if topic is None:
                         continue
 
-                    # Timing
                     if self.speed > 0:
                         bag_elapsed = (log_time_ns - first_ts) / 1e9
                         wall_elapsed = time.monotonic() - wall_start
@@ -315,13 +308,10 @@ class PjBridgeMcapPlayer:
                         if wait > 0:
                             await asyncio.sleep(wait)
 
-                    # ORIGINAL bag timestamp, never wall clock: the CDR payloads
-                    # (TF stamps, headers) carry bag time, so a wall-clock wire
-                    # stamp puts every sample months away from its own TF and
-                    # scene lookups fail (same fix as the foxglove player).
+                    # Original bag timestamp, never wall clock: the CDR payloads (TF stamps, headers) carry bag time,
+                    # so a wall-clock wire stamp puts every sample months away from its own TF and scene lookups fail.
                     bucket.append((topic, log_time_ns, data))
 
-                    # Flush bucket every 100ms of bag time
                     if (log_time_ns - bucket_ts) >= bucket_ms * 1_000_000 or len(bucket) >= 50:
                         await self._send_bucket(bucket)
                         bucket = []
@@ -335,11 +325,9 @@ class PjBridgeMcapPlayer:
                 continue
 
             if not self.loop:
-                # Single pass by default (foxglove-player parity): keep SERVING
-                # (control plane + latched replay stay live) but stop the data
-                # stream — looping would rewind bag time (see above). The
-                # notice below is deliberately loud: a quiet wire here has
-                # repeatedly been mistaken for a client bug.
+                # Single pass by default: keep serving (control plane and latched replay stay live) but stop the data
+                # stream, since looping would rewind bag time (see above). The notice below is deliberately loud: a
+                # quiet wire is easily mistaken for a client bug.
                 print(f"\n■ Bag finished ({messages_seen} msgs) — data stream ended.")
                 print("  Restart the player to replay, or pass --loop for wrap-around replay.")
                 while True:

@@ -1,19 +1,15 @@
 /**
  * @file ros_yolo_handlers.cpp
- * @brief yolo_msgs/DetectionArray -> sdk::ImageAnnotations (per-message,
- *        stateless decode). See parser_ros/YOLO_NOTES.md for the design
- *        rationale.
+ * @brief yolo_msgs/DetectionArray -> sdk::ImageAnnotations, stateless per message.
+ *        yolo_msgs (github.com/mgonzs13/yolo_ros) is a third-party message, not
+ *        standard ROS. Design notes: YOLO_NOTES.md.
  *
  * Each Detection becomes a bounding-box rectangle (PointsAnnotation, kLineLoop)
  * plus a class/score label (TextAnnotation); when present, the segmentation-mask
  * boundary is drawn as another kLineLoop and the 2D pose keypoints as small
- * filled circles. The decode is positional CDR — every field of every Detection
- * is consumed in full so the next Detection in the array stays aligned, even the
- * fields we don't render (bbox3d, keypoints3d, theta, mask dimensions).
- *
- * yolo_msgs (github.com/mgonzs13/yolo_ros) is a third-party message, NOT part of
- * standard ROS. This handler is net-new functionality, not a port of an upstream
- * PlotJuggler plugin — see YOLO_NOTES.md.
+ * filled circles. The decode is positional CDR: every field of every Detection is
+ * consumed, rendered or not (bbox3d, keypoints3d, theta, mask dimensions), so the
+ * next Detection in the array stays aligned.
  */
 
 #include <algorithm>
@@ -53,10 +49,8 @@ PJ::sdk::ColorRGBA colorForClass(int32_t class_id) {
   return kClassPalette[static_cast<size_t>(idx)];
 }
 
-// Clamp an array reservation by the bytes actually remaining. An element cannot
-// occupy fewer than `min_wire_bytes`, so however large (but in-cap) a corrupt
-// count is, we never reserve more than the payload could possibly hold — this
-// defuses the allocation amplification of reserving on an untrusted count.
+// Clamps a reservation to what the remaining bytes could hold (an element takes at least
+// `min_wire_bytes`), so an untrusted count cannot amplify the allocation.
 uint32_t reserveHint(uint32_t count, size_t bytes_left, uint32_t min_wire_bytes) {
   return std::min(count, static_cast<uint32_t>(bytes_left / min_wire_bytes));
 }
@@ -82,9 +76,9 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseYoloDetectionArray(PJ::Times
 
     PJ::sdk::ImageAnnotations out;
     out.timestamp_ns = current_timestamp_;
-    // Informational only — the Scene2D renderer composites by layer stacking,
-    // not by matching this against an image topic. yolo_msgs carries no image
-    // topic name, so the camera optical frame_id is the best available hint.
+    // Informational only: Scene2D composites by layer stacking, not by matching this
+    // against an image topic. yolo_msgs has no image topic name, so the camera optical
+    // frame_id is the best available hint.
     out.image_topic = header.frame_id;
 
     const uint32_t num_detections = deserializer_->deserializeUInt32();
@@ -166,7 +160,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseYoloDetectionArray(PJ::Times
       std::string kp3_frame;
       deserializer_->deserializeString(kp3_frame);
 
-      // --- Build the rendered annotations from the fields we keep. ---
       const PJ::sdk::ColorRGBA color = colorForClass(class_id);
       const double hx = sx / 2.0;
       const double hy = sy / 2.0;
@@ -206,11 +199,10 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseYoloDetectionArray(PJ::Times
       }
     }
 
-    // A corrupt-but-in-bounds count can desync the positional CDR decode without
-    // overrunning, so the try/catch never sees it; trailing bytes are the only
-    // signature. Warn once and still return best-effort — a hard throw would risk
-    // rejecting valid frames, since bytesLeft() > 0 is ambiguous (desync vs CDR
-    // alignment slack) and no other handler asserts an exact end of buffer.
+    // Trailing bytes are the only sign of a corrupt-but-in-bounds count that desynced the
+    // decode without overrunning. Warn once and return best-effort: bytesLeft() > 0 is
+    // ambiguous (desync vs CDR alignment slack) and no other handler asserts an exact end
+    // of buffer.
     if (deserializer_->bytesLeft() != 0 && !yolo_trailing_warned_) {
       yolo_trailing_warned_ = true;
       std::fprintf(
@@ -228,17 +220,13 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseYoloDetectionArray(PJ::Times
   }
 }
 
-// Slim scalar companion: read the header + the detections[] count and emit the
-// header series alongside `num_detections`. Keeps the host's eager-scalar ingest
-// from aborting on this object-only schema (see parseScalarsObjectOnly) while
-// giving a useful plottable count. The full per-detection decode stays in
-// parseYoloDetectionArray.
+// Slim scalar companion: the header series plus `num_detections`, without the per-detection
+// decode of parseYoloDetectionArray. Keeps eager-scalar ingest from aborting on this
+// object-only schema (see parseScalarsObjectOnly).
 PJ::Status RosParser::parseYoloScalars(PJ::Timestamp ts, PJ::Span<const uint8_t> payload) {
   try {
     beginDirectScalarRead(ts, payload);
-    // The header used to be read and dropped here. It is the one part of a
-    // DetectionArray that is genuinely a time series (sensor stamp + frame),
-    // so emit it: emitHeader appends into fields_.
+    // The header is the one real time series of a DetectionArray (sensor stamp + frame).
     emitHeader(readHeader());
     const uint32_t num_detections = deserializer_->deserializeUInt32();
     addField("num_detections", PJ::sdk::ValueRef{static_cast<uint64_t>(num_detections)});

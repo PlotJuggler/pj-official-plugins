@@ -1,18 +1,16 @@
 /**
- * @file navmap_parser.cpp
- * @brief EasyNavigation NavMap messages -> sdk::MeshMap / sdk::MeshMapUpdate.
+ * EasyNavigation NavMap messages -> sdk::MeshMap / sdk::MeshMapUpdate.
  *
- * Routing: this parser registers SchemaHandlers for exactly two ROS 2 types
- * and claims both routes, the object route (3D) and the scalar route (a few
- * summary series instead of flattening million-element arrays):
+ * Registers SchemaHandlers for exactly two ROS 2 types and claims both routes,
+ * the object route (3D) and the scalar route (a few summary series instead of
+ * flattening million-element arrays):
  *   navmap_ros_interfaces/msg/NavMap      -> kMeshMap
  *   navmap_ros_interfaces/msg/NavMapLayer -> kMeshMapUpdate (the sparse layer
  *                                            updates on `<map topic>_updates`)
- * The ROS parser makes an exact claim for every type it can bind too, and the
- * host breaks the tie by plugin provenance first: when the ROS parser is
- * bundled and this one is installed from the marketplace or a plugin
- * directory, the ROS parser takes the scalar route of NavMap topics (its
- * generic flattening). Only the object route is this parser's alone.
+ * The ROS parser also makes an exact claim for these types and the host breaks
+ * the tie by plugin provenance first: a bundled ROS parser wins the scalar
+ * route over this plugin when it is installed from the marketplace or a plugin
+ * directory. Only the object route is this parser's alone.
  *
  * The host also gives every parser a wildcard scalar claim for each manifest
  * encoding and accepts it whenever bindSchema() succeeds. bindSchema() must
@@ -110,7 +108,7 @@ class NavMapParser : public PJ::MessageParserPluginBase {
                              PJ::Timestamp ts, PJ::Span<const uint8_t> payload) { return decodeScalars(ts, payload); },
         .parse_object = [this](PJ::Timestamp ts, PJ::sdk::PayloadView payload) { return decodeLayer(ts, payload); },
     };
-    // Hosts pass the normalized "pkg/msg/Type"; accept the short form too.
+    // Hosts pass the "pkg/msg/Type" form; accept the short one too.
     registerSchemaHandler(kNavMapType, map_handler);
     registerSchemaHandler(normalizeRosTypeName(kNavMapType), map_handler);
     registerSchemaHandler(kNavMapLayerType, layer_handler);

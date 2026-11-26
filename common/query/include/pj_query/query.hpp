@@ -29,10 +29,8 @@ class Query {
     complete_ = result.complete;
     parse_error_ = std::move(result.error);
 
-    // If the parse is complete (all leaves are full comparisons), use the
-    // expanded serialization. Otherwise fall back to the raw source — the
-    // query may be valid Lua that our subset parser doesn't understand
-    // (e.g., string.find(), nil comparisons, function calls).
+    // An incomplete parse falls back to the raw source: the query may be valid Lua that this
+    // subset parser doesn't understand (string.find(), nil comparisons, function calls).
     if (complete_) {
       expanded_ = serialize(ast_.get());
     } else {
@@ -40,17 +38,15 @@ class Query {
     }
   }
 
-  // The original source string.
   [[nodiscard]] const std::string& source() const {
     return source_;
   }
 
-  // The token stream from lexing.
   [[nodiscard]] const std::vector<Token>& tokens() const {
     return tokens_;
   }
 
-  // The parsed AST. Null if the input was empty.
+  // Null if the input was empty.
   [[nodiscard]] const Expr* ast() const {
     return ast_.get();
   }
@@ -65,7 +61,6 @@ class Query {
     return parse_error_;
   }
 
-  // Is there anything to evaluate?
   [[nodiscard]] bool empty() const {
     return tokens_.empty();
   }
@@ -75,8 +70,7 @@ class Query {
     return expanded_;
   }
 
-  // Find the token at a given character offset in the source.
-  // Returns nullptr if no token covers that position.
+  // nullptr if no token covers `pos`.
   [[nodiscard]] const Token* tokenAt(int pos) const {
     for (const auto& tok : tokens_) {
       if (pos >= tok.start && pos < tok.end) {
@@ -86,8 +80,7 @@ class Query {
     return nullptr;
   }
 
-  // Find the token index at a given character offset.
-  // Returns -1 if no token covers that position.
+  // -1 if no token covers `pos`.
   [[nodiscard]] int tokenIndexAt(int pos) const {
     for (int index = 0; index < static_cast<int>(tokens_.size()); ++index) {
       if (pos >= tok(index).start && pos < tok(index).end) {
@@ -97,8 +90,7 @@ class Query {
     return -1;
   }
 
-  // Get the most recent key in context before a given token index.
-  // Walks backward through tokens to find the nearest Key token.
+  // The nearest Key token before `token_index`.
   [[nodiscard]] std::string keyBefore(int token_index) const {
     for (int index = token_index - 1; index >= 0; --index) {
       if (tok(index).type == TokenType::kKey) {
@@ -108,9 +100,8 @@ class Query {
     return {};
   }
 
-  // Determine what token type is expected at the given character offset.
+  // The token type expected at the given character offset.
   [[nodiscard]] TokenType expectedAt(int pos) const {
-    // Find which token we're at or after.
     int idx = -1;
     for (int index = 0; index < static_cast<int>(tokens_.size()); ++index) {
       if (tok(index).start <= pos) {
@@ -126,12 +117,11 @@ class Query {
 
     auto last_type = tok(idx).type;
 
-    // If cursor is inside a token, we're editing that token type.
+    // The cursor is inside a token: that token's type is being edited.
     if (pos < tok(idx).end) {
       return last_type;
     }
 
-    // Cursor is after the token — what comes next?
     switch (last_type) {
       case TokenType::kKey:
         return TokenType::kOperator;
@@ -153,7 +143,7 @@ class Query {
 
  private:
   std::string source_;
-  // Centralizes the int → size_type cast so -Wsign-conversion stays clean.
+  // Centralizes the int -> size_type cast (-Wsign-conversion).
   [[nodiscard]] const Token& tok(int index) const {
     return tokens_[static_cast<std::size_t>(index)];
   }

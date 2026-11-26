@@ -1,10 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// Unit tests for the PURE notification logic: ${ENV} expansion, config parse +
-// validation, the fire predicate, and payload building. Network delivery
-// (webhook/email) is exercised separately (command-sink end-to-end + manual);
-// these tests need no network.
+// Unit tests for the pure notification logic (no network): ${ENV} expansion, config parse and validation,
+// the fire predicate, payload building, and the command sink. Webhook/email delivery is exercised manually.
 
 #include "notify.hpp"
 
@@ -29,8 +27,6 @@ nlohmann::json reportDoc(const std::string& status, int info = 0, int warning = 
 
 }  // namespace
 
-// --------------------------------------------------------------------------- env
-
 TEST(ExpandEnv, SubstitutesAndEscapes) {
   ::setenv("ANOMALY_TEST_TOKEN", "s3cr3t", 1);
   EXPECT_EQ(expandEnv("Bearer ${ANOMALY_TEST_TOKEN}"), "Bearer s3cr3t");
@@ -43,8 +39,6 @@ TEST(ExpandEnv, UnsetVariableBecomesEmpty) {
   ::unsetenv("ANOMALY_TEST_UNSET");
   EXPECT_EQ(expandEnv("x${ANOMALY_TEST_UNSET}y"), "xy");
 }
-
-// ------------------------------------------------------------------------ config
 
 TEST(ParseConfig, WebhookWithEnvHeader) {
   ::setenv("ANOMALY_TEST_TOKEN", "abc123", 1);
@@ -113,8 +107,6 @@ TEST(ParseConfig, DefaultsNotifyOnToFail) {
   EXPECT_EQ(cfg->notify_on, "fail");
 }
 
-// ----------------------------------------------------------------------- predicate
-
 TEST(ShouldNotify, AlwaysAndFail) {
   EXPECT_TRUE(shouldNotify(reportDoc("pass"), "always"));
   EXPECT_TRUE(shouldNotify(reportDoc("fail"), "always"));
@@ -135,8 +127,6 @@ TEST(ShouldNotify, SeverityThreshold) {
   EXPECT_TRUE(shouldNotify(crit, "severity>=critical"));
 }
 
-// ------------------------------------------------------------------------- payload
-
 TEST(Payload, DefaultSubject) {
   EXPECT_EQ(defaultSubject(reportDoc("fail", 0, 0, 7)), "[anomaly] FAIL: 7 marker(s) — run.csv");
 }
@@ -153,8 +143,6 @@ TEST(Payload, EmailMessageHasHeadersAndBody) {
   EXPECT_NE(msg.find("\r\n\r\n"), std::string::npos);  // header/body separator
   EXPECT_NE(msg.find(R"({"k":1})"), std::string::npos);
 }
-
-// ------------------------------------------------------------- dispatch (command sink)
 
 TEST(Dispatch, PolicyNotFiredAttemptsNothing) {
   std::string err;

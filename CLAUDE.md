@@ -74,6 +74,11 @@ All plugin `.so` files build into `build/pj_ported_plugins/bin/`.
 - C++20, Google-based clang-format (2-space indent, 120 col limit, `InsertBraces: true`)
 - Pre-commit hooks enforce clang-format and standard checks
 - Compiler warnings: `-Wall -Wextra -Werror -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic`
+- **Comments, docs and READMEs stay essential.** Write only what reading the code does not tell you: the
+  reason for a non-obvious choice, invariants, threading/lifetime/ABI constraints, units, workarounds for
+  external bugs, and consequences that are hard to foresee. Do not restate the code. Never record history
+  ("previously", "changed to", "fixed in #123", dates, migration notes): that belongs in git and in the
+  `CHANGELOG.md`. If a past problem still constrains the code, state the constraint in the present tense.
 
 ## Architecture
 

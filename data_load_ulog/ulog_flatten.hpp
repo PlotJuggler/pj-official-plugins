@@ -1,11 +1,8 @@
 #pragma once
 
-// SDK-free helpers that flatten a ulog_cpp MessageFormat into the ordered list
-// of scalar leaves PlotJuggler ingests. The traversal logic (field skipping,
-// array expansion, string detection, and the nested base-offset accumulation)
-// lives here so it can be unit-tested directly, without pulling in the plugin
-// SDK. The SDK-coupled pieces (ValueRef construction, PrimitiveType mapping)
-// stay in ulog_source.cpp.
+// SDK-free helpers that flatten a ulog_cpp MessageFormat into the ordered scalar leaves PlotJuggler ingests, so the
+// traversal can be unit-tested without the plugin SDK. ValueRef construction and PrimitiveType mapping stay in
+// ulog_source.cpp.
 
 #include <cstddef>
 #include <cstdint>
@@ -18,20 +15,17 @@
 
 namespace ulog_flatten {
 
-/// Fields the importer never emits as time series: the leading message timestamp
-/// (used as the time axis) and ULog alignment padding.
+/// Fields never emitted as series: the message timestamp (the time axis) and ULog padding.
 inline bool isSkippedField(const std::string& name) {
   return name == "timestamp" || name.starts_with("_padding");
 }
 
-/// A `char[N]` field is a fixed-width string per the ULog spec ("Strings
-/// (char[length]) do not contain the termination NULL character"), not N
-/// numeric samples. A scalar `char` stays a one-byte numeric leaf.
+/// A `char[N]` field is a fixed-width string (the ULog spec: no terminating NUL), not N numeric samples. A scalar
+/// `char` stays a one-byte numeric leaf.
 inline bool isStringField(const ulog_cpp::Field& field) {
   return field.type().type == ulog_cpp::Field::BasicType::CHAR && field.arrayLength() > 0;
 }
 
-/// One flattened leaf of a record: where it sits, what it is, and how wide it is.
 /// For string leaves `size` spans the whole `char[N]` array.
 struct FlatLeaf {
   size_t offset;
@@ -40,9 +34,8 @@ struct FlatLeaf {
   bool is_string;
 };
 
-/// Recursively collect flattened field names for a ulog_cpp MessageFormat.
-/// Nested fields are separated by "." and array elements get ".00", ".01", etc.
-/// A `char[N]` array collapses to a single name (it is one string series).
+/// Flattened field names: nested fields are joined with "." and array elements get ".00", ".01", etc.; a `char[N]`
+/// array is one name.
 inline void collectFlatFieldNames(
     const ulog_cpp::MessageFormat& format, const std::string& prefix, std::vector<std::string>& out) {
   for (const auto& field_ptr : format.fields()) {
@@ -83,12 +76,9 @@ inline void collectFlatFieldNames(
   }
 }
 
-/// Visit every leaf of a MessageFormat in the same order as
-/// collectFlatFieldNames, invoking `visit(const FlatLeaf&)`. `base_offset` is
-/// the byte offset of `format` within the raw record (0 at the top level);
-/// nested structs accumulate their start offset so each leaf's offset is
-/// absolute, matching ulog_cpp's own resolution scheme
-/// (MessageFormat::resolveDefinition assigns per-format 0-based field offsets).
+/// Visits every leaf in the order of collectFlatFieldNames. `base_offset` is the byte offset of `format` within the
+/// raw record (0 at the top level); nested structs accumulate it because ulog_cpp's resolveDefinition assigns
+/// per-format 0-based field offsets.
 template <typename Visitor>
 void forEachFlatLeaf(const ulog_cpp::MessageFormat& format, size_t base_offset, Visitor&& visit) {
   for (const auto& field_ptr : format.fields()) {
@@ -121,40 +111,27 @@ void forEachFlatLeaf(const ulog_cpp::MessageFormat& format, size_t base_offset, 
   }
 }
 
-/// Minimum raw payload size ULog actually logs for a *top-level* subscribed
-/// `format`. Per the spec ("Padding" section of the ULog file format): "If
-/// the padding field is the last field, then this field may not be logged,
-/// to avoid writing unnecessary data. This means the message_data_s.data
-/// will be shorter by the size of the padding. However the padding is still
-/// needed when the message is used in a nested definition." So only a
-/// padding field that is genuinely LAST in the format is optional in the
-/// data; padding anywhere else (including a trailing padding field of a
-/// format that is itself nested inside another one, where the padding is
-/// required to keep sibling field offsets correct) still counts toward the
-/// minimum size. `format.fields()` is in declaration order, matching
-/// on-disk/offset order (MessageFormat::resolveDefinition assigns offsets by
-/// walking fields in that same order), so the last entry is the true trailing
-/// field.
+/// Minimum raw payload size ULog actually logs for a *top-level* subscribed `format`. Per the spec, a padding field
+/// that is the LAST field may be omitted from the data, but is still needed when the format is nested. So only a
+/// genuinely trailing padding field of a top-level format is optional; padding anywhere else (including the trailing
+/// padding of a nested format, which keeps sibling offsets correct) counts toward the minimum. `format.fields()` is in
+/// declaration order, which is also on-disk/offset order, so the last entry is the trailing field.
 inline size_t loggedSizeBytes(const ulog_cpp::MessageFormat& format) {
   size_t size = static_cast<size_t>(format.sizeBytes());
   const auto& fields = format.fields();
   if (!fields.empty()) {
     const auto& last = *fields.back();
     if (last.name().starts_with("_padding")) {
-      // sizeBytes() sums a name-keyed map, which undercounts duplicate fields.
-      // The ordered field's offset preserves the actual on-disk boundary.
+      // sizeBytes() sums a name-keyed map, which undercounts duplicate fields; the ordered offset is the real boundary.
       size = static_cast<size_t>(last.offsetInMessage());
     }
   }
   return size;
 }
 
-/// Byte offset of the record's `uint64_t timestamp` field, located by NAME.
-/// The ULog spec requires every subscribed format to carry it but does not
-/// require it to be the first field, so a fixed offset-0 read is wrong in
-/// general. Only the top level is searched: a timestamp inside a nested
-/// struct is that struct's data, not the message clock. Returns nullopt when
-/// the format has no such field (or it has the wrong type / is an array).
+/// Byte offset of the record's `uint64_t timestamp` field, located by NAME: the spec requires the field but not that it
+/// comes first. Only the top level is searched (a nested timestamp is that struct's data, not the message clock).
+/// Returns nullopt when there is no such field or it is not a scalar uint64.
 inline std::optional<size_t> findTimestampOffset(const ulog_cpp::MessageFormat& format) {
   for (const auto& field_ptr : format.fields()) {
     const auto& field = *field_ptr;
@@ -166,11 +143,9 @@ inline std::optional<size_t> findTimestampOffset(const ulog_cpp::MessageFormat& 
   return std::nullopt;
 }
 
-/// View of a `char[size]` string leaf at `offset`. Stops at the first NUL (PX4
-/// zero-pads shorter strings) or at `size` when the string fills the array
-/// (the spec guarantees no terminator). Mirrors ulog_cpp's own strnlen-based
-/// decoding, so the plugin and the library agree on string values. The caller
-/// must have bounds-checked `offset + size` against the record.
+/// View of a `char[size]` string leaf at `offset`. Stops at the first NUL (PX4 zero-pads shorter strings) or at `size`
+/// when the string fills the array. Mirrors ulog_cpp's strnlen-based decoding so both agree on string values. The
+/// caller must have bounds-checked `offset + size` against the record.
 inline std::string_view stringLeafView(const uint8_t* data, size_t offset, size_t size) {
   std::string_view full(reinterpret_cast<const char*>(data + offset), size);
   const auto nul = full.find('\0');

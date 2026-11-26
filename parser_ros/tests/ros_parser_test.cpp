@@ -81,26 +81,18 @@ struct RosParserFixture {
   }
 };
 
-// --- CDR serialization helpers ---
-
-// Build a CDR-encoded buffer for a simple flat message using NanoCDR_Serializer.
-// The message definition and the serialized fields must match.
-
+// Builds a CDR-encoded buffer with NanoCDR_Serializer; the serialized fields must match the message definition.
 std::vector<uint8_t> serializeCdr(const std::function<void(RosMsgParser::NanoCDR_Serializer&)>& fill) {
   RosMsgParser::NanoCDR_Serializer encoder;
   fill(encoder);
   return std::vector<uint8_t>(encoder.getBufferData(), encoder.getBufferData() + encoder.getBufferSize());
 }
 
-// --- ROS message definitions (text format) ---
-
-// Simple scalar message: int32 + float64 + bool
 static const char* kSimpleScalarDef =
     "int32 status\n"
     "float64 temperature\n"
     "bool active\n";
 
-// Nested message: Header with stamp (sec/nanosec) + a float64 value
 static const char* kNestedDef =
     "Header header\n"
     "float64 value\n"
@@ -113,15 +105,12 @@ static const char* kNestedDef =
     "int32 sec\n"
     "uint32 nanosec\n";
 
-// String message: just a string field
 static const char* kStringDef = "string data\n";
 
-// Array message: fixed-size and variable-size arrays
 static const char* kArrayDef =
     "float64[3] position\n"
     "int32 count\n";
 
-// Variable-length array message
 static const char* kVarArrayDef =
     "float64[] values\n"
     "int32 count\n";
@@ -135,8 +124,6 @@ module pkg {
   };
 };
 )";
-
-// ---- Tests ----
 
 TEST(RosParserTest, StreamedActionFeedbackSchema) {
   RosParserFixture f;
@@ -371,7 +358,7 @@ TEST(RosParserTest, OmgIdlSchemaParsesCdrPayload) {
   EXPECT_TRUE(found_active);
 }
 
-// Original schema and first message from PlotJuggler issue #851's ROS2 IDL MCAP.
+// Schema and first message of the ROS 2 IDL MCAP attached to PlotJuggler issue #851.
 TEST(RosParserTest, Ros2IdlSchemaParsesOriginalAckermannCdr) {
   std::ifstream schema_file(std::string(PJ_ROS_PARSER_TEST_DATA_DIR) + "/ros2idl_ackermann.idl");
   ASSERT_TRUE(schema_file.is_open());
@@ -448,14 +435,11 @@ TEST(RosParserTest, ClassifiesRos2IdlSchemaWithoutLoadConfig) {
   EXPECT_EQ(f.handle.classifySchema(type, bytes), PJ::sdk::BuiltinObjectType::kPointCloud);
 }
 
-// --- Advertise-time classification: bindSchema() with NO loadConfig() ---
-//
-// The demand-subscription host classifies advertised topics through a
-// throwaway handle via bindSchema() -> classifySchema(); the schema encoding
-// only travels later in the binding request's parser_config_json. Per the SDK
-// contract (message_parser_protocol.h) classify_schema must be correct right
-// after bind_schema, so the parser infers the format from the inputs' shape
-// and compiles eagerly.
+// Advertise-time classification, bindSchema() with NO loadConfig(): the demand-subscription host
+// classifies advertised topics through a throwaway handle via bindSchema() -> classifySchema(), and
+// the schema encoding only travels later in parser_config_json. Per the SDK contract
+// (message_parser_protocol.h) classify_schema must be correct right after bind_schema, so the parser
+// infers the format from the inputs' shape and compiles eagerly.
 
 TEST(RosParserTest, ClassifiesPointCloud2WithoutLoadConfig) {
   RosParserFixture f;
@@ -767,26 +751,21 @@ TEST(RosParserTest, NativeIntegerTypes) {
 }
 
 TEST(RosParserTest, ArrayClampingConfig) {
-  // Test that saveConfig/loadConfig round-trips max_array_size.
   RosParserFixture f;
   f.setUp();
 
-  // Default config should have max_array_size = 500
   std::string cfg;
   ASSERT_TRUE(f.handle.saveConfig(cfg));
   EXPECT_NE(cfg.find("\"max_array_size\""), std::string::npos);
   EXPECT_NE(cfg.find("500"), std::string::npos);
 
-  // Load a custom config
   ASSERT_TRUE(f.handle.loadConfig(R"({"max_array_size":100})"));
   ASSERT_TRUE(f.handle.saveConfig(cfg));
   EXPECT_NE(cfg.find("100"), std::string::npos);
 
-  // Load empty/invalid JSON should use defaults (not fail)
+  // An empty config keeps the defaults rather than failing.
   ASSERT_TRUE(f.handle.loadConfig("{}"));
 }
-
-// ---- Helper: find field by name ----
 
 const PJ::sdk::testing::RecordedField* findField(const PJ::sdk::testing::RecordedRow& row, const std::string& name) {
   for (const auto& f : row.fields) {
@@ -797,14 +776,12 @@ const PJ::sdk::testing::RecordedField* findField(const PJ::sdk::testing::Recorde
   return nullptr;
 }
 
-// ---- Helper: serialize a ROS2 header (sec, nsec, frame_id) ----
 void serializeHeader(RosMsgParser::NanoCDR_Serializer& enc, int32_t sec, uint32_t nsec, const std::string& frame_id) {
   enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(sec));
   enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(nsec));
   enc.serializeString(frame_id);
 }
 
-// ---- Helper: serialize a quaternion (x,y,z,w) ----
 void serializeQuaternion(RosMsgParser::NanoCDR_Serializer& enc, double x, double y, double z, double w) {
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(x));
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(y));
@@ -812,14 +789,11 @@ void serializeQuaternion(RosMsgParser::NanoCDR_Serializer& enc, double x, double
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(w));
 }
 
-// ---- Helper: serialize a vector3 (x,y,z) ----
 void serializeVector3(RosMsgParser::NanoCDR_Serializer& enc, double x, double y, double z) {
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(x));
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(y));
   enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(z));
 }
-
-// ===== ROS message definitions for specialized types =====
 
 static const char* kPoseDef =
     "Point position\n"
@@ -935,8 +909,6 @@ static const char* kTFMessageDef =
     "MSG: geometry_msgs/Quaternion\n"
     "float64 x\nfloat64 y\nfloat64 z\nfloat64 w\n";
 
-// ===== Specialization tests =====
-
 TEST(RosParserTest, QuaternionRPY) {
   // Identity quaternion (0,0,0,1) → RPY all zeros.
   RosParserFixture f;
@@ -998,12 +970,10 @@ TEST(RosParserTest, PoseWithRPY) {
   EXPECT_NE(findField(f.recorder.rows()[0], "/orientation/pitch"), nullptr);
 }
 
-// Regression (scalar route): a truncated message whose scalar (void) handler reads
-// past the end must fail cleanly, not std::terminate. The void handlers run through
-// wrapVoidHandler(), which — unlike the object handlers — is the C-ABI-facing entry
-// for the scalar route, so it must catch the CDR decode throw before it crosses the
-// noexcept trampoline. Here geometry_msgs/Pose carries only position (3 doubles);
-// handlePose throws reading the missing orientation.
+// A truncated message whose scalar (void) handler reads past the end must fail cleanly, not
+// std::terminate: wrapVoidHandler(), unlike the object handlers, is the C-ABI-facing entry of the
+// scalar route and must catch the CDR decode throw before it crosses the noexcept trampoline. Here
+// geometry_msgs/Pose carries only position (3 doubles), so handlePose throws reading the orientation.
 TEST(RosParserTest, TruncatedScalarMessageDoesNotTerminate) {
   RosParserFixture f;
   f.setUp();
@@ -1016,10 +986,9 @@ TEST(RosParserTest, TruncatedScalarMessageDoesNotTerminate) {
   EXPECT_FALSE(f.parse(payload)) << "truncated scalar message must fail cleanly, not terminate";
 }
 
-// A message the generic route cannot deserialize is a parse error, not an empty record: the bytes of a
-// real MCAP whose writer aligned the float64 to 4 instead of 8 (CDR alignment is counted after the
-// 4-byte encapsulation header), so the read of `value` runs past the end. Reporting success here made
-// a file of such messages load nothing and say nothing.
+// A message the generic route cannot deserialize is a parse error, not an empty record. The bytes come
+// from a real MCAP whose writer aligned the float64 to 4 instead of 8 (CDR alignment is counted after
+// the 4-byte encapsulation header), so the read of `value` runs past the end.
 TEST(RosParserTest, UndecodableGenericMessageIsAParseError) {
   RosParserFixture f;
   f.setUp();
@@ -1128,10 +1097,7 @@ TEST(RosParserTest, EmbeddedTimestampDisabled) {
 }
 
 TEST(RosParserTest, CovarianceUpperTriangle6x6) {
-  // Test via Odometry which has PoseWithCovariance (6×6) and TwistWithCovariance (6×6).
-  // We just test that field naming is correct via a simpler path: Imu has 3×3 covariance.
-  // The 6×6 case is tested implicitly through Odometry if needed.
-  // Here we directly test the 3×3 from Imu: 6 upper triangle entries.
+  // Imu's 3x3 covariance: 6 upper-triangle entries.
   RosParserFixture f;
   f.setUp();
   ASSERT_TRUE(f.bindSchema("sensor_msgs/Imu", kImuDef));
@@ -1850,8 +1816,6 @@ TEST(RosParserTest, CameraInfoProducesObject) {
   EXPECT_DOUBLE_EQ(ci->P[5], 500.0);  // fy
 }
 
-// ===== yolo_msgs/DetectionArray -> sdk::ImageAnnotations =====
-
 // Full nested .msg definition for yolo_msgs/DetectionArray (mgonzs13/yolo_ros).
 // Field order here must match what parseYoloDetectionArray reads positionally.
 static const char* kYoloDetectionArrayDef =
@@ -2073,7 +2037,7 @@ TEST(RosParserTest, YoloDetectionArrayScalarRouteEmitsNumDetections) {
   ASSERT_NE(num, nullptr);
   EXPECT_DOUBLE_EQ(num->numeric, 2.0);
 
-  // The header used to be read and thrown away here; it is emitted now.
+  // The header series is emitted too.
   const auto* stamp = findField(row, "/header/stamp");
   ASSERT_NE(stamp, nullptr);
   EXPECT_DOUBLE_EQ(stamp->numeric, 7.0);
@@ -2126,12 +2090,10 @@ TEST(RosParserTest, ImageObjectCarriesFrameId) {
   EXPECT_EQ(img->encoding, "mono8");
 }
 
-// Regression: a truncated sensor_msgs/Image whose data[] declares more bytes than
-// the message carries must be REJECTED, not decoded into a span that runs past the
-// payload. NanoCDR's byte-sequence reader does not clamp the declared length to the
-// buffer, so readByteSequence() adds the bound check the ROS1 path already has.
-// Without the fix, parseImage would emit an Image whose data span extends ~82 MB
-// past a 48-byte payload and the 2D viewer's copy would read off the end (SIGSEGV).
+// A truncated sensor_msgs/Image whose data[] declares more bytes than the message carries must be
+// REJECTED, not decoded into a span that runs past the payload. NanoCDR's byte-sequence reader does not
+// clamp the declared length to the buffer, so readByteSequence() adds the bound check the ROS 1 path
+// already has; otherwise the Image's data span would extend ~82 MB past a 48-byte payload.
 TEST(RosParserTest, ImageWithTruncatedDataIsRejected) {
   static const char* kImageDef =
       "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\n"
@@ -2165,11 +2127,8 @@ TEST(RosParserTest, ImageWithTruncatedDataIsRejected) {
   EXPECT_FALSE(rec.has_value()) << "truncated Image must be rejected, not decoded into an out-of-bounds span";
 }
 
-// Regression: ROS Bayer CFA images (bayer_rggb8 and friends) carry one raw mosaic
-// sample per pixel (1 byte/pixel). parseImage must ACCEPT them and pass the encoding
-// through verbatim — the viewer demosaics downstream. Previously these were rejected
-// as "unsupported ROS encoding", so bayer camera topics produced no frame at all
-// (the solid red/black tiles seen on real ugv recordings).
+// ROS Bayer CFA images (bayer_rggb8 and friends) carry one raw mosaic sample per pixel (1 byte/pixel).
+// parseImage must ACCEPT them and pass the encoding through verbatim; the viewer demosaics downstream.
 TEST(RosParserTest, ImageBayerRggb8IsAccepted) {
   static const char* kImageDef =
       "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\n"
@@ -2610,9 +2569,9 @@ TEST(RosParserTest, RobotDescriptionTopicProducesObject) {
 }
 
 TEST(RosParserTest, RobotDescriptionTopicIngestsThroughTheScalarPath) {
-  // The host's eager-scalar ingest calls parse() before the object route; an
-  // object-only handler with no parse_scalars made it fail with "registered
-  // handler has no parse_scalars", so a bag's URDF never reached the store.
+  // The host's eager-scalar ingest calls parse() before the object route; an object-only handler
+  // without parse_scalars fails with "registered handler has no parse_scalars" and the URDF never
+  // reaches the store.
   RosParserFixture f;
   f.setUp();
   ASSERT_TRUE(f.handle.loadConfig(R"({"topic_name":"/robot_description"})"));
@@ -2852,8 +2811,6 @@ TEST(RosParserTest, TransformStampedSpecialization) {
   ASSERT_NE(tx, nullptr);
   EXPECT_DOUBLE_EQ(tx->numeric, 1.0);
 }
-
-// ===== visualization_msgs/Marker(Array) -> sdk::SceneEntities =====
 
 // Builds a visualization_msgs/Marker .msg definition. `humble` adds the
 // texture block (texture_resource/texture/uv_coordinates) and mesh_file field
@@ -3205,10 +3162,8 @@ TEST(RosParserTest, MeshResourceMarkerProducesModel) {
   EXPECT_TRUE(se->entities[0].models[0].override_color);
 }
 
-// ROS 2 humble+ Markers can embed the mesh bytes inline via mesh_file (no
-// resolvable URL needed). Pre-fix decodeOneMarker read and DISCARDED mesh_file,
-// so the model had empty data and nothing rendered. The bytes must survive
-// whole and the media_type be inferred from the filename extension.
+// ROS 2 humble+ Markers can embed the mesh bytes inline via mesh_file (no resolvable URL needed). The
+// bytes must survive whole and the media_type be inferred from the filename extension.
 TEST(RosParserTest, MeshFileMarkerProducesEmbeddedModel) {
   RosParserFixture f;
   f.setUp();
@@ -3237,8 +3192,7 @@ TEST(RosParserTest, MeshFileMarkerProducesEmbeddedModel) {
   EXPECT_FALSE(model.override_color);
 }
 
-// When a publisher provides BOTH mesh_resource (url) and mesh_file (bytes), the
-// faithful translation keeps both — the consumer prefers data when present.
+// A marker with BOTH mesh_resource (url) and mesh_file (bytes) keeps both; the consumer prefers data.
 TEST(RosParserTest, MeshFileAndUrlMarkerKeepsBoth) {
   RosParserFixture f;
   f.setUp();
@@ -3381,8 +3335,6 @@ TEST(RosParserTest, PointsMarkerSkipped) {
   EXPECT_TRUE(se->deletions.empty());
 }
 
-// ===== sensor_msgs/LaserScan -> sdk::PointCloud (eager projection) =====
-
 static const char* kLaserScanDef =
     "std_msgs/Header header\n"
     "float32 angle_min\nfloat32 angle_max\nfloat32 angle_increment\n"
@@ -3519,9 +3471,8 @@ TEST(RosParserTest, LaserScanEmptyScanProducesEmptyCloud) {
   EXPECT_TRUE(pc->is_dense);
 }
 
-// The catalog entry must keep the scalar route on the generic flatten (the
-// pre-existing behavior for LaserScan): angle params and ranges[i] columns
-// still appear, subject to the user-configured array policy.
+// The catalog entry keeps the scalar route on the generic flatten: angle params and ranges[i]
+// columns appear, subject to the user-configured array policy.
 TEST(RosParserTest, LaserScanScalarRouteKeepsGenericFlatten) {
   RosParserFixture f;
   f.setUp();
@@ -3549,8 +3500,6 @@ TEST(RosParserTest, LaserScanScalarRouteKeepsGenericFlatten) {
   ASSERT_NE(frame_id, nullptr);
   EXPECT_EQ(frame_id->string_value, "laser");
 }
-
-// ===== rcl_interfaces/Log + rosgraph_msgs/Log -> sdk::Log =====
 
 static const char* kRosLog2Def =
     "builtin_interfaces/Time stamp\n"
@@ -3718,8 +3667,6 @@ TEST(RosParserTest, RosLogTruncatedPayloadIsRejected) {
   EXPECT_FALSE(parseRosLogObject(f, payload, 5).has_value());
 }
 
-// ===== foxglove_msgs/Log, mavros_msgs/StatusText, px4_msgs logs -> sdk::Log =====
-
 static const char* kFoxgloveLogDef =
     "builtin_interfaces/Time timestamp\n"
     "uint8 level\nstring message\nstring name\nstring file\nuint32 line\n"
@@ -3846,11 +3793,9 @@ TEST(RosParserTest, Px4LogMessagesDecodeFixedText) {
   }
 }
 
-// ===== /header/stamp diagnostic timeseries =====
-
-// Any std_msgs/Header topic on the generic-flatten route gains a single combined
-// /header/stamp (seconds) alongside the split sec/nanosec leaves — a plottable
-// series for diagnosing clock offset/skew against the message (log/publish) time.
+// Any std_msgs/Header topic on the generic-flatten route gains a single combined /header/stamp
+// (seconds) alongside the split sec/nanosec leaves: a plottable series for diagnosing clock
+// offset/skew against the message (log/publish) time.
 TEST(RosParserTest, GenericHeaderedMessageEmitsCombinedHeaderStamp) {
   static const char* kHeaderedDef =
       "std_msgs/Header header\nfloat64 value\n"
@@ -3874,7 +3819,7 @@ TEST(RosParserTest, GenericHeaderedMessageEmitsCombinedHeaderStamp) {
   ASSERT_NE(stamp, nullptr);
   EXPECT_DOUBLE_EQ(stamp->numeric, 2.5);
 
-  // The split leaves still flow through the generic flatten (back-compat).
+  // The split leaves still flow through the generic flatten.
   const auto* sec = findField(row, "/header/stamp/sec");
   ASSERT_NE(sec, nullptr);
   EXPECT_DOUBLE_EQ(sec->numeric, 2.0);
@@ -3888,8 +3833,8 @@ TEST(RosParserTest, GenericHeaderedMessageEmitsCombinedHeaderStamp) {
 
 // ROS 1 has no split sec/nanosec leaves: its `time` builtin already flattens to a
 // single /header/stamp (seconds), so the combined series must not be added on top.
-// The datastore rejects a record carrying one field name twice, which silently
-// dropped EVERY headered ROS 1 message.
+// The datastore rejects a record carrying one field name twice, which would drop EVERY headered
+// ROS 1 message.
 TEST(RosParserTest, Ros1HeaderedMessageEmitsHeaderStampOnce) {
   static const char* kRos1HeaderedDef =
       "Header header\nfloat64 value\n"
@@ -3934,7 +3879,7 @@ TEST(RosParserTest, Ros1HeaderedMessageEmitsHeaderStampOnce) {
 }
 
 // LaserScan flows through parseScalarsGeneric, so it gets the combined stamp too
-// — the specific gap that motivated this: /scan/header/stamp as a timeseries.
+// (/scan/header/stamp as a timeseries).
 TEST(RosParserTest, LaserScanScalarRouteEmitsCombinedHeaderStamp) {
   RosParserFixture f;
   f.setUp();
@@ -3987,7 +3932,7 @@ TEST(RosParserTest, TFMessageScalarRouteEmitsPerTransformHeaderStamp) {
   ASSERT_NE(s1, nullptr);
   EXPECT_DOUBLE_EQ(s1->numeric, 2.0);
 
-  // Regression: the transform values are still emitted alongside the stamp.
+  // The transform values are emitted alongside the stamp.
   const auto* tx = findField(row, "/world/base_link/translation/x");
   ASSERT_NE(tx, nullptr);
   EXPECT_DOUBLE_EQ(tx->numeric, 1.0);
@@ -4048,13 +3993,7 @@ TEST(RosParserTest, LaserScanRealCdrMessageFromBag) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PosesInFrame object route — geometry_msgs/PoseArray, foxglove_msgs/
-// PosesInFrame, geometry_msgs/PoseStamped (single), nav_msgs/Path.
-// ---------------------------------------------------------------------------
-
-// Shared message-definition fragments (the leaf geometry types are identical
-// across all four schemas).
+// Message-definition fragments shared by the four PosesInFrame schemas (identical leaf geometry types).
 static const char* kGeometryLeavesDef =
     "================\nMSG: geometry_msgs/Pose\n"
     "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation\n"
@@ -4253,16 +4192,8 @@ TEST(RosParserTest, PathProducesPosesInFrameObject) {
 }
 
 TEST(RosParserTest, OdometryProducesSinglePosePosesInFrameObject) {
-  // nav_msgs/Odometry carries the pose of child_frame_id expressed in the
-  // header frame. Dual route: it advertises the canonical PosesInFrame object
-  // (a one-element pose in the header frame) alongside its existing per-axis
-  // scalar flatten (handleOdometry), exactly like PoseStamped does.
-  //
-  // Wire layout:
-  //   header        std_msgs/Header
-  //   child_frame_id string
-  //   pose          geometry_msgs/PoseWithCovariance  (Pose + float64[36])
-  //   twist         geometry_msgs/TwistWithCovariance (Twist + float64[36])
+  // nav_msgs/Odometry: the pose of child_frame_id in the header frame. Dual route: a one-element
+  // PosesInFrame object alongside the per-axis scalar flatten (handleOdometry), as for PoseStamped.
   const std::string def = std::string(
                               "std_msgs/Header header\nstring child_frame_id\n"
                               "geometry_msgs/PoseWithCovariance pose\n"
@@ -4326,16 +4257,10 @@ TEST(RosParserTest, OdometryProducesSinglePosePosesInFrameObject) {
   EXPECT_DOUBLE_EQ(pos_x->numeric, 1.0);
 }
 
-// ---------------------------------------------------------------------------
-// Header series on the promoted (object-bearing) schemas.
-//
-// A message promoted to a builtin object is still worth a time base: the
-// datastore row is filed under the message/log clock, so without an explicit
-// stamp column the sensor's own time (and the frame it lives in) would be
-// unreachable from a plot. Each of these schemas therefore has a slim scalar
-// route that reads only the header (plus the one count that is genuinely a time
-// series) instead of the old full introspection flatten.
-// ---------------------------------------------------------------------------
+// A message promoted to a builtin object still needs a time base: the datastore row is filed under
+// the message/log clock, so without a stamp column the sensor's own time (and its frame) would be
+// unreachable from a plot. Each of these schemas has a slim scalar route that reads only the header
+// (plus the one count that is a real time series).
 
 namespace {
 
@@ -4415,8 +4340,7 @@ TEST(RosParserTest, PointCloud2ScalarRouteEmitsHeaderAndPointCount) {
   ASSERT_NE(num_points, nullptr);
   EXPECT_DOUBLE_EQ(num_points->numeric, 3.0) << "num_points must be len(data)/point_step, not width*height";
 
-  // Exactly those three columns: no /header/seq on ROS 2, and none of the
-  // layout metadata the previous full-flatten route used to emit.
+  // Exactly those three columns: no /header/seq on ROS 2, no layout metadata.
   EXPECT_EQ(row.fields.size(), 3u);
   EXPECT_EQ(findField(row, "/header/seq"), nullptr);
   EXPECT_EQ(findField(row, "/point_step"), nullptr);
@@ -4473,10 +4397,8 @@ TEST(RosParserTest, PointCloud2ScalarRouteRos1EmitsHeaderSeq) {
   EXPECT_EQ(row.fields.size(), 4u);
 }
 
-// builtin_interfaces/Time.sec is INT32 on the ROS 2 wire. Reading it unsigned
-// turned any negative stamp into ~4.29e9 (a year-2106 date) — not a rounding
-// artifact but a wholly wrong value, and exactly the kind of clock problem this
-// series exists to expose.
+// builtin_interfaces/Time.sec is INT32 on the ROS 2 wire. Read unsigned, a negative stamp becomes
+// ~4.29e9 (a year-2106 date), a wholly wrong value.
 TEST(RosParserTest, PointCloud2ScalarRouteHandlesNegativeHeaderSeconds) {
   RosParserFixture f;
   f.setUp();
@@ -4727,11 +4649,6 @@ TEST(RosParserTest, MarkerArrayScalarRouteStaysEmpty) {
   ASSERT_TRUE(f.parse(payload, 1000));
   EXPECT_TRUE(f.recorder.rows().empty());
 }
-
-// ---------------------------------------------------------------------------
-// GridMap object route — grid_map_msgs/GridMap (transcoded) and
-// foxglove_msgs/Grid (zero-copy view), on both wires.
-// ---------------------------------------------------------------------------
 
 static const char* kGridMapDef =
     "grid_map_msgs/GridMapInfo info\nstring[] layers\nstring[] basic_layers\n"
@@ -5103,12 +5020,6 @@ TEST(RosParserTest, GridMapRealRos1MessageFromBag) {
   EXPECT_GE(nan_dynamic, nan_cells);
 }
 
-// ---------------------------------------------------------------------------
-// foxglove_msgs/Grid — a bare Time head (uint32 sec on ROS 1, int32 on ROS 2),
-// then frame_id, pose, column_count, Vector2 cell_size, strides, fields[] and
-// the zero-copied data[].
-// ---------------------------------------------------------------------------
-
 static const char* kFoxgloveGridDef =
     "builtin_interfaces/Time timestamp\nstring frame_id\ngeometry_msgs/Pose pose\nuint32 column_count\n"
     "foxglove_msgs/Vector2 cell_size\nuint32 row_stride\nuint32 cell_stride\n"
@@ -5335,9 +5246,9 @@ TEST(RosParserTest, FoxgloveGridScalarRoute) {
   EXPECT_EQ(row.fields.size(), 7u);
 }
 
-// data_tamer_msgs Schemas + Snapshot through data_tamer 2.0.0: a schema hash above
-// UINT32_MAX (it was read with the 32-bit stoul on Windows), a "string" field decoded
-// as text, and a payload that does not match its schema reported as an error.
+// data_tamer_msgs Schemas + Snapshot through data_tamer 2.0.0: a schema hash above UINT32_MAX (32-bit
+// stoul on Windows would truncate it), a "string" field decoded as text, and a payload that does not
+// match its schema reported as an error.
 std::vector<uint8_t> dataTamerSchemasMessage(uint64_t hash, const std::string& channel, const std::string& text) {
   return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
     enc.serializeUInt32(1);
@@ -5406,7 +5317,7 @@ TEST(RosParserTest, DataTamerFullWidthHashAndTextField) {
   EXPECT_EQ(snapshot.recorder.rows().size(), 1U);
 }
 
-// ---- Reuse across messages: one instance == a fresh instance per message ----
+// Reuse across messages: one instance == a fresh instance per message.
 //
 // The parser keeps its scratch (field slots, name strings, cached leaf names,
 // path buffers) from one message to the next. These tests feed ONE instance a

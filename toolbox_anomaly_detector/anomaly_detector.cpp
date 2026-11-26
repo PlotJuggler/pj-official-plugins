@@ -1,20 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: Apache-2.0
 //
-// Marker Editor toolbox, styled after the host Filter Editor: a Preview
-// chart on top, then Source | Function | Lua editor. Picking a predefined
-// Function fills the editor with its Lua (targeting the selected source); the
-// "-- No function --" entry leaves a blank template to write your own. Apply runs
-// the script via the shared `anomaly_core` engine, which delegates to the Luau
-// marker engine in pj_scripting_core — the SAME engine PlotJuggler uses for filters
-// and the headless anomaly_runner CLI uses — and publishes the emitted set
-// as a PlotMarkers object via the toolbox object-write surface (per-series under the
-// selected source, or dataset-global at the Dataset and Global scopes). The status
-// shows "Done: N marker(s)" or "Error".
+// Marker Editor toolbox: a preview chart over a Source | Function | Lua editor. Apply submits the rule to
+// the host (`pj.data_processors.v1`, kind=markers), which runs it and publishes the resulting PlotMarkers
+// (per series, or dataset-wide / globally by scope). The plugin runs no Lua itself.
 //
-// It is a Toolbox because only that plugin family can read timeseries
-// (catalogSnapshot + readSeries) and write objects. The detection logic itself is
-// GUI-free and lives in anomaly_core; this file is only the host + dialog wiring.
+// A Toolbox because only that plugin family can read timeseries (catalogSnapshot + readSeries) and write
+// objects.
 
 #include <algorithm>
 #include <cctype>
@@ -47,13 +39,10 @@
 
 namespace {
 
-// --- PlotMarkers -> chart overlay (this plugin's "render the generator's output") ---
-// The generic toolbox_preview lib renders the INPUT source series; rendering the OUTPUT is
-// the backend's job, so the markers-specific mapping lives here, not in the shared lib.
+// PlotMarkers -> chart overlay. toolbox_preview renders only the input series, so the output mapping lives here.
 
-// Upper bound on markers drawn in the LIVE preview. A noisy rule can emit one marker per
-// sample; the panel re-serializes the overlay to JSON every 20 Hz tick, so an unbounded set
-// pegs the UI. The committed (Apply) markers are NOT capped — only this in-dialog preview.
+// Cap on markers drawn in the LIVE preview: a noisy rule can emit one marker per sample and the panel
+// re-serializes the overlay to JSON every 20 Hz tick. Committed (Apply) markers are not capped.
 constexpr std::size_t kPreviewMarkerCap = 2000;
 
 std::string colorHex(int r, int g, int b) {
@@ -94,9 +83,8 @@ const char* markerKindName(PJ::sdk::MarkerKind k) {
   return "event";
 }
 
-// Convert a host-published PlotMarkers set into chart-overlay markers, rebased to
-// seconds-from-`t0_ns`. Over `max_markers`, stride-decimate (same approach as the source
-// curve's downsampleToChart) to keep the per-tick serialization bounded.
+// Convert a host-published PlotMarkers set into chart-overlay markers, rebased to seconds from `t0_ns`.
+// Over `max_markers`, stride-decimate (like the source curve's downsampleToChart).
 std::vector<PJ::ChartMarker> markersToChart(
     const PJ::sdk::PlotMarkers& markers, double t0_ns, std::size_t max_markers = kPreviewMarkerCap) {
   const std::size_t n = markers.markers.size();
@@ -119,10 +107,6 @@ std::vector<PJ::ChartMarker> markersToChart(
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// AnomalyDetectorDialog — Filter-Editor-style UI (preview / source / function / editor).
-// ---------------------------------------------------------------------------
-
 class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
@@ -134,10 +118,9 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
 
   std::string widget_data() override {
     PJ::WidgetData wd;
-    // Accept series dragged from the host's Datasets tree. Marked on the section frame, not
-    // the list, so the whole panel section is a target. This MUST be present in the very
-    // first delivery: PanelEngine reads the drop targets once, off the initial payload —
-    // it is not a per-tick flag.
+    // Accept series dragged from the host's Datasets tree. Set on the section frame so the whole section is
+    // a target. PanelEngine reads drop targets once, from the initial payload, so this must be in the first
+    // delivery.
     wd.setDropTarget("sourceGroup");
     const std::vector<std::string>& visible = visibleNames();
     wd.setListItems("source_list", visible);
@@ -161,23 +144,18 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
       wd.setSelectedItems("source_list", std::vector<std::string>{selected_source_});
     }
     wd.setCodeContent("code_editor", code_).setCodeLanguage("code_editor", "lua");
-    // Scope is one ordered axis (series, then dataset, then every dataset) still carried
-    // by the two persisted booleans; naming the segments is what makes the pair that
-    // means nothing (all_datasets without global) unreachable.
+    // Scope is one ordered axis (series, dataset, every dataset) carried by the two persisted booleans;
+    // naming the segments makes the invalid pair (all_datasets without global) unreachable.
     wd.setChecked("scope_timeseries", !global_);
     wd.setChecked("scope_dataset", global_ && !all_datasets_);
     wd.setChecked("scope_global", global_ && all_datasets_);
-    // Save and Load are both native file pickers; onFileSelected tells them apart
-    // by widget name. Save-as lets the user create a new file anywhere.
     wd.setSaveFilePicker("save_rule_button", "Save rule as...", "*.json", "Save detection rule", "json");
     wd.setFilePicker("load_rule_button", "Load rule...", "*.json", "Load detection rule");
-    // State the precondition in the UI rather than failing on the click: runScript needs a
-    // source unless the scope is Dataset or Global. Reachable by default now that nothing is
-    // auto-selected.
+    // State the precondition in the UI rather than failing on the click: runScript needs a source unless
+    // the scope is Dataset or Global.
     const bool resolved = sourceResolved();
     wd.setEnabled("apply_button", !code_.empty() && (global_ || resolved));
 
-    // Preview: the selected source series, with the rule's detected markers overlaid.
     std::string status_line = status_;
     if (!selected_source_.empty() && !resolved) {
       status_line = "Source '" + selected_source_ + "' is not available in the loaded datasets.";
@@ -202,9 +180,8 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
         }
       }
     } else {
-      // No usable source: clear the chart, or the previous curve stays painted under a
-      // status line that says there is no source. Now reachable on open, since nothing is
-      // auto-selected any more.
+      // No usable source: clear the chart, or the previous curve stays painted under a status line that
+      // says there is no source.
       wd.clearChart("preview_chart");
       wd.setChartPlaceholder("preview_chart", "Pick a source series, or drag & drop one from the Datasets tree");
     }
@@ -233,18 +210,13 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  // Series dragged from the host's Datasets tree onto the Source section.
+  // Series dragged from the host's Datasets tree onto the Source section. Validated against series_names_
+  // (everything the catalog offers), not the filtered view: a drop has to work while a text filter is
+  // narrowing the list.
   //
-  // Validated against series_names_ (everything the catalog offers), NOT the filtered
-  // view: a drop has to work while a text filter is narrowing the list.
-  //
-  // A text field dropped here arrives as an unresolved catalog key rather than a series
-  // name, so it simply fails the lookup: the host's catalog_key_resolver (pj_app
-  // MainWindow, panel setup) goes through CatalogModel::curveDescriptor, which defaults to
-  // the kPlottable capability and returns nullopt for text — and DropEventFilter then
-  // passes the raw key through. A text drop and an unknown drop are therefore
-  // indistinguishable here, hence one message covering both. Telling them apart needs a
-  // host change, not a plugin one.
+  // A text field arrives as an unresolved catalog key (the host's catalog_key_resolver finds no plottable
+  // curve for it), so it fails the lookup and is indistinguishable from an unknown drop; one message
+  // covers both.
   bool onItemsDropped(std::string_view name, const std::vector<std::string>& items) override {
     if (name != "sourceGroup" || items.empty()) {
       return false;
@@ -261,9 +233,8 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
-  // The filter lives inside the Source section's band (sourceHeader's
-  // filterFieldName), not above the list. Purely a view filter: it must never touch the
-  // selection or the rule, so that narrowing the list cannot silently change what Apply
+  // The filter lives inside the Source section's band (sourceHeader's filterFieldName). Purely a view
+  // filter: it must never touch the selection or the rule, so narrowing the list cannot change what Apply
   // would run.
   bool onTextChanged(std::string_view name, std::string_view text) override {
     if (name == "source_filter") {
@@ -275,10 +246,9 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   }
 
   bool onCodeChanged(std::string_view name, std::string_view code) override {
-    // A code event that changes nothing is not an edit. The host emits one on the panel's
-    // first paint (the syntax highlighter's deferred rehighlight fires textChanged after the
-    // signals are wired), and taking it as a user edit would pin the pristine template to
-    // "--SOURCE--" until a function is picked.
+    // A code event that changes nothing is not an edit. The host emits one on the panel's first paint (the
+    // syntax highlighter's deferred rehighlight), and taking it as a user edit would pin the pristine
+    // template to "--SOURCE--" until a function is picked.
     if (name == "code_editor" && code != code_) {
       code_ = std::string(code);  // user edits win over the template
       user_edited_ = true;        // ...and survive a later source change
@@ -286,8 +256,8 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return false;  // no widget_data re-read while typing
   }
 
-  // Called by the panel host ~20Hz; lets the toolbox refresh its catalog so a
-  // dataset loaded after the panel opened shows up in the source list live.
+  // Called by the panel host at ~20 Hz; refreshes the catalog so a dataset loaded after the panel opened
+  // shows up in the source list live.
   bool onTick() override {
     if (on_tick_) {
       on_tick_();
@@ -330,8 +300,8 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  // Save and Load are both native file pickers (setSaveFilePicker / setFilePicker);
-  // the host returns the chosen path here, and we branch on the widget name.
+  // Save and Load are native file pickers; the host returns the chosen path here and we branch on the
+  // widget name.
   bool onFileSelected(std::string_view name, std::string_view path) override {
     if (name == "save_rule_button") {
       status_ = saveRuleTo(std::string(path));
@@ -353,9 +323,8 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
       }
       code_ = rule->code;
       selected_source_ = rule->source;
-      // A loaded rule counts as hand-authored: without this, the natural "load a rule,
-      // then pick a source" flow would have the source click overwrite the rule with the
-      // active builtin template. Only reachable now that nothing is auto-selected.
+      // A loaded rule counts as hand-authored: otherwise picking a source afterwards would overwrite it
+      // with the active builtin template.
       user_edited_ = true;
       status_ = "Loaded rule from " + std::string(path);
       return true;
@@ -363,8 +332,7 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return false;
   }
 
-  // Workspace persistence: the rule survives closing/reopening the dialog (and is
-  // saved into the layout). The toolbox forwards saveConfig/loadConfig here.
+  // Persisted in the workspace layout (the toolbox forwards saveConfig/loadConfig here).
   std::string saveConfig() const override {
     nlohmann::json j;
     j["code"] = code_;
@@ -386,15 +354,11 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return true;
   }
 
-  // The dialog deliberately does NOT auto-select a source. Picking series_names_.front()
-  // used to open the panel on whatever field happened to sort first — often an unusable
-  // one — with the template already retargeted at it and a blank preview explaining
-  // nothing. An empty selection invites a pick or a drop instead.
+  // Deliberately does not auto-select a source: the first catalog name is often an unusable field.
   //
-  // A `selected_source_` restored from a layout is left alone here even when it is absent
-  // from `names`: the dataset may simply not have loaded yet, and clearing it would be
-  // destructive and would retarget the rule back to --SOURCE--. widget_data() reports the
-  // unresolved state instead, and it heals itself once the catalog catches up.
+  // A `selected_source_` restored from a layout is left alone even when absent from `names`: the dataset
+  // may not have loaded yet, and clearing it would retarget the rule back to --SOURCE--. widget_data()
+  // reports the unresolved state and it heals once the catalog catches up.
   void setSeriesNames(std::vector<std::string> names) {
     series_names_ = std::move(names);
     list_dirty_ = true;
@@ -411,9 +375,8 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     preview_provider_ = std::move(cb);
   }
 
-  // Runs the current rule and returns the detected markers, rebased to the preview's
-  // X units, so the preview can overlay what Apply would publish. `error` is set to a
-  // rule compile/runtime error (empty on success) so the dialog can surface it.
+  // Runs the current rule and returns the detected markers rebased to the preview's X units. `error` is
+  // set to a rule compile/runtime error (empty on success).
   using MarkerProvider = std::function<std::vector<PJ::ChartMarker>(
       const std::string& code, const std::string& source, std::string& error)>;
   void setMarkerProvider(MarkerProvider cb) {
@@ -424,22 +387,20 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     on_tick_ = std::move(cb);
   }
 
-  // The source series currently selected in the panel — read by the toolbox's tick
-  // handler so it can live-refresh just that one series while streaming.
+  // The selected source series; the toolbox's tick handler live-refreshes just that series while streaming.
   const std::string& selectedSource() const {
     return selected_source_;
   }
 
  private:
-  // Is the current selection something the host can actually run a rule against? False
-  // for "nothing picked" and for a layout-restored name the catalog no longer offers.
+  // Whether the host can actually run a rule against the selection: false for "nothing picked" and for a
+  // layout-restored name the catalog no longer offers.
   [[nodiscard]] bool sourceResolved() const {
     return !selected_source_.empty() &&
            std::find(series_names_.begin(), series_names_.end(), selected_source_) != series_names_.end();
   }
 
-  // Take `name` as the source, retargeting a builtin template at it. Shared by the list
-  // click and the drop so the two paths cannot drift apart.
+  // Take `name` as the source, retargeting a builtin template at it (shared by list click and drop).
   bool adoptSource(std::string name) {
     selected_source_ = std::move(name);
     // Manual edits win: only a pristine template gets re-pointed.
@@ -456,9 +417,8 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     }
   }
 
-  // Case-insensitive substring match on the whitespace-trimmed query, preserving catalog
-  // order. Recomputed only when the list or the query changed — widget_data() runs at
-  // ~20 Hz and the source list can be thousands of names.
+  // Case-insensitive substring match on the whitespace-trimmed query, in catalog order. Recomputed only
+  // when the list or the query changed: widget_data() runs at ~20 Hz and the list can be thousands of names.
   const std::vector<std::string>& visibleNames() {
     if (!list_dirty_) {
       return visible_names_;
@@ -485,10 +445,8 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
     return visible_names_;
   }
 
-  // Write the current rule (script + source) to the chosen path as a portable JSON
-  // file. The Save-as picker already let the user create/select the file; the host
-  // guarantees the ".json" extension via the save-file-picker default_suffix contract
-  // (setSaveFilePicker(..., "json")), so no manual extension handling is needed here.
+  // Write the current rule (script + source) to the chosen path as portable JSON. The host's
+  // save-file-picker default_suffix contract guarantees the ".json" extension.
   std::string saveRuleTo(std::string path) const {
     if (path.empty()) {
       return "Error: no file selected";
@@ -526,22 +484,16 @@ class AnomalyDetectorDialog : public PJ::DialogPluginTyped {
   std::function<void()> on_tick_;
 };
 
-// ---------------------------------------------------------------------------
-// AnomalyDetectorToolbox — reads series, runs the rule (anomaly_core), publishes markers.
-// ---------------------------------------------------------------------------
-
 // Stable plugin-local id for the single live preview generator (created EPHEMERAL,
 // torn down with remove()). The host namespaces it under this plugin.
 constexpr std::string_view kPreviewId = "preview";
 
-// The toolbox IS the preview's `PreviewBackend`: the shared `EphemeralPreview` calls
-// back into submitPreview/readPreviewOverlay/removePreview (the only marker-specific part
-// of the preview — which host service, and how the output renders).
+// The toolbox is the preview's `PreviewBackend`: the shared `EphemeralPreview` calls back into
+// submitPreview/readPreviewOverlay/removePreview, the marker-specific part (which host service, how it renders).
 class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_preview::PreviewBackend {
  public:
-  // Tear down the live preview's ephemeral object topic on unload. The host (and its
-  // markers service) outlives the plugin instance during teardown, so this is safe; a
-  // torn-down/unbound service simply yields no view and the call is skipped.
+  // Tears down the live preview's ephemeral object topic on unload. The host and its markers service
+  // outlive the plugin instance during teardown; an unbound service yields no view and the call is skipped.
   ~AnomalyDetectorToolbox() override {
     removePreview();  // tear down the ephemeral preview generator
   }
@@ -560,15 +512,13 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
       error = preview_error_;
       return markers;
     });
-    // Refresh the catalog on every panel tick (cheap unless the structure changed) so a
-    // dataset loaded after the panel opened appears in the source list without reopening,
-    // then live-refresh the selected source's samples so the streaming preview follows.
+    // Refresh the catalog on every panel tick (cheap unless the structure changed) so a dataset loaded
+    // after the panel opened appears without reopening, then live-refresh the selected source's samples.
     dialog_.setOnTick([this]() { onTick(); });
     onTick();  // initial fill
     return PJ::borrowDialog(dialog_);
   }
 
-  // Persist the dialog's rule into the workspace layout (and restore it on load).
   std::string saveConfig() const override {
     return dialog_.saveConfig();
   }
@@ -578,9 +528,8 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
   }
 
  private:
-  // Panel tick (~20 Hz): keep the source list current when the catalog STRUCTURE
-  // changes, and live-refresh the selected source's samples so the streaming preview
-  // follows the window. Both are cheap no-ops when nothing changed.
+  // Panel tick (~20 Hz): refresh the source list when the catalog STRUCTURE changes and the selected
+  // source's samples so the streaming preview follows. Both are cheap no-ops when nothing changed.
   void onTick() {
     if (!toolboxHostBound()) {
       return;
@@ -605,8 +554,6 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     return std::move(overlay.markers);
   }
 
-  // --- toolbox_preview::PreviewBackend (the marker-specific "what it generates / where") ---
-
   // Submit/replace the ephemeral marker generator (kind=markers, EPHEMERAL): the host
   // runs the rule, auto-names a preview marker object topic, and returns it. An empty
   // string means "not available right now" (host service unbound) — retried next tick.
@@ -615,10 +562,9 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     if (!gens) {
       return std::string{};
     }
-    // Declare ONLY the series the rule reads (anomaly_core::ruleInputs), not the
-    // whole catalog: the host materializes every declared input whole-series on each run, so
-    // declaring all N would re-materialize the entire dataset on the GUI thread (the freeze).
-    // Built here (only on a re-submit), not every tick.
+    // Declare ONLY the series the rule reads (anomaly_core::ruleInputs): the host materializes every
+    // declared input whole-series on each run, so declaring the whole catalog would re-materialize the
+    // dataset on the GUI thread (the freeze). Built only on a re-submit, not every tick.
     const std::vector<std::string> refs = anomaly_core::ruleInputs(code, dialog_.selectedSource());
     const std::vector<std::string_view> inputs(refs.begin(), refs.end());
     const PJ::Expected<std::vector<std::string>> topics = gens->createMarkers(
@@ -658,25 +604,19 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     return overlay;
   }
 
-  // Tear down the ephemeral preview generator (dialog/toolbox teardown).
   void removePreview() override {
     if (auto gens = services().get<PJ::sdk::DataProcessorsHostService>()) {
       (void)gens->remove(kPreviewId);
     }
   }
 
-  // Submit the rule to the HOST as a marker data processor (pj.data_processors.v1, kind=markers).
-  // The host owns execution: it runs the script over the requested inputs, publishes the
-  // resulting PlotMarkers, and re-runs them when data changes — so markers recompute live
-  // and survive this plugin's unload. The live preview is ALSO host-driven (an ephemeral
-  // generator via createMarkers(..., EPHEMERAL), read back through the object
-  // store), so the plugin runs NO Lua at all; the headless anomaly_runner keeps its own
-  // engine, and all three run the same rule identically ("GUI == headless").
+  // Submit the rule to the host as a marker data processor (pj.data_processors.v1, kind=markers). The host
+  // runs the script, publishes the PlotMarkers and re-runs them when data changes, so they survive this
+  // plugin's unload.
   //
-  // `all_datasets` (only meaningful with `global`) publishes the global markers across
-  // EVERY loaded dataset; otherwise on the active dataset only. The target stays the
-  // "__global__" topic in both cases and {"scope":"all"} is only a hint: a host that
-  // understands it remaps the topic to its all-datasets marker topic, an older host keeps
+  // `all_datasets` (only with `global`) publishes the global markers across EVERY loaded dataset, else on
+  // the active dataset only. The target stays the "__global__" topic either way; {"scope":"all"} is a hint
+  // that a host which understands it remaps to its all-datasets marker topic, while an older host keeps
   // writing "__global__" everywhere, so the plugin works against either.
   std::string runScript(const std::string& code, const std::string& source, bool global, bool all_datasets) {
     if (code.empty()) {
@@ -698,9 +638,8 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     }
     const std::string target = global ? std::string(PJ::sdk::kGlobalMarkerTopic) : source;
 
-    // Declare ONLY the series the rule reads (see anomaly_core::ruleInputs), same as the
-    // preview, so Apply and preview stay identical AND the host doesn't materialize the whole
-    // dataset whole-series on every run/commit-recompute.
+    // Declare ONLY the series the rule reads (see anomaly_core::ruleInputs), same as the preview, so Apply
+    // and preview stay identical and the host doesn't materialize the whole dataset on every run.
     const std::vector<std::string> refs = anomaly_core::ruleInputs(code, global ? std::string() : source);
     std::vector<std::string_view> inputs(refs.begin(), refs.end());
 
@@ -708,11 +647,10 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
     const bool global_all = global && all_datasets;
     const std::string params = global_all ? R"({"scope":"all"})" : "{}";
 
-    // Stable per-(target, scope) id: re-Save upserts (replaces) the generator for that rule.
-    // One id is one generator on the host, and a scope change on an id replaces it, so a
-    // Dataset rule and a Global rule can only coexist under two ids. The host keeps their
-    // marker topics apart on its own (it rewrites "__global__" + scope:all to its
-    // all-datasets key); the id split is what keeps the RULES apart.
+    // Stable per-(target, scope) id: re-Save upserts the generator for that rule. One id is one generator
+    // on the host and a scope change on an id replaces it, so a Dataset rule and a Global rule can only
+    // coexist under two ids. The host keeps their marker topics apart itself; the id split keeps the
+    // RULES apart.
     const std::string id = "rule/" + (global_all ? std::string("__all__") : target);
     const PJ::Expected<std::vector<std::string>> submitted =
         gens.createMarkers(id, PJ::Span<const std::string_view>(inputs), target, code, params);
@@ -727,10 +665,8 @@ class AnomalyDetectorToolbox : public PJ::ToolboxPluginBase, public toolbox_prev
   }
 
   AnomalyDetectorDialog dialog_;
-  // Generic "preview a plot" engine, shared with other generator toolboxes: the source
-  // list + cached samples + streaming live-refresh, and the change-gated ephemeral
-  // generator submit/read-back. Only the marker-specific render (this class's
-  // PreviewBackend overrides) stays here.
+  // Shared "preview a plot" engine: source list + cached samples + streaming live-refresh, and the
+  // change-gated ephemeral generator submit/read-back. Only the marker-specific render stays here.
   toolbox_preview::SeriesCatalog catalog_;
   toolbox_preview::EphemeralPreview preview_;
   std::string preview_error_;  // last preview rule error (empty on success), shown in the status

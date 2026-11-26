@@ -1,17 +1,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// The canonical Mosaico source descriptor: the PUBLIC, allowlisted, versioned
-// description of one Download that the host records with a dataset and may
-// hand back to this provider for a headless re-import. It snapshots the EXACT
-// resolved request — the lowercased host:port origin, the sequence name, the
-// explicit topic list actually fetched (selection always expands to explicit
-// names before capture; never an "empty = all" shorthand), and the resolved
-// absolute time window. The canonical serialization + identity are a contract
-// pinned by docs/source-descriptor-vectors.json — changing either requires
-// bumping the descriptor version, never silently regenerating vectors. No
-// secrets, ever: api keys, cert paths and allow-insecure flags are rejected
-// by the field allowlist.
+// The canonical Mosaico source descriptor: the public, allowlisted, versioned description of one Download that the
+// host records with a dataset and may hand back to this provider for a headless re-import. It snapshots the EXACT
+// resolved request: lowercased host:port origin, sequence name, the explicit topic list actually fetched (selection
+// always expands to explicit names, never an "empty = all" shorthand) and the resolved absolute time window. The
+// canonical serialization + identity are pinned by docs/source-descriptor-vectors.json: changing either requires
+// bumping the descriptor version, never silently regenerating vectors. No secrets: api keys, cert paths and
+// allow-insecure flags are rejected by the field allowlist.
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -51,25 +47,21 @@ inline constexpr std::size_t kMaxStringBytes = 4096;
 /// canonicalization, identity scheme and generic resource bounds.
 [[nodiscard]] const PJ::sdk::source::SourceDescriptorPolicy& sourceDescriptorPolicy();
 
-/// Build a validated "mosaico.pull" descriptor from the resolved request
-/// fields, stamping version/kind (their authority stays in this module).
-/// Topics are sorted + deduped (the identity is a property of the topic SET).
-/// The SAME validation as parseSourceDescriptor applies via a round-trip, so
-/// an invalid request (malformed origin, empty topics, a name that is not
-/// valid UTF-8, …) yields nullopt with a human-readable reason instead of an
-/// uncacheable — or worse, request-aliasing — descriptor. Never throws.
+/// Build a validated "mosaico.pull" descriptor from the resolved request fields, stamping version/kind. Topics are
+/// sorted + deduped (the identity is a property of the topic SET). Applies the SAME validation as
+/// parseSourceDescriptor via a round-trip: an invalid request (malformed origin, empty topics, a name that is not
+/// valid UTF-8, ...) yields nullopt with a human-readable reason instead of an uncacheable or request-aliasing
+/// descriptor. Never throws.
 [[nodiscard]] std::optional<SourceDescriptor> makePullDescriptor(
     std::string origin, std::string sequence, std::vector<std::string> topics, std::int64_t start_ns,
     std::int64_t end_ns, std::string* error);
 
-/// Parse + validate. Rejects: wrong v/kind, missing/mistyped fields, unknown
-/// fields at BOTH levels (allowlist!), over-limit sizes, a malformed origin
-/// (uppercase, scheme, userinfo, path, IPv6 literal, missing/invalid port),
-/// an empty sequence, an empty/duplicate-carrying/UNSORTED topic list (the
-/// wire format is strictly ascending so canonical bytes stay unique per
-/// request), non-decimal ns strings, and end < start (unless both 0). The version check compares the
-/// JSON value exactly — never get<int>(), whose unchecked narrowing would let
-/// v=2^32+1 alias v1. Error is human-readable.
+/// Parse + validate. Rejects: wrong v/kind, missing/mistyped fields, unknown fields at BOTH levels (allowlist!),
+/// over-limit sizes, a malformed origin (uppercase, scheme, userinfo, path, IPv6 literal, missing/invalid port),
+/// an empty sequence, an empty/duplicate-carrying/UNSORTED topic list (the wire format is strictly ascending so
+/// canonical bytes stay unique per request), non-decimal ns strings, and end < start (unless both 0). The version
+/// check compares the JSON value exactly, never get<int>(), whose unchecked narrowing would let v=2^32+1 alias v1.
+/// Error is human-readable.
 [[nodiscard]] std::optional<SourceDescriptor> parseSourceDescriptor(std::string_view json, std::string* error);
 
 /// Canonical serialization: the EXACT byte string the identity is computed

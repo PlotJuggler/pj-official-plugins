@@ -3,10 +3,8 @@ find_package(nlohmann_json REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
-# Two-layer detection core: anomaly_helpers (Luau-FREE: builtins + JSON report/rule
-# helpers) and anomaly_core (adds the engine). The plugin links ONLY anomaly_helpers —
-# it submits rules to the host (pj.markers.v1), which executes them, so the plugin
-# carries NO script engine. The headless anomaly_runner links anomaly_core (engine).
+# The plugin links only the Luau-free anomaly_helpers: it submits rules to the host, which runs
+# them. The headless anomaly_runner links anomaly_core (the engine).
 add_subdirectory(core)
 
 add_library(toolbox_anomaly_detector_plugin SHARED anomaly_detector.cpp)
@@ -38,8 +36,7 @@ pj_emit_plugin_manifest(toolbox_anomaly_detector_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# Dialog-level tests drive the loaded .so (AnomalyDetectorDialog is in an anonymous
-# namespace, so it cannot be constructed directly) — same shape as toolbox_fft's.
+# The dialog class is in an anonymous namespace, so the tests drive the loaded .so.
 if(TARGET GTest::gtest_main)
   add_executable(toolbox_anomaly_detector_dialog_test anomaly_detector_dialog_test.cpp)
   target_compile_features(toolbox_anomaly_detector_dialog_test PRIVATE cxx_std_20)

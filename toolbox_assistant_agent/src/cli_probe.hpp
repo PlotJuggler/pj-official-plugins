@@ -11,12 +11,9 @@
 
 namespace assistant_agent {
 
-// The message for a CLI that locateCli() could not find anywhere it looked — shared between
-// probeCliVersion() and the "cannot find" guard each backend runs before spawning a turn, so the
-// wording never drifts between the two paths.
-//
-// Platform-neutral code: it only reads CliLocation fields, so it is exercised on Linux too by
-// constructing one with npm_shim set (locateCli() itself never fills npm_shim off Windows).
+// Message for a CLI that locateCli() could not find; shared by probeCliVersion() and each
+// backend's pre-spawn guard. Only reads CliLocation fields, so tests exercise the npm_shim
+// branch on Linux by constructing one (locateCli() fills npm_shim on Windows only).
 [[nodiscard]] inline std::string cannotFindCliMessage(const std::string& cli_path, const CliLocation& loc) {
   std::string joined;
   for (std::size_t i = 0; i < loc.searched.size(); ++i) {
@@ -27,12 +24,9 @@ namespace assistant_agent {
   }
   std::string message = "cannot find '" + cli_path + "' — searched: " + joined + ".";
   if (!loc.npm_shim.empty()) {
-    // A `.cmd`/`.ps1` launcher exists but this plugin never runs one — see
-    // CliLocation::npm_shim and subprocess.hpp's Windows contract (native
-    // .exe only, to stay out of the BatBadBut injection class). Naming an
-    // install command needs to know which CLI: the last path segment of the
-    // configured value is the stem (`claude`/`codex`), stripped of any
-    // extension a full path may have carried.
+    // A `.cmd`/`.ps1` launcher is never run (native .exe only, BatBadBut; see
+    // subprocess.hpp). The CLI name picking the install hint is the last path
+    // segment minus extension.
     std::string stem = cli_path;
     if (const std::size_t slash = stem.find_last_of("/\\"); slash != std::string::npos) {
       stem = stem.substr(slash + 1);
@@ -56,10 +50,8 @@ namespace assistant_agent {
   return message;
 }
 
-// The connectivity probe every headless-CLI backend runs: `<cli_path>
-// --version` exits 0. Shared by ClaudeBackend::testConnection and
-// CodexBackend::testConnection, which differ only in which CLI they name in
-// the failure message (`display_name`, e.g. "Claude" / "Codex").
+// Connectivity probe shared by the CLI backends' testConnection: `<cli_path> --version`
+// exits 0. `display_name` only words the failure message.
 [[nodiscard]] inline BackendTestResult probeCliVersion(const std::string& cli_path, const std::string& display_name) {
   const CliLocation loc = locateCli(cli_path);
   if (loc.path.empty()) {
@@ -78,7 +70,6 @@ namespace assistant_agent {
         false, "'" + cli_path + " --version' exited " + std::to_string(res.exit_code) + " (is the " + display_name +
                    " CLI installed and logged in?)"};
   }
-  // Trim trailing newline for a tidy transcript line.
   while (!version.empty() && (version.back() == '\n' || version.back() == '\r')) {
     version.pop_back();
   }

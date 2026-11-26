@@ -38,7 +38,6 @@ except ImportError:
     print("Error: pyzmq not installed. Run: pip install pyzmq")
     sys.exit(1)
 
-# Try to import protobuf bindings
 try:
     import test_message_pb2
     PROTOBUF_AVAILABLE = True
@@ -47,7 +46,6 @@ except ImportError:
 
 
 def create_json_payload(t: float, include_timestamp: bool) -> bytes:
-    """Create JSON payload with sensor data."""
     data = {
         "sensors": {
             "temperature": 20.0 + 5.0 * math.sin(t * 0.5),
@@ -64,7 +62,6 @@ def create_json_payload(t: float, include_timestamp: bool) -> bytes:
 
 
 def create_protobuf_payload(t: float, include_timestamp: bool) -> bytes:
-    """Create Protobuf payload with sensor data."""
     if not PROTOBUF_AVAILABLE:
         raise RuntimeError("Protobuf bindings not available")
 
@@ -116,20 +113,17 @@ def main():
     )
     args = parser.parse_args()
 
-    # Check protobuf availability
     if args.mode.startswith("protobuf") and not PROTOBUF_AVAILABLE:
         print("Error: Protobuf mode requires test_message_pb2.py")
         print("Generate it with: protoc --python_out=. test_message.proto")
         sys.exit(1)
 
-    # Create ZMQ socket
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     bind_addr = f"tcp://*:{args.port}"
     socket.bind(bind_addr)
     print(f"ZMQ PUB socket bound to {bind_addr}")
 
-    # Determine payload creator
     include_ts = args.mode.endswith("_ts")
     if args.mode.startswith("json"):
         create_payload = lambda t: create_json_payload(t, include_ts)
@@ -154,7 +148,6 @@ def main():
         while True:
             payload = create_payload(t)
 
-            # Build multipart message
             frames = []
             frame_desc = []
 

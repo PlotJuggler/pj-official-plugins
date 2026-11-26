@@ -2,11 +2,9 @@
 # SPDX-License-Identifier: MIT
 """Shared PJ Bridge control-plane helpers for the test servers.
 
-The three test servers (pj_bridge_test_server, pj_bridge_mixed_server,
-pj_bridge_mcap_player) speak one wire protocol; only their topic source and
-data-emit loop differ. These pure helpers own the protocol-critical envelope
-and the additive-subscribe response shape so a change lands in ONE place
-instead of drifting across three near-identical copies.
+The three test servers (pj_bridge_test_server, pj_bridge_mixed_server, pj_bridge_mcap_player)
+speak one wire protocol; only their topic source and data-emit loop differ. These pure helpers
+own the protocol-critical envelope and the additive-subscribe response shape.
 
 Mirrors the production BridgeServer (github.com/PlotJuggler/plotjuggler_bridge):
 protocol_version + id echo, additive subscribe with per-topic failures, the

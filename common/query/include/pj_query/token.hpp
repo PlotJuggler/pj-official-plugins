@@ -30,17 +30,9 @@ struct Token {
   int end = 0;       // byte offset in source (exclusive)
 };
 
-// Lexer: turns a query string into a sequence of typed, positioned tokens.
-//
-// Classification rules:
-//   - "and", "or", "not" → And/Or/Not
-//   - ==, ~=, <, >, <=, >= → Operator
-//   - Quoted strings ("..." or '...') → Value
-//   - Bare numbers (whole-word PJ::parseNumber, locale-independent) → Value
-//   - ( → OpenParen, ) → CloseParen
-//   - Everything else → Key
-//
-// Unrecognized characters are skipped (no crash, no infinite loop).
+// Turns a query string into typed, positioned tokens. A bare word is a number (whole-word
+// PJ::parseNumber, locale-independent) -> Value, "and"/"or"/"not" -> keyword, else Key. A lone '='
+// or '~' is an Operator. Unrecognized characters are skipped.
 class Lexer {
  public:
   explicit Lexer(std::string_view source) : src_(source) {}
@@ -51,13 +43,11 @@ class Lexer {
     int len = static_cast<int>(src_.size());
 
     while (index < len) {
-      // Skip whitespace.
       if (isSpace(index)) {
         ++index;
         continue;
       }
 
-      // Two-char operators.
       if (index + 1 < len) {
         auto two = slice(index, index + 2);
         if (two == "==" || two == "~=" || two == "<=" || two == ">=") {
@@ -67,14 +57,12 @@ class Lexer {
         }
       }
 
-      // Single-char operators.
       if (at(index) == '<' || at(index) == '>') {
         tokens.push_back({TokenType::kOperator, std::string(1, at(index)), index, index + 1});
         ++index;
         continue;
       }
 
-      // Parens.
       if (at(index) == '(') {
         tokens.push_back({TokenType::kOpenParen, "(", index, index + 1});
         ++index;
@@ -86,14 +74,13 @@ class Lexer {
         continue;
       }
 
-      // Quoted string.
       if (at(index) == '"' || at(index) == '\'') {
         int start = index;
         char quote = at(index);
         ++index;
         while (index < len && at(index) != quote) {
           if (at(index) == '\\' && index + 1 < len) {
-            ++index;  // skip escaped
+            ++index;  // skip the escaped character
           }
           ++index;
         }
@@ -104,14 +91,12 @@ class Lexer {
         continue;
       }
 
-      // Lone = or ~ (not part of a two-char op).
       if (at(index) == '=' || at(index) == '~') {
         tokens.push_back({TokenType::kOperator, std::string(1, at(index)), index, index + 1});
         ++index;
         continue;
       }
 
-      // Word: identifier, number, or keyword.
       int start = index;
       while (index < len && !isSpace(index) && !isPunct(index)) {
         ++index;
@@ -123,16 +108,14 @@ class Lexer {
         continue;
       }
 
-      // Unrecognized character — skip to prevent infinite loop.
-      ++index;
+      ++index;  // unrecognized character: skip, or the loop never advances
     }
 
     return tokens;
   }
 
  private:
-  // Bounds are managed by the callers; these only centralize the int → size_type
-  // casts so -Wconversion stays clean.
+  // Callers manage bounds; these only centralize the int -> size_type casts (-Wconversion).
   [[nodiscard]] char at(int index) const {
     return src_[static_cast<std::size_t>(index)];
   }
@@ -162,7 +145,6 @@ class Lexer {
       return TokenType::kNot;
     }
 
-    // Whole-word number (locale-independent) → Value.
     if (PJ::parseNumber<double>(word)) {
       return TokenType::kValue;
     }

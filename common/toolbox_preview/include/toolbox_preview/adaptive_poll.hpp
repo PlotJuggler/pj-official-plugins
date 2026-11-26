@@ -4,13 +4,11 @@
 
 namespace toolbox_preview {
 
-/// Cadence policy for a per-tick "should I do the expensive read now?" decision, kept
-/// separate from the read mechanism so the rule lives in one named, testable place.
-///
-/// Behaviour: read EVERY tick while the watched source is moving (so a streaming preview
-/// follows at the full panel rate and looks smooth), but once it has been static for a short
-/// grace period, skip progressively more ticks (capped) so re-reading an UNCHANGING but large
-/// source doesn't burn CPU every tick. Any observed change snaps the cadence back to every-tick.
+/// Cadence policy for a per-tick "should I do the expensive read now?" decision. Reads EVERY tick
+/// while the watched source is moving (a streaming preview follows at the full panel rate), but
+/// once it has been static for a short grace period, skips progressively more ticks (capped) so
+/// re-reading an UNCHANGING but large source doesn't burn CPU. Any observed change snaps the
+/// cadence back to every tick.
 ///
 /// Usage, once per tick:
 ///   if (!poll.shouldRead()) return;     // this tick is skipped
@@ -19,7 +17,7 @@ namespace toolbox_preview {
 /// and poll.reset() when the watched target switches.
 class AdaptivePoll {
  public:
-  /// True on ticks we should (re-)read; otherwise consumes one tick of the current skip gap.
+  /// True on ticks to (re-)read; otherwise consumes one tick of the current skip gap.
   bool shouldRead() {
     if (skip_ticks_ > 0) {
       --skip_ticks_;
@@ -28,8 +26,8 @@ class AdaptivePoll {
     return true;
   }
 
-  /// Feed back whether the read observed a change. A change snaps to every-tick reads; a run
-  /// of no-change grows the skip gap (after a grace period, capped).
+  /// A change snaps to every-tick reads; a run of no-change grows the skip gap (after the grace
+  /// period, capped).
   void observe(bool changed) {
     if (changed) {
       idle_streak_ = 0;
@@ -43,7 +41,7 @@ class AdaptivePoll {
     }
   }
 
-  /// Reset to the eager (every-tick) state — call when the watched target changes.
+  /// Back to every-tick reads; call when the watched target changes.
   void reset() {
     idle_streak_ = 0;
     skip_ticks_ = 0;

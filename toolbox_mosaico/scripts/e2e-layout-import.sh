@@ -17,16 +17,11 @@
 #      the host cache (exit 0). Zero-network by construction: without a key
 #      the server would refuse.
 #
-# STATUS: the provider side (descriptor parse, trust allowlist, headless
-# credential guard, startImport job) ships in this repo; the HOST side —
-# headless descriptor-import on layout restore, the host request cache, and
-# its cache directory layout — lands with PJ4 #633. Until that merges this
-# script needs:
+# Requires host support for headless descriptor-import on layout restore:
 #   - PJ4_HOST_CACHE_DIR: the host's request-cache directory for the run
-#     (leg A/B/C assert on the identity-addressed entry appearing there),
+#     (legs A/B/C assert on the identity-addressed entry appearing there),
 #   - the <materialize identity=... provider=...> layout element accepted by
-#     the PJ4 restore path (shape below tracks the #633 design; adjust here
-#     if the host shape drifts before freezing).
+#     the PJ4 restore path.
 #
 # Requirements: a built PJ4 tree (PJ4_DIR), the toolbox plugin build output
 # in this repo's build/ dir, and MOSAICO_API_KEY in the environment (this

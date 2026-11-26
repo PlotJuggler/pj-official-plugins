@@ -1,45 +1,17 @@
 #!/usr/bin/env python3
-"""
-Release tools for PlotJuggler extensions.
+"""Release helpers for PlotJuggler extensions: manifest/version validation, packaging, release notes.
 
-Terminology:
-- extension: The distributable package (ZIP containing plugin binary + manifest.json)
-- plugin: The compiled binary (.so/.dll/.dylib) containing the C++ class
-- source_dir: The source directory containing code and manifest.json
+Imported by release_extension.py and submit_to_registry.py; the subcommands below are called by CI.
+An extension is the ZIP (plugin binary + manifest.json) built from a source_dir.
 
-This module provides utilities for the extension release workflow:
-- Version extraction from compiled plugin binaries (via embedded manifest)
-- Version consistency verification (tag vs manifest.json vs binary)
-- Distribution package creation (locates plugin binary by manifest id)
-- Plugin-scoped release note generation for monorepo tags
-- Manifest validation
-
-Used as library by: release_plugin.py, submit_to_registry.py
-Used as CLI by: CI workflows
-
-CLI Usage:
-    # Verify that tag, manifest.json, and compiled binary have matching versions
-    python3 scripts/release_tools.py verify-version-consistency data_load_csv \\
-        --build-dir build/Release \\
-        --expected-version 1.0.5
-
-    # Create distribution package (finds binary by manifest id, copies to output dir)
-    python3 scripts/release_tools.py create-distribution-package data_load_csv \\
-        --build-dir build/Release \\
-        --output-dir dist \\
-        --os-label linux \\
-        --arch x86_64
-
-    # Extract and display the manifest embedded in a compiled binary
-    python3 scripts/release_tools.py extract-embedded-manifest build/Release/libfoo.so
-
-    # Validate manifest.json structure and required fields
-    python3 scripts/release_tools.py validate-manifest data_load_csv/manifest.json
-
-    # Generate release notes containing only plugin-specific changes
-    python3 scripts/release_tools.py generate-release-notes \\
-        --release-tag data_load_csv/v1.0.5 \\
-        --output release-notes.md
+Subcommands (see --help for options):
+    verify-version-consistency <source> --build-dir D --expected-version V
+    create-distribution-package <source> --build-dir D --output-dir O --os-label L --arch A
+    extract-embedded-manifest <binary>
+    validate-manifest <manifest.json>
+    validate-distribution-package <zip> [--checksum-file F]
+    generate-release-notes --release-tag <source_dir>/vX.Y.Z --output F
+    resolve-build-scope --tag T --tag-type TT --os-label L --arch A
 """
 
 import argparse
@@ -57,15 +29,10 @@ import zipfile
 from pathlib import Path
 
 
-# =============================================================================
-# CONSTANTS
-# =============================================================================
-
 REQUIRED_MANIFEST_FIELDS = ["id", "name", "version", "category"]
-# Optional free-text fields: when present they must be strings.
-# entry_point: where the user starts the extension in the host UI, as live
-# label strings (e.g. "Toolbox menu → FFT"); overrides the host's default
-# derived from category/tags.
+# Free-text fields that must be strings when present. entry_point is where the user starts the
+# extension in the host UI, as live label strings (e.g. "Toolbox menu → FFT"); it overrides the
+# host's default derived from category/tags.
 OPTIONAL_MANIFEST_FIELDS = ["description", "author", "publisher", "license", "entry_point"]
 
 VALID_PLATFORMS = [
@@ -79,7 +46,6 @@ VALID_PLATFORMS = [
 
 VALID_CATEGORIES = ["data_loader", "data_stream", "message_parser", "toolbox", "widget"]
 
-# Semantic versioning regex (simplified: major.minor.patch with optional pre-release)
 import sys as _sys
 
 _sys.path.insert(0, str(Path(__file__).resolve().parent / "vendor"))
@@ -97,23 +63,8 @@ SEMVER_REGEX = re.compile(
 SDK_VERSION_REGEX = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}(?:-dev\.(?:0|[1-9][0-9]*))?")
 
 
-# =============================================================================
-# CTYPES STRUCTURES FOR PLUGIN LOADING
-# =============================================================================
-
-
 class PluginVtable(ctypes.Structure):
-    """
-    Partial vtable structure matching PJ_data_source_vtable_t, PJ_message_parser_vtable_t,
-    PJ_toolbox_vtable_t and PJ_widget_vtable_t.
-
-    All four vtable types have the same initial fields up to manifest_json:
-    - protocol_version (uint32_t) at offset +0
-    - struct_size (uint32_t) at offset +4
-    - create (void* function pointer) at offset +8
-    - destroy (void* function pointer) at offset +16
-    - manifest_json (const char*) at offset +24
-    """
+    """Common prefix of PJ_data_source/message_parser/toolbox/widget_vtable_t (64-bit offsets 0, 4, 8, 16, 24)."""
 
     _fields_ = [
         ("protocol_version", ctypes.c_uint32),
@@ -124,24 +75,8 @@ class PluginVtable(ctypes.Structure):
     ]
 
 
-# =============================================================================
-# BINARY MANIFEST EXTRACTION
-# =============================================================================
-
-
 def extract_binary_manifest(plugin_path: Path) -> dict | None:
-    """
-    Load a plugin binary and extract the full embedded manifest.
-
-    Uses ctypes to load the shared library and call the vtable getter function.
-    Works cross-platform: .so (Linux), .dylib (macOS), .dll (Windows).
-
-    Args:
-        plugin_path: Path to the plugin binary
-
-    Returns:
-        Manifest dict if found, None if extraction failed
-    """
+    """Load the plugin via ctypes and return its embedded manifest; None if it cannot be loaded or parsed."""
     # Widget-family DLLs depend on Qt. Since Python 3.8 Windows does not resolve a ctypes-loaded
     # DLL's dependencies through PATH, so point the loader at Qt's bin dir when the build exported it.
     if sys.platform == "win32" and os.environ.get("QT_ROOT_DIR"):
@@ -180,36 +115,14 @@ def extract_binary_manifest(plugin_path: Path) -> dict | None:
 
 
 def extract_binary_version(plugin_path: Path) -> str | None:
-    """
-    Load a plugin binary and extract the version from its embedded manifest.
-
-    Args:
-        plugin_path: Path to the plugin binary
-
-    Returns:
-        Version string if found, None if extraction failed
-    """
     manifest = extract_binary_manifest(plugin_path)
     if manifest:
         return manifest.get("version")
     return None
 
 
-# =============================================================================
-# MANIFEST FILE FUNCTIONS
-# =============================================================================
-
-
 def read_manifest(manifest_path: Path) -> dict | None:
-    """
-    Read and parse a manifest.json file.
-
-    Args:
-        manifest_path: Path to manifest.json
-
-    Returns:
-        Manifest dict if valid, None otherwise
-    """
+    """Parsed manifest, None if unreadable or not valid JSON."""
     try:
         with open(manifest_path) as f:
             return json.load(f)
@@ -218,15 +131,6 @@ def read_manifest(manifest_path: Path) -> dict | None:
 
 
 def read_manifest_version(manifest_path: Path) -> str | None:
-    """
-    Read version from a manifest.json file.
-
-    Args:
-        manifest_path: Path to manifest.json
-
-    Returns:
-        Version string if found, None otherwise
-    """
     manifest = read_manifest(manifest_path)
     if manifest:
         return manifest.get("version")
@@ -234,15 +138,7 @@ def read_manifest_version(manifest_path: Path) -> str | None:
 
 
 def validate_manifest(manifest: dict) -> list[str]:
-    """
-    Validate a manifest dictionary.
-
-    Args:
-        manifest: Manifest dictionary
-
-    Returns:
-        List of error messages (empty if valid)
-    """
+    """Error messages for a manifest dict (empty if valid)."""
     if not isinstance(manifest, dict):
         return ["Manifest must be a JSON object"]
 
@@ -270,10 +166,9 @@ def validate_manifest(manifest: dict) -> list[str]:
 
 
 def validate_sdk_minimum(manifest: dict, sdk_version: str) -> list[str]:
-    """Validate explicit official-plugin minimums, not inferred feature usage.
-
-    Official SDK pins and minimums name released SDKs: X.Y.Z, or a development
-    pre-release X.Y.Z-dev.N (semver precedence: X.Y.Z-dev.N < X.Y.Z).
+    """Check that min_sdk_required and SDK_VERSION name SDK releases (X.Y.Z or X.Y.Z-dev.N, with
+    X.Y.Z-dev.N < X.Y.Z) and that the minimum does not exceed the build SDK. Declared values only:
+    feature usage is not inferred.
     """
     minimum = manifest.get("min_sdk_required")
     for label, version in (("min_sdk_required", minimum), ("SDK_VERSION", sdk_version)):
@@ -291,15 +186,7 @@ def sdk_precedence(version: str) -> tuple:
 
 
 def validate_manifest_file(manifest_path: Path) -> tuple[dict | None, list[str]]:
-    """
-    Read and validate a manifest.json file.
-
-    Args:
-        manifest_path: Path to manifest.json
-
-    Returns:
-        Tuple of (manifest_dict, error_list)
-    """
+    """Return (manifest or None if unreadable, errors)."""
     if not manifest_path.exists():
         return None, [f"Manifest not found: {manifest_path}"]
 
@@ -317,11 +204,6 @@ def validate_manifest_file(manifest_path: Path) -> tuple[dict | None, list[str]]
     return manifest, errors
 
 
-# =============================================================================
-# VERSION FUNCTIONS
-# =============================================================================
-
-
 def validate_semver(version: str) -> bool:
     """Whether `version` is SemVer 2.0.0: X.Y.Z[-pre-release][+build], no leading zeros.
 
@@ -332,17 +214,7 @@ def validate_semver(version: str) -> bool:
 
 
 def parse_tag_version(tag: str) -> tuple[str, str] | None:
-    """
-    Parse a release tag into source directory and version.
-
-    Expected format: 'source_dir/vX.Y.Z'
-
-    Args:
-        tag: Tag string (e.g., 'data_load_csv/v1.0.5')
-
-    Returns:
-        Tuple of (source_dir, version) or None if invalid format
-    """
+    """Split 'source_dir/vX.Y.Z' (e.g. 'data_load_csv/v1.0.5') into (source_dir, version); None otherwise."""
     match = re.match(r"^([^/]+)/v(.+)$", tag)
     if match:
         return match.group(1), match.group(2)
@@ -367,22 +239,8 @@ def semver_sort_key(version: str) -> tuple:
     return (core, 0, identifiers)
 
 
-# =============================================================================
-# BINARY DISCOVERY
-# =============================================================================
-
-
 def find_plugin_binaries(directory: Path, pattern: str = "*") -> list[Path]:
-    """
-    Find plugin binary files in a directory.
-
-    Args:
-        directory: Directory to search
-        pattern: Glob pattern for filename (without extension)
-
-    Returns:
-        List of binary paths found
-    """
+    """De-duplicated .so/.dylib/.dll files matching pattern in directory and below."""
     binaries = []
     for ext in ["so", "dylib", "dll"]:
         binaries.extend(directory.glob(f"{pattern}.{ext}"))
@@ -398,31 +256,14 @@ def find_plugin_binaries(directory: Path, pattern: str = "*") -> list[Path]:
 
 
 def find_binary_by_manifest_id(directory: Path, manifest_id: str) -> Path | None:
-    """
-    Find a plugin binary by its embedded manifest id.
-
-    Searches all plugin binaries in the directory (recursively),
-    loads each one, extracts the embedded manifest, and returns
-    the path to the binary whose manifest id matches.
-
-    Args:
-        directory: Directory to search (recursively)
-        manifest_id: The manifest id to match (e.g., 'csv-loader')
-
-    Returns:
-        Path to matching binary, or None if not found
-    """
+    """First binary under directory whose embedded manifest id matches (loads each candidate), else None."""
     matches = find_binaries_by_manifest_id(directory, manifest_id)
     return matches[0] if matches else None
 
 
 def find_binaries_by_manifest_id(directory: Path, manifest_id: str) -> list[Path]:
-    """
-    Find all plugin binaries with the given embedded manifest id.
-
-    Most extensions ship one DSO. Some extensions intentionally ship multiple
-    parser entry points under one marketplace id; all matching binaries must be
-    packaged together.
+    """All binaries with the given embedded manifest id. Some extensions ship several parser entry
+    points under one id, and all of them must be packaged together.
     """
     binaries = find_plugin_binaries(directory, "*")
     matches = []
@@ -435,13 +276,7 @@ def find_binaries_by_manifest_id(directory: Path, manifest_id: str) -> list[Path
     return sorted(matches)
 
 
-# =============================================================================
-# CHECKSUM FUNCTIONS
-# =============================================================================
-
-
 def compute_sha256(file_path: Path) -> str:
-    """Compute SHA256 checksum of a file."""
     sha256 = hashlib.sha256()
     with open(file_path, "rb") as f:
         while chunk := f.read(8192):
@@ -450,12 +285,10 @@ def compute_sha256(file_path: Path) -> str:
 
 
 def compute_sha256_bytes(data: bytes) -> str:
-    """Compute SHA256 checksum of bytes."""
     return hashlib.sha256(data).hexdigest()
 
 
 def verify_checksum(file_path: Path, expected: str) -> bool:
-    """Verify SHA256 checksum of a file."""
     if expected.startswith("sha256:"):
         expected = expected[7:]
     actual = compute_sha256(file_path)
@@ -463,20 +296,13 @@ def verify_checksum(file_path: Path, expected: str) -> bool:
 
 
 def verify_checksum_bytes(data: bytes, expected: str) -> bool:
-    """Verify SHA256 checksum of bytes."""
     if expected.startswith("sha256:"):
         expected = expected[7:]
     actual = compute_sha256_bytes(data)
     return actual.lower() == expected.lower()
 
 
-# =============================================================================
-# URL FUNCTIONS
-# =============================================================================
-
-
 def check_url_accessible(url: str, timeout: int = 10) -> tuple[bool, str]:
-    """Check if a URL is accessible via HEAD request."""
     try:
         req = urllib.request.Request(url, method="HEAD")
         req.add_header("User-Agent", "release-tools/1.0")
@@ -493,7 +319,6 @@ def check_url_accessible(url: str, timeout: int = 10) -> tuple[bool, str]:
 
 
 def download_url(url: str, timeout: int = 60) -> tuple[bytes | None, str]:
-    """Download content from a URL."""
     try:
         req = urllib.request.Request(url)
         req.add_header("User-Agent", "release-tools/1.0")
@@ -508,7 +333,6 @@ def download_url(url: str, timeout: int = 60) -> tuple[bytes | None, str]:
 
 
 def download_and_verify(url: str, expected_checksum: str, timeout: int = 60) -> tuple[bool, bytes | None, str]:
-    """Download a file and verify its SHA256 checksum."""
     data, error = download_url(url, timeout)
     if data is None:
         return False, None, f"Download failed: {error}"
@@ -520,10 +344,6 @@ def download_and_verify(url: str, expected_checksum: str, timeout: int = 60) -> 
 
     return True, data, ""
 
-
-# =============================================================================
-# PLATFORM FUNCTIONS
-# =============================================================================
 
 PLATFORM_ARCH_MAP = {
     "x64": "x86_64",
@@ -543,11 +363,7 @@ PLATFORM_OS_MAP = {
 
 
 def normalize_platform(filename: str) -> str | None:
-    """
-    Extract and normalize platform from an extension ZIP filename.
-
-    Expected format: {extension_id}-{version}-{os}-{arch}.zip
-    """
+    """'os-arch' platform of a {extension_id}-{version}-{os}-{arch}.zip name, None if unrecognized."""
     if filename.endswith(".zip"):
         filename = filename[:-4]
 
@@ -568,24 +384,14 @@ def normalize_platform(filename: str) -> str | None:
 
 
 def parse_zip_filename(filename: str) -> dict | None:
-    """
-    Parse an extension ZIP filename into its components.
-
-    Expected format: {extension_id}-{version}-{os}-{arch}.zip
-    Example: csv-loader-1.0.5-linux-x86_64.zip
-
-    Args:
-        filename: ZIP filename (with or without path)
-
-    Returns:
-        Dict with keys: extension_id, version, os_label, arch, platform
-        Or None if filename doesn't match expected format
+    """Split {extension_id}-{version}-{os}-{arch}.zip (e.g. csv-loader-1.0.5-linux-x86_64.zip) into a dict
+    with extension_id, version, os_label, arch, platform; None if the name does not match.
     """
     basename = Path(filename).name
     if not basename.endswith(".zip"):
         return None
 
-    name = basename[:-4]  # Remove .zip
+    name = basename[:-4]
     parts = name.split("-")
 
     if len(parts) < 4:
@@ -600,9 +406,7 @@ def parse_zip_filename(filename: str) -> dict | None:
     if not arch or not os_label:
         return None
 
-    # Version is second-to-last before os-arch
-    # Artifact ID is everything before version
-    # Handle extension IDs with dashes (e.g., "csv-loader")
+    # The version precedes {os}-{arch}; the id (which may contain dashes) is everything before it.
     version_idx = len(parts) - 3
     if version_idx < 1:
         return None
@@ -623,7 +427,6 @@ def parse_zip_filename(filename: str) -> dict | None:
 
 
 def get_platform_extension(platform: str) -> str:
-    """Get the library extension for a platform."""
     if platform.startswith("linux"):
         return "so"
     elif platform.startswith("macos"):
@@ -633,13 +436,7 @@ def get_platform_extension(platform: str) -> str:
     return "so"
 
 
-# =============================================================================
-# REGISTRY VALIDATION
-# =============================================================================
-
-
 def validate_registry_entry(entry: dict) -> list[str]:
-    """Validate a registry extension entry dictionary."""
     errors = []
 
     required = ["id", "name", "version", "description", "author", "publisher", "license", "category", "platforms"]
@@ -673,27 +470,12 @@ def validate_registry_entry(entry: dict) -> list[str]:
     return errors
 
 
-# =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
-
-
 def id_to_class_name(extension_id: str) -> str:
-    """Convert kebab-case extension ID to PascalCase class name."""
     return "".join(word.capitalize() for word in extension_id.replace("_", "-").split("-"))
 
 
 def find_source_dir(source_arg: str, root: Path) -> Path | None:
-    """
-    Find source directory by name or manifest id.
-
-    Args:
-        source_arg: Source directory name or manifest id (extension id)
-        root: Root directory to search from
-
-    Returns:
-        Path to source directory or None
-    """
+    """Source directory under root, matched by directory name or manifest id; None if not found."""
     direct = root / source_arg
     if direct.is_dir() and (direct / "manifest.json").exists():
         return direct
@@ -712,7 +494,6 @@ def find_source_dir(source_arg: str, root: Path) -> Path | None:
 
 
 def run_git(root: Path, args: list[str]) -> str:
-    """Run a git command in the repository root and return stdout."""
     result = subprocess.run(
         ["git"] + args,
         cwd=root,
@@ -724,7 +505,7 @@ def run_git(root: Path, args: list[str]) -> str:
 
 
 def find_previous_release_tag(root: Path, source_name: str, current_tag: str) -> str | None:
-    """Return the nearest older tag for the same plugin source directory."""
+    """Highest tag of the same plugin that is semver-older than current_tag, None if there is none."""
     parsed = parse_tag_version(current_tag)
     if not parsed:
         return None
@@ -751,7 +532,7 @@ def find_previous_release_tag(root: Path, source_name: str, current_tag: str) ->
 
 
 def list_commits_for_paths(root: Path, revision_range: str, paths: list[str]) -> list[tuple[str, str]]:
-    """List commits in a revision range that touched any of the requested paths."""
+    """(hash, subject) of commits in revision_range touching paths, oldest first, without merges or version bumps."""
     args = ["log", "--reverse", "--no-merges", "--format=%H%x1f%s", revision_range]
     if paths:
         args += ["--"] + paths
@@ -767,7 +548,7 @@ def list_commits_for_paths(root: Path, revision_range: str, paths: list[str]) ->
 
 
 def is_release_bookkeeping(subject: str) -> bool:
-    """Return true for version-bump commits that add noise to release notes."""
+    """Version-bump commits, kept out of release notes."""
     normalized = subject.lower()
     return (
         normalized.startswith("chore(release):")
@@ -777,27 +558,16 @@ def is_release_bookkeeping(subject: str) -> bool:
 
 
 def format_commit_list(commits: list[tuple[str, str]]) -> str:
-    """Format commit subjects as a markdown bullet list."""
     if not commits:
         return "- No plugin-specific changes detected in this range."
     return "\n".join(f"- {subject} ({commit_hash[:7]})" for commit_hash, subject in commits)
 
 
-# =============================================================================
-# CLI COMMANDS
-# =============================================================================
-
-
 def cmd_verify_version_consistency(args) -> int:
-    """
-    Verify that tag, manifest.json, and compiled plugin binary all have matching versions.
-
-    Used in CI after building to ensure the release is consistent.
-    """
+    """Fail unless the tag, manifest.json and built plugin binary report the same version (CI, after the build)."""
     script_dir = Path(__file__).parent
     root = script_dir.parent
 
-    # Parse release tag if provided
     if args.release_tag:
         parsed = parse_tag_version(args.release_tag)
         if not parsed:
@@ -840,21 +610,15 @@ def cmd_verify_version_consistency(args) -> int:
     versions = {"manifest": manifest_version}
     check_errors = []
 
-    # Expected version (from tag)
     if args.expected_version:
         versions["expected"] = args.expected_version
         print(f"Expected version: {args.expected_version}")
 
-    # Find and check plugin binary
     if args.build_dir:
-        # Staging-dir mode: a plugin that produced <build_dir>/dist/ via a
-        # release.sh override has the marketplace tree pre-assembled. Its
-        # binary either dispatches to a per-platform inner (the proxy in
-        # data_stream_ros2 only loads the inner when ROS is available) or
-        # the inner itself links against host-only deps that ctypes cannot
-        # load on a vanilla CI runner. Either way the embedded-manifest
-        # check is meaningless; trust the staging tree's manifest.json
-        # (or fall back to the source manifest).
+        # A <build_dir>/dist/ staging tree (from a release.sh override) holds a binary that either proxies to
+        # a per-platform inner (data_stream_ros2 loads it only when ROS is available) or links host-only deps
+        # ctypes cannot load on a CI runner, so the embedded-manifest check is skipped and the staged
+        # manifest.json is compared instead.
         staging_dir = args.build_dir / "dist"
         if staging_dir.is_dir() and any(staging_dir.iterdir()):
             print(f"\nStaging tree detected at {staging_dir} — skipping embedded-manifest binary check")
@@ -869,7 +633,7 @@ def cmd_verify_version_consistency(args) -> int:
             all_binaries = find_plugin_binaries(args.build_dir, "*")
             if all_binaries:
                 print(f"Found {len(all_binaries)} binary file(s):")
-                for b in all_binaries[:10]:  # Show up to 10
+                for b in all_binaries[:10]:
                     print(f"  - {b}")
                 if len(all_binaries) > 10:
                     print(f"  ... and {len(all_binaries) - 10} more")
@@ -885,7 +649,6 @@ def cmd_verify_version_consistency(args) -> int:
                 else:
                     check_errors.append(f"Could not extract version from plugin: {binary_path}")
             else:
-                # Show what manifests were found in the binaries for debugging
                 if all_binaries:
                     print(f"\nManifest IDs found in binaries:")
                     for b in all_binaries:
@@ -896,12 +659,10 @@ def cmd_verify_version_consistency(args) -> int:
                             print(f"  - {b.name}: (no manifest)")
                 check_errors.append(f"No plugin found with extension id '{extension_id}' in {args.build_dir}")
 
-    # Validate semver
     for source, ver in versions.items():
         if ver and not validate_semver(ver):
             check_errors.append(f"Invalid semver format in {source}: {ver}")
 
-    # Compare versions
     print()
     if len(versions) >= 2:
         unique = set(versions.values())
@@ -924,30 +685,17 @@ def cmd_verify_version_consistency(args) -> int:
 
 
 def cmd_create_distribution_package(args) -> int:
-    """
-    Create distribution package (extension) for a plugin.
+    """Assemble the extension tree in <output_dir>/<extension_id>/ and print the ZIP filename for CI.
 
-    Two modes, auto-selected by whether ``<build_dir>/dist/`` exists:
-
-    - **Staging-dir mode** (``<build_dir>/dist/`` exists): the plugin has
-      pre-assembled the tree it wants in the marketplace zip — typically
-      a ``release.sh`` override that produces a multi-artifact layout
-      (e.g. proxy at the root + per-distro binaries under ``dist/<distro>/``).
-      The contents of ``<build_dir>/dist/`` are copied as-is into
-      ``<output_dir>/<extension_id>/``. ``manifest.json`` is added
-      automatically if the staging tree omits it.
-
-    - **Heuristic mode** (default): binaries are located by their embedded
-      manifest id and copied alongside ``manifest.json``. Any sibling
-      ``python3*`` directory placed next to the binary by a CMake
-      POST_BUILD step is bundled too.
-
-    Outputs the ZIP filename to stdout for CI to capture.
+    Staging mode (<build_dir>/dist/ exists and is non-empty): the plugin's release.sh pre-assembled a
+    multi-artifact layout (e.g. proxy at the root + per-distro binaries under dist/<distro>/); it is copied
+    as-is, plus manifest.json if the tree lacks one.
+    Heuristic mode: every binary whose embedded manifest id matches, plus manifest.json and any python3*
+    directory next to a binary.
     """
     script_dir = Path(__file__).parent
     root = script_dir.parent
 
-    # Parse release tag if provided
     if args.release_tag:
         parsed = parse_tag_version(args.release_tag)
         if not parsed:
@@ -982,7 +730,6 @@ def cmd_create_distribution_package(args) -> int:
 
     staging_dir = args.build_dir / "dist"
     if staging_dir.is_dir() and any(staging_dir.iterdir()):
-        # Staging-dir mode — plugin has pre-assembled the marketplace tree.
         print(f"Staging tree found at {staging_dir} — packaging as-is", file=sys.stderr)
         for entry in sorted(staging_dir.iterdir()):
             dest = output_path / entry.name
@@ -992,13 +739,11 @@ def cmd_create_distribution_package(args) -> int:
                 shutil.copy(entry, dest)
             print(f"  staged {entry.name}", file=sys.stderr)
 
-        # Backstop: never ship without a manifest.json, even if the staging tree
-        # forgot it.
+        # Never ship without a manifest.json, even if the staging tree omits it.
         if not (output_path / "manifest.json").is_file():
             shutil.copy(manifest_path, output_path)
             print(f"  added missing manifest.json from {manifest_path}", file=sys.stderr)
     else:
-        # Heuristic mode — locate binaries by embedded manifest id.
         print(f"Searching for plugin(s) with id '{extension_id}' in {args.build_dir}...", file=sys.stderr)
         plugin_paths = find_binaries_by_manifest_id(args.build_dir, extension_id)
         if not plugin_paths:
@@ -1014,9 +759,8 @@ def cmd_create_distribution_package(args) -> int:
         shutil.copy(manifest_path, output_path)
         print(f"Copied manifest to: {output_path / 'manifest.json'}", file=sys.stderr)
 
-        # Bundle any Python stdlib directories placed next to the plugin binary
-        # by the CMake POST_BUILD step (e.g. python3.12/). Makes the plugin
-        # self-contained: no system Python installation is required at runtime.
+        # Python stdlib directories placed next to the binary by a CMake POST_BUILD step (e.g. python3.12/)
+        # make the plugin self-contained: no system Python is needed at runtime.
         bundled_python_dirs = set()
         for plugin_path in plugin_paths:
             for entry in plugin_path.parent.iterdir():
@@ -1026,7 +770,6 @@ def cmd_create_distribution_package(args) -> int:
                     shutil.copytree(entry, dest, dirs_exist_ok=True)
                     print(f"Bundled Python stdlib: {dest}", file=sys.stderr)
 
-    # Output extension ZIP filename to stdout
     if args.os_label and args.arch:
         zip_name = f"{extension_id}-{version}-{args.os_label}-{args.arch}.zip"
         print(zip_name)
@@ -1037,11 +780,6 @@ def cmd_create_distribution_package(args) -> int:
 
 
 def cmd_extract_embedded_manifest(args) -> int:
-    """
-    Extract and display the manifest embedded in a compiled plugin binary.
-
-    Useful for debugging and verifying that the correct manifest was compiled in.
-    """
     plugin_path = Path(args.plugin)
     if not plugin_path.exists():
         print(f"Error: Plugin not found: {plugin_path}", file=sys.stderr)
@@ -1057,9 +795,6 @@ def cmd_extract_embedded_manifest(args) -> int:
 
 
 def cmd_validate_manifest(args) -> int:
-    """
-    Validate a manifest.json file structure and required fields.
-    """
     manifest_path = Path(args.manifest)
     manifest, errors = validate_manifest_file(manifest_path)
 
@@ -1083,15 +818,9 @@ def cmd_validate_manifest(args) -> int:
 
 
 def cmd_validate_distribution_package(args) -> int:
-    """
-    Validate a distribution ZIP package (extension).
-
-    Performs comprehensive validation:
-    1. Filename format: {extension_id}-{version}-{os}-{arch}.zip
-    2. SHA256 checksum (if --checksum-file provided)
-    3. ZIP contains plugin binary and manifest.json
-    4. Plugin's embedded manifest matches the included manifest.json
-    5. Version in filename matches version in manifest
+    """Check a distribution ZIP: filename format, SHA256 (with --checksum-file), a plugin binary and
+    manifest.json present, embedded manifest id/version equal to manifest.json, and filename id/version equal
+    to the manifest's.
     """
     zip_path = Path(args.package)
     if not zip_path.exists():
@@ -1102,7 +831,6 @@ def cmd_validate_distribution_package(args) -> int:
     print(f"Validating: {zip_path.name}")
     print()
 
-    # === 1. Filename format ===
     print("Filename parsing:")
     filename_info = parse_zip_filename(zip_path.name)
     if filename_info:
@@ -1116,7 +844,6 @@ def cmd_validate_distribution_package(args) -> int:
         errors.append("Invalid filename format")
     print()
 
-    # === 2. Checksum verification ===
     if args.checksum_file:
         print("Checksum verification:")
         checksum_path = Path(args.checksum_file)
@@ -1126,7 +853,7 @@ def cmd_validate_distribution_package(args) -> int:
         else:
             with open(checksum_path) as f:
                 content = f.read().strip()
-            # Format: "hash  filename" or just "hash"
+            # sha256sum output ("hash  filename") or a bare hash
             expected_hash = content.split()[0]
             actual_hash = compute_sha256(zip_path)
             print(f"  Expected: {expected_hash[:16]}...")
@@ -1138,13 +865,11 @@ def cmd_validate_distribution_package(args) -> int:
                 errors.append("SHA256 checksum mismatch")
         print()
 
-    # === 3-5. ZIP contents validation ===
     print("Extension contents:")
     try:
         with zipfile.ZipFile(zip_path, 'r') as zf:
             names = zf.namelist()
 
-            # Find plugin and manifest
             plugin_name = None
             manifest_name = None
             for name in names:
@@ -1167,20 +892,16 @@ def cmd_validate_distribution_package(args) -> int:
 
             print()
 
-            # === 4. Compare manifests ===
             if plugin_name and manifest_name:
                 print("Manifest consistency:")
 
-                # Extract to temp dir and validate
                 with tempfile.TemporaryDirectory() as tmpdir:
                     zf.extractall(tmpdir)
                     tmp_path = Path(tmpdir)
 
-                    # Read file manifest
                     file_manifest_path = tmp_path / manifest_name
                     file_manifest = read_manifest(file_manifest_path)
 
-                    # Read plugin manifest
                     plugin_path = tmp_path / plugin_name
                     plugin_manifest = extract_binary_manifest(plugin_path)
 
@@ -1206,7 +927,6 @@ def cmd_validate_distribution_package(args) -> int:
 
                     print()
 
-                    # === 5. Filename vs content ===
                     if filename_info and file_manifest:
                         print("Filename vs content:")
                         print(f"  Filename version:  {filename_info['version']}")
@@ -1233,7 +953,6 @@ def cmd_validate_distribution_package(args) -> int:
         errors.append("Invalid ZIP file")
         print()
 
-    # === Summary ===
     if errors:
         print(f"FAILED: {len(errors)} error(s)")
         for err in errors:
@@ -1245,12 +964,8 @@ def cmd_validate_distribution_package(args) -> int:
 
 
 def cmd_generate_release_notes(args) -> int:
-    """
-    Generate release notes scoped to a single plugin in the monorepo.
-
-    GitHub's generated release notes are repository-wide. This command keeps
-    each plugin release focused on commits that touched that plugin directory,
-    with optional shared release/build changes separated explicitly.
+    """Release notes limited to commits that touched the plugin's directory (GitHub's generated notes are
+    repository-wide); --include-shared lists shared build/runtime commits in a separate section.
     """
     script_dir = Path(__file__).parent
     root = script_dir.parent
@@ -1334,38 +1049,26 @@ def cmd_generate_release_notes(args) -> int:
 
 
 def cmd_resolve_build_scope(args) -> int:
-    """Resolve a CI matrix entry's build scope and emit GitHub Actions outputs.
+    """Resolve a CI matrix entry's build scope and print it as key=value lines for $GITHUB_OUTPUT.
 
-    Inputs:
-      --tag, --tag-type     GITHUB_REF_NAME / GITHUB_REF_TYPE
-      --os-label, --arch    matrix.os_label / matrix.arch (raw values)
+    Outputs: build_dir, build_script_args, conan_hash, scope, plugin_name, platform, skip,
+    use_release_override, needs_qt. Notices and errors go to stderr, where Actions parses
+    `::notice::` / `::error::`.
 
-    Outputs (key=value lines on stdout, redirected by the workflow into
-    $GITHUB_OUTPUT):
-      build_dir, build_script_args, conan_hash, scope, plugin_name,
-      platform, skip, use_release_override, needs_qt
-
-    Notices and errors go to stderr where Actions still parses them as
-    `::notice::` / `::error::` annotations.
-
-    A plugin whose manifest category is "widget" links Qt: it reports needs_qt=true so the workflow
-    installs the official Qt on that leg only. The host loads a widget library only when it was
-    built against the same Qt major.minor, so a widget manifest limits supported_platforms to where
-    CI installs the official Qt (linux-x86_64 and windows-x86_64).
-
-    Optional per-plugin manifest fields honoured for plugin tags:
-      supported_platforms  list of canonical "os-arch" strings (see
-                           VALID_PLATFORMS). Matrix entries whose canonical
-                           platform is not listed are skipped.
-      <plugin>/release.sh  if present and executable, supplants the default
-                           build flow. The script is responsible for both
-                           build and any tests.
+    Per-plugin inputs honoured for plugin tags:
+      supported_platforms  manifest list of canonical "os-arch" strings (VALID_PLATFORMS); other matrix
+                           entries are skipped.
+      <plugin>/release.sh  if executable, replaces the default build flow and is responsible for build and tests.
+      category "widget"    links Qt, so needs_qt=true makes the workflow install the official Qt on that leg
+                           only. The host loads a widget library only when built against the same Qt
+                           major.minor, so a widget manifest limits supported_platforms to where CI installs
+                           Qt (linux-x86_64 and windows-x86_64).
     """
     canonical_arch = PLATFORM_ARCH_MAP.get(args.arch.lower(), args.arch)
     canonical_os = PLATFORM_OS_MAP.get(args.os_label.lower(), args.os_label)
     canonical_platform = f"{canonical_os}-{canonical_arch}"
 
-    # Defaults: full repo build (matches workflow_dispatch / scheduled triggers).
+    # Defaults: full repo build (workflow_dispatch / scheduled triggers).
     build_dir = "build/all/Release"
     build_script_args = ""
     scope = "all"
@@ -1383,9 +1086,8 @@ def cmd_resolve_build_scope(args) -> int:
         build_script_args = plugin_name
         scope = f"plugin-{plugin_name}"
 
-        # supported_platforms decides early whether this matrix entry runs at
-        # all. Done first so that skipped entries don't trip on later checks
-        # (e.g. missing conanfile.py for plugins that override the build).
+        # Evaluated first so skipped entries don't trip on later checks (e.g. a missing conanfile.py
+        # for plugins that override the build).
         manifest_path = Path(plugin_name) / "manifest.json"
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text())
@@ -1399,9 +1101,7 @@ def cmd_resolve_build_scope(args) -> int:
                     file=sys.stderr,
                 )
 
-        # release.sh override takes the place of the default conan + cmake
-        # flow, so plugins that ship one are not required to also ship a
-        # conanfile.py.
+        # A release.sh override replaces the conan + cmake flow, so such plugins need no conanfile.py.
         release_script = Path(plugin_name) / "release.sh"
         if release_script.is_file() and release_script.stat().st_mode & 0o111:
             use_release_override = True
@@ -1411,8 +1111,7 @@ def cmd_resolve_build_scope(args) -> int:
                 file=sys.stderr,
             )
 
-        # Choose the source for the cache key + assert the build inputs exist.
-        # Skipped entries don't need either.
+        # Cache-key source; skipped entries need no build inputs.
         if skip:
             conan_hash_path = manifest_path if manifest_path.is_file() else Path("conanfile.py")
         elif use_release_override:
@@ -1457,11 +1156,6 @@ def cmd_resolve_build_scope(args) -> int:
     return 0
 
 
-# =============================================================================
-# CLI MAIN
-# =============================================================================
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Release tools for PlotJuggler extensions",
@@ -1470,7 +1164,6 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # verify-version-consistency
     p_verify = subparsers.add_parser(
         "verify-version-consistency",
         help="Verify that tag, manifest.json, and plugin have matching versions",
@@ -1484,7 +1177,6 @@ def main():
     p_verify.add_argument("--check-manifest", action="store_true", help="Also validate manifest.json structure")
     p_verify.set_defaults(func=cmd_verify_version_consistency)
 
-    # create-distribution-package
     p_package = subparsers.add_parser(
         "create-distribution-package",
         help="Create distribution package (extension) with plugin + manifest",
@@ -1500,7 +1192,6 @@ def main():
     p_package.add_argument("--arch", help="Architecture for ZIP filename (x86_64, arm64, etc.)")
     p_package.set_defaults(func=cmd_create_distribution_package)
 
-    # extract-embedded-manifest
     p_extract = subparsers.add_parser(
         "extract-embedded-manifest",
         help="Extract and display the manifest embedded in a compiled plugin",
@@ -1510,7 +1201,6 @@ def main():
     p_extract.add_argument("plugin", help="Path to compiled plugin (.so/.dll/.dylib)")
     p_extract.set_defaults(func=cmd_extract_embedded_manifest)
 
-    # validate-manifest
     p_validate = subparsers.add_parser(
         "validate-manifest",
         help="Validate manifest.json structure and required fields",
@@ -1520,7 +1210,6 @@ def main():
     p_validate.add_argument("manifest", help="Path to manifest.json file")
     p_validate.set_defaults(func=cmd_validate_manifest)
 
-    # validate-distribution-package
     p_validate_pkg = subparsers.add_parser(
         "validate-distribution-package",
         help="Validate a distribution ZIP package (extension) completely",
@@ -1532,7 +1221,6 @@ def main():
     p_validate_pkg.add_argument("--checksum-file", help="Path to .sha256 checksum file")
     p_validate_pkg.set_defaults(func=cmd_validate_distribution_package)
 
-    # generate-release-notes
     p_notes = subparsers.add_parser(
         "generate-release-notes",
         help="Generate plugin-scoped release notes for a monorepo tag",
@@ -1545,7 +1233,6 @@ def main():
     p_notes.add_argument("--include-shared", action="store_true", help="Also include shared build/runtime commits in a separate section")
     p_notes.set_defaults(func=cmd_generate_release_notes)
 
-    # resolve-build-scope (CI helper)
     p_scope = subparsers.add_parser(
         "resolve-build-scope",
         help="Resolve a CI matrix entry into GitHub Actions outputs",

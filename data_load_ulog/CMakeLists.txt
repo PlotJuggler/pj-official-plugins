@@ -8,18 +8,16 @@ CPMAddPackage(
   URL https://github.com/PX4/ulog_cpp/archive/refs/tags/v1.1.0.zip
 )
 
-# Ensure ulog_cpp is statically linked into the plugin .so.
+# ulog_cpp is linked statically into the plugin .so.
 set_target_properties(ulog_cpp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# Mark ulog_cpp include dirs as SYSTEM to suppress -Werror on
-# third-party headers.
+# SYSTEM include dirs keep -Werror off ulog_cpp's headers.
 get_target_property(_ulog_includes ulog_cpp INTERFACE_INCLUDE_DIRECTORIES)
 if(_ulog_includes)
   set_target_properties(ulog_cpp PROPERTIES
     INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_ulog_includes}")
 endif()
 
-# --- Plugin shared library ---
 add_library(ulog_source_plugin SHARED ulog_source.cpp ulog_container.cpp)
 target_compile_features(ulog_source_plugin PRIVATE cxx_std_20)
 target_compile_options(ulog_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -34,14 +32,12 @@ pj_embed_manifest(ulog_source_plugin
   VAR_NAME kUlogManifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+# Sidecar .pjmanifest.json (manifest.json + abi_major + family) the host scans before dlopen.
 pj_emit_plugin_manifest(ulog_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Integration test ---
 add_executable(ulog_source_test tests/ulog_source_test.cpp ulog_container.cpp)
 target_compile_features(ulog_source_test PRIVATE cxx_std_20)
 target_compile_options(ulog_source_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -58,7 +54,7 @@ target_link_libraries(ulog_source_test PRIVATE
 add_dependencies(ulog_source_test ulog_source_plugin)
 add_test(NAME ulog_source_test COMMAND ulog_source_test)
 
-# --- Import benchmark (not a test: run it by hand, see README) ---
+# Not a test: run it by hand (see README).
 add_executable(ulog_import_bench benchmarks/ulog_import_bench.cpp)
 target_compile_features(ulog_import_bench PRIVATE cxx_std_20)
 target_compile_options(ulog_import_bench PRIVATE ${PJ_WARNING_FLAGS})

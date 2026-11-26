@@ -21,31 +21,23 @@
 namespace assistant_agent {
 
 namespace {
-// Persisted settings keys (pj.settings.v1). Namespaced so they never collide
-// with another toolbox's keys in the shared store.
+// Persisted settings keys (pj.settings.v1), namespaced so they never collide with another
+// toolbox's keys in the shared store.
 constexpr const char* kKeyBackend = "assistant.backend";  // "claude" or "codex"
-// Character budget for the catalog digest handed to the model at the top of
-// every turn (catalogDigest, catalog_digest.hpp). Same default as
-// catalogDigest's own parameter default, so an absent key is byte-identical
-// to the pre-existing behaviour; clamped in resolveCatalogBudgetChars so a
-// stray value in the settings store cannot blow the digest up unbounded or
-// shrink it to nothing.
+// Catalog digest budget (catalogDigest); the default equals catalogDigest's own, and
+// resolveCatalogBudgetChars clamps so a stray stored value cannot blow it up or shrink it to nothing.
 constexpr const char* kKeyCatalogBudgetChars = "assistant.catalog_budget_chars";
 constexpr int kDefaultCatalogBudgetChars = 10000;
 constexpr int kMinCatalogBudgetChars = 1000;
 constexpr int kMaxCatalogBudgetChars = 200000;
-// The same for the "PlotJuggler features" block (featuresBlock,
-// features_digest.hpp), whose default is featuresDigest's own.
+// Same for the "PlotJuggler features" block, whose default is featuresDigest's own.
 constexpr const char* kKeyFeaturesBudgetChars = "assistant.features_budget_chars";
 constexpr int kMaxFeaturesBudgetChars = 200000;
 
-// One row per backend this build knows about: its settings key, the
-// backendCombo index it fills, the settings keys/defaults for its
-// model/cli-path fields, and two function pointers -- `make` builds the
-// backend object (rebuildBackend()'s job) and `models` lists what it offers
-// in the settings combo (the Settings code's job) -- so neither has to switch
-// on `key` or spin up a throwaway instance to reach a virtual. Widget names
-// are not stored here; see widgetName() below.
+// One row per backend: its settings key, the backendCombo index it fills, the settings
+// keys/defaults of its model/cli-path fields, and two function pointers: `make` builds the
+// backend (rebuildBackend()) and `models` lists its combo entries, so neither needs a switch on
+// `key` or a throwaway instance. Widget names are derived by widgetName().
 struct BackendSpec {
   const char* key;
   int combo_index;
@@ -67,30 +59,24 @@ std::shared_ptr<LlmBackend> makeCodexBackend(
 }
 
 constexpr BackendSpec kBackends[] = {
-    // Leaving this blank would pass no --model and get the CLI's own default,
-    // which is the slowest tier for no measurable gain: `sonnet` matches the
-    // fastest tier on turn time (10.1 s vs 10.4 s median) and was the only
-    // tier with no miss in the 240-cell study. A user who
-    // deliberately clears the field still gets the CLI default, because an
-    // empty stored value is returned as-is rather than falling back to this.
+    // A blank default would pass no --model and get the CLI's own default, the slowest tier for no
+    // measurable gain: `sonnet` matches the fastest tier on turn time and was the only tier with
+    // no miss in the 240-cell study. A user who clears the field still gets the CLI default, since
+    // an empty stored value is returned as-is.
     {"claude", 0, "assistant.claude.model", "assistant.claude.cli_path", "sonnet", "claude", &makeClaudeBackend,
      &ClaudeBackend::listModels},
-    // Codex has had no equivalent benchmark run yet, so an empty default just
-    // means "whatever `codex exec` picks on its own" rather than a measured pick.
+    // No benchmark pick for Codex: empty means whatever `codex exec` chooses.
     {"codex", 1, "assistant.codex.model", "assistant.codex.cli_path", "", "codex", &makeCodexBackend,
      &CodexBackend::listModels},
 };
 
-// A BackendSpec field's widget name, e.g. widgetName(kBackends[0], "ModelCombo")
-// == "claudeModelCombo" (ui/assistant_settings.ui). Derived from `key` instead
-// of stored per-field: the field never has to be told twice which backend it
-// belongs to.
+// A BackendSpec field's widget name, e.g. widgetName(kBackends[0], "ModelCombo") ==
+// "claudeModelCombo" (ui/assistant_settings.ui).
 std::string widgetName(const BackendSpec& spec, const char* suffix) {
   return std::string(spec.key) + suffix;
 }
 
-// The spec whose key/combo_index matches, or nullptr for a choice this build
-// has never heard of.
+// nullptr for a choice this build does not know.
 const BackendSpec* backendByKey(std::string_view key) {
   for (const BackendSpec& spec : kBackends) {
     if (key == spec.key) {
@@ -109,38 +95,30 @@ const BackendSpec* backendByIndex(int index) {
   return nullptr;
 }
 
-// The name a row shows: the user's custom name (assistant.conv.<key>.titles,
-// conversation_state.hpp) if one is set, else the harness's own title.
+// The user's custom name (conversation_state.hpp) if set, else the harness's title.
 std::string displayTitle(const ConversationSummary& c, const ConversationTitles& titles) {
   const auto it = titles.find(c.id);
   return it != titles.end() ? it->second : c.title;
 }
 
-// A drawer row's text. The date suffix is what keeps two same-titled
-// conversations apart under the host's text-keyed list protocol
-// (setSelectedItems / onSelectionChanged match by TEXT, not by row or id).
+// A drawer row's text. The date suffix keeps two same-titled conversations apart under the
+// host's text-keyed list protocol (setSelectedItems / onSelectionChanged match by TEXT).
 std::string listText(const ConversationSummary& c, const ConversationTitles& titles) {
   return displayTitle(c, titles) + " · " + formatShortDate(c.last_ts);
 }
 
-// True for an empty or whitespace-only rename: the house behavior elsewhere
-// in PlotJuggler is that clearing a name resets it, not that it stores "".
+// An empty or whitespace-only rename resets the name rather than storing "".
 bool isBlank(const std::string& s) {
   return std::all_of(s.begin(), s.end(), [](unsigned char ch) { return std::isspace(ch) != 0; });
 }
 
-// Which backend key a persisted `assistant.backend` value resolves to —
-// shared by rebuildBackend() (which needs it to build the right object) and
-// loadPersistedConversation() (which needs it BEFORE a backend exists, to
-// know which `assistant.conv.<key>.session_id` to read). "echo" for a choice
-// this build has never heard of: the harmless fallback backend has no store
-// of its own, so its "memory" is simply never resumed into.
+// The backend key a persisted `assistant.backend` value resolves to; "echo" for an unknown
+// choice (no store of its own, so its memory is never resumed into).
 std::string resolveBackendKey(const SettingsStore& store) {
   const std::string choice = store.getString(kKeyBackend, "claude");
   return backendByKey(choice) ? choice : "echo";
 }
 
-// An integer setting, `def` when absent or unparsable, clamped to [lo, hi].
 int clampedSetting(const SettingsStore& store, const char* key, int def, int lo, int hi) {
   return std::clamp(store.getInt(key, def), lo, hi);
 }
@@ -163,9 +141,8 @@ AssistantDialog::AssistantDialog() {
 }
 
 AssistantDialog::~AssistantDialog() {
-  // Ask the backend to abort any in-flight turn first — the worker may be
-  // blocked inside a long HTTP post or subprocess wait, and join() below
-  // would otherwise stall teardown until it finishes on its own.
+  // Abort an in-flight turn first: the worker may be blocked in a subprocess wait, and join()
+  // would stall teardown until it finished.
   if (backend_) {
     backend_->cancel();
   }
@@ -190,12 +167,10 @@ std::shared_ptr<HarnessMemory> AssistantDialog::memoryFor(const std::string& key
 }
 
 bool AssistantDialog::rebuildBackend() {
-  // Never mid-turn: the incoming and outgoing backends share the conversation
-  // memory, and the worker may be writing a session id into it right now. The
-  // Settings button is already disabled while busy, so in practice this only
-  // catches a host-driven setSettings() landing during a turn. Deferred here,
-  // this reports no change (false); onTick applies the real rebuild once the
-  // turn ends and acts on THAT call's return value instead.
+  // Never mid-turn: the incoming and outgoing backends share the conversation memory, which the
+  // worker may be writing a session id into. The Settings button is disabled while busy, so this
+  // only catches a host-driven setSettings() during a turn. Deferred, it returns false; onTick
+  // applies the rebuild after the turn and acts on that call's return value.
   {
     std::lock_guard<std::mutex> lock(state_.mu);
     if (state_.session.busy()) {
@@ -207,12 +182,8 @@ bool AssistantDialog::rebuildBackend() {
 
   const std::string previous_key = active_backend_key_;
 
-  // The persisted 'assistant.backend' choice selects the backend: "claude" or
-  // "codex" each get their own conversation memory (memoryFor), so switching
-  // between them never touches the other's; a choice this build has never
-  // heard of falls back to the harmless echo backend, visibly labeled. (A
-  // store still saying "ollama" was migrated when the settings view was bound
-  // — see setSettings.)
+  // "claude" and "codex" each get their own conversation memory (memoryFor); an unknown choice
+  // falls back to the visibly labeled echo backend.
   SettingsStore store(settings_);
   active_backend_key_ = resolveBackendKey(store);
   if (const BackendSpec* spec = backendByKey(active_backend_key_)) {
@@ -231,31 +202,26 @@ bool AssistantDialog::rebuildBackend() {
 void AssistantDialog::startNewConversation() {
   std::lock_guard<std::mutex> lock(state_.mu);
   if (state_.session.busy()) {
-    return;  // the button is disabled while busy; this is the belt to that brace
+    return;  // the button is disabled while busy
   }
   state_.session.clear();
   state_.usage.reset();
-  // Clearing in place is what makes this work for whichever backend is live:
-  // it reads its memory through the pointer the dialog still holds. Only the
-  // ACTIVE key's memory is touched — the other backend's last conversation is
-  // none of "New chat"'s business.
+  // Cleared in place: the live backend reads its memory through the pointer the dialog holds.
+  // Only the ACTIVE key's memory is touched.
   *memoryFor(active_backend_key_) = HarnessMemory{};
   state_.active_conversation_id.clear();
-  // The persisted pointer goes too: New chat is the one gesture that frees
-  // the user from the past, and a reopen must not resume it. Nothing is
-  // deleted on disk — the old conversation stays in the harness's store and
-  // the drawer, just no longer active.
+  // The persisted id goes too, so a reopen does not resume it. Nothing is deleted on disk.
   SettingsStore store(settings_);
   clearActiveSessionId(store, active_backend_key_);
   state_.transcript_dirty = true;
   state_.controls_dirty = true;
-  state_.drawer_dirty = true;  // the active row changes; the drawer itself stays as it is
+  state_.drawer_dirty = true;
 }
 
 bool AssistantDialog::switchToConversation(const std::string& id) {
   const std::vector<ChatMessage> transcript = backend_ ? backend_->loadTranscript(id) : std::vector<ChatMessage>{};
   if (transcript.empty()) {
-    return false;  // nothing under this id -- purged, or a stale drawer row
+    return false;  // purged, or a stale drawer row
   }
 
   std::lock_guard<std::mutex> lock(state_.mu);
@@ -267,9 +233,7 @@ bool AssistantDialog::switchToConversation(const std::string& id) {
         state_.session.addUser(m.text);
         break;
       case ChatMessage::Role::Assistant:
-        // appendAssistant, not addAssistant: merges consecutive blocks into
-        // one row exactly like a live streamed reply does, so this renders
-        // identically to how the turn looked when it happened.
+        // appendAssistant merges consecutive blocks into one row, like a live streamed reply.
         state_.session.appendAssistant(m.text);
         break;
       case ChatMessage::Role::Tool:
@@ -280,24 +244,20 @@ bool AssistantDialog::switchToConversation(const std::string& id) {
         break;
     }
   }
-  // Visible seam between then and now — the model's memory comes back through
-  // --resume regardless; this keeps the user able to SEE that it did.
+  // The model's memory returns through --resume regardless; this lets the user SEE the seam.
   state_.session.addSystem("resumed previous conversation");
 
   const std::shared_ptr<HarnessMemory> memory = memoryFor(active_backend_key_);
   *memory = HarnessMemory{};
   memory->session_id = id;
-  // Forces composePayload to re-send the catalog with the resume note on the
-  // next turn: the loaded layout and current owned-tab set may differ from the
-  // state in this transcript, while --resume still replays that earlier state.
+  // Makes composePayload re-send the catalog with the resume note: the loaded layout and owned
+  // tabs may differ from this transcript, while --resume replays the earlier state.
   memory->resumed_pending = true;
 
   state_.active_conversation_id = id;
   SettingsStore store(settings_);
   saveActiveSessionId(store, id, active_backend_key_);
 
-  // The drawer stays open: it is a sidebar the user browses, not a menu that
-  // dismisses itself once picked from.
   state_.drawer_dirty = true;
   state_.transcript_dirty = true;
   state_.controls_dirty = true;
@@ -305,9 +265,8 @@ bool AssistantDialog::switchToConversation(const std::string& id) {
 }
 
 void AssistantDialog::loadPersistedConversation() {
-  // rebuildBackend() must already have run against these same settings — a
-  // persisted Codex id needs to be loaded THROUGH a CodexBackend, not the
-  // ctor's default ClaudeBackend (backend_ built against an unbound store).
+  // rebuildBackend() must already have run against these settings: a persisted Codex id has to
+  // load THROUGH a CodexBackend, not the ctor's default ClaudeBackend.
   activateBackendConversation();
 }
 
@@ -315,19 +274,14 @@ void AssistantDialog::activateBackendConversation() {
   SettingsStore store(settings_);
   const std::string id = loadActiveSessionId(store, active_backend_key_);
   if (id.empty() || !switchToConversation(id)) {
-    // Nothing was persisted for this backend, or it was purged since the last
-    // time it was active either way, there is no --resume target to dangle.
+    // Nothing persisted, or purged since: leave no dangling --resume target.
     clearActiveSessionId(store, active_backend_key_);
     std::lock_guard<std::mutex> lock(state_.mu);
     state_.session.clear();
     state_.usage.reset();
     state_.active_conversation_id.clear();
   }
-  // switchToConversation() on success already sets transcript/controls dirty,
-  // but setting them again here is free, and it is what covers the
-  // blank-reset branch above too -- every path through this function leaves
-  // the panel showing exactly what is now active. The drawer's listing is
-  // always visible now, so it is always refreshed here too.
+  // Also covers the blank-reset branch: every path leaves the panel showing what is now active.
   std::lock_guard<std::mutex> lock(state_.mu);
   refreshConversationsLocked();
   state_.drawer_dirty = true;
@@ -342,8 +296,7 @@ void AssistantDialog::refreshConversationsLocked() {
   for (const ConversationSummary& c : state_.conversations) {
     ids.push_back(c.id);
   }
-  // Prune first, then reload: a rename whose conversation just fell out of
-  // this same listing must not still show up in conversation_titles below.
+  // Prune before reloading, so a rename whose conversation just fell out of this listing is gone.
   SettingsStore store(settings_);
   pruneConversationTitles(store, active_backend_key_, ids);
   state_.conversation_titles = loadConversationTitles(store, active_backend_key_);
@@ -400,19 +353,17 @@ void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
   settings_ = settings;
   if (!conversation_loaded_) {
     conversation_loaded_ = true;
-    // First bind is the one moment the store is both readable and fresh:
-    // migrate an Ollama-era store before anything reads the backend choice.
+    // First bind: the store is readable, so retire Ollama-era keys before anything reads the
+    // backend choice.
     SettingsStore store(settings_);
     if (store.getString(kKeyBackend, "") == "ollama") {
       store.setString(kKeyBackend, "claude");
     }
     scrubRetiredOllamaKeys(store);
     scrubLegacyConversationKeys(store);
-    // rebuildBackend() FIRST: the ctor already built a default ClaudeBackend
-    // against an unbound settings view, but a persisted choice of "codex"
-    // needs its conversation loaded THROUGH a CodexBackend (loadTranscript
-    // reads a different store) — loadPersistedConversation() below relies on
-    // active_backend_key_ already reflecting the real, bound settings.
+    // rebuildBackend() FIRST: the ctor built a default ClaudeBackend against an unbound view, but
+    // a persisted "codex" conversation must load THROUGH a CodexBackend (a different store);
+    // loadPersistedConversation() relies on active_backend_key_ reflecting the bound settings.
     rebuildBackend();
     loadPersistedConversation();
     return;
@@ -422,27 +373,21 @@ void AssistantDialog::setSettings(PJ::sdk::SettingsView settings) {
 
 std::string AssistantDialog::widget_data() {
   std::lock_guard<std::mutex> lock(state_.mu);
-  // Steady state of an open panel: nothing changed, so skip building +
-  // serializing a WidgetData 20x/sec — the host treats an empty return as
-  // "no update".
+  // Steady state: skip building a WidgetData 20x/sec; the host treats an empty return as "no update".
   if (!state_.transcript_dirty && !state_.controls_dirty && !state_.clear_input_pending &&
       !state_.open_settings_pending && !state_.open_rename_pending && !state_.drawer_dirty &&
       !state_.header_icons_pending) {
     return {};
   }
-  // SubDialogKind's backstop: a Cancel on either sub-dialog never fires
-  // subDialogAccepted, so nothing else clears open_sub_dialog. The moment
-  // THIS render has no fresh request of its own, whatever it was pointing at
-  // is stale.
+  // SubDialogKind's backstop: a Cancel never fires subDialogAccepted, so a render with no fresh
+  // request means open_sub_dialog is stale.
   if (!state_.open_settings_pending && !state_.open_rename_pending) {
     state_.open_sub_dialog = SubDialogKind::None;
   }
   PJ::WidgetData wd;
 
-  // Every widget-data object that names "conversationList" must also carry
-  // list_deletable, or the host turns the trash/elision delegate off for that
-  // payload (widget_data.hpp: "re-send on every build") -- both blocks below
-  // that touch this widget route through here instead of repeating the flag.
+  // Every payload naming "conversationList" must also carry list_deletable, or the host turns the
+  // trash/elision delegate off for that payload (widget_data.hpp: "re-send on every build").
   const auto nameConversationList = [&wd](bool busy) {
     wd.setEnabled("conversationList", !busy);
     wd.setListItemsDeletable("conversationList", true);
@@ -455,27 +400,22 @@ std::string AssistantDialog::widget_data() {
 
   if (state_.controls_dirty) {
     const bool busy = state_.session.busy();
-    // The turn state, which backend answers, then what the last turn moved
-    // (summary() is "" when there is nothing to report): one line of status,
-    // since the header row above it is host chrome now.
+    // Turn state, answering backend, then the last turn's usage (summary() may be "").
     wd.setLabel(
         "statusLabel", state_.session.statusText() + "  \xc2\xb7  " + state_.backend_name + state_.usage.summary());
     wd.setEnabled("inputEdit", !busy);
     wd.setEnabled("sendButton", !busy);
     wd.setEnabled("cancelButton", busy);
-    // A mid-turn backend rebuild would strand the in-flight turn on the old
-    // backend (kept alive by the worker's reference) — just don't offer it.
+    // A mid-turn backend rebuild would strand the turn on the old backend.
     wd.setEnabled("settingsButton", !busy);
-    // Same reason, plus: wiping the conversation memory under a running turn
-    // would have the backend resume a session it just forgot.
+    // Also: wiping the memory under a running turn would resume a session it just forgot.
     wd.setEnabled("newChatButton", !busy);
     nameConversationList(busy);
     state_.controls_dirty = false;
   }
 
   if (state_.header_icons_pending) {
-    // A static per-panel glyph; no reason to resend on every build like the
-    // per-turn state above.
+    // Static glyph; not resent on every build.
     wd.setButtonIconNamed("newChatButton", "add");
     state_.header_icons_pending = false;
   }
@@ -503,15 +443,14 @@ std::string AssistantDialog::widget_data() {
   if (state_.open_settings_pending) {
     state_.open_settings_pending = false;
     state_.open_sub_dialog = SubDialogKind::Settings;
-    // Pre-fill the modal from persisted settings before showing it.
+    // Pre-fill the modal from persisted settings.
     SettingsStore store(settings_);
     const BackendSpec* stored_spec = backendByKey(store.getString(kKeyBackend, "claude"));
     wd.setCurrentIndex("backendCombo", stored_spec ? stored_spec->combo_index : 0);
     for (const BackendSpec& spec : kBackends) {
       wd.setText(widgetName(spec, "CliPathEdit"), store.getString(spec.cli_key, spec.default_cli));
 
-      // Model combo: "CLI default", "Custom...", then this backend's own
-      // models() -- ModelPicker owns the index<->value mapping both ways.
+      // ModelPicker owns the combo's index<->value mapping both ways.
       const ModelPicker picker(spec.models());
       const std::string model_combo = widgetName(spec, "ModelCombo");
       wd.setItems(model_combo, picker.items());
@@ -538,18 +477,15 @@ bool AssistantDialog::onTextChanged(std::string_view widget_name, std::string_vi
   std::lock_guard<std::mutex> lock(state_.mu);
   if (widget_name == "inputEdit") {
     state_.input_text = std::string(text);
-    return false;  // no re-render; the widget already shows the text
+    return false;  // the widget already shows the text
   }
   if (widget_name == "renameEdit") {
-    // Staged exactly like a settings field: the host harvests this box's
-    // current text on accept regardless of whether the user typed anything,
-    // so this always lands before subDialogAccepted fires.
+    // Staged like a settings field: the host harvests this box's text on accept even if untouched,
+    // so it always lands before subDialogAccepted.
     state_.pending_rename_text = std::string(text);
     return false;
   }
-  // Settings sub-dialog inputs: stage the value under its settings key; commit
-  // on subDialogAccepted. Widget names derived from each BackendSpec's key
-  // (widgetName()) instead of a hand-written table.
+  // Settings sub-dialog inputs: staged under their settings key, committed on subDialogAccepted.
   for (const BackendSpec& spec : kBackends) {
     if (widget_name == widgetName(spec, "ModelEdit")) {
       state_.pending_text[spec.model_key] = std::string(text);
@@ -566,20 +502,15 @@ bool AssistantDialog::onTextChanged(std::string_view widget_name, std::string_vi
 bool AssistantDialog::onIndexChanged(std::string_view widget_name, int index) {
   std::lock_guard<std::mutex> lock(state_.mu);
   if (widget_name == "backendCombo") {
-    // Stage only; commitSettings() persists it under kKeyBackend. "Claude Code
-    // (subscription)" is combo index 0, "Codex (ChatGPT subscription)" is 1
-    // (ui/assistant_settings.ui) — an index this build has never heard of
-    // falls back to "claude" rather than staging a value nothing downstream
-    // understands.
+    // Staged only; commitSettings() persists it. Combo index 0 is Claude Code, 1 is Codex
+    // (ui/assistant_settings.ui); an unknown index falls back to "claude".
     const BackendSpec* spec = backendByIndex(index);
     state_.pending_backend = spec ? spec->key : "claude";
     return false;
   }
-  // A model combo. The host harvests every QLineEdit before any QComboBox on
-  // accept, so onTextChanged(model_edit, ...) has already staged whatever
-  // that box currently shows into pending_text[model_key] by the time this
-  // runs — which is exactly what "Custom..." (ModelPicker::valueForIndex
-  // returning nullopt) wants persisted, so that case below leaves it alone.
+  // A model combo. The host harvests every QLineEdit before any QComboBox on accept, so
+  // onTextChanged(model_edit, ...) has already staged the box's text into pending_text[model_key];
+  // "Custom..." (valueForIndex returning nullopt) wants exactly that, so it is left alone.
   for (const BackendSpec& spec : kBackends) {
     if (widget_name != widgetName(spec, "ModelCombo")) {
       continue;
@@ -599,11 +530,9 @@ bool AssistantDialog::onClicked(std::string_view widget_name) {
     return true;
   }
   if (widget_name == "cancelButton") {
-    // Stops the CLI, then gives the endpoint back: PlotJuggler revokes its
-    // token, which stops what the CLI left running there (an import or an
-    // evaluation that had gone to the background would otherwise carry on with
-    // nobody waiting for it). The next turn acquires a new endpoint. The turn
-    // holds its own copy of the old one, so the worker shares nothing with this.
+    // Stops the CLI, then releases the endpoint: PlotJuggler revokes its token, which stops
+    // anything the CLI left running there (a backgrounded import or evaluation). The next turn
+    // acquires a new endpoint; the turn holds its own copy, so the worker shares nothing with this.
     if (backend_) {
       backend_->cancel();
     }
@@ -622,10 +551,8 @@ bool AssistantDialog::onClicked(std::string_view widget_name) {
     return true;
   }
   if (widget_name == "subDialogAccepted") {
-    // Exactly one sub-dialog can be open at a time, and PanelEngine fires this
-    // same synthetic click for whichever one the user just accepted (host
-    // side: panel_engine.cpp) -- route by what widget_data() last requested,
-    // not by guessing from which fields happen to be staged.
+    // One sub-dialog is open at a time and PanelEngine fires this same synthetic click for either;
+    // route by what widget_data() last requested, not by which fields are staged.
     SubDialogKind kind;
     {
       std::lock_guard<std::mutex> lock(state_.mu);
@@ -635,8 +562,7 @@ bool AssistantDialog::onClicked(std::string_view widget_name) {
     if (kind == SubDialogKind::Rename) {
       commitRename();
     } else {
-      // Settings, or (should never happen) None -- the safe default is the
-      // one every build before this one always did.
+      // Settings, or None (should not happen).
       commitSettings();
     }
     return true;
@@ -656,7 +582,7 @@ bool AssistantDialog::onSelectionChanged(std::string_view widget_name, const std
     }
     id = idForListTextLocked(selected.front());
     if (id.empty() || id == state_.active_conversation_id) {
-      return false;  // re-selecting the active row, or a row that raced with a delete
+      return false;  // the active row again, or a row that raced with a delete
     }
   }
   // Unlocked: switchToConversation takes state_.mu itself (non-recursive).
@@ -673,7 +599,7 @@ bool AssistantDialog::onItemDeleteRequested(std::string_view widget_name, int in
   {
     std::lock_guard<std::mutex> lock(state_.mu);
     if (state_.session.busy()) {
-      return false;  // the list is disabled while busy; this is the belt to that brace
+      return false;  // the list is disabled while busy
     }
     if (index < 0 || static_cast<std::size_t>(index) >= state_.conversations.size()) {
       return false;
@@ -690,8 +616,7 @@ bool AssistantDialog::onItemDeleteRequested(std::string_view widget_name, int in
     state_.drawer_dirty = true;
   }
   if (was_active) {
-    // New chat, not a blank dead-end: startNewConversation also clears the
-    // active id and the in-memory session/memory.
+    // Not a blank dead end: also clears the active id and the in-memory session/memory.
     startNewConversation();
   }
   return true;
@@ -703,7 +628,7 @@ bool AssistantDialog::onItemContextAction(std::string_view widget_name, int inde
   }
   std::lock_guard<std::mutex> lock(state_.mu);
   if (state_.session.busy()) {
-    return false;  // the list is disabled while busy; this is the belt to that brace
+    return false;  // the list is disabled while busy
   }
   if (index < 0 || static_cast<std::size_t>(index) >= state_.conversations.size()) {
     return false;  // a stale row index racing a delete
@@ -717,8 +642,7 @@ bool AssistantDialog::onItemContextAction(std::string_view widget_name, int inde
 }
 
 bool AssistantDialog::onTick() {
-  // Worker-posted event closures — each mutates state_ and sets dirty flags,
-  // so they run here, on the GUI thread.
+  // Worker-posted closures mutate state_ and set dirty flags, so they run here on the GUI thread.
   std::deque<std::function<void()>> batch;
   {
     std::lock_guard<std::mutex> lock(evt_mu_);
@@ -728,19 +652,16 @@ bool AssistantDialog::onTick() {
     fn();
   }
 
-  // A backend rebuild that had to wait for the turn to finish. The flag is read
-  // under the lock, but rebuildBackend() is called outside it: it takes the same
-  // non-recursive mutex, and it re-checks busy() and clears the flag itself.
+  // A rebuild deferred until the turn ended. Read under the lock, but rebuildBackend() runs
+  // outside it: it takes the same non-recursive mutex and re-checks busy() itself.
   bool rebuild = false;
   {
     std::lock_guard<std::mutex> lock(state_.mu);
     rebuild = state_.rebuild_pending && !state_.session.busy();
   }
   if (rebuild) {
-    // This is the other half of commitSettings()'s own call: a Settings
-    // commit that landed mid-turn defers rebuildBackend() (see its doc
-    // comment), so the backend switch — and the conversation switch that
-    // goes with it — only actually happens here, once the turn is over.
+    // The other half of commitSettings()'s call: a commit mid-turn defers the backend switch (and
+    // its conversation switch) to here.
     if (rebuildBackend()) {
       activateBackendConversation();
     }
@@ -768,31 +689,21 @@ void AssistantDialog::sendCurrentInput() {
     state_.controls_dirty = true;
   }
 
-  // Hand the turn to the worker thread. The sink marshals every backend event
-  // back to the GUI thread via the event queue. The lambda captures its OWN
-  // backend reference (still on the GUI thread here): a mid-turn Settings
-  // commit may swap backend_, and the captured reference keeps the in-flight
-  // object alive for the whole turn.
-  // Snapshot what is loaded here, on the GUI thread, where the host view is
-  // legal to touch — the worker cannot call host services itself. Rebuilt every
-  // turn rather than cached, so that loading another file or starting a stream
-  // is reflected; it is host metadata, so the scan is cheap. The backend
-  // decides whether this turn actually needs to carry it. The budget is read
-  // from settings fresh every turn too (not cached), so a value written to the
-  // conf before the app starts takes effect without a rebuild.
+  // The worker cannot call host services, so everything host-side is snapshotted here on the GUI
+  // thread. The catalog is rebuilt every turn (cheap host metadata) so a newly loaded file or
+  // stream shows up; the backend decides whether this turn carries it. The budget is also read
+  // fresh each turn.
   TurnTools tools;
   if (toolbox_host_.valid()) {
     const SettingsStore store(settings_);
     tools.catalog =
         catalogDigest(toolbox_host_, static_cast<std::size_t>(resolveCatalogBudgetChars(store)), playback_host_);
   }
-  // What PlotJuggler offers, from the same GUI-thread snapshot point and for
-  // the same reason; rebuilt every turn too, so enabling or installing a
-  // plugin shows up (its own hash decides whether it is re-sent).
+  // Rebuilt every turn too, so an enabled or installed plugin shows up (its own hash decides
+  // whether it is re-sent).
   tools.features = featuresForTurn();
-  // Acquired here because the host service is main-thread only; while held,
-  // the host hands back the same endpoint. A failure is not ours to report:
-  // the backend fails the turn with it, in the chat.
+  // Acquired here because the host service is main-thread only. A failure is passed on: the
+  // backend fails the turn with it, in the chat.
   tools.mcp = PJ::unexpected("it offers no MCP endpoint to plugins.");
   if (mcp_host_.valid()) {
     tools.mcp = mcp_host_.acquire();
@@ -818,7 +729,7 @@ void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
   std::lock_guard<std::mutex> lock(state_.mu);
   switch (ev.kind) {
     case BackendEvent::Kind::AssistantText:
-      // Append, don't add: a streaming backend sends one reply as many chunks.
+      // Append, not add: a streaming backend sends one reply as many chunks.
       state_.session.appendAssistant(ev.text);
       state_.transcript_dirty = true;
       break;
@@ -831,27 +742,21 @@ void AssistantDialog::applyBackendEvent(const BackendEvent& ev) {
     case BackendEvent::Kind::Error:
       state_.session.addSystem("Error: " + ev.text);
       if (ev.resume_failed) {
-        // The backend established that --resume itself failed (the session
-        // was purged between listing it and this turn): say the one thing the
-        // error text does not — retrying will not help. The transcript stays
-        // readable; New chat is the way forward.
+        // --resume itself failed (session purged between listing and this turn): say what the error
+        // text does not, that retrying will not help.
         state_.session.addSystem("This conversation can no longer be continued; start a new one.");
       }
       state_.transcript_dirty = true;
       break;
     case BackendEvent::Kind::Metrics:
-      // No repaint of its own: TurnComplete follows immediately and its
-      // controls_dirty is what re-renders the status label.
+      // No repaint of its own: TurnComplete follows and re-renders the status label.
       state_.usage.record(ev.metrics);
       break;
     case BackendEvent::Kind::TurnComplete: {
       state_.session.setState(TurnState::Idle);
       state_.controls_dirty = true;
-      // Persist the active session id once it actually changes — a brand-new
-      // conversation gets its id here for the first time; a resumed one
-      // already has it saved, so this is then a no-op read. Always the
-      // memory for the backend that actually ran this turn (active_backend_key_
-      // cannot have changed mid-turn: rebuildBackend() defers itself while busy).
+      // Persist the session id once it changes (a new conversation gets its id here). Always the
+      // memory of the backend that ran this turn: active_backend_key_ cannot change mid-turn.
       const std::shared_ptr<HarnessMemory> memory = memoryFor(active_backend_key_);
       if (!memory->session_id.empty() && memory->session_id != state_.active_conversation_id) {
         state_.active_conversation_id = memory->session_id;
@@ -870,8 +775,6 @@ void AssistantDialog::commitSettings() {
   std::string backend;
   {
     std::lock_guard<std::mutex> lock(state_.mu);
-    // Persist each staged text edit and clear the map for the next time the
-    // modal opens.
     for (const auto& [key, value] : state_.pending_text) {
       store.setString(key, value);
     }
@@ -883,12 +786,9 @@ void AssistantDialog::commitSettings() {
     backend = store.getString(kKeyBackend, "claude");
   }
 
-  // Re-derive the header label + active backend from the freshly persisted
-  // choice. If a turn is in flight, rebuildBackend() defers itself and
-  // returns false (see its doc comment) — onTick applies the deferred
-  // rebuild and this same activation once the turn is over. Before the
-  // "Settings saved" note, so that note lands in the transcript it is about
-  // (the backend just switched TO), not the one just left.
+  // Before the "Settings saved" note, so it lands in the transcript of the backend just switched
+  // TO. If a turn is in flight rebuildBackend() defers and returns false; onTick then applies the
+  // rebuild and this activation.
   if (rebuildBackend()) {
     activateBackendConversation();
   }
@@ -899,9 +799,8 @@ void AssistantDialog::commitSettings() {
     state_.transcript_dirty = true;
   }
 
-  // Probe the new backend off the GUI thread and report the result. Capture a
-  // reference (still on the GUI thread here) so a subsequent rebuild can't
-  // swap the object out from under the probe.
+  // Probe off the GUI thread; the captured reference keeps a later rebuild from swapping the
+  // object out from under the probe.
   postCommand([this, backend = backend_]() {
     BackendTestResult t = backend ? backend->testConnection() : BackendTestResult{false, "no backend"};
     postEvent([this, t]() {
@@ -924,7 +823,7 @@ void AssistantDialog::commitRename() {
     state_.pending_rename_text.reset();
   }
   if (id.empty()) {
-    return;  // defensive: nothing staged to commit (should not happen, see onItemContextAction)
+    return;  // nothing staged (onItemContextAction always stages one)
   }
   SettingsStore store(settings_);
   if (isBlank(text)) {
@@ -933,11 +832,8 @@ void AssistantDialog::commitRename() {
     setConversationTitle(store, active_backend_key_, id, text);
   }
   std::lock_guard<std::mutex> lock(state_.mu);
-  // Only the affected id needs updating, but reloading the whole map is one
-  // read and keeps this in lockstep with refreshConversationsLocked() instead
-  // of hand-duplicating its logic here.
   state_.conversation_titles = loadConversationTitles(store, active_backend_key_);
-  state_.drawer_dirty = true;  // the renamed row's text just changed
+  state_.drawer_dirty = true;
 }
 
 void AssistantDialog::workerLoop() {

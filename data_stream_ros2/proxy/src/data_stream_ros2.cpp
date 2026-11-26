@@ -425,13 +425,11 @@ void fillProxyError(PJ_error_t* out_error) {
   out_error->extended_kind[0] = '\0';
 }
 
-// ---------------------------------------------------------------------------
 // Trampolines. Each forwards verbatim to the inner vtable once it is resolved.
 // Expected runtime absence forwards to kUnavailableVtable instead. Payload
 // faults return null from create(), keeping normal host error reporting. The
 // proxy holds no per-instance state of its own — the context belongs to the
 // selected implementation and is forwarded unchanged through every slot.
-// ---------------------------------------------------------------------------
 
 void* proxyCreate() noexcept {
   const auto* inner = innerDataSource();

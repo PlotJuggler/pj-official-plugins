@@ -43,8 +43,7 @@ struct DialogState {
   std::mutex mu;
   std::string uri = "grpc+tls://demo.mosaico.dev:6726";
   bool connected = false;
-  // True between a Connect click and the connectFinished result — drives
-  // the Connect button's disabled state (PJ3 parity).
+  // True between a Connect click and the connectFinished result; drives the Connect button's disabled state.
   bool connecting = false;
   // Set after a plaintext fallback has been attempted for the current
   // URI; prevents infinite TLS-fail → plaintext-fail → TLS-retry loop.
@@ -58,9 +57,8 @@ struct DialogState {
   std::size_t seq_epoch = 0;
   std::vector<std::string> topic_names;
   std::vector<TopicInfo> topic_infos;  // partial info from listTopics (size/ts/created)
-  // True between a sequence selection and its topicsReady — drives the
-  // "Topics — loading…" header hint (the only in-panel feedback now that the
-  // bottom status strip is gone; the topic-list RPC is a network round trip).
+  // True between a sequence selection and its topicsReady (a network round trip); drives the "Topics - loading..."
+  // header hint, the only in-panel feedback.
   bool topics_loading = false;
   // Full per-topic metadata (incl. Arrow schema) fetched on demand for the
   // Info panel, keyed by topic name. Survives across selection changes.
@@ -71,13 +69,10 @@ struct DialogState {
   // case-insensitive substring; on = standard regex match.
   bool seq_filter_regex = false;
   bool topic_filter_regex = false;
-  // Column sort state — the plugin owns row ordering (built-in table widget
-  // sorting would desync the index-based visibility filter). -1 = unsorted
-  // (server/load order). seqTable cols: 0=Name 1=Date 2=Size; topicTable: 0=Name 1=Size.
-  // PJ3 parity: both tables default to Name ascending (column 0) because the
-  // server's iteration order is unstable — without a deterministic sort, rows
-  // would visibly reshuffle on every re-fetch (sequence_panel.cpp:102,
-  // topic_panel.cpp:101-104).
+  // Column sort state: the plugin owns row ordering (built-in table widget sorting would desync the index-based
+  // visibility filter). -1 = unsorted (server/load order). seqTable cols: 0=Name 1=Date 2=Size; topicTable:
+  // 0=Name 1=Size. Both tables default to Name ascending (column 0), as in PJ3: the server's iteration order is
+  // unstable, so without a deterministic sort rows would reshuffle on every re-fetch.
   int seq_sort_col = 0;
   bool seq_sort_asc = true;
   int topic_sort_col = 0;
@@ -88,11 +83,9 @@ struct DialogState {
   std::vector<std::string> selected_topics;
   std::string selected_sequence;
 
-  // PJ3 parity (main_window.cpp:1051-1052,1064-1065): the last sequence + topic
-  // selection is persisted and re-selected on the next connect. These hold the
-  // restored values until the matching sequence/topic list arrives; the
-  // restore-on-arrival is one-shot (cleared once consumed) so a later manual
-  // selection or re-fetch doesn't keep snapping back to the saved one.
+  // The last sequence + topic selection is persisted and re-selected on the next connect. These hold the restored
+  // values until the matching sequence/topic list arrives; the restore is one-shot (cleared once consumed) so a
+  // later manual selection or re-fetch doesn't snap back to the saved one.
   std::string restore_selected_sequence;
   std::vector<std::string> restore_selected_topics;
 
@@ -103,7 +96,7 @@ struct DialogState {
 
   // Time range — RangeSlider handle positions in slider units [0, kSliderSteps],
   // applied proportionally to the selected sequence's [min_ts_ns, max_ts_ns].
-  // Drives the int64 start/end passed to pullTopic. PJ3 parity: kSliderSteps.
+  // Drives the int64 start/end passed to pullTopic.
   static constexpr int kSliderSteps = 1'000'000;
   int range_lower = 0;
   int range_upper = kSliderSteps;
@@ -120,11 +113,10 @@ struct DialogState {
   // context shows no popup); explicit Connect clicks still report failures.
   bool suppress_connect_error = false;
 
-  // Lua query editor. The query language lives entirely in the plugin; the host
-  // shows a plain QPlainTextEdit (code-edit mode). The plugin pushes the
-  // persisted query back ONCE on first widget_data (query_text_pushed) to
-  // restore it, then never again — pushing every tick would clobber the editor's
-  // own edits (the bug this design fixes). Edits flow back via onCodeChanged.
+  // Lua query editor. The query language lives entirely in the plugin; the host shows a plain QPlainTextEdit
+  // (code-edit mode). The plugin pushes the persisted query back ONCE on first widget_data (query_text_pushed) to
+  // restore it, then never again: pushing every tick would clobber the editor's own edits. Edits flow back via
+  // onCodeChanged.
   std::string query_text;
   bool query_text_pushed = false;
   // Caret offset (bytes) in the query editor, delivered by onCodeChangedWithCursor.
@@ -148,12 +140,10 @@ struct DialogState {
   Schema query_schema;
   std::size_t query_schema_epoch = static_cast<std::size_t>(-1);
 
-  // Memoized seqTable view (rows + visible-row set). widget_data() runs on the
-  // GUI thread every host tick (~20Hz); recomputing the per-sequence display
-  // strings, the metadata-map copies, and the name/date/Lua filter on every
-  // tick burned the GUI thread and made the sequence list feel laggy. The
-  // result is a pure function of the inputs captured here, so it is recomputed
-  // only when one of them changes (PJ3 was event-driven, not timer-driven).
+  // Memoized seqTable view (rows + visible-row set). widget_data() runs on the GUI thread every host tick (~20Hz);
+  // recomputing the per-sequence display strings, metadata-map copies and name/date/Lua filter each tick lags the
+  // sequence list. The result is a pure function of the inputs captured here, so it is recomputed only when one
+  // changes.
   struct SeqViewCache {
     bool valid = false;
     std::size_t seq_epoch = 0;
@@ -172,31 +162,26 @@ struct DialogState {
   std::map<std::string, std::int64_t, std::less<>> bytes_by_topic;
   std::string fetch_status;
 
-  // Fetch lifecycle (PJ3 parity: a batch of topics completes via
-  // allFetchesComplete, not per-topic). The panel only closes after the
-  // whole batch lands, and only when not cancelling.
+  // Fetch lifecycle: a batch of topics completes via allFetchesComplete, not per-topic. The panel only closes
+  // after the whole batch lands, and only when not cancelling.
   bool fetch_active = false;
   bool cancelling = false;
   int fetch_total = 0;   // topics requested this batch
   int fetch_done = 0;    // topics that reported pullFinished (ok or fail)
   int fetch_failed = 0;  // subset of fetch_done that failed
   bool imported_any = false;
-  // Per-message error tally so identical failures collapse into "[Nx] msg"
-  // (PJ3 showCopyableWarning dedup).
+  // Per-message error tally so identical failures collapse into "[Nx] msg".
   std::map<std::string, int, std::less<>> error_counts;
-  // Per-topic rolling 5 s transfer rate — mirrors PJ3 DownloadStatsDialog
-  // speed calc via the shared PJ::common::RollingTransferRate.
+  // Per-topic rolling 5 s transfer rate (PJ::common::RollingTransferRate).
   std::map<std::string, PJ::common::RollingTransferRate, std::less<>> speed_samples;
   std::map<std::string, std::string, std::less<>> topic_fetch_status;  // name → "" / "Done" / "Failed"
 
   // Sub-dialog request flags (read+cleared in getWidgetData).
   bool open_cert_pending = false;
 
-  // Staged credential edits from the cert sub-dialog. PanelEngine fires
-  // onTextChanged for each text/checkable child after the user
-  // clicks OK; we capture the values here until the synthetic
-  // `subDialogAccepted` click commits them to persisted settings under the
-  // current URI.
+  // Staged credential edits from the cert sub-dialog. PanelEngine fires onTextChanged for each text/checkable child
+  // after the user clicks OK; they are held here until the synthetic `subDialogAccepted` click commits them to
+  // persisted settings under the current URI.
   std::string pending_cert_path;
   std::string pending_api_key;
   bool pending_allow_insecure = false;
@@ -213,7 +198,6 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   MosaicoDialog();
   ~MosaicoDialog() override;
 
-  // DialogPluginTyped overrides
   std::string manifest() const override;
   std::string ui_content() const override;
   std::string widget_data() override;
@@ -251,9 +235,8 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
 
   void onConnectFinished(ConnectResult result);
   void onSequencesReady(std::vector<SequenceInfo> sequences);
-  // Progressive discovery (PJ3 parity): populate the table from the initial
-  // list as soon as it arrives, then fill each row's Date/Size as the server
-  // streams per-sequence detail (onSequenceInfoReady), before the final list.
+  // Progressive discovery: populate the table from the initial list as soon as it arrives, then fill each row's
+  // Date/Size as the server streams per-sequence detail (onSequenceInfoReady), before the final list.
   void onSequenceListStarted(std::vector<SequenceInfo> sequences);
   void onSequenceInfoReady(SequenceInfo sequence);
   void onTopicsReady(std::string sequence_name, std::vector<std::string> topic_names);
@@ -304,8 +287,8 @@ class MosaicoDialog : public PJ::DialogPluginTyped {
   // releasing the lock. Caller MUST hold state_.mu.
   std::vector<std::string> restoreSelectedTopicsLocked();
 
-  // Persist the Lua query + slider proportions to settings (PJ3 parity:
-  // restored next time the panel opens). Caller must NOT hold state_.mu.
+  // Persist the Lua query + slider proportions to settings (restored next time the panel opens). Caller must NOT
+  // hold state_.mu.
   void persistState();
 
   DialogState state_;

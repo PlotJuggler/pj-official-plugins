@@ -8,7 +8,7 @@
 
 namespace assistant_agent::testing {
 
-// The whole file as bytes; empty when it cannot be opened.
+// The whole file; empty when it cannot be opened.
 inline std::string readFileToString(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   std::ostringstream out;

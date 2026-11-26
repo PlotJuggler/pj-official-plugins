@@ -25,9 +25,8 @@ std::optional<double> toDouble(const std::string& str) {
     return std::nullopt;
   }
 
-  // Handle European comma decimal separator by replacing with dot.
-  // Only replace if there's exactly one comma and no dots (to avoid
-  // misinterpreting thousand separators).
+  // European comma decimal separator: replaced only when there is exactly one comma and no dots, so thousand
+  // separators are not misread.
   std::string normalized = str;
   auto comma_count = std::count(normalized.begin(), normalized.end(), ',');
   auto dot_count = std::count(normalized.begin(), normalized.end(), '.');
@@ -35,9 +34,8 @@ std::optional<double> toDouble(const std::string& str) {
     std::replace(normalized.begin(), normalized.end(), ',', '.');
   }
 
-  // PJ::parseNumber is a strict whole-string parse and, unlike std::strtod,
-  // ignores LC_NUMERIC — "1.5" parses as 1.5 even when the host application
-  // runs under a comma-decimal locale (fr_FR, es_ES, ...). See issue #238.
+  // Unlike std::strtod, PJ::parseNumber ignores LC_NUMERIC, so "1.5" parses even when the host runs under a
+  // comma-decimal locale (fr_FR, es_ES, ...).
   return PJ::parseNumber<double>(normalized);
 }
 

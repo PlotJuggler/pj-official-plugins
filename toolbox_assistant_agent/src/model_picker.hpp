@@ -12,12 +12,9 @@
 namespace assistant_agent {
 
 // Maps a backend's model catalog onto (and back from) the settings combo's
-// three-section layout: "CLI default", "Custom...", then one row per listed
-// choice (kIndexFirstListed + i -> choices[i]). Value type, built fresh from
-// a backend's availableModels() wherever it is needed (widget_data()'s
-// prefill, onIndexChanged's index -> value mapping) -- a static list or one
-// small JSON read on a user click, cheap enough that nothing needs to be
-// cached across the two call sites.
+// layout: "CLI default", "Custom...", then one row per listed choice
+// (kIndexFirstListed + i -> choices[i]). Cheap value type, rebuilt from the
+// backend's availableModels() wherever needed rather than cached.
 class ModelPicker {
  public:
   explicit ModelPicker(std::vector<ModelChoice> choices) : choices_(std::move(choices)) {}
@@ -26,8 +23,6 @@ class ModelPicker {
   static constexpr int kIndexCustom = 1;
   static constexpr int kIndexFirstListed = 2;
 
-  // "CLI default", "Custom...", then each choice's label in order -- ready
-  // for wd.setItems().
   [[nodiscard]] std::vector<std::string> items() const {
     std::vector<std::string> out = {"CLI default", "Custom..."};
     for (const ModelChoice& c : choices_) {
@@ -36,10 +31,8 @@ class ModelPicker {
     return out;
   }
 
-  // Maps a persisted model value onto a combo row: empty -> CLI default; one
-  // of the listed ids -> that row; anything else (unlisted -- a model this
-  // build's catalog does not know about, or did not when it was typed) ->
-  // Custom.
+  // Persisted model value -> combo row: empty -> CLI default; a listed id -> its
+  // row; anything else (not in this build's catalog) -> Custom.
   [[nodiscard]] int indexForValue(const std::string& persisted) const {
     if (persisted.empty()) {
       return kIndexDefault;
@@ -52,10 +45,8 @@ class ModelPicker {
     return kIndexCustom;
   }
 
-  // The reverse: a combo row -> the value to persist under the model key.
-  // kIndexDefault -> "" (CLI default); a listed row -> its id; kIndexCustom,
-  // or an index this build does not recognize -> nullopt, meaning "keep
-  // whatever the custom text box already staged" (onTextChanged runs first).
+  // Combo row -> value to persist. kIndexCustom or an unknown index -> nullopt,
+  // meaning "keep what the custom text box already staged" (onTextChanged runs first).
   [[nodiscard]] std::optional<std::string> valueForIndex(int index) const {
     if (index == kIndexDefault) {
       return std::string{};

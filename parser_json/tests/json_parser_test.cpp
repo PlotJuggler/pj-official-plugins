@@ -122,10 +122,8 @@ TEST(JsonParserTest, StringFieldsIncluded) {
   EXPECT_TRUE(found_value);
 }
 
-// Regression: several short (SSO-range) string values in one payload must
-// not corrupt each other. The internal string buffer is a std::deque
-// precisely so push_back doesn't invalidate string_view references captured
-// before it — a std::vector here would dangle prior views on each realloc.
+// Several short (SSO-range) strings in one payload must not corrupt each other:
+// a vector-backed string buffer would dangle the earlier views on reallocation.
 TEST(JsonParserTest, MultipleShortStringsPreserved) {
   JsonParserFixture f;
   f.setUp();
@@ -209,21 +207,15 @@ TEST(JsonParserTest, TimestampPreserved) {
 TEST(JsonParserTest, ManifestContainsEncoding) {
   JsonParserFixture f;
   f.setUp();
-  // Manifest uses "encoding" as an array containing all supported encodings
   EXPECT_NE(f.handle.manifest().find("\"json\""), std::string::npos);
   EXPECT_NE(f.handle.manifest().find("\"cbor\""), std::string::npos);
   EXPECT_NE(f.handle.manifest().find("\"msgpack\""), std::string::npos);
   EXPECT_NE(f.handle.manifest().find("\"bson\""), std::string::npos);
 }
 
-// ---------------------------------------------------------------------------
-// Embedded timestamp tests
-// ---------------------------------------------------------------------------
-
 TEST(JsonParserTest, EmbeddedTimestampDisabledByDefault) {
   JsonParserFixture f;
   f.setUp();
-  // Without config, the host timestamp should be used even if JSON has "timestamp" field
   ASSERT_TRUE(f.parse(R"({"timestamp":1234.567,"value":42.0})", 9999));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);  // host timestamp, not embedded
@@ -263,15 +255,13 @@ TEST(JsonParserTest, EmbeddedTimestampMissingFieldFallsBackToHost) {
   JsonParserFixture f;
   f.setUp();
   ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
-  // JSON doesn't have "timestamp" field, should use host timestamp
   ASSERT_TRUE(f.parse(R"({"value":42.0})", 9999));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 9999);
 }
 
 TEST(JsonParserTest, LabelKeyedArraysDisabledByDefault) {
-  // Without config, {label, value} arrays keep index-based names — existing
-  // MQTT/ZMQ/file users' saved layouts must not change.
+  // Without config, {label, value} arrays keep index-based names.
   JsonParserFixture f;
   f.setUp();
   ASSERT_TRUE(f.parse(R"({"scalars":[{"label":"shoulder_pan.pos","value":3.5}]})"));
@@ -360,15 +350,13 @@ TEST(JsonParserTest, EmbeddedTimestampIntegerValue) {
   JsonParserFixture f;
   f.setUp();
   ASSERT_TRUE(f.handle.loadConfig(R"({"use_embedded_timestamp":true})"));
-  // Integer timestamp (seconds)
   ASSERT_TRUE(f.parse(R"({"timestamp":1000,"value":42.0})", 9999));
   ASSERT_EQ(f.recorder.rows().size(), 1u);
   EXPECT_EQ(f.recorder.rows()[0].timestamp, 1000000000000LL);  // 1000s * 1e9
 }
 
-// Regression: a field must keep ONE column type across messages whatever the
-// producer spelled (5, -5, 1.5), otherwise the host rejects the mismatching
-// value. Every number is float64.
+// A field must keep ONE column type across messages whatever the producer
+// spelled (5, -5, 1.5), or the host rejects the mismatching value.
 TEST(JsonParserTest, NumbersAreFloat64WhateverTheirSpelling) {
   JsonParserFixture f;
   f.setUp();

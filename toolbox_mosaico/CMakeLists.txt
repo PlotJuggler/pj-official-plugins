@@ -4,14 +4,10 @@ find_package(fmt REQUIRED)
 find_package(lua REQUIRED)
 find_package(sol2 REQUIRED)
 
-# Probe for a real Arrow Flight target (the candidate set must match the SDK's
-# in mosaico-cpp-sdk). Crucially this does NOT fall back to plain arrow::arrow:
-# Conan's arrow only carries Flight where arrow:with_flight_rpc actually built
-# it (Linux), and on Windows/macOS arrow::arrow exists WITHOUT Flight. Treating
-# arrow::arrow as Flight there let the plugin proceed into the SDK, which then
-# FATAL_ERROR'd on the missing Flight target. With a strict probe, Flight-less
-# platforms fall through to the skip below — Mosaico is Linux-only for Flight,
-# same as PJ3 — instead of failing the whole build.
+# Probe for a real Arrow Flight target (the candidate set must match the SDK's in mosaico-cpp-sdk). This does NOT
+# fall back to plain arrow::arrow: Conan's arrow carries Flight only where arrow:with_flight_rpc built it (Linux),
+# while on Windows/macOS arrow::arrow exists WITHOUT Flight and the SDK would FATAL_ERROR on the missing target.
+# Flight-less platforms fall through to the skip below (Mosaico is Linux-only for Flight, as in PJ3).
 set(MOSAICO_ARROW_FLIGHT_TARGET "")
 foreach(_candidate
         ArrowFlight::arrow_flight_static
@@ -29,8 +25,7 @@ if(NOT MOSAICO_ARROW_FLIGHT_TARGET)
   return()
 endif()
 
-# gRPC++ — required because static Arrow Flight does not propagate gRPC
-# symbols. Same probe as PJ3.
+# gRPC++ is required because static Arrow Flight does not propagate gRPC symbols.
 set(MOSAICO_GRPCPP_TARGET "")
 find_package(gRPC QUIET CONFIG)
 if(TARGET gRPC::grpc++)
@@ -50,12 +45,10 @@ endif()
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# The Mosaico client SDK lives in its own repo and is fetched via CPM. Arrow
-# (+ Flight) and nlohmann_json targets must already exist (created above) — the
-# SDK does not find_package() them. Pin the source to a release tag: the
-# downstream cancellation patch below is deliberately tied to that snapshot and
-# must fail loudly if its context stops matching, rather than silently building
-# without active stream cancellation.
+# The Mosaico client SDK lives in its own repo and is fetched via CPM. Arrow (+ Flight) and nlohmann_json targets
+# must already exist (created above): the SDK does not find_package() them. The source is pinned to a release tag
+# because the cancellation patch below is tied to that snapshot and must fail loudly if its context stops matching,
+# rather than silently building without active stream cancellation.
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
 set(MOSAICO_SDK_VERSION v0.1.0)
 CPMAddPackage(
@@ -86,10 +79,8 @@ endif()
 add_library(toolbox_mosaico_plugin SHARED ${MOSAICO_SOURCES})
 
 target_compile_features(toolbox_mosaico_plugin PRIVATE cxx_std_20)
-# Don't apply ${PJ_WARNING_FLAGS} here — sol2 triggers -Wconversion and
-# -Wunused-parameter under -Werror. The core dialog/state-machine code is
-# reviewed manually. These GNU flags are not valid for cl, so gate them to
-# non-MSVC compilers.
+# Don't apply ${PJ_WARNING_FLAGS} here: sol2 triggers -Wconversion and -Wunused-parameter under -Werror. These GNU
+# flags are not valid for cl, so gate them to non-MSVC compilers.
 if(NOT MSVC)
   set(_mosaico_plugin_warnings
     -Wall -Wextra -Werror
@@ -153,9 +144,7 @@ pj_emit_plugin_manifest(toolbox_mosaico_plugin
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# ----------------------------------------------------------------------------
-# Tests — independent of Mosaico SDK / Flight / gRPC.
-# ----------------------------------------------------------------------------
+# Tests: independent of Mosaico SDK / Flight / gRPC.
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
 
@@ -366,7 +355,7 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoSelectionMergeTest COMMAND toolbox_mosaico_selection_merge_test)
 
-  # Human-readable byte formatting (1024-based, PJ3 parity). Header-only.
+  # Human-readable byte formatting (1024-based). Header-only.
   add_executable(toolbox_mosaico_format_utils_test
     tests/format_utils_test.cpp
   )
@@ -376,8 +365,7 @@ if(BUILD_TESTING)
   )
   add_test(NAME ToolboxMosaicoFormatUtilsTest COMMAND toolbox_mosaico_format_utils_test)
 
-  # PJ3-ported leaf utility tests. Standard library only — no Arrow Flight,
-  # no toolbox host.
+  # Leaf utility tests. Standard library only: no Arrow Flight, no toolbox host.
   add_executable(toolbox_mosaico_server_history_test
     tests/server_history_test.cpp
     src/server_history.cpp
@@ -503,8 +491,7 @@ if(BUILD_TESTING)
     TIMEOUT 60
   )
 
-  # Live-server diagnostic harness (Task 0.1). Standalone executable
-  # that connects to demo.mosaico.dev, discovers an RGB image topic, pulls the
+  # Live-server diagnostic harness. Standalone executable
   # first record batch, prints the COMPLETE Arrow schema + ROW-0 image metadata,
   # and writes the batch to tests/fixtures/<slug>_batch.arrow (Arrow IPC file).
   # Not registered with ctest — it is a hand-run diagnostic that requires

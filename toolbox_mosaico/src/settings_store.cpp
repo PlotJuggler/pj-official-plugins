@@ -4,9 +4,6 @@
 
 namespace mosaico {
 
-// On a backend-fault Expected (!has_value()) every getter returns the default
-// and every setter is a silent no-op, preserving the non-throwing contract.
-
 std::string SettingsStore::getString(const std::string& key, const std::string& def) const {
   if (auto v = view_.value(key)) {
     return v->toString(def);

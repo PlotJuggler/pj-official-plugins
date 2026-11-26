@@ -13,8 +13,6 @@
 
 namespace {
 
-/// Extract the file basename (without extension) from a path.
-/// Handles both '/' and '\\' separators.
 std::string basenameWithoutExt(const std::string& filepath) {
   auto slash = filepath.find_last_of("/\\");
   auto start = (slash != std::string::npos) ? slash + 1 : 0;
@@ -47,7 +45,6 @@ class CsvSource : public PJ::FileSourceBase {
   }
 
   PJ::Status importData() override {
-    // Extract configuration from dialog state
     std::string filepath;
     {
       auto cfg_str = dialog_.saveConfig();
@@ -67,7 +64,6 @@ class CsvSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("cannot open file: ") + filepath);
     }
 
-    // Build parse config from dialog state
     PJ::CSV::CsvParseConfig config;
     config.delimiter = dialog_.delimiter();
     config.time_column_index = dialog_.timeColumnIndex();
@@ -98,20 +94,16 @@ class CsvSource : public PJ::FileSourceBase {
       return runtimeHost().progressUpdate(static_cast<uint64_t>(current));
     });
 
-    // ParseCsvData sets success=false either on a real parse error OR when the user
-    // stopped the load (the progress callback returned false). In the stop case the
-    // rows parsed so far are already in `result` — write them so the host's
-    // "Stop and Keep" can flush them (Discard evicts the dataset host-side anyway).
-    // Only a genuine failure (not a stop) aborts with no data.
+    // ParseCsvData reports success=false on a parse error OR a user stop (the progress callback returned false).
+    // On a stop the rows parsed so far are written so the host's "Stop and Keep" can flush them; only a genuine
+    // failure aborts with no data.
     const bool stopped_by_user = runtimeHost().isStopRequested();
     if (!result.success && !stopped_by_user) {
       return PJ::unexpected(std::string("CSV parsing failed"));
     }
 
-    // Interactive "continue?" prompts only make sense on a normal load. When the user
-    // already chose to stop, don't ask more questions — just keep what was parsed.
+    // No "continue?" prompts once the user chose to stop.
     if (!stopped_by_user) {
-      // --- Non-monotonic time warning ---
       if (result.time_is_non_monotonic) {
         if (!runtimeHost().askContinue(
                 "Non-monotonic Timestamps",
@@ -122,7 +114,6 @@ class CsvSource : public PJ::FileSourceBase {
         }
       }
 
-      // --- Skipped lines warning with detail ---
       std::string detail;
       for (const auto& warn : result.warnings) {
         if (warn.type == PJ::CSV::CsvParseWarning::WRONG_COLUMN_COUNT ||
@@ -130,8 +121,7 @@ class CsvSource : public PJ::FileSourceBase {
           detail += "Line " + std::to_string(warn.line_number) + ": " + warn.detail + "\n";
         }
       }
-      // Nothing survived parsing: fail like any other import error. Reporting success
-      // with zero rows makes the host commit an empty dataset, which on a reload
+      // Fail rather than report success with zero rows: the host would commit an empty dataset, which on a reload
       // silently replaces the data the user already had.
       if (result.lines_processed == 0) {
         return PJ::unexpected(
@@ -147,7 +137,6 @@ class CsvSource : public PJ::FileSourceBase {
       }
     }
 
-    // --- Classify columns ---
     std::string topic_name = basenameWithoutExt(filepath);
     if (topic_name.empty()) {
       topic_name = "data";
@@ -158,16 +147,14 @@ class CsvSource : public PJ::FileSourceBase {
       return PJ::unexpected(topic.error());
     }
 
-    // Identify which columns are data (not time, not combined components)
+    // Data columns: not the time column, not combined date/time components.
     std::vector<size_t> numeric_col_indices;
     std::vector<size_t> string_col_indices;
 
     for (size_t i = 0; i < result.columns.size(); i++) {
-      // Skip time column
       if (config.time_column_index >= 0 && static_cast<size_t>(config.time_column_index) == i) {
         continue;
       }
-      // Skip combined date/time component columns
       if (result.combined_component_indices.count(static_cast<int>(i)) > 0) {
         continue;
       }
@@ -186,16 +173,14 @@ class CsvSource : public PJ::FileSourceBase {
       } else if (has_string) {
         string_col_indices.push_back(i);
       }
-      // Columns with no data at all: register as numeric (empty series)
-      // This matches old behavior: plot_data.addNumeric(name) for empty cols
+      // Columns with no data at all register as numeric (empty series), as the original plugin does.
       if (!has_numeric && !has_string) {
         numeric_col_indices.push_back(i);
       }
     }
 
-    // --- Pre-register ALL columns before writing any data ---
-    // Rows are appended by handle: the by-name path copies every column name
-    // into each row and makes the host re-resolve it, per cell.
+    // Rows are appended by handle: the by-name path copies every column name into each row and makes the host
+    // re-resolve it per cell.
     std::vector<PJ::sdk::FieldHandle> column_handles(result.columns.size());
     for (size_t col_idx : numeric_col_indices) {
       auto field = writeHost().ensureField(*topic, result.columns[col_idx].name, PJ::PrimitiveType::kFloat64);
@@ -212,7 +197,6 @@ class CsvSource : public PJ::FileSourceBase {
       column_handles[col_idx] = *field;
     }
 
-    // --- Write one record per timestamp, straight from the parsed columns ---
     std::vector<PJ::sdk::BoundFieldValue> row_fields;
     PJ::Status write_status = PJ::okStatus();
     PJ::CSV::ForEachRecord(

@@ -1,46 +1,33 @@
 #!/usr/bin/env python3
 """Enforce each plugin's ``min_sdk_required`` against the host surfaces it uses.
 
-Repo driver over the SDK's reusable floor-checker core
-(``scripts/vendor/feature_floor_check.py``, a temporary byte-copy of the module
-the SDK ships next to ``feature_floors.json`` from 0.33.0 — see
-``scripts/vendor/README.md``). The core owns the table schema, source
-scanning, exception validation, and the floor rule; this driver owns what is
-specific to this monorepo:
+Repo driver over the SDK's floor-checker core (``scripts/vendor/feature_floor_check.py``, see
+``scripts/vendor/README.md``). The core owns the table schema, source scanning, exception
+validation and the floor rule; this driver owns what is specific to this monorepo:
 
-  - the CMake link closure: each plugin's scan set is its directory plus every
-    ``common/`` library reachable from its ``pj_emit_plugin_manifest`` targets
-    through ``target_link_libraries`` (unresolved link expressions fail closed);
-  - iteration over every top-level ``manifest.json`` plugin with aggregated
-    PASS/WARN/FAIL reporting;
-  - table resolution: an explicit ``--sdk-floors`` path wins (and must match
-    any leftover interim copy byte-for-payload); otherwise the bundled interim
-    table stands in until the pinned ``SDK_VERSION`` ships it. Once
-    ``SDK_VERSION`` reaches 0.33.0 the check resolves the SDK's own table from
-    ``PJ_SDK_ROOT`` or the Conan cache instead, and HARD-FAILS while the
-    interim table still exists, forcing its deletion instead of trusting a
-    doc comment.
+  - the CMake link closure: a plugin's scan set is its directory plus every ``common/`` library
+    reachable from its ``pj_emit_plugin_manifest`` targets through ``target_link_libraries``
+    (unresolved link expressions fail closed);
+  - iterating every top-level ``manifest.json`` plugin with aggregated PASS/WARN/FAIL reporting;
+  - table resolution: an explicit ``--sdk-floors`` path wins; otherwise the bundled interim table
+    is used while the pinned ``SDK_VERSION`` predates 0.33.0. From 0.33.0 the SDK's own table is
+    resolved from ``PJ_SDK_ROOT`` or the Conan cache, and the check HARD-FAILS while the interim
+    table still exists.
 
-Known, deliberate boundaries: the scan set is the LINK closure's directories —
-include-only dependencies, sources added via ``target_sources()`` from outside
-those directories, and generated code are not covered (linking is the repo's
-dependency contract; a Clang compile-command-based extractor is the upgrade
-path). And only RUNTIME host-contract surfaces are visible: compile-time SDK
-library APIs (``parseIso8601Utc``, ``sliderToWindow``, ...) never appear here,
-so "no host surfaces matched" or an over-declared-floor WARNING is NEVER by
-itself justification to lower ``min_sdk_required`` — toolbox_mosaico and
-data_load_mp4 (both 0.31.0 for compile-time reasons) are the canonical
-examples, correct as declared. A ``floor_test`` proves the DEGRADED PATH at
-the finest testable granularity: helper-level is acceptable when the full
-entry point needs a live host, and the test comment must then state the
+Boundaries: the scan covers only the LINK closure's directories. Include-only dependencies,
+sources added via ``target_sources()`` from outside those directories, and generated code are not
+covered. Only RUNTIME host-contract surfaces are visible: compile-time SDK library APIs
+(``parseIso8601Utc``, ``sliderToWindow``, ...) never appear, so "no host surfaces matched" or an
+over-declared-floor WARNING is NEVER by itself justification to lower ``min_sdk_required``
+(toolbox_mosaico and data_load_mp4, both 0.31.0 for compile-time reasons, are correct as declared).
+A ``floor_test`` proves the DEGRADED PATH at the finest testable granularity: helper-level is
+acceptable when the full entry point needs a live host, and the test comment must then state the
 routing fact.
 
-Per plugin, the lean floor contract (see the core module): the floor must
-cover every matched non-negotiated surface; a matched surface above the floor
-requires ``suggested_sdk_version`` (== max since over all matched surfaces)
-plus an existing ``floor_test`` gtest, both forbidden otherwise. Floors below
-the table's ``minimum_supported_floor`` fail; over-declared floors only warn
-(the maintainer may know a runtime reason the scan cannot see).
+Per plugin: the floor must cover every matched non-negotiated surface; a matched surface above the
+floor requires ``suggested_sdk_version`` (== max ``since`` over all matched surfaces) plus an
+existing ``floor_test`` gtest, both forbidden otherwise. Floors below the table's
+``minimum_supported_floor`` fail; over-declared floors only warn.
 """
 
 from __future__ import annotations
@@ -66,9 +53,7 @@ DEFAULT_REPO_ROOT = SCRIPT_DIR.parent
 INTERIM_TABLE_NAME = "sdk_feature_floors_interim.json"
 VENDORED_CORE_NAME = "feature_floor_check.py"
 SDK_TABLE_RELATIVE = Path("pj_base") / "feature_floors.json"
-# The release whose SDK package ships the floor table; the interim copy must
-# be deleted once SDK_VERSION reaches it, and the check resolves the SDK's own
-# table (--sdk-floors, PJ_SDK_ROOT, or the Conan cache) from then on.
+# First SDK release shipping the floor table; from there the interim copy must be deleted.
 SDK_SHIPS_TABLE_FROM = (0, 33, 0)
 
 EXCLUDED_SOURCE_DIRS = frozenset(
@@ -86,9 +71,8 @@ EXCLUDED_SOURCE_DIRS = frozenset(
     }
 )
 TEST_SOURCE_DIRS = ("tests", "test")
-# CMake variables that are genuinely external (never targets under common/).
-# Kept explicit so a newly introduced unresolved expression fails closed
-# instead of silently shrinking a plugin's source closure.
+# CMake variables that are genuinely external (never targets under common/). Explicit so a new
+# unresolved expression fails closed instead of silently shrinking a plugin's source closure.
 EXTERNAL_LINK_EXPRESSION_ALLOWLIST = {
     "${CMAKE_DL_LIBS}": "CMake's platform dynamic-loader libraries",
 }
@@ -138,9 +122,6 @@ class CommonGraph:
     unresolved_edges: dict[str, set[UnresolvedLink]]
 
 
-# --- Table resolution --------------------------------------------------------
-
-
 def _surfaces_payload(path: Path) -> object:
     document = json.loads(path.read_text(encoding="utf-8"))
     return {
@@ -165,12 +146,8 @@ def _verify_and_load_table(
     vendored_core_path: Path,
     err: TextIO,
 ) -> core.SurfaceTable:
-    """Load ``table_path`` and cross-check it against any leftover interim
-    table and the vendored checker core. Shared by the explicit --sdk-floors
-    path and every table resolved automatically (PJ_SDK_ROOT, Conan cache)."""
+    """Load ``table_path`` and cross-check it against any leftover interim table and the vendored core."""
     table = core.load_surface_table(table_path)
-    # A diverging interim artifact is a rot hazard: the SDK copy wins, and
-    # the stale duplicate fails the check outright (sync or delete it).
     if interim_path.is_file():
         if _surfaces_payload(table_path) != _surfaces_payload(interim_path):
             raise CheckError(
@@ -179,8 +156,7 @@ def _verify_and_load_table(
             )
         print(f"NOTE: SDK surface table in use; delete the interim copy {interim_path}", file=err)
     if vendored_core_path.is_file():
-        # Installed layout: core beside the table. SDK checkout layout:
-        # table under pj_base/, core under tools/feature_floors/.
+        # Installed layout: core beside the table. SDK checkout: table in pj_base/, core in tools/feature_floors/.
         candidates = [
             table_path.parent / VENDORED_CORE_NAME,
             table_path.parent.parent / "tools" / "feature_floors" / VENDORED_CORE_NAME,
@@ -200,8 +176,7 @@ def _verify_and_load_table(
 
 
 def _pj_sdk_root_table_path(root_value: str) -> Path:
-    """Resolve PJ_SDK_ROOT to a feature_floors.json, accepting either the
-    installed layout (share/plotjuggler_sdk/) or an SDK checkout (pj_base/)."""
+    """PJ_SDK_ROOT may be the installed layout (share/plotjuggler_sdk/) or an SDK checkout (pj_base/)."""
     root = Path(root_value)
     installed = root / "feature_floors.json"
     if installed.is_file():
@@ -216,9 +191,7 @@ def _pj_sdk_root_table_path(root_value: str) -> Path:
 
 
 def _conan_cache_table_path(sdk_version: str, *, err: TextIO) -> Path | None:
-    """Best-effort lookup of the pinned SDK's export_source in the Conan
-    cache. Any failure (no conan, cache miss, unexpected layout) is soft: it
-    only notes to err and lets the caller try the next source."""
+    """Best-effort lookup in the Conan cache; any failure only notes to err and returns None."""
     package_ref = f"plotjuggler_sdk/{sdk_version}"
     try:
         result = subprocess.run(
@@ -241,9 +214,7 @@ def _conan_cache_table_path(sdk_version: str, *, err: TextIO) -> Path | None:
 
 
 def _resolve_post_cutover_table_path(sdk_version: str, *, err: TextIO) -> Path:
-    """Once SDK_VERSION ships the table, find it without an explicit
-    --sdk-floors: PJ_SDK_ROOT wins when set (and must resolve, no fallback),
-    otherwise try the Conan cache."""
+    """PJ_SDK_ROOT wins when set (and must resolve, no fallback); otherwise the Conan cache."""
     pj_sdk_root = os.environ.get("PJ_SDK_ROOT")
     if pj_sdk_root:
         return _pj_sdk_root_table_path(pj_sdk_root)
@@ -265,9 +236,8 @@ def resolve_surface_table(
     *,
     err: TextIO,
 ) -> core.SurfaceTable:
-    """Prefer an explicit table; once SDK_VERSION ships it, resolve the SDK's
-    own table (PJ_SDK_ROOT, then the Conan cache); otherwise fall back to the
-    bundled interim copy for pins older than SDK_SHIPS_TABLE_FROM."""
+    """Explicit table, else the SDK's own (PJ_SDK_ROOT, then Conan cache) once SDK_VERSION ships it,
+    else the bundled interim copy."""
     interim_path = repo_root / "scripts" / INTERIM_TABLE_NAME
     vendored_core_path = repo_root / "scripts" / "vendor" / VENDORED_CORE_NAME
 
@@ -307,9 +277,6 @@ def resolve_surface_table(
         file=err,
     )
     return core.load_surface_table(interim_path)
-
-
-# --- CMake link-closure resolution -------------------------------------------
 
 
 def _blank_except_newlines(text: str) -> str:
@@ -456,9 +423,7 @@ def parse_cmake_model(path: Path) -> CMakeModel:
     commands = [(name, _cmake_tokens(body, path)) for name, body in _cmake_commands(path)]
     variables: dict[str, set[str]] = {}
     for name, tokens in commands:
-        # An empty CMake value (`set(X "")`) means "no dependency", not an
-        # unresolvable expression — filtering it lets ordinary optional-dep
-        # variables resolve through the machinery instead of the allowlist.
+        # An empty value (`set(X "")`) means "no dependency", not an unresolvable expression.
         if name == "set" and tokens and COMMAND_NAME_RE.fullmatch(tokens[0]):
             variables.setdefault(tokens[0], set()).update(token for token in tokens[1:] if token)
         elif (
@@ -474,8 +439,7 @@ def parse_cmake_model(path: Path) -> CMakeModel:
             continue
         if name == "add_library":
             if not LITERAL_TARGET_RE.fullmatch(tokens[0]):
-                # A variable-named library target must resolve, or the file's
-                # closure would silently lose it — fail closed instead.
+                # A variable-named target must resolve, or the closure would silently lose it.
                 resolved_names, name_unresolved = _resolve_link_item(tokens[0], variables, path)
                 if name_unresolved or not resolved_names:
                     raise CheckError(
@@ -511,8 +475,7 @@ def parse_cmake_model(path: Path) -> CMakeModel:
                         model.edges[source_target].update(dependencies)
                         model.unresolved_edges[source_target].update(unresolved)
                 else:
-                    # Function parameters such as parser_ros's ${TARGET} are
-                    # attached conservatively to every release target below.
+                    # Function parameters such as parser_ros's ${TARGET} attach to every release target.
                     model.dynamic_link_dependencies.update(dependencies)
                     model.dynamic_unresolved_links.update(unresolved)
     return model
@@ -605,9 +568,6 @@ def derive_common_closure(plugin_dir: Path, common_graph: CommonGraph) -> set[Pa
     return common_dirs
 
 
-# --- Per-plugin scan and verdict ---------------------------------------------
-
-
 def _display_path(path: Path, repo_root: Path) -> str:
     try:
         return path.relative_to(repo_root).as_posix()
@@ -620,9 +580,7 @@ def detect_triggers(
     table: core.SurfaceTable,
     file_cache: dict[Path, list[tuple[str, int]]],
 ) -> list[Trigger]:
-    """Matches across the scan set; per-file results are memoized for the run
-    so a common/ library shared by many plugins is scanned once, not per
-    consumer."""
+    """Matches across the scan set; per-file results are memoized so a shared common/ library is scanned once."""
     triggers: list[Trigger] = []
     source_files = sorted(
         {
@@ -682,7 +640,7 @@ def check_sdk_feature_floors(
     out: TextIO = sys.stdout,
     err: TextIO = sys.stderr,
 ) -> bool:
-    """Run the guardrail and return True only when every selected plugin passes."""
+    """True only when every selected plugin passes."""
     repo_root = repo_root.resolve()
     if sdk_floors_path is not None and not sdk_floors_path.is_absolute():
         sdk_floors_path = repo_root / sdk_floors_path
@@ -712,8 +670,7 @@ def check_sdk_feature_floors(
             print(f"FAIL {plugin_name}: {exc}", file=err)
             continue
 
-        # First trigger per surface is enough for reporting; the mapping is
-        # what exceptions and the floor rule are validated against.
+        # First trigger per surface; the floor rule is validated against this mapping.
         matched: dict[str, str] = {}
         for trigger in sorted(
             triggers, key=lambda item: (_display_path(item.path, repo_root), item.line)

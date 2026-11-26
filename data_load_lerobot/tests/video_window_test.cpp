@@ -1,6 +1,5 @@
-// Unit tests for lerobot::resolveEmitSlice — the v2.x-vs-v3.0 video window logic
-// (keyframe-seek-back, presentation window, episode-local rebase). Pure: drives
-// synthetic AccessUnit indices, no host and no libav.
+// lerobot::resolveEmitSlice (keyframe-seek-back, presentation window, episode-local rebase) over synthetic
+// AccessUnit indices.
 #include <gtest/gtest.h>
 
 #include <cstdint>

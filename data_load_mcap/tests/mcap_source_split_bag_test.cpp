@@ -266,8 +266,8 @@ TEST_F(SplitBagImport, SqliteBagIsRejectedWithoutPushingAnything) {
   EXPECT_TRUE(result.recording.pushes.empty());
 }
 
-// One topic whose every message fails to decode must not take the others down: a high-rate bad topic
-// recorded before a good one used to hit the consecutive-failure cap and abort the whole import.
+// One topic whose every message fails to decode must not take the others down: a high-rate bad topic recorded before a
+// good one must not hit the consecutive-failure cap and abort the whole import.
 TEST_F(SplitBagImport, UndecodableTopicDoesNotAbortTheOthers) {
   const fs::path merged = dir_ / "rec.mcap";
   {

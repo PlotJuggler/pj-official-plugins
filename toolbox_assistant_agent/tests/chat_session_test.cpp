@@ -1,8 +1,5 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
-//
-// ChatSession is the pure transcript + turn-state model the panel renders. No
-// Qt, no threads — exhaustively testable in isolation.
 #include "chat_session.hpp"
 
 #include <gtest/gtest.h>
@@ -30,7 +27,6 @@ TEST(ChatSession, RendersSpeakerTags) {
   const std::string out = s.renderMarkdown();
   EXPECT_NE(out.find("**You:**\n\nhello"), std::string::npos);
   EXPECT_NE(out.find("**Assistant:**\n\nhi there"), std::string::npos);
-  // The user line comes before the assistant line.
   EXPECT_LT(out.find("**You:**"), out.find("**Assistant:**"));
 }
 
@@ -121,9 +117,7 @@ TEST(ChatSession, ClearResetsEverything) {
   EXPECT_EQ(s.state(), TurnState::Idle);
 }
 
-// Simulates the echo turn lifecycle: user sends -> WaitingForLlm ->
-// assistant reply -> back to Idle. This is the exact sequence the dialog's
-// worker/event plumbing produces in M1.
+// The echo turn lifecycle: user sends -> WaitingForLlm -> assistant reply -> Idle.
 TEST(ChatSession, EchoTurnLifecycle) {
   ChatSession s;
   s.addUser("ping");
@@ -137,9 +131,8 @@ TEST(ChatSession, EchoTurnLifecycle) {
   EXPECT_NE(s.renderMarkdown().find("You said: ping"), std::string::npos);
 }
 
-// Restoring a persisted conversation replays messages() through the addX
-// methods (assistant_dialog's loadPersistedConversation) — the rebuilt session
-// must render byte-identically to the original, rows and speaker tags intact.
+// Restoring a conversation replays messages() through the addX methods; the rebuilt session must
+// render byte-identically to the original.
 TEST(ChatSession, ReplayingMessagesReproducesTheRender) {
   ChatSession original;
   original.addUser("how many topics?");

@@ -16,42 +16,29 @@ struct SubprocessResult {
   std::string error;
 };
 
-// Run argv[0] with argv, streaming its stdout to `on_stdout` in raw chunks
-// (the caller splits into lines). argv is passed straight to execvp — there is
-// NO shell, so nothing forwarded here can inject commands. `stdin_data` is
-// written to the child's stdin then closed (keep it below the pipe buffer,
-// ~64 KiB: it is written in full before stdout is drained); pass empty to give
-// the child a closed stdin. Blocks until the child exits; if `cancel` becomes
-// true the child is sent SIGTERM and reaped. stderr is discarded.
-//
-// A non-empty `working_dir` becomes the child's cwd (chdir after fork, before
-// exec); the child exits 127 if it cannot enter it. Callers that hand the child
-// to a tool which derives context from its cwd — the Claude CLI reads the
-// working directory's CLAUDE.md and project state — pass a neutral directory so
-// the child sees the caller's choice, not wherever the host app was launched.
-//
-// `extra_env` is applied with setenv() in the child, after fork and chdir but
-// before exec — on top of the inherited environment, never replacing it. This
-// is how CodexBackend hands the MCP bearer token to the CLI without it landing
-// on the command line (argv is world-readable via /proc/<pid>/cmdline, exactly
-// the reason ClaudeBackend already keeps its own token out of argv via a
-// private --mcp-config file instead).
-//
-// POSIX and Windows; other platforms return spawned=false so the caller can
-// surface a clean "not supported here" instead of failing to build. Windows
-// differs from the POSIX contract above in a few load-bearing ways:
-//   - a missing `working_dir` makes the call fail outright (spawned=false)
-//     instead of the child exiting 127 -- CreateProcessW rejects a bad cwd
-//     before the child ever starts, there is no fork() to survive past;
-//   - `cancel` kills the whole process tree (a job object), not just the one
-//     process SIGTERM would reach;
-//   - argv[0] must be an absolute path to a native `.exe` -- handing
-//     CreateProcess a `.bat`/`.cmd` routes it through cmd.exe, whose own
-//     parsing is the "BatBadBut" injection class;
-//   - once the child itself exits, anything IT started is killed too (via
-//     the same job object) and this function then drains its stdout to EOF,
-//     so a grandchild's inherited handle cannot keep the pipe open forever.
+// Runs argv[0] with argv, streaming stdout to `on_stdout` in raw chunks (the caller splits
+// lines). argv goes straight to execvp: NO shell, so nothing forwarded can inject commands.
+// `stdin_data` is written in full to the child's stdin, then closed, before stdout is
+// drained, so keep it below the pipe buffer (~64 KiB); empty gives a closed stdin. Blocks
+// until the child exits; if `cancel` becomes true the child gets SIGTERM and is reaped.
 // stderr is discarded on every platform.
+//
+// A non-empty `working_dir` is the child's cwd (chdir after fork, before exec; the child
+// exits 127 if it cannot enter it). Pass a neutral directory for tools that derive context
+// from cwd (the Claude CLI reads its CLAUDE.md and project state).
+//
+// `extra_env` is applied with setenv() in the child on top of the inherited environment,
+// never replacing it. It carries the MCP bearer token to Codex, keeping it off argv
+// (readable via /proc/<pid>/cmdline).
+//
+// POSIX and Windows; other platforms return spawned=false. Windows differs from the above:
+//   - a missing `working_dir` fails the call (spawned=false) instead of the child exiting
+//     127: CreateProcessW rejects a bad cwd before the child starts;
+//   - `cancel` kills the whole process tree (a job object), not one process;
+//   - argv[0] must be an absolute path to a native `.exe`: a `.bat`/`.cmd` routes through
+//     cmd.exe, whose parsing is the "BatBadBut" injection class;
+//   - once the child exits, its descendants are killed via the job object and stdout is
+//     drained to EOF, so a grandchild's inherited handle cannot hold the pipe open.
 SubprocessResult runProcess(
     const std::vector<std::string>& argv, const std::string& stdin_data,
     const std::function<void(const std::string&)>& on_stdout, const std::atomic<bool>& cancel,
@@ -98,7 +85,6 @@ inline SubprocessResult runProcess(
     return {false, -1, "fork() failed"};
   }
   if (pid == 0) {
-    // Child: stdin <- pipe, stdout -> pipe, stderr -> /dev/null, then exec.
     dup2(in_fds[0], STDIN_FILENO);
     dup2(fds[1], STDOUT_FILENO);
     const int devnull = open("/dev/null", O_WRONLY);
@@ -110,7 +96,7 @@ inline SubprocessResult runProcess(
     close(fds[0]);
     close(fds[1]);
     if (!working_dir.empty() && chdir(working_dir.c_str()) != 0) {
-      _exit(127);  // refusing to run in the wrong directory beats running there
+      _exit(127);  // never run in the wrong directory
     }
     for (const auto& [name, value] : extra_env) {
       setenv(name.c_str(), value.c_str(), 1);
@@ -125,8 +111,7 @@ inline SubprocessResult runProcess(
     _exit(127);  // exec failed
   }
 
-  // Parent: hand the child its stdin up front (chat-sized, fits the pipe
-  // buffer), close it so the child sees EOF, then drain stdout.
+  // Parent: stdin goes up front (chat-sized, fits the pipe buffer), then EOF, then drain stdout.
   close(in_fds[0]);
   if (!stdin_data.empty()) {
     ssize_t off = 0;
@@ -158,7 +143,7 @@ inline SubprocessResult runProcess(
       break;
     }
     if (pr == 0) {
-      continue;  // timeout — loop to re-check cancel
+      continue;  // timeout: re-check cancel
     }
     if (pfd.revents & (POLLIN | POLLHUP | POLLERR)) {
       const ssize_t n = read(fds[0], buf, sizeof(buf));
@@ -194,13 +179,8 @@ namespace assistant_agent {
 
 namespace detail {
 
-// A non-copyable owning wrapper around a Win32 HANDLE, closing it on
-// destruction (both a null handle and INVALID_HANDLE_VALUE are treated as
-// "nothing to close" -- CreateFileW hands back the latter on failure, every
-// other API here hands back the former). Used for every handle runProcess
-// creates below (pipes, the stderr sink, the job object, the child process)
-// so the failure paths do not need a hand-copied CloseHandle chain: letting
-// the wrapper go out of scope closes it.
+// Move-only owner of a Win32 HANDLE. Both null and INVALID_HANDLE_VALUE mean "nothing to
+// close": CreateFileW returns the latter on failure, every other API here the former.
 struct ScopedHandle {
   HANDLE h = nullptr;
 
@@ -219,7 +199,6 @@ struct ScopedHandle {
     reset();
   }
 
-  // Closes the current handle (if any) and takes ownership of `new_h`.
   void reset(HANDLE new_h = nullptr) {
     if (h != nullptr && h != INVALID_HANDLE_VALUE) {
       CloseHandle(h);
@@ -227,7 +206,6 @@ struct ScopedHandle {
     h = new_h;
   }
 
-  // Gives up ownership without closing, returning the raw handle.
   [[nodiscard]] HANDLE release() {
     HANDLE tmp = h;
     h = nullptr;
@@ -239,13 +217,10 @@ struct ScopedHandle {
   }
 };
 
-// Builds one CreateProcessW-ready argument, appended to `cmd`. Windows has no
-// argv array -- the child re-splits a single command-line string itself (the
-// same algorithm the Microsoft CRT startup code and CommandLineToArgvW use),
-// so this exists to survive that round trip byte for byte. A bare backslash
-// means nothing special; it only doubles right before a quote character
-// (escaping it) or before the argument's own closing quote -- doubling it
-// anywhere else would corrupt an ordinary path like `C:\Users\x\file`.
+// Appends one argument to `cmd`, quoted so the child's re-split (the CRT startup /
+// CommandLineToArgvW algorithm) reproduces it byte for byte. A backslash doubles only right
+// before a quote character or the argument's own closing quote; doubling it elsewhere would
+// corrupt a path like `C:\Users\x\file`.
 inline void appendQuotedArg(std::wstring& cmd, const std::wstring& a) {
   if (!a.empty() && a.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
     cmd += a;
@@ -272,18 +247,15 @@ inline void appendQuotedArg(std::wstring& cmd, const std::wstring& a) {
   cmd += L'"';
 }
 
-// Builds the double-NUL-terminated environment block CreateProcessW expects:
-// every entry GetEnvironmentStringsW reports, with `extra_env` applied on
-// top -- a name matching an existing entry case-insensitively replaces EVERY
-// such entry (never leaving a shadowed duplicate for CreateProcessW to
-// resolve unpredictably), a name matching nothing is appended -- then sorted
-// case-insensitively by name, which is the shape a well-formed block has. A
-// leading '=' entry (a per-drive hidden cwd, e.g. "=C:=C:\x") is kept
-// verbatim: its NAME runs to the SECOND '=', not the first.
+// Builds the double-NUL-terminated environment block CreateProcessW expects: the inherited
+// entries with `extra_env` on top (a case-insensitive name match replaces EVERY such entry,
+// leaving no shadowed duplicate; no match appends), sorted case-insensitively by name as a
+// well-formed block is. A leading '=' entry (per-drive hidden cwd, e.g. "=C:=C:\x") is kept
+// verbatim: its NAME runs to the SECOND '='.
 inline std::wstring buildEnvironmentBlock(const std::vector<std::pair<std::string, std::string>>& extra_env) {
   struct Entry {
     std::wstring name;
-    std::wstring line;  // "NAME=VALUE", or the raw "=C:=C:\x" form
+    std::wstring line;
   };
   std::vector<Entry> entries;
 
@@ -302,12 +274,8 @@ inline std::wstring buildEnvironmentBlock(const std::vector<std::pair<std::strin
   for (const auto& [name_utf8, value_utf8] : extra_env) {
     const std::wstring wname = utf8ToWide(name_utf8);
     const std::wstring wline = wname + L'=' + utf8ToWide(value_utf8);
-    // Every entry whose name matches case-insensitively collapses into ONE
-    // replacement -- if the inherited block somehow carried more than one
-    // case-variant of the same name, the first match becomes the
-    // replacement and any further match is erased rather than also
-    // overwritten, which would otherwise leave duplicate "NAME=value" lines
-    // behind for CreateProcessW to resolve unpredictably.
+    // The first case-insensitive match becomes the replacement and further matches are
+    // erased, so no duplicate "NAME=value" lines remain.
     bool replaced = false;
     for (auto it = entries.begin(); it != entries.end();) {
       if (CompareStringOrdinal(it->name.c_str(), -1, wname.c_str(), -1, TRUE) == CSTR_EQUAL) {
@@ -337,7 +305,7 @@ inline std::wstring buildEnvironmentBlock(const std::vector<std::pair<std::strin
     block += e.line;
     block += L'\0';
   }
-  block += L'\0';  // the block's own terminating NUL
+  block += L'\0';  // the block's terminating NUL
   return block;
 }
 
@@ -351,15 +319,12 @@ inline SubprocessResult runProcess(
     return {false, -1, "empty argv"};
   }
 
-  // argv[0] must be an absolute path to a native .exe -- see the Windows
-  // paragraph in the contract comment above.
+  // See the Windows notes in the contract above.
   const std::filesystem::path exe_path = utf8ToPath(argv[0]);
   if (!exe_path.is_absolute() || !detail::endsWithCi(argv[0], ".exe")) {
     return {false, -1, "Windows runs only a native .exe CLI (got '" + argv[0] + "')"};
   }
 
-  // The single command-line string the child re-splits itself; every entry,
-  // including argv[0], goes through the same quoting.
   std::wstring cmdline;
   for (std::size_t i = 0; i < argv.size(); ++i) {
     if (i != 0) {
@@ -389,9 +354,7 @@ inline SubprocessResult runProcess(
   }
   detail::ScopedHandle in_r(in_r_raw), in_w(in_w_raw);
 
-  // Only the child-side ends are meant to be inherited; the parent's own
-  // ends must not leak into some OTHER child this process spawns
-  // concurrently.
+  // The parent's ends must not leak into another child spawned concurrently.
   SetHandleInformation(out_r.h, HANDLE_FLAG_INHERIT, 0);
   SetHandleInformation(in_w.h, HANDLE_FLAG_INHERIT, 0);
 
@@ -401,11 +364,8 @@ inline SubprocessResult runProcess(
     return {false, -1, "could not open NUL for the child's stderr"};
   }
 
-  // An explicit handle-inheritance list: without it, CreateProcess with
-  // bInheritHandles=TRUE would hand the child every inheritable handle this
-  // process happens to be holding at that moment, not just the three below.
-  // The child's own copies are closed right after CreateProcess returns, to
-  // shrink the window in which a concurrent host spawn could inherit them.
+  // Explicit inheritance list: bInheritHandles=TRUE would otherwise hand the child every
+  // inheritable handle this process holds, not just these three.
   STARTUPINFOEXW si{};
   si.StartupInfo.cb = sizeof(si);
   si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -415,7 +375,7 @@ inline SubprocessResult runProcess(
 
   HANDLE handle_list[3] = {in_r.h, out_w.h, nul.h};
   SIZE_T attr_list_size = 0;
-  InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_list_size);  // size query; expected to "fail"
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_list_size);  // size query, expected to "fail"
   std::vector<char> attr_list_buf(attr_list_size);
   auto* attr_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_list_buf.data());
   const bool attr_list_ok =
@@ -460,8 +420,8 @@ inline SubprocessResult runProcess(
   }
   detail::ScopedHandle process(pi.hProcess);
 
-  // Shrink the window in which a concurrent host spawn could inherit these:
-  // close every child-side handle now that the child has its own copies.
+  // Close the child-side handles now to shrink the window in which a concurrent host spawn
+  // could inherit them.
   in_r.reset();
   out_w.reset();
   nul.reset();
@@ -488,7 +448,7 @@ inline SubprocessResult runProcess(
 
   bool killed = false;
   bool exited = false;
-  int fallback_empty_waits = 0;  // only used when job is absent; see below
+  int fallback_empty_waits = 0;  // only used without a job object
   char buf[4096];
   for (;;) {
     if (cancel.load() && !killed) {
@@ -502,7 +462,7 @@ inline SubprocessResult runProcess(
 
     DWORD avail = 0;
     if (!PeekNamedPipe(out_r.h, nullptr, 0, nullptr, &avail, nullptr)) {
-      break;  // ERROR_BROKEN_PIPE (or worse): EOF
+      break;  // ERROR_BROKEN_PIPE or worse: EOF
     }
     if (avail > 0) {
       const DWORD to_read = avail < sizeof(buf) ? avail : static_cast<DWORD>(sizeof(buf));
@@ -517,17 +477,13 @@ inline SubprocessResult runProcess(
     if (wr == WAIT_OBJECT_0 && !exited) {
       exited = true;
       if (job) {
-        // Kills every descendant too, so a grandchild's own inherited copy
-        // of the stdout write handle cannot keep the pipe open after the
-        // CLI itself is gone -- PeekNamedPipe/ReadFile above would otherwise
-        // wait forever on output nothing will ever produce.
+        // Kills descendants too: a grandchild's inherited copy of the stdout write handle
+        // would otherwise keep the pipe open and the read loop waiting forever.
         TerminateJobObject(job.h, 0);
       }
     } else if (exited && !job) {
-      // No job object to reap descendants with (AssignProcessToJobObject
-      // failed): a grandchild's inherited handle could keep the pipe open
-      // past the parent's own exit. Bounded fallback -- give up after 20
-      // consecutive empty polls (~1 s) rather than block forever.
+      // No job object to reap descendants (AssignProcessToJobObject failed): bound the wait
+      // at 20 consecutive empty polls (~1 s) instead of blocking on a grandchild's handle.
       if (++fallback_empty_waits >= 20) {
         break;
       }
@@ -537,11 +493,8 @@ inline SubprocessResult runProcess(
   WaitForSingleObject(process.h, INFINITE);
   DWORD exit_code = 0;
   GetExitCodeProcess(process.h, &exit_code);
-  // out_r/process/job (and any still-open pipe handle above) close via their
-  // ScopedHandle destructors below.
-  // If `cancel` killed the child, exit_code is whatever TerminateJobObject/
-  // TerminateProcess reported (1 above) -- callers detect cancellation
-  // through their own `cancel_` flag, not through this exit code.
+  // After a cancel, exit_code is the 1 passed to TerminateJobObject/TerminateProcess;
+  // callers detect cancellation through their own flag, not this code.
   return {true, static_cast<int>(exit_code), ""};
 }
 

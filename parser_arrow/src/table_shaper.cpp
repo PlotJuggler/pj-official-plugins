@@ -27,7 +27,6 @@ namespace {
 /// Planning state for a scalar output or an ingestible variable list awaiting its first-batch width.
 enum class ColumnStatus { kReady, kVariableList };
 
-/// One output column and the source path or cast used to populate it.
 struct OutputColumn {
   std::vector<int64_t> source_path;
   ColumnSource source = ColumnSource::kLeaf;
@@ -48,13 +47,11 @@ struct OutputColumn {
   int32_t decimal_scale = 0;
 };
 
-/// One dropped source column paired with its depth-first collection order.
 struct OrderedDroppedColumn {
   std::size_t source_order = 0;
   DroppedColumn column;
 };
 
-/// Final host-compatible columns, schema, diagnostics, and optional first-batch peek.
 struct CompatibilityResult {
   PJ::sdk::ArrowSchemaHolder output_schema;
   std::deque<PJ::sdk::ArrowArrayHolder> pending_batches;
@@ -64,7 +61,6 @@ struct CompatibilityResult {
   bool has_data = true;
 };
 
-/// State owned by one lazy shaping ArrowArrayStream.
 struct ShapingStreamState {
   PJ::sdk::ArrowStreamHolder input;
   PJ::sdk::ArrowSchemaHolder input_schema;
@@ -83,7 +79,6 @@ struct ShapingStreamState {
 
 constexpr char kCallbackErrorFallback[] = "parser_arrow: unable to store Arrow stream error details";
 
-/// Parse one schema node into a validated view.
 [[nodiscard]] PJ::Expected<ArrowSchemaView> schemaView(const ArrowSchema* schema) {
   if (schema == nullptr || schema->format == nullptr) {
     return PJ::unexpected(parserError("malformed Arrow child schema"));
@@ -97,7 +92,6 @@ constexpr char kCallbackErrorFallback[] = "parser_arrow: unable to store Arrow s
   return view;
 }
 
-/// Initialize and bind a reusable array view.
 [[nodiscard]] int bindArrayView(
     ArrowArrayView* view, const ArrowSchema* schema, const ArrowArray* array, ArrowError* error) {
   int result = ArrowArrayViewInitFromSchema(view, schema, error);
@@ -134,12 +128,10 @@ void setNanoarrowStreamError(ShapingStreamState& state, int result, const char* 
   }
 }
 
-/// Return whether a schema represents an Arrow struct.
 [[nodiscard]] bool isStruct(const ArrowSchema* schema) {
   return schema != nullptr && schema->format != nullptr && std::string_view(schema->format) == "+s";
 }
 
-/// Return whether a schema is normalized through the canonical byte-copy path.
 [[nodiscard]] bool needsByteNormalization(const ArrowSchema* schema) {
   if (schema == nullptr || schema->format == nullptr) {
     return false;
@@ -158,17 +150,14 @@ void setNanoarrowStreamError(ShapingStreamState& state, int result, const char* 
   return parent_name.empty() ? component : std::string(parent_name) + "/" + component;
 }
 
-/// Copy a nullable C string into a nanoarrow-owned schema field.
 [[nodiscard]] int copySchemaName(ArrowSchema* output, const char* name) {
   return name == nullptr ? NANOARROW_OK : ArrowSchemaSetName(output, name);
 }
 
-/// Copy nullable C Data schema metadata into nanoarrow-owned storage.
 [[nodiscard]] int copySchemaMetadata(ArrowSchema* output, const char* metadata) {
   return metadata == nullptr ? NANOARROW_OK : ArrowSchemaSetMetadata(output, metadata);
 }
 
-/// Resolve a child schema by a path collected from the same root.
 [[nodiscard]] const ArrowSchema* schemaAtPath(const ArrowSchema* root, const std::vector<int64_t>& path) {
   const ArrowSchema* current = root;
   for (const int64_t child_index : path) {
@@ -177,7 +166,6 @@ void setNanoarrowStreamError(ShapingStreamState& state, int result, const char* 
   return current;
 }
 
-/// Resolve a mutable source array by a collected child path.
 [[nodiscard]] ArrowArray* arrayAtPath(ArrowArray* root, const std::vector<int64_t>& path) {
   ArrowArray* current = root;
   for (const int64_t child_index : path) {
@@ -186,17 +174,14 @@ void setNanoarrowStreamError(ShapingStreamState& state, int result, const char* 
   return current;
 }
 
-/// Return whether an Arrow integer type is unsigned, so its ticks must be read through the uint64 accessor.
 [[nodiscard]] bool isUnsignedInteger(ArrowType type) {
   return typeRow(type).is_unsigned_integer;
 }
 
-/// Return whether a logical type uses Arrow list offsets or a schema-declared fixed width.
 [[nodiscard]] bool isListType(ArrowType type) {
   return typeRow(type).is_list_type;
 }
 
-/// Translate Arrow's native unit without changing the timestamp's interpretation.
 [[nodiscard]] PJ::TimeUnit timestampUnit(ArrowTimeUnit unit) {
   switch (unit) {
     case NANOARROW_TIME_UNIT_SECOND:
@@ -301,7 +286,6 @@ PJ::Status collectOutputColumns(
   return PJ::okStatus();
 }
 
-/// Collect every flattened leaf of a stream schema in depth-first order.
 PJ::Status collectLeaves(const ArrowSchema* schema, bool flatten_structs, std::vector<OutputColumn>& output) {
   for (int64_t child_index = 0; child_index < schema->n_children; ++child_index) {
     const auto* child = schema->children[child_index];
@@ -324,7 +308,6 @@ PJ::Status collectLeaves(const ArrowSchema* schema, bool flatten_structs, std::v
   return index;
 }
 
-/// Surface the SDK's warning when an explicitly selected axis has limited range or precision.
 void appendExplicitAxisWarning(const OutputColumn& column, std::vector<ShapeWarning>& warnings) {
   const auto limitation = PJ::sdk::explicitOnlyWarning(typeRow(column.source_type).timestamp_storage, column.unit);
   if (!limitation.empty()) {
@@ -347,7 +330,6 @@ void appendExplicitAxisWarning(const OutputColumn& column, std::vector<ShapeWarn
   return PJ::sdk::detectTimestampColumn(candidates, policy).value_or(leaves.size());
 }
 
-/// Return whether the current PlotJuggler host imports a final output schema.
 [[nodiscard]] PJ::Expected<bool> isHostIngestible(const ArrowSchema* schema) {
   auto view = schemaView(schema);
   if (!view) {
@@ -378,7 +360,6 @@ void appendExplicitAxisWarning(const OutputColumn& column, std::vector<ShapeWarn
   return current;
 }
 
-/// Resolve one list row's child bounds from the list view storage layout.
 [[nodiscard]] bool listChildBounds(
     const ArrowArrayView* list, int64_t row, int32_t fixed_size, int64_t* begin, int64_t* end) {
   if (row < 0 || list->offset > std::numeric_limits<int64_t>::max() - row) {
@@ -420,7 +401,6 @@ void appendExplicitAxisWarning(const OutputColumn& column, std::vector<ShapeWarn
   return std::pair<std::string, bool>{scalar_schema->format, *ingestible};
 }
 
-/// Append one expanded list's selected columns or report the source list once when it is empty or skipped.
 void finalizeList(
     const OutputColumn& source, int64_t real_width, const ArrowSchema* source_schema,
     const PJ::sdk::ArrayLimit& array_limit, std::vector<OutputColumn>& output,
@@ -450,7 +430,6 @@ void finalizeList(
   }
 }
 
-/// Build a host-compatible schema for the finalized output mapping.
 PJ::Status buildOutputSchema(
     const ArrowSchema* input_schema, const std::vector<OutputColumn>& columns, ArrowSchema* output_schema) {
   ArrowSchemaInit(output_schema);
@@ -502,8 +481,6 @@ PJ::Status buildOutputSchema(
   return PJ::okStatus();
 }
 
-/// Apply every compatibility workaround required by pj_datastore's current arrow_import implementation.
-///
 /// Everything in here exists only because pj_datastore's arrow_import maps only int/uint/float/double/bool/utf8,
 /// drops TIMESTAMP, mis-reads LARGE_STRING offsets, and turns an empty timestamp name into row indices; delete when
 /// the host is fixed.
@@ -569,9 +546,8 @@ PJ::Status buildOutputSchema(
     return !column.is_timestamp_axis && column.status != ColumnStatus::kVariableList;
   });
   if (has_variable_list) {
-    // If lists are the only data and initially empty, find the first usable
-    // batch before publishing the fixed schema. Keep preceding rows for null
-    // padding and timestamp validation. Independent messages plan afresh.
+    // If lists are the only data and initially empty, find the first usable batch before publishing the fixed schema,
+    // keeping the preceding rows for null padding and timestamp validation.
     while (true) {
       PJ::sdk::ArrowArrayHolder batch;
       const int next = input.get()->get_next(input.get(), batch.out());
@@ -687,7 +663,6 @@ PJ::Status buildOutputSchema(
   return result;
 }
 
-/// Return whether a struct leaf can transfer ownership without parent validity work.
 [[nodiscard]] bool canMoveFlattenedLeaf(const ArrowArray* root, const std::vector<int64_t>& path) {
   if (root->offset != 0 || root->null_count != 0) {
     return false;
@@ -705,7 +680,6 @@ PJ::Status buildOutputSchema(
   return true;
 }
 
-/// Return whether one source-backed output column needs an input view for copying.
 [[nodiscard]] bool needsCopy(const ArrowArray* input, const OutputColumn& column) {
   if (column.source == ColumnSource::kSynthesizedTimestamp) {
     return false;
@@ -716,7 +690,6 @@ PJ::Status buildOutputSchema(
   return cast_requires_copy || !canMoveFlattenedLeaf(input, column.source_path);
 }
 
-/// Append one supported scalar or byte value from an ArrowArrayView.
 [[nodiscard]] int appendValue(
     ArrowArray* output, const ArrowArrayView* input, int64_t row, const OutputColumn& column,
     ShapingStreamState& state) {
@@ -749,12 +722,10 @@ PJ::Status buildOutputSchema(
   return fail(state, EINVAL, "Arrow column '" + column.name + "' has invalid scalar copy metadata");
 }
 
-/// Return whether appendValue can reconstruct one logical source value.
 [[nodiscard]] bool supportsScalarCopy(ArrowType type) {
   return typeRow(type).copy != CopyKind::kUnsupported;
 }
 
-/// Append one copied/cast source value and preserve ordinary-column nulls.
 [[nodiscard]] int appendCastedValue(
     ArrowArray* output, const ArrowArrayView* input, int64_t row, const OutputColumn& column,
     ShapingStreamState& state) {
@@ -808,7 +779,6 @@ PJ::Status buildOutputSchema(
   return ArrowArrayAppendInt(output, *converted);
 }
 
-/// Copy one source leaf while applying all ancestor and leaf validity.
 [[nodiscard]] int copyColumn(
     ArrowArray* output, const ArrowArrayView* input_root, const OutputColumn& column, int64_t length,
     ShapingStreamState& state) {
@@ -839,7 +809,6 @@ PJ::Status buildOutputSchema(
   return NANOARROW_OK;
 }
 
-/// Copy all expanded columns from one source list, resolving its path and row bounds once per row.
 [[nodiscard]] int copyListColumns(
     ArrowArray* output, std::size_t first, std::size_t last, const ArrowArrayView* input_root,
     const std::vector<OutputColumn>& columns, int64_t length, ShapingStreamState& state) {
@@ -902,7 +871,6 @@ PJ::Status buildOutputSchema(
   return NANOARROW_OK;
 }
 
-/// Append this batch's section of the whole-stream synthetic timestamp sequence.
 [[nodiscard]] int appendSyntheticTimestamps(ArrowArray* output, ShapingStreamState& state, int64_t length) {
   int result = ArrowArrayStartAppending(output);
   if (result != NANOARROW_OK) {
@@ -922,7 +890,6 @@ PJ::Status buildOutputSchema(
   return NANOARROW_OK;
 }
 
-/// Rewrite one batch according to the stream's immutable mapping and one shared input view.
 [[nodiscard]] int rewriteBatch(
     ShapingStreamState& state, ArrowArray* input, const ArrowArrayView* input_view, ArrowArray* output) {
   for (const auto& column : state.columns) {
@@ -987,8 +954,8 @@ PJ::Status buildOutputSchema(
 
   output->length = input->length;
   output->null_count = 0;
-  // Finalize only nanoarrow-owned arrays. Its builder must never inspect the
-  // private_data of children exported by another Arrow implementation.
+  // Finalize only nanoarrow-owned arrays: the builder must never inspect the private_data of children exported by
+  // another Arrow implementation (moved columns are attached after this call).
   result = ArrowArrayFinishBuilding(output, NANOARROW_VALIDATION_LEVEL_NONE, &error);
   if (result != NANOARROW_OK) {
     setNanoarrowStreamError(state, result, error.message);
@@ -1001,12 +968,10 @@ PJ::Status buildOutputSchema(
   return NANOARROW_OK;
 }
 
-/// Recover the private wrapper state from an ArrowArrayStream callback.
 [[nodiscard]] ShapingStreamState* streamState(ArrowArrayStream* stream) {
   return static_cast<ShapingStreamState*>(stream->private_data);
 }
 
-/// Export a fresh owned copy of the rewritten schema.
 int shapingGetSchema(ArrowArrayStream* stream, ArrowSchema* output) noexcept {
   try {
     auto* state = streamState(stream);
@@ -1026,7 +991,6 @@ int shapingGetSchema(ArrowArrayStream* stream, ArrowSchema* output) noexcept {
   }
 }
 
-/// Pull and lazily rewrite one record batch from the inner stream.
 int shapingGetNext(ArrowArrayStream* stream, ArrowArray* output) noexcept {
   *output = {};
   try {
@@ -1094,13 +1058,11 @@ int shapingGetNext(ArrowArrayStream* stream, ArrowArray* output) noexcept {
   }
 }
 
-/// Return the most recent wrapper or inner-stream diagnostic.
 const char* shapingGetLastError(ArrowArrayStream* stream) noexcept {
   const auto* state = streamState(stream);
   return state->fixed_error != nullptr ? state->fixed_error : state->last_error.c_str();
 }
 
-/// Release the inner stream, cached schemas, mapping, and wrapper state.
 void shapingRelease(ArrowArrayStream* stream) noexcept {
   if (stream->release == nullptr) {
     return;
@@ -1118,7 +1080,6 @@ namespace test {
   return supportsScalarCopy(type);
 }
 
-/// Exercise production scalar-copy dispatch without exposing its shaping state to tests.
 [[nodiscard]] int appendCastedValueForTesting(
     ArrowArray* output, const ArrowArrayView* input, int64_t row, const ArrowSchema* logical_schema) {
   ShapingStreamState state;

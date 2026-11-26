@@ -17,9 +17,7 @@ struct TopicInfo {
   std::string schema_name;
   std::string schema;
 
-  /// Value equality over all fields — lets the advertise catalog detect a real
-  /// change (schema/type edit, not just a re-notification) so the source
-  /// re-advertises to the host only on a genuine delta. See applyAdvertiseDelta.
+  /// Lets the advertise catalog tell a real schema/type change from a re-notification (see applyAdvertiseDelta).
   friend bool operator==(const TopicInfo&, const TopicInfo&) = default;
 };
 
@@ -46,10 +44,8 @@ inline constexpr size_t kMaxDecompressedSize = size_t{256} * 1024 * 1024;
 bool parseBinaryFrame(
     const uint8_t* data, size_t size, std::vector<RawMessage>& messages, std::vector<uint8_t>& decompress_buffer);
 
-/// Build a JSON request with a UUID.
 std::string buildRequest(const std::string& command, const std::string& uuid);
 
-/// Generate a simple UUID-like string for request matching.
 std::string generateRequestId();
 
 }  // namespace PJ::BridgeProtocol

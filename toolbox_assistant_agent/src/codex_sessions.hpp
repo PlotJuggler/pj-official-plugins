@@ -7,39 +7,28 @@
 #include <vector>
 
 #include "chat_session.hpp"
-#include "claude_sessions.hpp"  // ConversationSummary -- one shape, shared by every harness's drawer row
+#include "claude_sessions.hpp"  // ConversationSummary
 
 namespace assistant_agent {
 
-// Read-only, tolerant access to the Codex CLI's own session store —
-// `${CODEX_HOME:-~/.codex}/sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl`,
-// one append-only file per conversation. Mirrors claude_sessions.hpp's
-// contract exactly (never written to, defensive against corrupt lines and
-// record shapes this build has never heard of) but under distinct function
-// names — `listConversations`/`loadTranscript`/`deleteConversation` already
-// name Claude's own free functions in this namespace, and Codex's `dir`
-// parameter takes an extra `work_dir` (the cwd filter has to happen inside
-// the listing here; Claude's own store is already split one directory per
-// cwd, so it needs no such filter).
+// Read-only, tolerant access to the Codex CLI's own session store,
+// `${CODEX_HOME:-~/.codex}/sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl`, one
+// append-only file per conversation. Same contract as claude_sessions.hpp (never
+// written to, defensive against corrupt lines and unknown record shapes), under
+// distinct names, and the listing takes a `work_dir` because the cwd filter has to
+// happen inside it (Claude's store is already one directory per cwd).
 //
-// `codex exec` prepends a few harness-injected "user"-role messages
-// ("<environment_context>...", "<recommended_plugins>...", and, since 0.158,
-// the user's global ~/.codex/AGENTS.md as "# AGENTS.md instructions...")
-// before the actual prompt on (at least) a session's first turn — verified against real files
-// under ~/.codex/sessions/2026/09/03/. Nothing in the JSON marks them as
-// synthetic, so both functions below recognize them by their opening text
-// (codex_sessions.cpp's isHarnessInjectedUserText) and treat them exactly
-// like a Claude `developer` record: skipped for both the title and the
-// transcript.
+// `codex exec` prepends harness-injected "user"-role messages ("<environment_context>...",
+// "<recommended_plugins>...", the global AGENTS.md as "# AGENTS.md instructions...")
+// before the real prompt, with nothing in the JSON marking them synthetic. Both
+// functions below recognize them by their opening text (isHarnessInjectedUserText in
+// codex_sessions.cpp) and skip them for the title and the transcript.
 
-// `${CODEX_HOME:-$HOME/.codex}` -- the one place this resolution lives.
-// codexSessionsDir() below appends "sessions"; codex_models.cpp's
-// codexModelsCacheFile() appends "models_cache.json" onto the same base.
-// Empty when neither variable resolves a base directory.
+// `${CODEX_HOME:-$HOME/.codex}`, the single place this is resolved (codexSessionsDir()
+// and codexModelsCacheFile() append to it). Empty when neither variable resolves.
 [[nodiscard]] std::filesystem::path codexHomeDir();
 
-// `${CODEX_HOME:-~/.codex}/sessions`. Empty when neither variable resolves a
-// base directory; callers treat that as "list nothing".
+// `codexHomeDir()/sessions`. Empty means "list nothing".
 [[nodiscard]] std::filesystem::path codexSessionsDir();
 
 // Every `rollout-*.jsonl` under `sessions_dir` (recursing the YYYY/MM/DD
@@ -49,11 +38,9 @@ namespace assistant_agent {
 [[nodiscard]] std::vector<ConversationSummary> listCodexConversations(
     const std::filesystem::path& sessions_dir, const std::string& work_dir);
 
-// The rows of one conversation (found by the file whose name ends with
-// `-<id>.jsonl`), in file order, ready to replay through the same ChatSession
-// calls the live path uses. No tool rows: the real session files under
-// ~/.codex/sessions/2026/09/03/ never carry an `McpToolCall` event_msg item,
-// so there is nothing verified to replay — see codex_backend_brief.md.
+// The rows of one conversation (the file whose name ends with `-<id>.jsonl`), in file
+// order, for replay through the live path's ChatSession calls. No tool rows: session
+// files carry no verified `McpToolCall` event_msg item to replay.
 [[nodiscard]] std::vector<ChatMessage> loadCodexTranscript(
     const std::filesystem::path& sessions_dir, const std::string& id);
 

@@ -11,17 +11,14 @@
 
 namespace toolbox_testing {
 
-// A catalog-only toolbox host with optionally named datasets and field COUNT
-// and TYPE the test controls. Neither existing fake covers this:
-// ToolboxTestStore stamps every field float64 with real timestamps/values
-// (it exists for the read path), and FakeMultiDatasetHost fixes one float64
-// "value" field per topic (it exists for the several-datasets path). The
-// mixed catalog digest's tiering depends on topics with many fields of
-// assorted types, which needs a host that can vary both.
+// A catalog-only toolbox host with optionally named datasets and field COUNT and TYPE the test
+// controls. ToolboxTestStore stamps every field float64 with real timestamps/values (for the read
+// path) and FakeMultiDatasetHost fixes one float64 "value" field per topic (for the
+// several-datasets path); the mixed catalog digest's tiering needs topics with many fields of
+// assorted types.
 //
-// Catalog-only like FakeMultiDatasetHost: every other slot stays null so a
-// test that wanders into the read path fails loudly instead of reading
-// zeros.
+// Every other slot stays null, so a test that wanders into the read path fails loudly instead of
+// reading zeros.
 class FakeCatalogHost {
  public:
   // Adds a scalar topic. With `dataset`, the topic belongs to that data source (created on first use);
@@ -46,11 +43,9 @@ class FakeCatalogHost {
     return *this;
   }
 
-  // Adds an object topic (catalog snapshot v2 only -- see supportsV2()).
-  // `metadata_json` defaults to a document already carrying the canonical
-  // `builtin_object_type` key so a test that only needs a plausible object
-  // topic can omit it; a test asserting `"derived"` should pass a document
-  // with (or without) the `"pj_derived"` key explicitly.
+  // Adds an object topic (catalog snapshot v2 only, see supportsV2()). `metadata_json` defaults to
+  // a document carrying the canonical `builtin_object_type` key; a test asserting `"derived"`
+  // should pass a document with (or without) the `"pj_derived"` key explicitly.
   FakeCatalogHost& addObjectTopic(
       const std::string& name, const std::string& type_name, std::uint64_t entries, std::int64_t t_min_ns,
       std::int64_t t_max_ns, const std::string& metadata_json = R"({"builtin_object_type":"kPointCloud"})",
@@ -60,11 +55,9 @@ class FakeCatalogHost {
     return *this;
   }
 
-  // Opt-in, true by default: a test simulates a host that predates catalog
-  // snapshot v2 by calling supportsV2(false), which leaves the vtable's
-  // acquire_catalog_snapshot_v2 slot null AND shrinks struct_size to exclude
-  // it -- either alone already fails PJ_HAS_TAIL_SLOT, both together is what
-  // a host actually built before the slot existed would report.
+  // True by default. supportsV2(false) simulates a host without catalog snapshot v2: it leaves the
+  // vtable's acquire_catalog_snapshot_v2 slot null AND shrinks struct_size to exclude it (either
+  // alone fails PJ_HAS_TAIL_SLOT; both together is what a host built before the slot reports).
   FakeCatalogHost& supportsV2(bool value) {
     supports_v2_ = value;
     return *this;
@@ -119,9 +112,8 @@ class FakeCatalogHost {
     }
   }
 
-  // Rebuilds topic_abi_/field_abi_ from topics_ -- shared by tAcquire and
-  // tAcquireV2 so the scalar half of a v2 snapshot is byte-for-byte what v1
-  // would have reported.
+  // Shared by tAcquire and tAcquireV2 so the scalar half of a v2 snapshot is byte-for-byte what v1
+  // reports.
   void rebuildScalarAbi() {
     source_abi_.clear();
     for (std::size_t i = 0; i < datasets_.size(); ++i) {

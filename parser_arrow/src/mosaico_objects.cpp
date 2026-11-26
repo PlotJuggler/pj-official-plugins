@@ -37,14 +37,9 @@ namespace mosaico {
 
 namespace {
 
-// --------------------------------------------------------------------------
-// Per-row Arrow column readers. Each dispatches on the chunk's runtime type so
-// the same helper handles the int32/int64, BINARY/STRING and — critically for
-// the Mosaico server — the BINARY_VIEW / STRING_VIEW variants Arrow >=15 emits
-// for variable-length columns. Reading those view types with a plain
-// BinaryArray/StringArray cast returns nothing, which is the root cause of
-// image topics "barely downloading" (empty encoding/data -> the topic errored).
-// --------------------------------------------------------------------------
+// Per-row column readers dispatch on the chunk's runtime type. Mosaico emits the BINARY_VIEW / STRING_VIEW variants
+// (Arrow >=15) for variable-length columns such as `encoding`, `format`, `frame_id` and the image `data`; a plain
+// BinaryArray/StringArray cast reads nothing from them.
 
 [[nodiscard]] std::int32_t arrowI32At(const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
   if (!col || row < 0 || row >= col->length()) {
@@ -110,7 +105,6 @@ namespace {
   return scalar.ok() && (*scalar)->is_valid;
 }
 
-// Read a UTF-8 string handling STRING / LARGE_STRING / STRING_VIEW.
 [[nodiscard]] std::string arrowStringAt(const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
   if (!col || row < 0 || row >= col->length()) {
     return {};
@@ -128,8 +122,6 @@ namespace {
         case arrow::Type::LARGE_STRING:
           return std::static_pointer_cast<arrow::LargeStringArray>(chunk)->GetString(chunk_row);
         case arrow::Type::STRING_VIEW:
-          // Arrow >=15 emits Utf8View for variable-length string columns; the
-          // Mosaico server uses it for `encoding`/`format`/`frame_id`.
           return std::static_pointer_cast<arrow::StringViewArray>(chunk)->GetString(chunk_row);
         default:
           return {};
@@ -140,7 +132,6 @@ namespace {
   return {};
 }
 
-// Read a bool handling BOOL; returns @p fallback on null/missing/other type.
 [[nodiscard]] bool arrowBoolAt(const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row, bool fallback) {
   if (!col || row < 0 || row >= col->length()) {
     return fallback;
@@ -162,9 +153,7 @@ namespace {
   return fallback;
 }
 
-// View a row's bytes as a span, handling BINARY / LARGE_BINARY /
-// FIXED_SIZE_BINARY / BINARY_VIEW. The span borrows the Arrow buffer; the
-// caller must not retain it past the lifetime of @p col.
+// The returned span borrows the Arrow buffer and must not outlive @p col.
 [[nodiscard]] PJ::Span<const std::uint8_t> arrowBinaryAt(
     const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
   if (!col || row < 0 || row >= col->length()) {
@@ -195,8 +184,6 @@ namespace {
           return PJ::Span<const std::uint8_t>(bin->GetValue(chunk_row), static_cast<std::size_t>(bin->byte_width()));
         }
         case arrow::Type::BINARY_VIEW: {
-          // Arrow >=15 emits BinaryView for variable-length binary columns;
-          // the Mosaico server uses it for the image `data` column.
           auto bin = std::static_pointer_cast<arrow::BinaryViewArray>(chunk);
           const std::string_view view = bin->GetView(chunk_row);
           return PJ::Span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(view.data()), view.size());
@@ -210,7 +197,6 @@ namespace {
   return {};
 }
 
-// Return the first column present under any of @p names, else nullptr.
 [[nodiscard]] std::shared_ptr<arrow::ChunkedArray> firstPresentColumn(
     const std::shared_ptr<arrow::Table>& table, std::initializer_list<const char*> names) {
   for (const char* name : names) {
@@ -221,9 +207,6 @@ namespace {
   return nullptr;
 }
 
-// Read a scalar as double, handling DOUBLE / FLOAT / INT64 / INT32. Returns 0.0
-// on null/missing/other type. Used for the per-row pose/transform struct-child
-// columns (translation/x, rotation/w, …) after flattenStructColumns.
 [[nodiscard]] double arrowDoubleAt(const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
   if (!col || row < 0 || row >= col->length()) {
     return 0.0;
@@ -253,18 +236,12 @@ namespace {
   return 0.0;
 }
 
-// Forward declarations: readPointFields (next) reads the `fields` struct
-// children through these type-flexible absolute-index helpers, which are defined
-// further down with the other list/struct readers.
 [[nodiscard]] std::string arrayStringAt(const std::shared_ptr<arrow::Array>& arr, std::int64_t idx);
 [[nodiscard]] std::optional<std::int64_t> arrayIntAt(const std::shared_ptr<arrow::Array>& arr, std::int64_t idx);
 
-// Read one row of the ROS-PointCloud2 `fields` column —
-// list<struct<name:string, offset:uint32, datatype:int64, count:uint32>> — into
-// canonical sdk::PointField records. Mosaico's `datatype` shares ROS PointField's
-// numbering, which equals sdk::PointField::Datatype (kInt8=1 … kFloat64=8), so the
-// value maps verbatim (out-of-range -> kUnknown). Returns empty on
-// null/missing/wrong-shape.
+// Reads the PointCloud2 `fields` column, list<struct<name, offset, datatype, count>>. Mosaico's `datatype` uses ROS
+// PointField numbering, which equals sdk::PointField::Datatype (kInt8=1 … kFloat64=8), so it maps verbatim
+// (out-of-range -> kUnknown). Returns empty on null/missing/wrong-shape.
 [[nodiscard]] std::vector<PJ::sdk::PointField> readPointFields(
     const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
   std::vector<PJ::sdk::PointField> out;
@@ -286,12 +263,9 @@ namespace {
       if (!items) {
         return out;
       }
-      // Read each child through a type-flexible helper rather than a single
-      // fixed cast: the `fields` column is a list<struct> that bypasses
-      // flattenStructColumns, so the server is free to emit `name` as
-      // Utf8/LargeUtf8/Utf8View and offset/datatype/count at any integer width.
-      // A fixed cast would null out and silently yield empty names / offset 0
-      // (every channel aliasing byte 0).
+      // This list<struct> bypasses flattenStructColumns, so the server may emit `name` as Utf8/LargeUtf8/Utf8View and
+      // offset/datatype/count at any integer width. A fixed cast would silently yield empty names and offset 0 (every
+      // channel aliasing byte 0), hence the type-flexible helpers.
       const auto names = items->GetFieldByName("name");
       const auto offsets = items->GetFieldByName("offset");
       const auto datatypes = items->GetFieldByName("datatype");
@@ -317,16 +291,8 @@ namespace {
   return out;
 }
 
-// --------------------------------------------------------------------------
-// List / struct readers for the non-packed object ontologies (transform,
-// occupancy_grid, laser_scan, grid_cells, and the columnar "futures" clouds).
-// These mirror the per-row chunk-walk of the scalar readers above but descend
-// into Arrow list<…> / struct<…> values.
-// --------------------------------------------------------------------------
-
-// Read a UTF-8 string at an ABSOLUTE index of an (already-resolved) Array,
-// handling STRING / LARGE_STRING / STRING_VIEW. For list/struct children whose
-// parent chunk has already been located.
+// The readers below take an ABSOLUTE index into an already-resolved Array (list/struct children whose parent chunk
+// was located by the caller).
 [[nodiscard]] std::string arrayStringAt(const std::shared_ptr<arrow::Array>& arr, std::int64_t idx) {
   if (!arr || idx < 0 || idx >= arr->length() || arr->IsNull(idx)) {
     return {};
@@ -343,12 +309,8 @@ namespace {
   }
 }
 
-// Read an integer Array child at an ABSOLUTE index, handling every signed /
-// unsigned width (8..64). Returns std::nullopt on null/missing/non-integer so
-// the caller can tell "absent" from a real 0. Used for the PointCloud2 `fields`
-// descriptor children (offset / datatype / count), whose Arrow width the server
-// is free to choose — a single fixed cast would silently yield 0 for any other
-// width.
+// Returns std::nullopt on null/missing/non-integer so the caller can tell "absent" from a real 0. Handles every
+// integer width because the server chooses the Arrow width of the PointCloud2 `fields` children.
 [[nodiscard]] std::optional<std::int64_t> arrayIntAt(const std::shared_ptr<arrow::Array>& arr, std::int64_t idx) {
   if (!arr || idx < 0 || idx >= arr->length() || arr->IsNull(idx)) {
     return std::nullopt;
@@ -375,10 +337,8 @@ namespace {
   }
 }
 
-// A rotation quaternion whose components all defaulted to 0 (missing/null/typed
-// unexpectedly so every read fell back to 0.0) is not a valid rotation — its
-// norm is 0 and downstream TF/pose math would divide by it. Substitute identity
-// (w=1) so a server schema surprise degrades to "no rotation" rather than NaNs.
+// A quaternion whose components all read as 0 (missing, null or unexpectedly typed) has norm 0, and downstream TF/pose
+// math would divide by it. Substitute identity so a schema surprise degrades to "no rotation" rather than NaNs.
 [[nodiscard]] PJ::sdk::Quaternion sanitizeQuaternion(PJ::sdk::Quaternion q) {
   const double norm2 = (q.x * q.x) + (q.y * q.y) + (q.z * q.z) + (q.w * q.w);
   if (!std::isfinite(norm2) || norm2 < 1e-12) {
@@ -387,8 +347,6 @@ namespace {
   return q;
 }
 
-// Read a struct child as double at an ABSOLUTE index, handling DOUBLE / FLOAT /
-// INT*. Returns 0.0 when the child is absent/null/non-numeric.
 [[nodiscard]] double structChildDoubleAt(const std::shared_ptr<arrow::Array>& s, const char* name, std::int64_t idx) {
   const auto st = std::dynamic_pointer_cast<arrow::StructArray>(s);
   if (!st) {
@@ -412,7 +370,6 @@ namespace {
   }
 }
 
-// Read a struct child string ("frame_id" inside a header struct) at an ABSOLUTE index.
 [[nodiscard]] std::string structChildStringAt(
     const std::shared_ptr<arrow::Array>& s, const char* name, std::int64_t idx) {
   const auto st = std::dynamic_pointer_cast<arrow::StructArray>(s);
@@ -422,9 +379,8 @@ namespace {
   return arrayStringAt(st->GetFieldByName(name), idx);
 }
 
-// One per-point attribute list read out of a single row, kept as contiguous
-// native bytes (count * bytesPerElement) tagged with its canonical PointField
-// datatype. Backs the columnar→packed PointCloud build.
+// One per-point attribute list of a single row: contiguous native bytes (count * bytesPerElement) tagged with its
+// canonical PointField datatype.
 struct NumericList {
   PJ::sdk::PointField::Datatype datatype = PJ::sdk::PointField::Datatype::kUnknown;
   std::int64_t count = 0;
@@ -445,9 +401,7 @@ void copyListElems(
   }
 }
 
-// Locate the list values + [begin, len) slice for @p row of a LIST / LARGE_LIST
-// chunked column. Returns false (and leaves outputs untouched) on
-// null/missing/non-list/empty.
+// Returns false and leaves the outputs untouched on null/missing/non-list/empty.
 [[nodiscard]] bool resolveListSlice(
     const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row, std::shared_ptr<arrow::Array>& values,
     std::int64_t& begin, std::int64_t& len) {
@@ -531,8 +485,6 @@ void copyListElems(
   return out;
 }
 
-// Decode element @p i of a NumericList to double (used where a uniform numeric
-// view is enough, e.g. laser ranges).
 [[nodiscard]] double numericElemAsDouble(const NumericList& nl, std::int64_t i) {
   if (i < 0 || i >= nl.count) {
     return 0.0;
@@ -580,8 +532,6 @@ void copyListElems(
   }
 }
 
-// Read one row of a list<struct{…,x,y,z,…}> column into XYZ triples (e.g. the
-// grid_cells `cells` column; the structs carry mixin baggage we ignore).
 [[nodiscard]] std::vector<std::array<double, 3>> readXyzStructList(
     const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
   std::vector<std::array<double, 3>> out;
@@ -601,9 +551,8 @@ void copyListElems(
   return out;
 }
 
-// Read one row of a `frame_transform` `transforms` list<struct{…}> column into
-// FrameTransform records (parent_frame_id = header.frame_id, child_frame_id =
-// target_frame_id). The caller fills each record's timestamp.
+// parent_frame_id comes from header.frame_id and child_frame_id from target_frame_id; the caller fills each record's
+// timestamp.
 [[nodiscard]] std::vector<PJ::sdk::FrameTransform> readTransformList(
     const std::shared_ptr<arrow::ChunkedArray>& col, std::int64_t row) {
   std::vector<PJ::sdk::FrameTransform> out;
@@ -641,16 +590,13 @@ void copyListElems(
   return out;
 }
 
-// One attribute feeding the packed-cloud builder.
 struct PackAttr {
   std::string name;
   const NumericList* src = nullptr;
 };
 
-// Pack parallel per-point attributes into a canonical PointCloud `data` buffer.
-// Fills @p cloud.fields/width/height/point_step/row_step and returns the packed
-// bytes (the caller anchors the buffer in the returned cloud). Each attribute contributes one PointField of its
-// native datatype; tail elements beyond an attribute's count are left zero.
+// Each attribute becomes one PointField of its native datatype. Fills the cloud's layout fields and returns the packed
+// bytes, which the caller anchors in the cloud; elements beyond an attribute's count are left zero.
 [[nodiscard]] std::vector<std::uint8_t> packPointCloud(
     PJ::sdk::PointCloud& cloud, const std::vector<PackAttr>& attrs, std::int64_t npoints) {
   std::uint32_t point_step = 0;
@@ -692,10 +638,9 @@ arrow::Result<std::shared_ptr<arrow::Table>> flattenStructColumns(std::shared_pt
     return arrow::Status::Invalid("flattenStructColumns: null table");
   }
 
-  // Arrow's Table::Flatten only peels one struct layer at a time and uses
-  // "." as the separator. Loop until there are no more struct columns, then
-  // rewrite the dotted names with "/" so the resulting curve paths match
-  // PJ3's flattenArray output (toolbox_mosaico.cpp:374).
+  // Table::Flatten peels one struct layer at a time and joins names with ".", so loop until no struct columns remain,
+  // then rewrite the dots as "/" so the curve paths match PJ3's flattenArray output
+  // (e.g. "<sequence>/<topic>/pose/position/x").
   auto current = std::move(table);
   while (true) {
     bool has_struct = false;
@@ -711,9 +656,6 @@ arrow::Result<std::shared_ptr<arrow::Table>> flattenStructColumns(std::shared_pt
     ARROW_ASSIGN_OR_RAISE(current, current->Flatten());
   }
 
-  // Rename "parent.child" → "parent/child" to keep curve keys consistent
-  // with PJ3 (e.g. "<sequence>/<topic>/pose/position/x"). Only the fields
-  // change — the data and chunk layout carry through untouched.
   std::vector<std::shared_ptr<arrow::Field>> renamed_fields;
   renamed_fields.reserve(static_cast<std::size_t>(current->num_columns()));
   bool needs_rename = false;
@@ -729,11 +671,9 @@ arrow::Result<std::shared_ptr<arrow::Table>> flattenStructColumns(std::shared_pt
     renamed_fields.push_back(arrow::field(new_name, field->type(), field->nullable(), field->metadata()));
   }
   if (needs_rename) {
-    // Carry the original table-level metadata onto the rebuilt schema. It holds
-    // `mosaico:properties` (the ontology_tag) that resolveOntologyTag falls back
-    // on; the default Schema ctor would drop it, silently routing struct-bearing
-    // ontologies (pose/transform/occupancy_grid) to the scalar path whenever the
-    // cached tag is unavailable.
+    // The table-level metadata must carry over: it holds `mosaico:properties` (the ontology_tag) that
+    // resolveOntologyTag falls back on, and without it struct-bearing ontologies (pose/transform/occupancy_grid)
+    // silently take the scalar path whenever the cached tag is unavailable.
     auto renamed_schema = std::make_shared<arrow::Schema>(renamed_fields, current->schema()->metadata());
     current = arrow::Table::Make(renamed_schema, current->columns(), current->num_rows());
   }
@@ -752,7 +692,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeImage(
   if (!data_col) {
     return PJ::unexpected(std::string("image topic '") + topic_name + "' missing 'data' column");
   }
-  // Resolve columns once; geometry/encoding are read per-row below.
   const auto width_col = table->GetColumnByName("width");
   const auto height_col = table->GetColumnByName("height");
   const auto stride_col = firstPresentColumn(table, {"stride", "step", "row_step"});
@@ -772,14 +711,11 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeImage(
   const std::int32_t height = arrowI32At(height_col, row);
   const std::int32_t stride = arrowI32At(stride_col, row);
   std::string encoding = arrowStringAt(encoding_col, row);
-  // Capture emptiness of the per-row `encoding` BEFORE the `format` fallback
-  // overwrites it — a row that arrived with no pixel `encoding` is a
-  // pure-compressed frame (geometry lives inside the blob). Reused below for
-  // the is_compressed test so we don't re-materialize the string column.
+  // Captured before the `format` fallback overwrites `encoding`: a row with no pixel `encoding` is a pure-compressed
+  // frame (its geometry lives inside the blob).
   const bool encoding_was_empty = encoding.empty();
   const std::string format = arrowStringAt(format_col, row);
-  // Pure-compressed topics ship only `format` (jpeg/png) with no pixel
-  // `encoding`; fall back so the blob still carries a usable encoding.
+  // Pure-compressed topics ship only `format` (jpeg/png); use it as the encoding.
   if (encoding.empty()) {
     encoding = format;
   }
@@ -788,9 +724,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeImage(
         std::string("image topic '") + topic_name + "' row " + std::to_string(row) +
         ": missing both 'encoding' and 'format'");
   }
-  // A raw (non-compressed) frame needs positive geometry. A compressed frame
-  // (encoding came from `format`, geometry lives inside the blob) is allowed
-  // to have width/height == 0.
+  // Only raw frames need positive geometry; a compressed frame may report width/height == 0.
   const bool is_compressed = encoding_col == nullptr || encoding_was_empty;
   if (!is_compressed && (width <= 0 || height <= 0)) {
     return PJ::unexpected(
@@ -809,11 +743,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeImage(
   img.height = height > 0 ? static_cast<std::uint32_t>(height) : 0U;
   img.row_step = stride > 0 ? static_cast<std::uint32_t>(stride) : 0U;
   img.encoding = std::move(encoding);
-  // is_bigendian describes the PRODUCER's byte order and matters only for
-  // multi-byte raw encodings (mono16). When the column is null/absent we
-  // default to false (little-endian), matching the canonical sdk::Image
-  // struct default (Image.hpp) and the ROS convention. An explicit column
-  // value is always honored.
+  // is_bigendian is the PRODUCER's byte order and matters only for multi-byte raw encodings (mono16); null/absent
+  // defaults to little-endian, matching the canonical sdk::Image default and the ROS convention.
   img.is_bigendian = arrowBoolAt(bigendian_col, row, /*fallback=*/false);
   img.timestamp_ns = ts_ns;
   img.data = bytes_span;
@@ -889,12 +820,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodePointCloud(
   if (!table) {
     return PJ::unexpected(std::string("point_cloud topic '") + topic_name + "': null table");
   }
-  // The Mosaico `point_cloud2` ontology is ROS PointCloud2-shaped: a single
-  // packed `data` blob plus a `fields` channel descriptor and
-  // point_step/row_step/width/height — which IS the canonical sdk::PointCloud
-  // layout. So this copies the fields through verbatim: no point packing and,
-  // crucially, no decode/decompression (the bytes are already the canonical
-  // point buffer; host-side coloring/conversion happens in pj_scene3D).
+  // The `point_cloud2` ontology is already the canonical sdk::PointCloud layout (packed `data` blob, `fields`
+  // descriptor, point_step/row_step/width/height), so everything is copied verbatim: no packing, no decompression.
   const auto data_col = table->GetColumnByName("data");
   const auto fields_col = table->GetColumnByName("fields");
   if (!data_col || !fields_col) {
@@ -950,15 +877,13 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodePose(
   if (!table) {
     return PJ::unexpected(std::string("pose topic '") + topic_name + "': null table");
   }
-  // position/orientation arrive as struct columns; flatten to position/x …. The
-  // `pose` ontology nests them at the top level (position/*); `motion_state`
-  // (odometry) nests them under pose/* (pose/position/*) — accept either prefix.
+  // The `pose` ontology has position/* at the top level; `motion_state` (odometry) nests it under pose/*.
   const auto& flat = table;
   std::string prefix;
   if (flat->GetColumnByName("position/x")) {
     prefix = "";
   } else if (flat->GetColumnByName("pose/position/x")) {
-    prefix = "pose/";  // motion_state (odometry) nests the pose under pose/*
+    prefix = "pose/";
   } else {
     return PJ::unexpected(std::string("pose topic '") + topic_name + "' missing position/* columns");
   }
@@ -1028,9 +953,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeTransforms(
     return PJ::sdk::ObjectRecord{ts_ns, std::move(batch)};
   }
 
-  // `transform`: one transform per row. Flatten the struct columns and read the
-  // translation/rotation children, parent (header/frame_id) + child
-  // (target_frame_id) frame ids.
+  // `transform`: one transform per row; parent frame is header/frame_id, child frame is target_frame_id.
   const auto& flat = table;
   const auto tx = flat->GetColumnByName("translation/x");
   const auto ty = flat->GetColumnByName("translation/y");
@@ -1077,8 +1000,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeGrid(
   if (!table) {
     return PJ::unexpected(std::string("occupancy_grid topic '") + topic_name + "': null table");
   }
-  // info/origin/map_load_time are struct columns; flatten to read the scalar
-  // metadata + origin pose. The dense `data` list<int8> passes through flatten.
   const auto& flat = table;
   const auto data_col = flat->GetColumnByName("data");
   if (!data_col) {
@@ -1108,9 +1029,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeGrid(
   const double resolution = arrowDoubleAt(resolution_col, row);
   NumericList data = readNumericList(data_col, row);
   const std::int64_t cells = static_cast<std::int64_t>(w) * static_cast<std::int64_t>(h);
-  // A zero/negative/non-finite resolution is geometrically meaningless (cells
-  // collapse to a point); reject it alongside bad geometry rather than push a
-  // degenerate map that masks a server schema mismatch.
+  // A zero/negative/non-finite resolution collapses the cells to a point; reject it rather than push a degenerate map
+  // that would mask a server schema mismatch.
   if (w <= 0 || h <= 0 || !std::isfinite(resolution) || resolution <= 0.0 || !data.valid() || data.count < cells) {
     return PJ::unexpected(
         std::string("occupancy_grid topic '") + topic_name + "' row " + std::to_string(row) +
@@ -1129,7 +1049,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeGrid(
       .y = arrowDoubleAt(qy, row),
       .z = arrowDoubleAt(qz, row),
       .w = qw ? arrowDoubleAt(qw, row) : 1.0};
-  // `data` is int8 (−1/0..100); store the raw bytes (codec copies them).
+  // `data` is int8 (-1, 0..100); the raw bytes are stored as-is.
   auto owned = std::make_shared<std::vector<std::uint8_t>>(std::move(data.bytes));
   grid.data = PJ::Span<const std::uint8_t>(owned->data(), static_cast<std::size_t>(cells));
   grid.anchor = owned;
@@ -1143,7 +1063,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeLaserScan(
   if (!table) {
     return PJ::unexpected(std::string("laser_scan topic '") + topic_name + "': null table");
   }
-  // Flatten to surface header/frame_id; the `ranges`/`intensities` lists pass through.
   const auto& flat = table;
   const auto ranges_col = flat->GetColumnByName("ranges");
   if (!ranges_col) {
@@ -1175,8 +1094,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeLaserScan(
   const NumericList intensities = intensities_col ? readNumericList(intensities_col, row) : NumericList{};
   const bool have_intensity = intensities.valid() && intensities.count == ranges.count;
 
-  // Expand the polar scan to packed XYZ (+intensity) points, dropping returns
-  // that are non-finite or outside [range_min, range_max].
+  // Expand the polar scan to XYZ (+intensity) points, dropping returns that are non-finite or outside
+  // [range_min, range_max].
   std::vector<float> xs;
   std::vector<float> ys;
   std::vector<float> zs;
@@ -1292,7 +1211,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeColumnarCloud(
   if (!table) {
     return PJ::unexpected(std::string("futures point cloud topic '") + topic_name + "': null table");
   }
-  // Flatten to surface header/frame_id; the per-point list columns pass through.
   const auto& flat = table;
   const auto x_col = flat->GetColumnByName("x");
   const auto y_col = flat->GetColumnByName("y");
@@ -1303,7 +1221,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeColumnarCloud(
   const auto frame_col = firstPresentColumn(flat, {"header/frame_id", "frame_id"});
   const auto ts_col = !ts_field ? nullptr : flat->GetColumnByName(*ts_field);
 
-  // Recognized optional per-point attributes across lidar/radar/rgbd/tof/stereo.
+  // Optional per-point attributes recognized across lidar/radar/rgbd/tof/stereo.
   static constexpr std::array<std::string_view, 25> kOptionalAttrs = {
       "intensity",
       "reflectivity",
@@ -1337,8 +1255,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> decodeColumnarCloud(
     return PJ::unexpected(timestamp.error());
   }
   const std::int64_t ts_ns = *timestamp;
-  // Reserve so the NumericList storage never reallocates — PackAttr holds
-  // pointers into it.
+  // The reserve keeps `lists` from reallocating: PackAttr holds pointers into it.
   std::vector<NumericList> lists;
   lists.reserve(3 + kOptionalAttrs.size());
   std::vector<PackAttr> attrs;

@@ -17,7 +17,7 @@
 
 namespace {
 
-constexpr double kResolveTimeout = 2.0;   // seconds, blocking is OK in onStart
+constexpr double kResolveTimeout = 2.0;   // seconds; blocking is fine in onStart
 constexpr double kTimeCorrTimeout = 2.0;  // seconds
 constexpr int kInletBufferSeconds = 360;  // liblsl default max_buflen
 
@@ -50,10 +50,9 @@ class LslSource : public PJ::StreamSourceBase {
     }
 
     inlets_.clear();
-    // local_clock() -> epoch offset, captured once for all inlets.
+    // local_clock() -> epoch offset, shared by all inlets.
     epoch_offset_ns_ = nowEpochNs() - static_cast<int64_t>(lsl::local_clock() * 1e9);
 
-    // Disambiguated topic names, one per selected stream (order preserved).
     std::vector<pj_lsl::StreamKey> keys;
     keys.reserve(cfg.streams.size());
     for (const auto& s : cfg.streams) {
@@ -61,9 +60,8 @@ class LslSource : public PJ::StreamSourceBase {
     }
     const std::vector<std::string> topic_names = pj_lsl::uniqueTopicNames(keys);
 
-    // Build into a local vector; only publish to inlets_ once the whole loop
-    // succeeds, so a mid-loop host error (ensureTopic/ensureField) leaves no
-    // half-opened inlets behind (startup is resource-transactional).
+    // Published to inlets_ only once the whole loop succeeds, so a mid-loop host
+    // error (ensureTopic/ensureField) leaves no half-opened inlets behind.
     std::vector<Inlet> pending;
     for (size_t i = 0; i < cfg.streams.size(); ++i) {
       const auto& sel = cfg.streams[i];
@@ -86,9 +84,8 @@ class LslSource : public PJ::StreamSourceBase {
       inlet.is_string = pj_lsl::isStringFormat(inlet.format);
 
       try {
-        // recover=false: honor the no-reconnect design. A stream that drops is
-        // reported lost via pull_chunk (see drain*), marked dead, and skipped;
-        // it is not silently re-resolved.
+        // recover=false: a dropped stream is reported lost via pull_chunk (see
+        // drain*), marked dead and skipped, never silently re-resolved.
         inlet.inlet = std::make_unique<lsl::stream_inlet>(info, kInletBufferSeconds, 0, false);
       } catch (const std::exception& e) {
         runtimeHost().reportMessage(
@@ -99,7 +96,7 @@ class LslSource : public PJ::StreamSourceBase {
       try {
         inlet.time_corr_s = inlet.inlet->time_correction(kTimeCorrTimeout);
       } catch (...) {
-        inlet.time_corr_s = 0.0;  // no time sync available -> treat as zero offset
+        inlet.time_corr_s = 0.0;  // no time sync available
       }
 
       auto topic = writeHost().ensureTopic(topic_names[i]);
@@ -130,9 +127,8 @@ class LslSource : public PJ::StreamSourceBase {
     return PJ::okStatus();
   }
 
-  // Drain every live inlet. A per-inlet stream loss marks that inlet dead and is
-  // skipped thereafter; the other streams keep flowing (a single drop must not
-  // stop the whole source). Only a host write failure is fatal.
+  // A lost stream marks only its inlet dead; the others keep flowing. Only a
+  // host write failure is fatal.
   PJ::Status onPoll() override {
     const int64_t now_ns = nowEpochNs();
     for (auto& inlet : inlets_) {
@@ -155,7 +151,7 @@ class LslSource : public PJ::StreamSourceBase {
   }
 
   void onStop() override {
-    inlets_.clear();  // resetting each inlet releases its receiver thread + socket
+    inlets_.clear();  // releases each inlet's receiver thread and socket
   }
 
  private:
@@ -166,12 +162,11 @@ class LslSource : public PJ::StreamSourceBase {
     lsl::channel_format_t format = lsl::cf_undefined;
     PJ::PrimitiveType field_type = PJ::PrimitiveType::kFloat64;
     bool is_string = false;
-    bool dead = false;  // stream lost -> stop draining this inlet, keep the rest
+    bool dead = false;  // stream lost; onPoll skips it
     double time_corr_s = 0.0;
   };
 
-  // A stream that dropped: report once, mark dead, and let onPoll skip it.
-  // Non-fatal to the source (the documented "dropped stream is skipped").
+  // Reports once; non-fatal to the source.
   void markLost(Inlet& inlet, const char* what) {
     inlet.dead = true;
     runtimeHost().reportMessage(
@@ -190,8 +185,7 @@ class LslSource : public PJ::StreamSourceBase {
     return s.source_id.empty() ? "<unnamed>" : s.source_id;
   }
 
-  // Resolve a selected stream, preferring source_id, else name; when multiple
-  // match, prefer one whose type also matches.
+  // Resolves by source_id, else name; among several matches prefers the one whose type matches.
   static std::optional<lsl::stream_info> resolveOne(const pj_lsl::SelectedStream& sel) {
     std::vector<lsl::stream_info> found;
     try {
@@ -218,7 +212,7 @@ class LslSource : public PJ::StreamSourceBase {
     std::vector<std::vector<double>> chunk;
     std::vector<double> stamps;
     try {
-      inlet.inlet->pull_chunk(chunk, stamps);  // two-arg overload: non-blocking drain
+      inlet.inlet->pull_chunk(chunk, stamps);  // two-arg overload: non-blocking
     } catch (const std::exception& e) {
       markLost(inlet, e.what());
       return PJ::okStatus();  // per-inlet loss is non-fatal

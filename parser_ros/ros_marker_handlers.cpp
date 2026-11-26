@@ -1,17 +1,15 @@
 /**
  * @file ros_marker_handlers.cpp
- * @brief visualization_msgs/Marker(Array) -> sdk::SceneEntities (per-message,
- *        stateless decode). See parser_ros/MARKER_NOTES.md for the full design
- *        rationale (why statefulness is NOT resolved here, what is deferred).
+ * @brief visualization_msgs/Marker(Array) -> sdk::SceneEntities, stateless per
+ *        message. Design notes (why statefulness is NOT resolved here): MARKER_NOTES.md.
  *
  * Each Marker becomes one SceneEntity (ADD/MODIFY) or one SceneEntityDeletion
- * (DELETE/DELETEALL). The decode is positional CDR — the Marker wire layout is
- * identical across all supported ROS 2 distros (humble..rolling); the only
- * divergence is the `texture_resource`/`texture`/`uv_coordinates` block and the
- * `mesh_file` field (absent in EOL foxy/galactic and in ROS 1). bindSchema
- * sniffs the bound .msg definition and sets marker_has_texture_block_ /
- * marker_has_mesh_file_ so the variable tail is consumed correctly on every
- * layout — which keeps each marker in a MarkerArray aligned for the next.
+ * (DELETE/DELETEALL). The decode is positional CDR. The wire layout is identical
+ * across ROS 2 humble..rolling except for the `texture_resource`/`texture`/
+ * `uv_coordinates` block and the `mesh_file` field (absent in foxy/galactic and
+ * ROS 1). bindSchema sniffs the .msg and sets marker_has_texture_block_ /
+ * marker_has_mesh_file_, so the variable tail is consumed correctly and every
+ * marker in a MarkerArray stays aligned.
  */
 
 #include <algorithm>
@@ -54,11 +52,10 @@ constexpr int32_t kDeleteAll = 3;
 constexpr uint32_t kMaxMarkerVertices = 2'000'000;
 constexpr uint32_t kMaxMarkersPerArray = 200'000;
 
-// visualization_msgs/MeshFile carries only a filename (no MIME type), so the
-// media type of an inline mesh is inferred from the extension. The returned
-// strings match what the Scene3D consumer's hintFromMediaType() recognizes; an
-// unknown extension becomes "model/<ext>" so the consumer can still recover a
-// format from the suffix. An extensionless filename yields an empty media_type.
+// visualization_msgs/MeshFile carries only a filename (no MIME type), so an inline mesh's
+// media type is inferred from the extension, in the form the Scene3D consumer's
+// hintFromMediaType() recognizes. An unknown extension becomes "model/<ext>" so the
+// consumer can still recover a format; no extension yields an empty media_type.
 std::string mediaTypeFromMeshFilename(const std::string& filename) {
   const auto dot = filename.find_last_of('.');
   if (dot == std::string::npos || dot + 1 >= filename.size()) {
@@ -146,8 +143,7 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
     colors.push_back({toByteColor(rf32()), toByteColor(rf32()), toByteColor(rf32()), toByteColor(rf32())});
   }
 
-  // --- Variable tail. Always consumed in full so the next marker in a
-  // MarkerArray stays aligned, even when its fields are unused. ---
+  // Variable tail, always consumed in full so the next marker in a MarkerArray stays aligned.
   if (marker_has_texture_block_) {
     std::string texture_resource;
     deserializer_->deserializeString(texture_resource);
@@ -279,9 +275,8 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
     }
     case marker_type::kCubeList:
     case marker_type::kSphereList: {
-      // Expand to one primitive per point. Each glyph sits at its point in the
-      // marker frame; marker-pose translation is applied, full rotation
-      // composition is deferred (correct for identity / translation-only poses).
+      // One primitive per point, at that point in the marker frame. Only the marker pose's
+      // translation is applied, not its rotation (correct for identity / translation-only poses).
       for (size_t i = 0; i < points.size(); ++i) {
         PJ::sdk::Pose glyph_pose;
         glyph_pose.position = {
@@ -327,7 +322,7 @@ void RosParser::decodeOneMarker(PJ::sdk::SceneEntities& out) {
     }
     default:
       // POINTS (8), ARROW_STRIP (12), or unknown: no SceneEntity primitive.
-      // POINTS belongs in kPointCloud; the rest have no canonical mapping yet.
+      // POINTS belongs in kPointCloud; the rest have no canonical mapping.
       return;
   }
 

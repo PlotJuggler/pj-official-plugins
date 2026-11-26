@@ -24,7 +24,7 @@ struct StringSeriesData {
   std::vector<std::string> v;
 };
 
-// PJ3 toolbox_csv.h:59-72 — generic time-aligned representation shared by both serializers.
+// Generic time-aligned representation shared by both serializers.
 struct ExportTable {
   // Numeric columns
   std::vector<std::string> names;

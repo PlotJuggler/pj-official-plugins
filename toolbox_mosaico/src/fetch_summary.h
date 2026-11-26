@@ -17,8 +17,7 @@ struct FetchSummary {
   bool should_import = false;  // flush buffered writer chunks + refresh catalog
 };
 
-// Collapse identical error messages into "[Nx] msg" lines (PJ3
-// showCopyableWarning dedup). Stable ordering follows the map's ordering.
+// Collapse identical error messages into "[Nx] msg" lines, in the map's order.
 inline std::string summarizeErrors(const std::map<std::string, int, std::less<>>& error_counts) {
   std::string out;
   for (const auto& [msg, count] : error_counts) {
@@ -33,14 +32,14 @@ inline std::string summarizeErrors(const std::map<std::string, int, std::less<>>
   return out;
 }
 
-// PJ3 parity completion policy:
+// Completion policy (as in PJ3):
 //   * cancelling           → "Download cancelled", stay open, no import
 //   * any topic imported   → import + close (partial success still imports)
 //   * nothing imported     → stay open showing the (deduped) errors
 inline FetchSummary buildFetchSummary(
     int fetch_total, int fetch_done, int fetch_failed, bool imported_any, bool cancelling,
     const std::map<std::string, int, std::less<>>& error_counts) {
-  (void)fetch_done;  // reserved for future "N/M completed" detail
+  (void)fetch_done;  // unused
   FetchSummary s;
   s.error_summary = summarizeErrors(error_counts);
   const int imported = fetch_total - fetch_failed;

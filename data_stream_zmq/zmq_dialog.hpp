@@ -13,20 +13,14 @@
 
 namespace {
 
-/// Dialog plugin for the ZMQ Subscriber.
-/// Uses the original .ui layout: connect/bind radios, transport combo,
-/// address/port fields, protocol combo, topic filter.
 class ZmqDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  /// Set the available encodings from the runtime host.
-  /// Called by the owning DataSource after runtime host is bound (in loadConfig).
+  /// Called by the data source in loadConfig(), once the runtime host is bound.
   void setAvailableEncodings(std::vector<std::string> encodings) {
     available_encodings_ = std::move(encodings);
   }
-
-  // --- Dialog protocol ---
 
   std::string manifest() const override {
     return kZmqManifest;
@@ -39,27 +33,23 @@ class ZmqDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Connection mode
     wd.setChecked("radioConnect", connect_mode_);
     wd.setChecked("radioBind", !connect_mode_);
 
-    // Transport combo (matches original .ui: comboBox with tcp://, ipc://, pgm://)
     wd.setItems("comboBox", {"tcp://", "ipc://", "pgm://"});
     wd.setCurrentIndex("comboBox", transportToIndex(transport_));
 
-    // Address and port — port is not used for IPC transport
+    // IPC has no port.
     bool is_ipc = (transport_ == "ipc://");
     wd.setText("lineEditAddress", address_);
     wd.setText("lineEditPort", std::to_string(port_));
     wd.setEnabled("lineEditPort", !is_ipc);
 
-    // Protocol combo — dynamically populated from available parsers
     const bool has_encodings = PJ::sdk::writeEncodingSelector(wd, "comboBoxProtocol", available_encodings_, encoding_);
 
-    // Topic filter
     wd.setText("lineEditTopics", topic_filter_);
 
-    // Disable OK if no encodings available
+    // No parsers, nothing can decode.
     wd.setOkEnabled(has_encodings);
 
     return wd.toJson();
@@ -80,7 +70,7 @@ class ZmqDialog : public PJ::DialogPluginTyped {
   bool onIndexChanged(std::string_view widget_name, int index) override {
     if (widget_name == "comboBox") {
       transport_ = indexToTransport(index);
-      return true;  // refresh UI so port field enable/disable updates immediately
+      return true;  // re-render: the port field's enabled state changes
     }
     if (widget_name == "comboBoxProtocol") {
       encoding_ = PJ::sdk::encodingAt(index, available_encodings_);

@@ -21,8 +21,7 @@ uint64_t fieldSize(const ParsedField& f) {
   return static_cast<uint64_t>(PJ::sdk::bytesPerElement(f.datatype)) * static_cast<uint64_t>(f.count);
 }
 
-// Write a numeric `value` (given as double) into `dst` at `offset` as datatype
-// `dt`, host-endian (little on all supported platforms).
+// Host-endian (little on all supported platforms).
 void writeScalar(uint8_t* dst, uint32_t offset, Datatype dt, double value) {
   if (dt != Datatype::kFloat32 && dt != Datatype::kFloat64 && !std::isfinite(value)) {
     // Casting a non-finite/out-of-range double to an integer type is UB.
@@ -73,7 +72,6 @@ void writeScalar(uint8_t* dst, uint32_t offset, Datatype dt, double value) {
   }
 }
 
-// Read a scalar as double from little-endian packed bytes.
 double readScalar(const uint8_t* src, Datatype dt) {
   switch (dt) {
     case Datatype::kInt8: {
@@ -161,17 +159,13 @@ PJ::Expected<PJ::sdk::PointCloud> buildPointCloud(
   const uint32_t point_step = layout.point_step;
   const uint64_t num_points = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
 
-  // A positive point count with a zero stride (no fields) is malformed: it
-  // yields an empty payload yet would spin the ascii fill loop num_points
-  // times (the binary paths are saved by their body.size() check, ascii is
-  // not). Reject it before the loops run.
+  // Zero stride with points (no fields) is malformed: the payload is empty yet the ascii fill loop would spin
+  // num_points times (the binary paths are caught by their body.size() check).
   if (point_step == 0 && num_points > 0) {
     return PJ::unexpected("point cloud has points but no fields");
   }
-  // Reject overflow/oversize BEFORE allocating: point_step*num_points could
-  // wrap a narrower type, and even a large-but-non-overflowing size could
-  // throw std::bad_alloc/length_error out of resize(). This single check
-  // (with point_step != 0 to avoid div-by-zero) catches both cases.
+  // BEFORE allocating: point_step*num_points could wrap, and even a large non-overflowing size could throw
+  // bad_alloc/length_error out of resize().
   if (point_step != 0 && num_points > kMaxCloudBytes / static_cast<uint64_t>(point_step)) {
     return PJ::unexpected("point cloud too large");
   }
@@ -233,7 +227,7 @@ PJ::Expected<PJ::sdk::PointCloud> buildPointCloud(
   cloud.fields = layout.fields;
   cloud.timestamp_ns = 0;
   cloud.data = PJ::Span<const uint8_t>(buf->data(), buf->size());
-  cloud.anchor = buf;  // shared_ptr<vector<uint8_t>> -> shared_ptr<const void>; keeps bytes alive
+  cloud.anchor = buf;  // keeps the bytes alive
   return cloud;
 }
 

@@ -30,10 +30,8 @@ bool endsWithCsv(const std::string& path) {
   return path.size() >= 4 && PJ::sdk::lowerAscii(path.substr(path.size() - 4)) == ".csv";
 }
 
-/// Per-interface decode/topic state, resolved once per bus-name CHANGE
-/// rather than on every frame (a capture typically stays on the same
-/// interface for long runs). Keyed internally by (id << 1) | extended
-/// instead of a per-frame string concatenation.
+/// Per-interface decode/topic state, resolved once per bus-name CHANGE rather than per frame. Topics are keyed by
+/// (id << 1) | extended to avoid a per-frame string concatenation.
 struct InterfaceTopics {
   pj_can_dbc::CanDecoder* decoder = nullptr;  // nullptr if no dictionary assigned
   std::unordered_map<std::uint64_t, PJ::sdk::TopicHandle> decoded;
@@ -45,11 +43,9 @@ std::uint64_t frameKey(std::uint32_t can_id, bool extended) {
   return (static_cast<std::uint64_t>(can_id) << 1) | (extended ? 1u : 0u);
 }
 
-/// Imports candump `-l` log files and interactive screen captures. Frames are
-/// decoded per-interface via a DBC (or an ARUS-style CSV, translated
-/// in-memory to DBC text) and grouped as one topic per (interface, message);
-/// undecodable/unassigned frames optionally become one raw topic per
-/// (interface, id) with byte0..N fields.
+/// Frames are decoded per interface via a DBC (or an ARUS-style CSV translated to DBC text), one topic per
+/// (interface, message); undecodable/unassigned frames optionally become one raw topic per (interface, id) with
+/// byte0..N fields.
 class CandumpSource : public PJ::FileSourceBase {
  public:
   uint64_t extraCapabilities() const override {
@@ -65,10 +61,7 @@ class CandumpSource : public PJ::FileSourceBase {
   }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    // A config-only/headless restore (no dialog ever shown): the summary/
-    // interface-table a full prescan would produce is never read, so don't
-    // pay for it here -- CandumpDialog runs it lazily instead, on the first
-    // widget_data() call, if/when the dialog is actually opened.
+    // A headless restore never reads the prescan summary, so skip it; the dialog scans lazily on first render.
     if (!dialog_.loadConfigDeferringScan(config_json)) {
       return PJ::unexpected(std::string("invalid config JSON"));
     }
@@ -92,8 +85,7 @@ class CandumpSource : public PJ::FileSourceBase {
       if (!prescan.is_open()) {
         return PJ::unexpected(std::string("cannot open file: ") + filepath);
       }
-      // Same bounded scan (and the same kScanCap) as CandumpDialog's own
-      // preview -- only the TimeMode half of the result is needed here.
+      // Same bounded scan as CandumpDialog's preview; only the TimeMode is needed here.
       const auto scan = candump_detail::prescanCandump(prescan, candump_detail::kScanCap);
       const auto override_mode = dialog_.timeModeOverride();
       if (!scan.time_mode.saw_numeric_timestamp && !override_mode.has_value()) {
@@ -159,15 +151,12 @@ class CandumpSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("cannot open file: ") + filepath);
     }
 
-    // Precomputed "byte0".."byte7" names for the raw-bytes fallback topics
-    // (classic CAN payload is at most 8 bytes).
+    // Names for the raw-bytes fallback topics (classic CAN payload is at most 8 bytes).
     std::array<std::string, 8> byte_field_names;
     for (std::size_t i = 0; i < byte_field_names.size(); ++i) {
       byte_field_names[i] = "byte" + std::to_string(i);
     }
 
-    // Per-interface decode/topic state, resolved once per bus-name change
-    // (see InterfaceTopics) instead of a per-frame decoders/topic lookup.
     std::unordered_map<std::string, InterfaceTopics> topics_by_interface;
     std::string last_interface;
     InterfaceTopics* current_topics = nullptr;
@@ -213,7 +202,7 @@ class CandumpSource : public PJ::FileSourceBase {
       }
 
       const candump_detail::ParsedLine parsed = candump_detail::parseLine(line);
-      // Fed every line, before the kind switch (see TimelineClock).
+      // Must see every line, before the kind switch (see TimelineClock).
       const std::optional<std::int64_t> timeline_ns = clock.advance(parsed);
       switch (parsed.kind) {
         case candump_detail::LineKind::kMalformed:
@@ -248,13 +237,10 @@ class CandumpSource : public PJ::FileSourceBase {
           break;
       }
 
-      // A kData line always has a numeric timestamp (parseCommonPrefix only
-      // continues into the body when it does).
+      // A kData line always has a numeric timestamp.
       const std::int64_t ts_ns = *timeline_ns;
 
-      // Resolve the interface's decoder/topic-map bucket once per bus-name
-      // CHANGE, not once per frame -- a capture typically stays on the same
-      // interface for long runs.
+      // A capture typically stays on one interface for long runs.
       if (current_topics == nullptr || parsed.interface != last_interface) {
         last_interface = parsed.interface;
         auto [bucket_it, inserted] = topics_by_interface.try_emplace(last_interface);
@@ -264,7 +250,6 @@ class CandumpSource : public PJ::FileSourceBase {
           current_topics->decoder = decoder_it != decoders.end() ? &decoder_it->second : nullptr;
         }
       }
-      // Built once per frame, reused by whichever of decoded/raw applies.
       const std::uint64_t key = frameKey(parsed.can_id, parsed.extended);
       // J1939 / NMEA 2000: an extended frame finds its message by PGN, and its topic also names the source.
       const bool by_pgn = current_topics->decoder != nullptr &&
@@ -387,7 +372,6 @@ class CandumpSource : public PJ::FileSourceBase {
     if (counters.error > 0) {
       summary += "; " + std::to_string(counters.error) + " error frame(s) (recognized, not decoded)";
     }
-    // Shared verbatim with CandumpDialog's own preview summary.
     counters.appendErrorDetail(summary);
     counters.appendDropCount(summary);
     counters.appendWallClock(summary);

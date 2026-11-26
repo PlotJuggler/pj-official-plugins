@@ -50,14 +50,9 @@ struct FlattenedField {
   std::string owned_string;  // keeps string data alive for string_view in value
 };
 
-/// Seconds form of an absolute nanosecond stamp.
-///
-/// Every promoted (object-bearing) schema emits its embedded sensor stamp as a
-/// "timestamp" scalar series in these units, so the message time is plottable
-/// and comparable against the host/log clock the row is filed under. It is
-/// emitted unconditionally — the use_embedded_timestamp option governs only
-/// which clock the ROW lands on (ScalarRecord::ts), never whether the series
-/// exists.
+/// Seconds form of an absolute nanosecond stamp. Every promoted (object-bearing) schema emits its embedded sensor stamp
+/// as a "timestamp" scalar series in these units, unconditionally: use_embedded_timestamp only governs which clock the
+/// ROW lands on (ScalarRecord::ts), never whether the series exists.
 constexpr double timestampSeconds(PJ::Timestamp ts_ns) {
   return static_cast<double>(ts_ns) * 1e-9;
 }
@@ -86,8 +81,7 @@ void flattenMessage(
     std::string field_name(field->name());
     std::string key;
     if (is_map) {
-      // Map entries have "key" and "value" fields.
-      // Skip the key field; use the parent prefix for value.
+      // Map entries: skip the key field; the value uses the parent prefix.
       if (field_name == "key") {
         continue;
       }
@@ -102,9 +96,9 @@ void flattenMessage(
       count = static_cast<unsigned>(reflection->FieldSize(msg, field));
       if (max_array_size > 0 && count > max_array_size) {
         if (!clamp_arrays) {
-          continue;  // skip oversized arrays
+          continue;
         }
-        count = max_array_size;  // clamp to limit
+        count = max_array_size;
       }
     }
 
@@ -173,7 +167,6 @@ void flattenMessage(
 #pragma pop_macro("GetMessage")
 
           if (field->is_map()) {
-            // Extract the map key to build a meaningful suffix.
             const gp::Descriptor* map_desc = sub.GetDescriptor();
             const gp::Reflection* map_ref = sub.GetReflection();
             const gp::FieldDescriptor* key_field = map_desc->FindFieldByName("key");
@@ -206,8 +199,7 @@ void flattenMessage(
           break;
         }
         case gp::FieldDescriptor::CPPTYPE_STRING: {
-          // Include short string fields (< 100 bytes), skip large blobs.
-          // This matches original PlotJuggler behavior.
+          // Only short strings (< 100 bytes) are kept, skipping large blobs, like the original PlotJuggler.
           std::string str_val = repeated ? reflection->GetRepeatedString(msg, field, static_cast<int>(idx))
                                          : reflection->GetString(msg, field);
           if (str_val.size() < 100) {
@@ -221,7 +213,6 @@ void flattenMessage(
   }
 }
 
-/// Map protobuf cpp_type to PJ::PrimitiveType for pre-registration.
 PJ::PrimitiveType protobufCppTypeToPrimitive(gp::FieldDescriptor::CppType cpp_type) {
   switch (cpp_type) {
     case gp::FieldDescriptor::CPPTYPE_DOUBLE:
@@ -247,9 +238,8 @@ PJ::PrimitiveType protobufCppTypeToPrimitive(gp::FieldDescriptor::CppType cpp_ty
   }
 }
 
-/// Walk the descriptor tree and pre-register non-repeated scalar fields.
-/// Repeated fields, maps, and nested messages with repeated parents are skipped
-/// (they produce dynamic field names like "arr[0]" at runtime).
+/// Repeated fields, maps, and nested messages with repeated parents are skipped: they produce dynamic field names like
+/// "arr[0]" at runtime.
 void preRegisterFields(
     const gp::Descriptor* descriptor, const std::string& prefix, PJ::sdk::ParserWriteHostView host,
     std::unordered_map<std::string, PJ::sdk::FieldHandle>& cache) {
@@ -282,12 +272,11 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
-    // Load options
     use_embedded_timestamp_ = cfg.value("use_embedded_timestamp", false);
     timestamp_field_name_ = cfg.value("timestamp_field_name", std::string{});
     array_limit_ = PJ::sdk::arrayLimitFromJson(cfg);
 
-    // If config contains a compiled schema (from dialog), bind it
+    // A compiled schema from the dialog is bound here.
     if (cfg.contains("compiled_schema_base64") && cfg["compiled_schema_base64"].is_string() &&
         cfg.contains("message_type") && cfg["message_type"].is_string()) {
       std::string schema_b64 = cfg["compiled_schema_base64"].get<std::string>();
@@ -310,14 +299,10 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   }
 
   PJ::Status bindSchema(std::string_view type_name, PJ::Span<const uint8_t> schema) override {
-    // Canonical-object fast path. PJ.VideoFrame and foxglove.CompressedVideo are
-    // wire-identical (a fixed protobuf layout — see the SDK contract), so a
-    // single decoder serves both. We bypass the reflection/descriptor pool
-    // entirely: the wire layout is known, and deserializeVideoFrameView() reads
-    // it zero-copy (the H.264/H.265/… bitstream span aliases the payload). The
-    // descriptor-pool machinery below is only needed for arbitrary user schemas.
+    // Canonical-object fast path. PJ.VideoFrame and foxglove.CompressedVideo are wire-identical, so one decoder serves
+    // both. The descriptor pool is bypassed: deserializeVideoFrameView() reads the known layout zero-copy (the
+    // bitstream span aliases the payload). The pool below is only needed for arbitrary user schemas.
     if (type_name == PJ::kSchemaVideoFrame || type_name == "foxglove.CompressedVideo") {
-      // Record the bound type so the base class dispatch finds our handler.
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
       }
@@ -325,13 +310,10 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
-    // Canonical-object fast path for foxglove.PointCloud. Unlike VideoFrame, the
-    // Foxglove point-cloud wire layout differs from the canonical PJ.PointCloud
-    // (point_stride vs point_step, PackedElementField with a swapped enum, an
-    // extra pose, no width/height), so the SDK codec does not apply — we decode
-    // it plugin-local and zero-copy, exactly mirroring how parser_ros promotes
-    // sensor_msgs/PointCloud2 to a kPointCloud object. The schema bytes (a real
-    // FileDescriptorSet) are intentionally ignored: the layout is known.
+    // foxglove.PointCloud: unlike VideoFrame, its wire layout differs from the canonical PJ.PointCloud (point_stride vs
+    // point_step, PackedElementField with a swapped enum, an extra pose, no width/height), so the SDK codec does not
+    // apply. It is decoded plugin-local and zero-copy, like parser_ros does for sensor_msgs/PointCloud2. The schema
+    // bytes only feed resolveFoxgloveFieldNumbers(); the layout is otherwise known.
     if (type_name == "foxglove.PointCloud") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
@@ -341,11 +323,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
-    // Canonical-object fast path for foxglove.LaserScan -> kPointCloud. The
-    // scan is eagerly projected into cartesian x/y/z(/intensity) points by the
-    // shared pj_laser_scan projector (cos/sin LUT cached per scanner config),
-    // exactly mirroring how parser_ros promotes sensor_msgs/LaserScan. The
-    // schema bytes are intentionally ignored: the layout is known.
+    // foxglove.LaserScan -> kPointCloud: eagerly projected into cartesian x/y/z(/intensity) points by the shared
+    // pj_laser_scan projector (cos/sin LUT cached per scanner config), like parser_ros for sensor_msgs/LaserScan.
     if (type_name == "foxglove.LaserScan") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
@@ -355,12 +334,9 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
-    // Canonical-object fast path for PosesInFrame. Like VideoFrame, the
-    // canonical PJ.PosesInFrame and foxglove.PosesInFrame are wire-identical
-    // (the SDK proto mirrors foxglove field-for-field), so the SDK codec
-    // (deserializePosesInFrame) serves both names — no plugin-local decoder.
-    // foxglove.PoseInFrame (a SINGLE pose at field 3) is wire-identical to a
-    // one-element PosesInFrame, so the same codec decodes it into one pose.
+    // PJ.PosesInFrame and foxglove.PosesInFrame are wire-identical, so the SDK codec (deserializePosesInFrame) serves
+    // both. foxglove.PoseInFrame (a SINGLE pose at field 3) is wire-identical to a one-element PosesInFrame, so the
+    // same codec decodes it too.
     if (type_name == PJ::kSchemaPosesInFrame || type_name == "foxglove.PosesInFrame" ||
         type_name == "foxglove.PoseInFrame") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
@@ -370,10 +346,9 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
-    // Canonical-object fast path for foxglove.Odometry -> kPosesInFrame (one
-    // pose). Unlike PoseInFrame the pose is at field 4 (field 3 is a string), so
-    // the PosesInFrame codec cannot be reused — a dedicated decoder reads the
-    // single pose and skips the velocities, covariances and metadata.
+    // foxglove.Odometry -> kPosesInFrame (one pose). The pose is at field 4 (field 3 is a string), so unlike
+    // PoseInFrame the PosesInFrame codec cannot be reused; a dedicated decoder reads the pose and skips velocities,
+    // covariances and metadata.
     if (type_name == "foxglove.Odometry") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
@@ -383,11 +358,9 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
-    // Other well-known Foxglove schemas -> their canonical builtin objects.
-    // Same rationale as PointCloud: the wire layout is known, so we decode it
-    // directly and bypass the descriptor pool. Crucially, promoting these stops
-    // the generic scalar-flatten of their large nested arrays (a Foxglove scene
-    // / annotation message flattens to a pathological number of scalar series).
+    // Other well-known Foxglove schemas -> their canonical builtin objects, decoded directly from the known wire
+    // layout. Promoting them also avoids the generic scalar flatten of their large nested arrays, which would create a
+    // pathological number of series for a scene or annotation message.
     if (type_name == "foxglove.FrameTransform" || type_name == "foxglove.CompressedImage" ||
         type_name == "foxglove.RawImage" || type_name == "foxglove.CameraCalibration" ||
         type_name == "foxglove.ImageAnnotations" || type_name == "foxglove.SceneUpdate" ||
@@ -400,13 +373,12 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::okStatus();
     }
 
-    // Log messages keep the generic descriptor-pool path below for their scalar
-    // route and add a kLog object route on top (registerLogHandler).
+    // Log messages keep the generic descriptor-pool path below for their scalar route and add a kLog object route
+    // (registerLogHandler).
     const bool is_log = type_name == PJ::kSchemaLog || type_name == "foxglove.Log";
 
-    // When schema bytes are empty (e.g. UDP/stream sources that have no schema),
-    // the schema was already bound via loadConfig()'s compiled_schema_base64 path.
-    // Just record the type name and keep the existing descriptor.
+    // Empty schema bytes (e.g. UDP/stream sources) mean the schema was already bound via loadConfig()'s
+    // compiled_schema_base64; only the type name is recorded and the existing descriptor is kept.
     if (schema.empty()) {
       MessageParserPluginBase::bindSchema(type_name, schema);
       if (is_log) {
@@ -434,10 +406,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::unexpected(std::string("message type not found: ") + std::string(type_name));
     }
 
-    // Detect embedded timestamp field: a top-level non-repeated double.
-    // Resolution order (same contract as parser_json):
-    //   1. If timestamp_field_name_ is set, only that name is tried.
-    //   2. If empty, try "timestamp" then "ts" (conventional defaults).
+    // Embedded timestamp: a top-level non-repeated double. With timestamp_field_name_ set only that name is tried,
+    // otherwise "timestamp" then "ts" (same contract as parser_json).
     timestamp_field_ = nullptr;
     if (use_embedded_timestamp_) {
       auto tryField = [&](const std::string& name) -> const gp::FieldDescriptor* {
@@ -480,9 +450,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     if (!writeHostBound()) {
       return PJ::unexpected(std::string("write host not bound"));
     }
-    // Canonical-object schemas (VideoFrame) have no descriptor pool — they are
-    // served by a registered SchemaHandler. Defer to the base parse(), which
-    // dispatches through parseScalars() to that handler.
+    // Canonical-object schemas have no descriptor pool; the base parse() dispatches to their registered SchemaHandler.
     if (descriptor_ == nullptr) {
       if (findSchemaHandler(bound_type_name_) != nullptr) {
         return MessageParserPluginBase::parse(timestamp_ns, payload);
@@ -523,8 +491,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   }
 
  private:
-  // Decodes the payload with the bound descriptor and flattens it into
-  // owned_fields_ (the generic scalar route).
+  // Flattens the payload into owned_fields_ (the generic scalar route).
   PJ::Expected<std::unique_ptr<gp::Message>> decodeAndFlatten(PJ::Span<const uint8_t> payload) {
     const gp::Message* prototype = factory_->GetPrototype(descriptor_);
     std::unique_ptr<gp::Message> msg(prototype->New());
@@ -535,9 +502,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     owned_fields_.clear();
     flattenMessage(*msg, "", false, array_limit_.max_size, array_limit_.clamp(), owned_fields_);
 
-    // Fix up string_view entries now that the vector won't reallocate.
-    // During flattenMessage, push_back may have reallocated the vector,
-    // invalidating earlier string_view pointers. Re-point them now.
+    // flattenMessage's push_back may have reallocated the vector, invalidating earlier string_view pointers.
     for (auto& f : owned_fields_) {
       if (!f.owned_string.empty()) {
         f.value = std::string_view(f.owned_string);
@@ -546,12 +511,10 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     return msg;
   }
 
-  // Register the SchemaHandler for foxglove.Log / PJ.Log -> kLog. Unlike the
-  // other fast paths the descriptor pool is still built: the scalar route keeps
-  // the generic flatten exactly as before (level, message, name, ... stay
-  // plottable), so it needs a bound descriptor. The object route decodes the
-  // wire with the SDK codec (PJ.Log is wire-compatible with foxglove.Log), which
-  // keeps messages of any length; the flatten skips strings of 100 bytes or more.
+  // foxglove.Log / PJ.Log -> kLog. Unlike the other fast paths the descriptor pool is still built: the scalar route
+  // uses the generic flatten (level, message, name, ... stay plottable), which skips strings of 100 bytes or more. The
+  // object route decodes with the SDK codec (PJ.Log is wire-compatible with foxglove.Log) and keeps messages of any
+  // length.
   void registerLogHandler(std::string_view type_name) {
     PJ::sdk::SchemaHandler handler;
     handler.object_type = PJ::sdk::BuiltinObjectType::kLog;
@@ -565,8 +528,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         return PJ::unexpected(std::move(msg).error());
       }
       PJ::sdk::ScalarRecord record;
-      // Match the object route's timestamp policy so the scalar columns and the
-      // object entry land on the same timeline.
+      // Same timestamp policy as the object route, so scalars and object share a timeline.
       if (use_embedded_timestamp_) {
         if (auto log = PJ::deserializeLog(payload.data(), payload.size()); log && log->timestamp_ns > 0) {
           record.ts = log->timestamp_ns;
@@ -595,36 +557,27 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
-  // Register the SchemaHandler for the canonical VideoFrame fast path. The
-  // object route decodes one PJ.VideoFrame / foxglove.CompressedVideo per
-  // message zero-copy; the scalar route emits a slim metadata row so the
-  // ingest path still produces plottable columns (timestamp / frame_id /
-  // format / data size) alongside the object, mirroring the Image/PointCloud
-  // handlers in parser_ros.
+  // Object route: one PJ.VideoFrame / foxglove.CompressedVideo per message, zero-copy. Scalar route: a slim metadata
+  // row (timestamp / frame_id / format / data size) so ingest still produces plottable columns.
   void registerVideoFrameHandler(std::string_view type_name) {
     PJ::sdk::SchemaHandler handler;
     handler.object_type = PJ::sdk::BuiltinObjectType::kVideoFrame;
 
     handler.parse_scalars =
         [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-      // Owning decode (not the zero-copy view): the scalar route only needs the
-      // metadata strings + data size, and an owning frame avoids leaving a span
-      // that aliases `payload` with a null anchor (a use-after-free footgun if
-      // this handler is ever extended to surface the bytes).
+      // Owning decode, not the zero-copy view: the scalar route only needs the metadata strings and data size, and a
+      // view here would alias `payload` with a null anchor (a use-after-free if the handler ever surfaces the bytes).
       auto frame = PJ::deserializeVideoFrame(payload.data(), payload.size());
       if (!frame) {
         return PJ::unexpected(std::move(frame).error());
       }
-      // ValueRef holds a non-owning string_view, so the decoded strings must
-      // outlive the returned ScalarRecord (the host reads its fields after this
-      // lambda returns). Park them in member storage — same lifetime trick the
-      // generic path uses with owned_fields_.
+      // ValueRef holds a non-owning string_view and the host reads the fields after this lambda returns, so the
+      // decoded strings are parked in member storage.
       video_frame_id_ = std::move(frame->frame_id);
       video_format_ = std::move(frame->format);
       PJ::sdk::ScalarRecord record;
-      // Match the object route's timestamp policy so the scalar columns and the
-      // object entry land on the same timeline (otherwise scalars use host time
-      // while the object uses the embedded sensor time).
+      // Same timestamp policy as the object route; otherwise scalars land on host time while the object uses sensor
+      // time.
       if (use_embedded_timestamp_ && frame->timestamp_ns > 0) {
         record.ts = frame->timestamp_ns;
       }
@@ -638,15 +591,11 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
 
     handler.parse_object =
         [this](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-      // Zero-copy: the decoded frame's data span aliases payload.bytes; the
-      // anchor keeps that buffer alive past this call.
+      // Zero-copy: the frame's data span aliases payload.bytes; the anchor keeps that buffer alive past this call.
       auto frame = PJ::deserializeVideoFrameView(payload.bytes.data(), payload.bytes.size(), payload.anchor);
       if (!frame) {
         return PJ::unexpected(std::move(frame).error());
       }
-      // Embedded-timestamp policy mirrors the generic path: when enabled, the
-      // proto Timestamp drives the record time; otherwise the host's receive
-      // time is used.
       std::optional<PJ::Timestamp> ts;
       if (use_embedded_timestamp_ && frame->timestamp_ns > 0) {
         ts = frame->timestamp_ns;
@@ -657,30 +606,23 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
-  // Register the SchemaHandler for the canonical PosesInFrame fast path. The
-  // object route decodes one PJ.PosesInFrame / foxglove.PosesInFrame per
-  // message with the SDK codec (owning — the message carries no byte blob, only
-  // scalars + a frame_id string, so there is nothing to alias zero-copy).
+  // Object route: one PJ.PosesInFrame / foxglove.PosesInFrame per message via the SDK codec (owning: the message has
+  // no byte blob to alias).
   void registerPosesInFrameHandler(std::string_view type_name) {
     PJ::sdk::SchemaHandler handler;
     handler.object_type = PJ::sdk::BuiltinObjectType::kPosesInFrame;
 
     handler.parse_scalars =
         [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-      // Slim metadata row: a pose array can be huge (e.g. an AMCL particle
-      // cloud), so the scalar route emits the header pair (timestamp/frame_id)
-      // and a bounded count, never per-pose columns — mirroring
-      // foxglove.FrameTransform's num_transforms. The object-bearing entry also
-      // needs a parse_scalars at all: without one the host's eager-scalar ingest
-      // aborts the push and drops the object.
+      // Slim metadata row: a pose array can be huge (e.g. an AMCL particle cloud), so only the header pair
+      // (timestamp/frame_id) and a bounded count are emitted, never per-pose columns. An object-bearing entry needs a
+      // parse_scalars at all: without one the host's eager-scalar ingest aborts the push and drops the object.
       auto poses = PJ::deserializePosesInFrame(payload.data(), payload.size());
       if (!poses) {
-        return PJ::unexpected(std::move(poses).error());  // surface, don't drop silently
+        return PJ::unexpected(std::move(poses).error());
       }
       poses_frame_id_ = std::move(poses->frame_id);  // keep alive for the string_view below.
       PJ::sdk::ScalarRecord record;
-      // Match the object route's timestamp policy so the scalar columns and the
-      // object entry land on the same timeline.
       if (use_embedded_timestamp_ && poses->timestamp_ns > 0) {
         record.ts = poses->timestamp_ns;
       }
@@ -697,9 +639,6 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       if (!poses) {
         return PJ::unexpected(std::move(poses).error());
       }
-      // Embedded-timestamp policy mirrors the other foxglove object handlers:
-      // when enabled, the proto Timestamp drives the record time; otherwise the
-      // host's receive time is used.
       std::optional<PJ::Timestamp> ts;
       if (use_embedded_timestamp_ && poses->timestamp_ns > 0) {
         ts = poses->timestamp_ns;
@@ -710,16 +649,13 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
-  // Register the SchemaHandler for foxglove.Odometry -> kPosesInFrame (one pose).
-  // The object route decodes the single pose (of body_frame_id, in frame_id).
+  // foxglove.Odometry -> kPosesInFrame (one pose). The object route decodes the single pose (of body_frame_id, in
+  // frame_id).
   //
-  // The scalar route deliberately departs from the sibling slim-count handlers
-  // (PosesInFrame/FrameTransform emit num_poses/num_transforms): an Odometry
-  // always carries exactly ONE pose, so a count would be a useless constant. We
-  // instead emit the 7 bounded per-axis pose columns — the values people actually
-  // plot from odometry — matching the ROS nav_msgs/Odometry dual route. The
-  // velocities and 6x6 covariances are still left out (not a per-element blow-up
-  // risk, just not promoted here).
+  // Unlike the sibling slim-count handlers (PosesInFrame/FrameTransform emit num_poses/num_transforms), the scalar
+  // route emits the 7 per-axis pose columns: an Odometry always carries exactly ONE pose, so a count would be a
+  // constant, and these are the values people plot (like the ROS nav_msgs/Odometry route). Velocities and covariances
+  // are left out.
   void registerFoxgloveOdometryHandler(std::string_view type_name) {
     PJ::sdk::SchemaHandler handler;
     handler.object_type = PJ::sdk::BuiltinObjectType::kPosesInFrame;
@@ -728,7 +664,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
       auto poses = pj_protobuf::deserializeFoxgloveOdometry(payload.data(), payload.size(), odometry_fields_);
       if (!poses) {
-        return PJ::unexpected(std::move(poses).error());  // surface, don't drop silently
+        return PJ::unexpected(std::move(poses).error());
       }
       odometry_frame_id_ = std::move(poses->frame_id);  // keep alive for the string_view below.
       PJ::sdk::ScalarRecord record;
@@ -767,19 +703,15 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
-  // Register the SchemaHandler for foxglove.PointCloud. The object route decodes
-  // one cloud per message zero-copy (the packed-point span aliases the payload);
-  // the scalar route emits a slim metadata row (timestamp / frame_id /
-  // point_count) so the ingest path still produces plottable columns,
-  // mirroring parsePointCloud2Scalars in parser_ros.
+  // Object route: one cloud per message, zero-copy (the packed-point span aliases the payload). Scalar route: a slim
+  // metadata row (timestamp / frame_id / point_count) so ingest still produces plottable columns.
   void registerFoxglovePointCloudHandler(std::string_view type_name) {
     PJ::sdk::SchemaHandler handler;
     handler.object_type = PJ::sdk::BuiltinObjectType::kPointCloud;
 
     handler.parse_scalars =
         [this](PJ::Timestamp /*ts*/, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-      // No anchor needed: the scalar route reads only metadata and never retains
-      // the aliased point buffer past this call.
+      // No anchor needed: only metadata is read, and the aliased point buffer is not retained past this call.
       auto decoded =
           pj_protobuf::deserializeFoxglovePointCloudView(payload.data(), payload.size(), nullptr, pointcloud_fields_);
       if (!decoded) {
@@ -794,9 +726,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       record.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(cloud.timestamp_ns)}});
       record.fields.push_back({.name = "frame_id", .value = PJ::sdk::ValueRef{std::string_view(pointcloud_frame_id_)}});
       record.fields.push_back({.name = "point_count", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(cloud.width)}});
-      // point_step and num_fields are layout constants of the cloud, not a time
-      // series: they describe how to read `data`, and the object route already
-      // carries them. Emitting them made two flat columns that never move.
+      // point_step and num_fields are layout constants (the object route carries them), not a time series.
       return record;
     };
 
@@ -807,11 +737,9 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       if (!decoded) {
         return PJ::unexpected(std::move(decoded).error());
       }
-      // sdk::PointCloud expresses geometry in frame_id and relies on an external
-      // TF tree (like PointCloud2). Foxglove's inline pose has no home in the
-      // struct, so a non-identity pose is dropped — warn once so it is not a
-      // silent failure (the cloud would be mislocated if no equivalent TF is
-      // present). foxglove.FrameTransform support is the follow-up that fixes it.
+      // sdk::PointCloud expresses geometry in frame_id plus an external TF tree (like PointCloud2), so Foxglove's
+      // inline pose has no home and a non-identity one is dropped. Warn once: the cloud is mislocated without an
+      // equivalent TF.
       if (decoded->has_pose && !decoded->pose_is_identity && !pointcloud_pose_warned_) {
         pointcloud_pose_warned_ = true;
         std::cerr << "[protobuf_parser] foxglove.PointCloud carries a non-identity pose; it is dropped "
@@ -827,13 +755,10 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
-  // Register the SchemaHandler for foxglove.LaserScan. The object route decodes
-  // + eagerly projects one scan per message into an OWNED point buffer (no
-  // zero-copy by design: the wire carries polar ranges, the cloud carries
-  // newly generated cartesian points, anchored by the projector). The scalar
-  // route emits a slim metadata row (timestamp / frame_id / start_angle /
-  // end_angle / num_ranges) from a header-only walk — no LUT, no projection —
-  // mirroring the lightweight foxglove.PointCloud scalar path above.
+  // Object route: decodes and eagerly projects one scan per message into an OWNED point buffer (not zero-copy: the
+  // wire carries polar ranges, the cloud newly generated cartesian points, anchored by the projector). Scalar route: a
+  // slim metadata row (timestamp / frame_id / start_angle / end_angle / num_ranges) from a header-only walk, with no
+  // LUT and no projection.
   void registerFoxgloveLaserScanHandler(std::string_view type_name) {
     PJ::sdk::SchemaHandler handler;
     handler.object_type = PJ::sdk::BuiltinObjectType::kPointCloud;
@@ -849,7 +774,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       if (use_embedded_timestamp_ && info->timestamp_ns > 0) {
         record.ts = info->timestamp_ns;
       }
-      // Flat metadata names (no '/' prefix), matching the PointCloud handler convention.
+      // Flat metadata names (no '/' prefix), like the PointCloud handler.
       record.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(info->timestamp_ns)}});
       record.fields.push_back({.name = "frame_id", .value = PJ::sdk::ValueRef{std::string_view(laserscan_frame_id_)}});
       record.fields.push_back({.name = "start_angle", .value = PJ::sdk::ValueRef{info->start_angle}});
@@ -865,9 +790,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       if (!decoded) {
         return PJ::unexpected(std::move(decoded).error());
       }
-      // Same policy as foxglove.PointCloud above: sdk::PointCloud has no pose
-      // (geometry lives in frame_id + the TF tree), so a non-identity pose is
-      // dropped — warn once so it is not a silent mislocation.
+      // Same as foxglove.PointCloud: sdk::PointCloud has no pose, so a non-identity one is dropped; warn once.
       if (decoded->has_pose && !decoded->pose_is_identity && !laserscan_pose_warned_) {
         laserscan_pose_warned_ = true;
         std::cerr << "[protobuf_parser] foxglove.LaserScan carries a non-identity pose; it is dropped "
@@ -883,12 +806,10 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     registerSchemaHandler(type_name, std::move(handler));
   }
 
-  // Resolve the field numbers of a well-known Foxglove schema from the bound
-  // topic's embedded FileDescriptorSet, so the hand-rolled zero-copy decoders
-  // honor a self-describing file that renumbered the schema (the dispatcher keys
-  // off the schema NAME only). Builds a throwaway pool just to read field numbers
-  // by NAME; leaves each codec's default numbering in place when there is no
-  // schema (streaming) or it cannot be parsed/built.
+  // Resolves the field numbers of a well-known Foxglove schema from the bound topic's embedded FileDescriptorSet, so
+  // the hand-rolled decoders honor a self-describing file that renumbered the schema (the dispatcher keys off the
+  // schema NAME only). Builds a throwaway pool just to read field numbers by NAME; each codec keeps its default
+  // numbering when there is no schema (streaming) or it cannot be parsed/built.
   void resolveFoxgloveFieldNumbers(std::string_view type_name, PJ::Span<const uint8_t> schema) {
     if (schema.empty()) {
       return;
@@ -902,10 +823,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     gp::DescriptorPool pool(&database);
     const gp::Descriptor* descriptor = pool.FindMessageTypeByName(std::string(type_name));
     if (descriptor == nullptr) {
-      // The schema was present but unbuildable (e.g. a dependency like
-      // google.protobuf.Timestamp missing from the set). We fall
-      // back to the official field numbers — but make that visible, because the
-      // bug this whole path fixes is a SILENT misparse of a renumbered schema.
+      // The schema was present but unbuildable (e.g. a dependency like google.protobuf.Timestamp missing from the set).
+      // Falling back to the official numbers is reported because a renumbered schema would otherwise misparse silently.
       std::cerr << "[protobuf_parser] could not resolve a descriptor for " << type_name
                 << " from its embedded schema; assuming official foxglove field numbers "
                    "(a renumbered schema would misparse).\n";
@@ -936,12 +855,9 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     }
   }
 
-  // Register a SchemaHandler for one of the well-known Foxglove scene/image
-  // schemas. parse_object decodes the canonical builtin object; parse_scalars
-  // emits a slim, BOUNDED metadata row (the embedded timestamp + frame_id where
-  // the schema has one, plus counts/sizes) so promoted topics still produce a
-  // few plottable columns without the per-element scalar blow-up that made the
-  // generic flatten pathological.
+  // parse_object decodes the canonical builtin object; parse_scalars emits a slim, BOUNDED metadata row (embedded
+  // timestamp + frame_id where the schema has one, plus counts/sizes), avoiding the per-element scalar blow-up of the
+  // generic flatten.
   void registerFoxgloveObjectHandler(std::string_view type_name) {
     PJ::sdk::SchemaHandler handler;
     const std::string name(type_name);
@@ -962,22 +878,19 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       };
       handler.parse_scalars =
           [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
-        // This used to decode nothing and hardcode num_transforms=1, so the row
-        // carried no information at all. FrameTransform is cheap to decode (a
-        // stamp, two frame ids, 7 doubles — no blob), so actually read it and
-        // emit the embedded stamp plus the real count.
+        // FrameTransform is cheap to decode (a stamp, two frame ids, 7 doubles, no blob), so the embedded stamp and the
+        // real count are emitted.
         auto obj =
             pj_protobuf::deserializeFoxgloveFrameTransform(payload.data(), payload.size(), frame_transform_fields_);
         if (!obj) {
-          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+          return PJ::unexpected(std::move(obj).error());
         }
         PJ::sdk::ScalarRecord r;
         if (use_embedded_timestamp_ && !obj->transforms.empty() && obj->transforms.front().timestamp_ns > 0) {
           r.ts = obj->transforms.front().timestamp_ns;
         }
-        // The schema holds exactly one transform, so "the" stamp is the first
-        // one's; with none decoded there is no stamp to report and the series is
-        // omitted for this message rather than filed as a fake 0.
+        // The schema holds exactly one transform, so "the" stamp is the first one's; with none decoded the series is
+        // omitted rather than filed as a fake 0.
         if (!obj->transforms.empty()) {
           r.fields.push_back(
               {.name = "timestamp",
@@ -1006,19 +919,14 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         auto obj = pj_protobuf::deserializeFoxgloveCompressedImageView(
             payload.data(), payload.size(), nullptr, compressed_image_fields_);
         if (!obj) {
-          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+          return PJ::unexpected(std::move(obj).error());
         }
-        // ValueRef holds a non-owning string_view, so park the decoded strings
-        // in members that outlive the returned record (the VideoFrame pattern).
-        // sdk::Image::encoding IS the foxglove `format` string verbatim, so the
-        // column keeps the schema's own name.
+        // The decoded strings are parked in members because ValueRef holds a non-owning string_view.
+        // sdk::Image::encoding IS the foxglove `format` string verbatim, so the column keeps the schema's name.
         compressed_image_frame_id_ = std::move(obj->frame_id);
         compressed_image_format_ = std::move(obj->encoding);
         PJ::sdk::ScalarRecord r;
-        // Same timestamp policy as this schema's object route, so the scalar
-        // columns and the object entry land on the SAME timeline. Without it,
-        // enabling use_embedded_timestamp put the object on sensor time while
-        // its own metadata row stayed on host time.
+        // Same timestamp policy as the object route, so scalars and object share a timeline.
         if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {
           r.ts = obj->timestamp_ns;
         }
@@ -1048,7 +956,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         auto obj = pj_protobuf::deserializeFoxgloveCameraCalibration(
             payload.data(), payload.size(), camera_calibration_fields_);
         if (!obj) {
-          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+          return PJ::unexpected(std::move(obj).error());
         }
         camera_calibration_frame_id_ = std::move(obj->frame_id);  // keep alive for the string_view below.
         PJ::sdk::ScalarRecord r;
@@ -1081,14 +989,13 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         auto obj =
             pj_protobuf::deserializeFoxgloveImageAnnotations(payload.data(), payload.size(), image_annotations_fields_);
         if (!obj) {
-          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+          return PJ::unexpected(std::move(obj).error());
         }
         PJ::sdk::ScalarRecord r;
         if (use_embedded_timestamp_ && obj->timestamp_ns > 0) {  // match the object route's timeline
           r.ts = obj->timestamp_ns;
         }
-        // No top-level frame_id in this schema — annotations are tied to an
-        // image by layer stacking, not by frame — so only the stamp is added.
+        // No top-level frame_id: annotations are tied to an image by layer stacking, not by frame.
         r.fields.push_back({.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->timestamp_ns)}});
         r.fields.push_back(
             {.name = "num_circles", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->circles.size())}});
@@ -1116,7 +1023,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         auto obj =
             pj_protobuf::deserializeFoxgloveRawImageView(payload.data(), payload.size(), nullptr, raw_image_fields_);
         if (!obj) {
-          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+          return PJ::unexpected(std::move(obj).error());
         }
         raw_image_frame_id_ = std::move(obj->frame_id);  // keep alive for the string_view below.
         PJ::sdk::ScalarRecord r;
@@ -1149,7 +1056,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         auto obj =
             pj_protobuf::deserializeFoxgloveVoxelGridView(payload.data(), payload.size(), nullptr, voxelgrid_fields_);
         if (!obj) {
-          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+          return PJ::unexpected(std::move(obj).error());
         }
         voxelgrid_frame_id_ = std::move(obj->frame_id);  // keep alive for the string_view below.
         PJ::sdk::ScalarRecord r;
@@ -1183,7 +1090,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
           [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
         auto obj = pj_protobuf::deserializeFoxgloveGridView(payload.data(), payload.size(), nullptr, grid_fields_);
         if (!obj) {
-          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+          return PJ::unexpected(std::move(obj).error());
         }
         grid_frame_id_ = std::move(obj->frame_id);  // keep alive for the string_view below.
         PJ::sdk::ScalarRecord r;
@@ -1218,16 +1125,14 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
           [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
         auto obj = pj_protobuf::deserializeFoxgloveSceneUpdate(payload.data(), payload.size(), scene_update_fields_);
         if (!obj) {
-          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+          return PJ::unexpected(std::move(obj).error());
         }
         PJ::sdk::ScalarRecord r;
         if (use_embedded_timestamp_ && !obj->entities.empty() && obj->entities.front().timestamp_ns > 0) {
           r.ts = obj->entities.front().timestamp_ns;  // match the object route's timeline
         }
-        // A SceneUpdate has no top-level stamp; the first entity's is the one
-        // the object route files the record under, so it is the stamp for this
-        // message. With no entities there is none — omit the column rather than
-        // file a fabricated 0.0 (same rule as foxglove.FrameTransform).
+        // A SceneUpdate has no top-level stamp; the first entity's is the one the object route files the record under.
+        // With no entities the column is omitted rather than filed as a fabricated 0.0 (same as FrameTransform).
         if (!obj->entities.empty()) {
           r.fields.push_back(
               {.name = "timestamp", .value = PJ::sdk::ValueRef{timestampSeconds(obj->entities.front().timestamp_ns)}});
@@ -1251,10 +1156,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   std::string timestamp_field_name_;  // empty = fallback chain ("timestamp" → "ts")
   PJ::sdk::ArrayLimit array_limit_;
 
-  // Field numbers for the well-known Foxglove schemas, resolved from the bound
-  // topic's embedded descriptor in bindSchema(). Default to each codec's historical
-  // numbering so schemaless streams (no descriptor) decode exactly as before; a
-  // self-describing .mcap that renumbered a schema overrides only the named fields.
+  // Field numbers for the well-known Foxglove schemas, resolved from the bound topic's embedded descriptor in
+  // bindSchema(). Schemaless streams keep each codec's defaults; a renumbered schema overrides only the named fields.
   pj_protobuf::RawImageFieldNumbers raw_image_fields_;
   pj_protobuf::CompressedImageFieldNumbers compressed_image_fields_;
   pj_protobuf::CameraCalibrationFieldNumbers camera_calibration_fields_;
@@ -1271,28 +1174,21 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   std::vector<FlattenedField> owned_fields_;
   std::vector<PJ::sdk::BoundFieldValue> bound_fields_;
 
-  // VideoFrame scalar-route string storage. Keeps the decoded frame_id/format
-  // alive while the host reads the ScalarRecord's string_view fields.
+  // Scalar-route string storage: ValueRef holds a non-owning string_view, so every decoded string a ScalarRecord
+  // references must outlive the lambda that decoded it. One parser instance serves one schema, so these are mutually
+  // exclusive in practice.
   std::string video_frame_id_;
   std::string video_format_;
 
-  // foxglove.PointCloud scalar-route frame_id storage (same lifetime trick) and
-  // a latch so the dropped-pose warning fires only once per parser instance.
+  // The latch makes the dropped-pose warning fire once per parser instance.
   std::string pointcloud_frame_id_;
   bool pointcloud_pose_warned_ = false;
 
-  // foxglove.LaserScan: the shared projector (one per parser instance = per
-  // topic, so the cos/sin LUT is computed once per scanner config), the
-  // scalar-route frame_id storage, and the warn-once dropped-pose latch.
+  // One projector per parser instance (= per topic), so the cos/sin LUT is computed once per scanner config.
   PJ::laser_scan::LaserScanProjector laserscan_projector_;
   std::string laserscan_frame_id_;
   bool laserscan_pose_warned_ = false;
 
-  // Scalar-route string storage for the remaining promoted schemas. Same
-  // lifetime trick as above: ValueRef holds a non-owning string_view, so every
-  // decoded string a ScalarRecord references must live in the parser, not in
-  // the decode result that dies with the lambda. One parser instance serves one
-  // schema, so these are mutually exclusive in practice.
   std::string poses_frame_id_;
   std::string odometry_frame_id_;
   std::string compressed_image_frame_id_;

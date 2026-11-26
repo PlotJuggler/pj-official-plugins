@@ -13,17 +13,12 @@
 
 namespace {
 
-/// Dialog plugin for the UDP Server.
-/// Configures address, port and message encoding.
 class UdpDialog : public PJ::DialogPluginTyped {
  public:
-  /// Set the available encodings from the runtime host.
-  /// Called by the owning DataSource after runtime host is bound (in loadConfig).
+  /// Called by the data source in loadConfig(), once the runtime host is bound.
   void setAvailableEncodings(std::vector<std::string> encodings) {
     available_encodings_ = std::move(encodings);
   }
-
-  // --- Dialog protocol ---
 
   std::string manifest() const override {
     return kUdpManifest;

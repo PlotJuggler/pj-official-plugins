@@ -29,9 +29,8 @@ TEST(StoppableThread, DestructorRequestsStopThenJoins) {
   EXPECT_TRUE(body_finished.load());
 }
 
-// The reason the poller used the stop_token-aware wait_for overload: shutdown
-// must not have to sit out the full poll interval. With a 30s interval, a
-// destructor that only joined would take 30s.
+// Shutdown must not have to sit out the full poll interval: with a 30s interval, a destructor that only joined
+// would take 30s.
 TEST(StoppableThread, WaitForStopWakesImmediatelyOnStop) {
   std::atomic<bool> waiting{false};
   const auto start = std::chrono::steady_clock::now();

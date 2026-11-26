@@ -18,29 +18,23 @@ namespace {
 /// Folder name of the dataset the saved `selected_episodes` were chosen for.
 constexpr char kSelectionDatasetKey[] = "selected_episodes_dataset";
 
-// Generated at configure time by pj_embed_ui / pj_embed_manifest.
+// Generated at configure time.
 #include "dialog_lerobot_ui.hpp"
 #include "lerobot_manifest.hpp"
 
-/// DataSource-owned dialog: pick which episodes of a LeRobot dataset to load,
-/// and how to lay them out on the timeline. Mirrors the ParquetDialog pattern.
+/// Picks which episodes of a LeRobot dataset to load.
 class LeRobotDialog : public PJ::DialogPluginTyped {
  public:
-  // --- Accessors used by LeRobotSource ---
-
   const lerobot::DatasetModel* model() const {
     return model_ ? &*model_ : nullptr;
   }
   const std::string& datasetError() const {
     return model_error_;
   }
-  /// Episode this LeRobotSource instance imports. Populated when the host
-  /// passes a per-instance fanout config carrying `"episode": <int>`.
+  /// Set when the host passes a per-instance fanout config carrying `"episode": <int>`.
   std::optional<int64_t> singleEpisode() const {
     return single_episode_;
   }
-
-  // --- Dialog protocol ---
 
   std::string manifest() const override {
     return kLerobotManifest;
@@ -119,20 +113,14 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
   void onRejected() override {}
 
   std::string saveConfig() const override {
-    // Dialog/UI mode: emit the dialog template the user just confirmed AND a
-    // top-level `__pj_fanout` array if multi-select produced ≥1 episodes.
-    // FileLoader peels `__pj_fanout` to spawn one LeRobotSource per entry
-    // (each entry → one DatasetId). The outer fields restore the dialog
-    // selection on next open. See FileLoader::extractFanout in pj_app.
+    // The host peels the top-level `__pj_fanout` array to spawn one LeRobotSource (one DatasetId) per entry; the
+    // outer fields restore the dialog selection on next open.
     nlohmann::json cfg;
     cfg["filepath"] = filepath_;
     cfg["selected_episodes"] = selected_eps_;
 
-    // Name the dataset tree-root after the dataset folder (e.g. "pusht_v21")
-    // rather than the opened file (info.json → "info"). pj_app reads this
-    // top-level `display_name` and uses it as the catalog root label (and as
-    // the shared prefix combined with each entry's `display_suffix` in fanout).
-    // model_->root is the resolved dataset root (walked up to meta/info.json).
+    // The host uses the top-level `display_name` as the catalog root label (and the shared prefix of each fanout
+    // entry's `display_suffix`): the dataset folder ("pusht_v21"), not the opened file ("info").
     if (model_) {
       const std::string name = PJ::utf8_path::pathToUtf8(model_->root.filename());
       if (!name.empty()) {
@@ -162,17 +150,13 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     }
     filepath_ = cfg.value("filepath", std::string{});
 
-    // Per-instance fanout mode: the FileLoader passes a sub-config with a
-    // single `episode` int. importData reads singleEpisode() to skip the
-    // multi-episode iteration. The dialog UI fields stay at defaults — this
-    // instance is never shown.
+    // Per-instance fanout config: a single `episode` int; this instance is never shown.
     single_episode_.reset();
     if (auto it = cfg.find("episode"); it != cfg.end() && it->is_number_integer()) {
       single_episode_ = it->get<int64_t>();
     }
 
-    // Restore dialog selection (dialog/UI mode path). Per-instance configs
-    // don't carry selected_episodes, so this is a no-op for fanout entries.
+    // Per-instance fanout configs carry no selected_episodes, so this is a no-op for them.
     std::vector<int64_t> restored;
     if (auto it = cfg.find("selected_episodes"); it != cfg.end() && it->is_array()) {
       for (const auto& v : *it) {
@@ -188,8 +172,7 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       loadModel();
     }
     if (model_ && single_episode_.has_value()) {
-      // Per-instance: verify the episode still exists in the dataset; refuse
-      // the config otherwise so the host reports a clean error.
+      // Refuse the config if the episode no longer exists, so the host reports a clean error.
       const int64_t ep = *single_episode_;
       const auto& eps = model_->episodes;
       if (!std::any_of(eps.begin(), eps.end(), [ep](const lerobot::EpisodeInfo& e) { return e.episode_index == ep; })) {
@@ -197,14 +180,13 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       }
     } else if (model_) {
       // The selection belongs to the dataset it was chosen for: the host pre-fills the next dataset's dialog with
-      // this config, "filepath" rewritten, and episode indices of one dataset mean nothing in another. A config
-      // without the name (an older plugin version) keeps its selection.
+      // this config ("filepath" rewritten) and episode indices mean nothing across datasets. A config without the
+      // name keeps its selection.
       const auto chosen_for = cfg.value(kSelectionDatasetKey, std::string{});
       if (!chosen_for.empty() && chosen_for != PJ::utf8_path::pathToUtf8(model_->root.filename())) {
         restored.clear();
       }
-      // Keep only restored indices still present (the dataset may have
-      // changed since the layout was saved); empty selection ⇒ default all.
+      // Keep only indices still present in the dataset; an empty selection defaults to all.
       for (int64_t ep : restored) {
         const auto& eps = model_->episodes;
         if (std::any_of(
@@ -284,8 +266,6 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
   std::string model_error_;
   std::vector<std::string> episode_items_;  // aligned 1:1 with model_->episodes
   std::vector<int64_t> selected_eps_;       // episode_index values, ascending
-  // Per-instance fanout: set by loadConfig when the host passes a single
-  // `episode` int; importData uses it to bypass the multi-episode iteration.
   std::optional<int64_t> single_episode_;
 };
 

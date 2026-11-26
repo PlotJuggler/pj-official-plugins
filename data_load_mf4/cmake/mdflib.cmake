@@ -1,7 +1,6 @@
-# mdflib.cmake -- mdflib (ihedvall/mdflib) as a static library. Shared by this
-# plugin and PlotJuggler's WebAssembly build: each fetches the same pinned source
-# and calls pj_add_mdflib_library(<target> <mdflib source dir>). Needs ZLIB::ZLIB
-# and EXPAT::EXPAT.
+# mdflib (ihedvall/mdflib) as a static library, shared by this plugin and PlotJuggler's WebAssembly build: each
+# fetches the same pinned source and calls pj_add_mdflib_library(<target> <mdflib source dir>). Needs ZLIB::ZLIB and
+# EXPAT::EXPAT.
 #
 # mdflib is built from its globbed sources rather than add_subdirectory'd:
 #   1. its CMakeLists uses ${CMAKE_SOURCE_DIR} for script/{zlib,expat}.cmake and
@@ -17,10 +16,9 @@ function(pj_add_mdflib_library target source_dir)
 # a missed match would compile the unpatched copy beside the patched one.
 get_filename_component(source_dir "${source_dir}" ABSOLUTE)
 file(GLOB _mdf_sources CONFIGURE_DEPENDS ${source_dir}/mdflib/src/*.cpp)
-# Emscripten's libc is musl, whose strerror_r is the XSI one (returns int).
-# mdflib's non-Windows branch expects glibc's (returns char*), so route
-# Emscripten through its Cygwin branch, which ignores the return value. Applied
-# on every platform (a no-op elsewhere) so this repo's CI checks the anchor.
+# Emscripten's libc is musl, whose strerror_r is the XSI one (returns int); mdflib's non-Windows branch expects
+# glibc's (returns char*), so Emscripten is routed through its Cygwin branch, which ignores the return value.
+# Applied on every platform (a no-op elsewhere) so CI checks the anchor.
 file(READ ${source_dir}/mdflib/src/platform.cpp _mdf_platform_cpp)
 set(_mdf_strerror_anchor "#elif (__CYGWIN__)")
 set(_mdf_strerror_fixed "#elif (__CYGWIN__ || __EMSCRIPTEN__)")
@@ -43,9 +41,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include algorithm>" "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstdint>")
 endif()
 if(EMSCRIPTEN)
-  # WebAssembly has no floating-point exceptions: Emscripten's <fenv.h> names no
-  # FE_* flag. Turning off half.hpp's <cfenv> use makes it define its own; its
-  # floating-point error handling, the only user of <cfenv>, is off anyway.
+  # WebAssembly has no floating-point exceptions and Emscripten's <fenv.h> names no FE_* flag; disabling half.hpp's
+  # <cfenv> use (only for error handling, which is off anyway) makes it define its own.
   target_compile_definitions(${target} PRIVATE HALF_ENABLE_CPP11_CFENV=0)
 endif()
 if(MSVC)

@@ -13,8 +13,7 @@
 # This reads the JSON file at configure time and generates a header like:
 #   inline constexpr char kMyManifest[] = { 0x7b, ... , 0x00 };
 #
-# The manifest file is tracked as a configure dependency — editing it triggers
-# CMake reconfiguration and header regeneration.
+# The manifest is a configure dependency: editing it regenerates the header.
 
 function(pj_embed_manifest TARGET)
   cmake_parse_arguments(ARG "" "MANIFEST_FILE;HEADER;VAR_NAME" "" ${ARGN})
@@ -27,20 +26,17 @@ function(pj_embed_manifest TARGET)
     set(ARG_MANIFEST_FILE "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json")
   endif()
 
-  # Track the manifest file so CMake reconfigures when it changes
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ARG_MANIFEST_FILE}")
 
-  # Get just the filename for the comment
   get_filename_component(_manifest_filename "${ARG_MANIFEST_FILE}" NAME)
 
-  # Use hex-encoded char array to avoid MSVC's 16380-char string literal limit (C2026).
+  # Hex-encoded char array avoids MSVC's 16380-char string literal limit (C2026).
   # Character literals ('\xe2'), not integers (0xe2): an int above 0x7f is a
   # narrowing conversion to char in a braced initializer, a hard error for any
-  # manifest with non-ASCII bytes (same fix as the SDK's pj_embed_file).
+  # manifest with non-ASCII bytes.
   file(READ "${ARG_MANIFEST_FILE}" _manifest_hex HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "'\\\\x\\1'," _byte_list "${_manifest_hex}")
 
-  # Generate the header with a char array initializer + null terminator
   file(WRITE "${ARG_HEADER}"
     "#pragma once\n"
     "// Auto-generated from ${_manifest_filename} — edit the .json file, not this header.\n"
@@ -49,7 +45,6 @@ function(pj_embed_manifest TARGET)
     "${_byte_list}'\\x00'};\n"
   )
 
-  # Add the generated directory to include path
   get_filename_component(_gen_dir "${ARG_HEADER}" DIRECTORY)
   target_include_directories(${TARGET} PRIVATE "${_gen_dir}")
 endfunction()

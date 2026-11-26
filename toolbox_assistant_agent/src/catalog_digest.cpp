@@ -1,8 +1,5 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
-//
-// catalogDigest: the budgeted listing of loaded data that rides along with
-// every message, so the model rarely needs list_topics.
 
 #include "catalog_digest.hpp"
 
@@ -53,11 +50,8 @@ const char* primitiveTypeName(PJ::PrimitiveType t) {
   }
 }
 
-// An object topic's time range, in the best axis available: display seconds
-// when a playback view is bound and can convert both ends (matching the
-// display-time reports of PlotJuggler's own tools), else the raw dataset-domain
-// seconds the host reported, flagged so the model never mistakes one axis for
-// the other.
+// An object topic's time range in display seconds when a playback view can convert both ends,
+// else the raw dataset-domain seconds, flagged so the model never mistakes one axis for the other.
 struct ObjectTimeRange {
   double a = 0.0;
   double b = 0.0;
@@ -77,18 +71,14 @@ ObjectTimeRange objectTimeRange(
   return {static_cast<double>(t_min_ns) * 1e-9, static_cast<double>(t_max_ns) * 1e-9, true};
 }
 
-// How much of a topic's field list catalogDigest rendered, cheapest to
-// costliest.
+// How much of a topic's field list is rendered, cheapest to costliest.
 enum class Tier { kCount, kPartial, kFull };
 
-// Plain truncation: the full tree, then (if that still does not fit) topic
-// names only, with a footer naming the gap. This is the ENTIRE pre-mixed-tier
-// catalogDigest, kept verbatim as the fallback for the rare budget so tight
-// that not even a bare field COUNT fits for every topic — see catalogDigest's
-// count-only feasibility check below, the only caller.
-// Templated over the catalog type so it serves both the legacy (v1) host and
-// catalogSnapshotV2()'s scalar half -- both expose the same topics()/fields()/
-// dataSources() shape, and this fallback never touches object topics.
+// Plain truncation: the full tree, then (if that does not fit) topic names only, with a footer
+// naming the gap. Fallback for a budget so tight that not even a bare field COUNT fits every
+// topic (see the feasibility check in renderScalarCatalogDigest). Templated over the catalog type
+// so it serves both the v1 host and catalogSnapshotV2()'s scalar half, which share the
+// topics()/fields()/dataSources() shape; it never touches object topics.
 template <class Catalog>
 std::string legacyCatalogDigest(const Catalog& catalog, std::size_t budget_chars) {
   auto topics = catalog.topics();
@@ -138,8 +128,7 @@ std::string legacyCatalogDigest(const Catalog& catalog, std::size_t budget_chars
   std::string body = build(/*with_fields=*/true, shown);
   bool with_fields = true;
   if (shown < topics.size()) {
-    // Didn't fit with fields — retry with topic names only, which is far
-    // cheaper per topic and usually fits a dataset that the full tree can't.
+    // Topic names only are far cheaper per topic and usually fit where the full tree cannot.
     std::size_t shown_names = 0;
     std::string names_body = build(/*with_fields=*/false, shown_names);
     if (shown_names > shown) {
@@ -172,29 +161,20 @@ std::string legacyCatalogDigest(const Catalog& catalog, std::size_t budget_chars
   return header + body + footer;
 }
 
-// The scalar half of the digest -- everything catalogDigest rendered before
-// object topics existed, unchanged in behavior. Templated over the catalog
-// type so catalogSnapshotV2()'s scalar arrays (identical shape to v1's) share
-// this without a second copy; the caller has already handled "nothing is
-// loaded" (that verdict needs to know about object topics too, on a v2 host).
+// The scalar half of the digest. Templated so v1 and catalogSnapshotV2()'s scalar arrays share it;
+// the caller has already handled "nothing is loaded" (on a v2 host that depends on object topics too).
 template <class Catalog>
 std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget_chars) {
   auto topics = catalog.topics();
   auto fields = catalog.fields();
   const std::uint32_t n = static_cast<std::uint32_t>(topics.size());
 
-  // Which dataset each topic belongs to. PJ4 can hold several loaded at once —
-  // two runs of the same robot, say — and a flat topic list hides that
-  // completely: the model cannot offer to compare them because it does not know
-  // there are two, and cannot avoid mixing them for the same reason. Topics are
-  // grouped contiguously per source (first_topic/topic_count), so this is a
-  // lookup table rather than a scan. Empty when the host reports no sources, in
-  // which case the listing stays exactly as it was.
+  // Which dataset each topic belongs to. Several can be loaded at once (two runs of the same
+  // robot), and a flat topic list would hide that: the model could neither offer to compare them
+  // nor avoid mixing them. Empty when the host reports no sources.
   const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(catalog.dataSources());
 
-  // Dataset-header prefix per topic index — empty except where a new dataset
-  // starts. Precomputed once so every tier below (full/partial/count) shares
-  // it without re-deriving dataset transitions per topic.
+  // Dataset-header prefix per topic index; empty except where a new dataset starts.
   std::vector<std::string> dataset_prefix(n);
   {
     std::string current_dataset;
@@ -206,10 +186,8 @@ std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget
     }
   }
 
-  // The dominant field type, when at least 80% of every field in the catalog
-  // shares one: that type is then left off every "name (type)" rendering, and
-  // only the minority still carries one — the header states the rule once
-  // instead of repeating "(float64)" on thirty topics that are all float64.
+  // The dominant field type, when at least 80% of all fields share one: it is left off every
+  // "name (type)" and the header states the rule once, instead of repeating "(float64)" per field.
   std::optional<std::string> dominant_type;
   {
     std::map<std::string, std::size_t> type_counts;
@@ -241,9 +219,7 @@ std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget
     return "  " + std::string(PJ::sdk::toStringView(topics[ti].name)) + ": ";
   };
 
-  // Sub-budget for a partial line's field list (before the "  <topic>: "
-  // prefix and the trailing "… +N more") — enough for a handful of short
-  // field names at far less than a full line's cost.
+  // Budget for a partial line's field list, excluding the "  <topic>: " prefix and "… +N more".
   constexpr std::size_t kPartialFieldBudget = 120;
 
   auto buildFullBody = [&](std::uint32_t ti) {
@@ -275,8 +251,7 @@ std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget
         break;
       }
       const std::string candidate = (fi != 0 ? ", " : "") + renderField(idx);
-      // Always take at least one field, even an oversized one, so a partial
-      // line is never emptier than the count line it is meant to beat.
+      // Always at least one field, so a partial line is never emptier than the count line.
       if (partial_shown > 0 && partial_fields.size() + candidate.size() > kPartialFieldBudget) {
         break;
       }
@@ -290,9 +265,7 @@ std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget
 
   auto renderHeader = [&] {
     std::string header = "Loaded data (" + std::to_string(n) + " topic(s)):\n";
-    // Teach the qualifier by stating it where the dataset names are, instead
-    // of spending schema tokens on it in every session: this line exists
-    // only when several datasets are actually loaded.
+    // Only when several datasets are loaded; stated here rather than in every session's schema.
     if (catalog.dataSources().size() >= 2) {
       header +=
           "Several datasets are loaded; when the same topic exists in more than one, address the series as "
@@ -304,10 +277,8 @@ std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget
     return header;
   };
 
-  // Every topic's full rendering, built up front — the common case (the
-  // whole catalog fits with every field spelled out) needs nothing else, so
-  // the count and partial tiers below are built lazily, only once that fast
-  // path has been ruled out.
+  // Full renderings are built up front: the common case (everything fits) needs nothing else, so
+  // the count and partial tiers are built only after that fast path is ruled out.
   std::vector<std::string> full_body(n);
   for (std::uint32_t ti = 0; ti < n; ++ti) {
     full_body[ti] = buildFullBody(ti);
@@ -328,10 +299,8 @@ std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget
     }
   }
 
-  // The full tree doesn't fit whole: every topic's cheapest rendering (a
-  // bare field count) is the feasibility floor -- if even THAT doesn't fit,
-  // there is nothing left to trim except fields entirely, which is exactly
-  // what the pre-existing full-tree/names-only truncation already does.
+  // Every topic's cheapest rendering (a bare field count) is the feasibility floor; if even that
+  // does not fit, only legacyCatalogDigest's truncation is left.
   std::vector<std::string> count_body(n);
   for (std::uint32_t ti = 0; ti < n; ++ti) {
     count_body[ti] = buildCountBody(ti);
@@ -344,14 +313,11 @@ std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget
     return legacyCatalogDigest(catalog, budget_chars);
   }
 
-  // Every topic starts at "count" (already paid for above) and ascends
-  // cheapest-upgrade-first — (full size - count size), stable-sorted so a tie
-  // resolves in catalog order — trying full, then partial, stopping the first
-  // time an upgrade would blow the budget. Signed deltas: a topic with no
-  // fields renders SHORTER as "full" than as "count", and that must read as
-  // an improvement, not wrap around as an unsigned underflow. partial_body is
-  // filled in lazily, only for the topics this loop actually considers one
-  // for (a topic whose full upgrade already fit never needs it).
+  // Every topic starts at "count" (already paid for) and upgrades cheapest-first (full size minus
+  // count size, stable-sorted so ties keep catalog order), trying full then partial and skipping an
+  // upgrade that would blow the budget. Deltas are signed: a topic with no fields renders SHORTER
+  // as "full" than as "count", which must not wrap around. partial_body is built lazily, only for
+  // topics whose full upgrade did not fit.
   std::vector<std::string> partial_body(n);
   std::vector<Tier> tier(n, Tier::kCount);
   {
@@ -411,12 +377,9 @@ std::string renderScalarCatalogDigest(const Catalog& catalog, std::size_t budget
   return renderHeader() + body + footer;
 }
 
-// One line per non-marker object topic, grouped under the same "dataset
-// \"X\":" headers the scalar half uses. Budgeted like a topic with one field:
-// every line is a fixed-size unit -- there is no field list inside it to
-// shrink -- so unlike a scalar topic it has only one tier, taken whole or
-// left out. Lines are appended greedily in catalog order until the next one
-// would exceed `budget_chars`; `shown < total` is catalogDigest's signal to
+// One line per non-marker object topic, under the same "dataset \"X\":" headers as the scalar half.
+// A line has no field list to shrink, so it is taken whole or left out: appended greedily in
+// catalog order until the next would exceed `budget_chars`. `shown < total` makes catalogDigest
 // say the list was cut.
 struct ObjectDigestLines {
   std::string body;
@@ -465,10 +428,8 @@ std::string catalogDigest(
     if (v2->topics().empty() && object_lines.total == 0) {
       return "Loaded data: nothing is loaded yet.";
     }
-    // Object topics are fixed-size lines with nothing to shrink, so they take
-    // their share of the budget first; the scalar tiering algorithm gets
-    // whatever is left, which is the whole budget on the common catalog with
-    // no object topics -- every existing scalar guarantee is unchanged then.
+    // Object lines cannot shrink, so they take their share first; scalar tiering gets the rest
+    // (the whole budget when there are no object topics).
     const std::size_t scalar_budget =
         budget_chars > object_lines.body.size() ? budget_chars - object_lines.body.size() : 0;
     std::string out = v2->topics().empty() ? std::string() : renderScalarCatalogDigest(*v2, scalar_budget);

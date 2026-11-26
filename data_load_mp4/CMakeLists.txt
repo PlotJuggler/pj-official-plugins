@@ -3,7 +3,6 @@ find_package(ffmpeg REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# --- Plugin shared library ---
 add_library(mp4_source_plugin SHARED mp4_source.cpp)
 target_compile_features(mp4_source_plugin PRIVATE cxx_std_20)
 target_compile_options(mp4_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -18,14 +17,12 @@ pj_embed_manifest(mp4_source_plugin
   VAR_NAME kMp4Manifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+# Sidecar .pjmanifest.json (manifest.json + abi_major, family) the host scans before dlopen.
 pj_emit_plugin_manifest(mp4_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Contract test for the SDK ISO-8601 → epoch-ns parser (pure, no FFmpeg) ---
 add_executable(mp4_iso8601_test tests/mp4_iso8601_test.cpp)
 target_compile_features(mp4_iso8601_test PRIVATE cxx_std_20)
 target_compile_options(mp4_iso8601_test PRIVATE ${PJ_WARNING_FLAGS})

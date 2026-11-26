@@ -5,9 +5,9 @@
 
 namespace ulog_detail {
 
-// PX4 starts a logged message with the emitting module in brackets: "[commander] Takeoff detected". Returns the module
-// and the text after "] ", or an empty module and the whole message when it does not start that way (a bracketed
-// word with spaces or nothing after it is part of the text).
+// PX4 prefixes a logged message with its module: "[commander] Takeoff detected". Returns the module and the text after
+// "] ", or an empty module and the whole message when it does not start that way (a bracketed word with spaces or
+// nothing after it is part of the text).
 inline std::pair<std::string_view, std::string_view> splitModulePrefix(std::string_view message) {
   const auto close = message.find(']');
   if (!message.starts_with('[') || close == std::string_view::npos || close < 2 || close + 2 >= message.size() ||

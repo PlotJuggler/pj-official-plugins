@@ -2,11 +2,9 @@
 // Copyright 2026 PlotJuggler contributors
 // SPDX-License-Identifier: MIT
 //
-// Zero-copy decoder for the well-known `foxglove.VoxelGrid` protobuf schema into
-// the canonical sdk::VoxelGrid builtin object (the dense 3D voxel grid added in
-// plotjuggler_sdk 0.10.0). Same approach as foxglove_pointcloud_codec.hpp: the
-// wire layout is known, so we scan it directly with CodedInputStream and alias
-// the packed voxel bytes in place.
+// Zero-copy decoder for the well-known `foxglove.VoxelGrid` protobuf schema into the canonical sdk::VoxelGrid builtin
+// object (a dense 3D voxel grid). The wire layout is known, so it is scanned directly with CodedInputStream and the
+// packed voxel bytes are aliased in place.
 //
 //   message foxglove.VoxelGrid {
 //     google.protobuf.Timestamp timestamp = 1;
@@ -41,10 +39,9 @@ class Descriptor;
 
 namespace pj_protobuf {
 
-// Descriptor-driven field numbers (see foxglove_object_codecs.hpp for the full
-// rationale): a self-describing .mcap may embed a schema that renumbers these,
-// so resolve them by NAME from the embedded descriptor. Defaults = official
-// Foxglove numbering, so schemaless streams behave exactly as before.
+// Field numbers are resolved by NAME from the embedded descriptor (see foxglove_object_codecs.hpp), because a
+// self-describing .mcap may renumber them. Defaults are the official Foxglove numbering, used when no descriptor is
+// available.
 
 /// Field numbers for foxglove.VoxelGrid and its nested PackedElementField (pef_*).
 struct VoxelGridFieldNumbers {

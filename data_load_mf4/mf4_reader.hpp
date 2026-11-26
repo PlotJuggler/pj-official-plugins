@@ -1,13 +1,11 @@
 #pragma once
 
-// Mf4Reader: a thin wrapper over mdflib that exposes an MDF file as a flat list
-// of channel groups (topics) and streams a group's records as rows.
+// Thin wrapper over mdflib exposing an MDF file as a flat list of channel groups (topics) whose records stream as
+// rows.
 //
-// Memory model (verified against mdflib): MdfReader::ReadData(dg) materializes a
-// whole *data group* into memory, so readGroup() reads one group, emits its rows
-// through a callback, then calls ClearData() to release it before the next group.
-// Bounded per-data-group, not per-sample. Observers live only for the duration of
-// one readGroup() call.
+// Memory: MdfReader::ReadData(dg) materializes a whole *data group*, so readGroup() reads one group, emits its rows
+// through a callback, then ClearData()s it before the next: memory is bounded per data group, not per sample.
+// Observers live only for one readGroup() call.
 
 #include <mdf/mdfreader.h>
 
@@ -24,9 +22,8 @@
 
 namespace mf4_detail {
 
-/// Returns `candidate` if it is not already in `used`, otherwise the first of
-/// `candidate#1`, `candidate#2`, … that is free — and records the result in
-/// `used`. Shared by the group-topic and channel-field name de-duplication.
+/// `candidate` if not in `used`, otherwise the first free `candidate#1`, `candidate#2`, ...; records the result in
+/// `used`. Shared by group-topic and channel-field name de-duplication.
 std::string dedupeName(const std::string& candidate, std::unordered_set<std::string>& used);
 
 /// Metadata for one channel of a group.
@@ -55,11 +52,9 @@ struct SampleValue {
   bool valid = true;    ///< false -> null (mdflib reported an invalid sample)
 };
 
-/// Per-record callback. `ts_ns` is absolute nanoseconds; `values` holds one
-/// SampleValue per supported non-master channel, in the order returned by
-/// valueChannelNames(). The vector is reused across records — consume it (copy
-/// or appendRecord) synchronously; do not retain references past the call.
-/// Return false to stop reading early (e.g. on cancel).
+/// `ts_ns` is absolute nanoseconds; `values` holds one SampleValue per supported non-master channel, in
+/// valueChannelNames() order. The vector is reused across records: consume it synchronously. Return false to stop
+/// reading early.
 using RowCallback = std::function<bool(std::int64_t ts_ns, const std::vector<SampleValue>& values)>;
 
 /// Per-group read diagnostics.
@@ -69,11 +64,8 @@ struct ReadGroupStats {
   std::uint64_t skipped_invalid_time = 0;
 };
 
-/// Per-frame callback for a CAN bus-logging group. `ts_ns` is absolute
-/// nanoseconds; `bus_channel` is CanMessage::BusChannel() (0 when the file
-/// does not record one); `can_id` is the raw 11/29-bit id; `extended` is the
-/// frame format; `data` are the payload bytes. Return false to stop reading
-/// early (e.g. on cancel).
+/// `ts_ns` is absolute nanoseconds; `bus_channel` is CanMessage::BusChannel() (0 when the file records none);
+/// `can_id` is the raw 11/29-bit id. Return false to stop reading early.
 using CanFrameCallback = std::function<bool(
     std::int64_t ts_ns, std::uint16_t bus_channel, std::uint32_t can_id, bool extended,
     const std::vector<std::uint8_t>& data)>;
@@ -84,7 +76,7 @@ class Mf4Reader {
   Mf4Reader(const Mf4Reader&) = delete;
   Mf4Reader& operator=(const Mf4Reader&) = delete;
 
-  /// Open the file and read all metadata blocks (no sample data).
+  /// Reads all metadata blocks, no sample data.
   PJ::Status open(const std::string& path);
 
   const std::vector<GroupInfo>& groups() const {
@@ -97,20 +89,16 @@ class Mf4Reader {
     return finalized_;
   }
 
-  /// Field names for a group's supported non-master value channels, in row
-  /// order, de-duplicated (`name`, then `name#1`, ... on collision; empty names
-  /// become `chan{N}`). Parallel to the `values` vector passed to readGroup().
+  /// Supported non-master value channel names, de-duplicated (`name`, then `name#1`, ...; empty names become
+  /// `chan{N}`). Parallel to the `values` vector passed to readGroup().
   std::vector<std::string> valueChannelNames(std::size_t group_index) const;
 
-  /// Stream every record of a measurement group through `cb`. Records whose
-  /// master (time) value is invalid are skipped and counted in `stats`.
-  /// Returns an error if the group has no master channel or the sample data
-  /// cannot be read.
+  /// Records whose master (time) value is invalid are skipped and counted in `stats`. Errors if the group has no
+  /// master channel or the sample data cannot be read.
   PJ::Status readGroup(std::size_t group_index, const RowCallback& cb, ReadGroupStats* stats = nullptr);
 
-  /// Stream every CAN frame of a bus-logging group through `cb`. Use for groups
-  /// whose bus_type is CAN. Frame time = start time + CanMessage::Timestamp();
-  /// frames with an unusable timestamp are skipped and counted in `stats`.
+  /// For groups whose bus_type is CAN. Frame time = start time + CanMessage::Timestamp(); frames with an unusable
+  /// timestamp are skipped and counted in `stats`.
   PJ::Status readCanGroup(std::size_t group_index, const CanFrameCallback& cb, ReadGroupStats* stats = nullptr);
 
  private:

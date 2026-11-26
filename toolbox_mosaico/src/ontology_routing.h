@@ -12,17 +12,12 @@
 
 namespace mosaico {
 
-// Resolve a pulled topic's ontology tag from the server metadata — the single
-// source of truth. Mosaico tags every topic in its Arrow schema
-// (mosaico:properties → ontology_tag), so there is NO column-structure
-// guessing here: an earlier heuristic that inferred "image" from a `data`
-// binary column + width/height false-positived on point clouds (ROS
-// PointCloud2 carries the same columns) and on geometry-less compressed
-// images. We read the tag explicitly instead:
+// Resolve a pulled topic's ontology tag from the server metadata (mosaico:properties -> ontology_tag), the single
+// source of truth. There is no column-structure guessing: a `data` binary column + width/height also matches point
+// clouds (ROS PointCloud2) and geometry-less compressed images. Order:
 //   1) the tag cached from getTopicMetadata (extractOntologyTag on the topic),
 //   2) extractOntologyTag on the pulled stream's schema metadata.
-// An absent tag yields "" — the topic is then treated as plain scalar data
-// rather than guessed at.
+// An absent tag yields "": the topic is then plain scalar data.
 [[nodiscard]] inline std::string resolveOntologyTag(
     const std::shared_ptr<arrow::Schema>& schema, const std::string& cached_tag) {
   if (!cached_tag.empty()) {

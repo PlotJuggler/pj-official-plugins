@@ -1,27 +1,21 @@
 # ZeroMQ Streaming Source
 
-Receives data via ZeroMQ SUB socket with delegated ingest to message
-parsers.
-
-## Features
-
-- ZeroMQ SUB socket with configurable transport (tcp, ipc, pgm)
-- Connect or Bind mode toggle
-- Topic filter subscription (comma/semicolon separated list)
-- Multi-part message handling: topic frame, payload frame, optional
-  timestamp frame
-- Non-blocking polling with per-topic parser caching
-
-## Timestamp Handling
-
-If a third ZMQ frame is present, it is parsed as a text-encoded
-timestamp (seconds since epoch) and converted to nanoseconds. Otherwise,
-the current system time is used.
+Receives data via a ZeroMQ SUB socket and hands it to message parsers.
 
 ## Configuration
 
-The dialog configures transport protocol, address, port, connect/bind
-mode, and topic filter string.
+The dialog configures transport (tcp, ipc, pgm), address, port (unused for ipc),
+connect or bind mode, and the topic filter: a comma, semicolon or space separated
+list of SUB subscriptions (empty subscribes to everything).
+
+## Message frames
+
+- `[payload]`: no topic (the topic is then `zmq/data`)
+- `[topic, payload]`
+- `[topic, payload, timestamp]`
+
+The optional third frame is a text-encoded timestamp (seconds since epoch). When it
+is absent or not a number, the arrival time is used.
 
 ## Testing
 
@@ -48,14 +42,4 @@ cd test_scripts/
 
 Options: `--port`, `--topic`, `--zmq-timestamp`, `--rate`.
 
-ZMQ frame structure:
-- `[payload]` — no topic, no ZMQ timestamp
-- `[topic, payload]` — with topic
-- `[topic, payload, timestamp]` — with topic and ZMQ timestamp frame
-
 The `test_message.proto` schema is used for protobuf modes.
-
-## Known Limitations
-
-- Topic parsing handles whitespace differently from original (spaces
-  preserved within topic names instead of stripped)

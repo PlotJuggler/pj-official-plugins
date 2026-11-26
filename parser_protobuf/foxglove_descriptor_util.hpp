@@ -11,11 +11,9 @@
 
 namespace pj_protobuf {
 
-/// Look up a field's wire number by NAME in an embedded message descriptor,
-/// returning `fallback` when the descriptor is null or has no field by that
-/// name. A complete foxglove descriptor defines every field, so the resolved
-/// numbers form a permutation of distinct values; partial descriptors (which the
-/// well-known schemas never are) could alias a resolved number onto a default.
+/// Wire number of field `name` in `descriptor`, or `fallback` when the descriptor is null or has no such field. A
+/// complete foxglove descriptor defines every field, so the resolved numbers are distinct; a partial descriptor could
+/// alias a resolved number onto a default.
 [[nodiscard]] inline int fieldNumberOr(const google::protobuf::Descriptor* descriptor, const char* name, int fallback) {
   if (descriptor != nullptr) {
     if (const auto* field = descriptor->FindFieldByName(name)) {
@@ -25,10 +23,9 @@ namespace pj_protobuf {
   return fallback;
 }
 
-/// The descriptor of the message type referenced by message-typed field `name`,
-/// or nullptr if `descriptor` is null or `name` is absent / not a message field.
-/// Used to descend into nested foxglove messages (SceneEntity, PackedElement
-/// Field) whose own field numbers also need resolving.
+/// The descriptor of message-typed field `name`, or nullptr if `descriptor` is null or `name` is absent / not a
+/// message field. Used to descend into nested foxglove messages (SceneEntity, PackedElementField) whose own field
+/// numbers also need resolving.
 [[nodiscard]] inline const google::protobuf::Descriptor* nestedDescriptor(
     const google::protobuf::Descriptor* descriptor, const char* name) {
   if (descriptor != nullptr) {

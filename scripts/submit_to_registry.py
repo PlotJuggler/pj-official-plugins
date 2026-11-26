@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 """Submit an extension release to pj-plugin-registry as a PR.
 
-Terminology:
-- extension: The distributable package (ZIP containing plugin binary + manifest.json)
-- plugin: The compiled binary (.so/.dll/.dylib) containing the C++ class
-- source_dir: The source directory containing code and manifest.json
-
-Usage:
-    python3 scripts/submit_to_registry.py data_load_csv
+Usage (from the repository root; needs an authenticated gh CLI and an existing GitHub
+release, see release_extension.py):
+    python3 scripts/submit_to_registry.py data_load_csv [--dry-run]
     python3 scripts/submit_to_registry.py csv-loader
-    python3 scripts/submit_to_registry.py data_load_csv --dry-run
-
-Prerequisites:
-    - gh CLI authenticated with appropriate permissions
-    - Release must already exist on GitHub (use release_plugin.py first)
-    - Run from the repository root (pj_official_plugins)
 """
 
 import argparse
@@ -23,7 +13,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Add scripts directory to path for imports
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -63,17 +52,10 @@ MANIFEST_FIELDS = [
 
 
 def find_source_dir(arg: str) -> str:
-    """Find source directory from argument.
-
-    Accepts:
-      - Directory name: data_load_csv
-      - Extension id (manifest id): csv-loader
-    """
-    # Check if it's a direct directory match
+    """Resolve a directory name (data_load_csv) or manifest id (csv-loader) to a source directory."""
     if Path(arg).is_dir() and (Path(arg) / "manifest.json").exists():
         return arg
 
-    # Search all manifests for matching id
     for manifest_path in Path(".").glob("*/manifest.json"):
         manifest = read_manifest(manifest_path)
         if manifest and manifest.get("id") == arg:
@@ -83,7 +65,7 @@ def find_source_dir(arg: str) -> str:
 
 
 def get_local_tag(tag: str) -> str | None:
-    """Check if tag exists locally and return commit sha."""
+    """Commit sha of a local tag, None when absent."""
     result = subprocess.run(
         ["git", "rev-list", "-n", "1", tag],
         capture_output=True,
@@ -96,10 +78,9 @@ def get_local_tag(tag: str) -> str | None:
 
 
 def list_github_releases(source_dir: str) -> list[dict]:
-    """List all releases for an extension from GitHub."""
+    """GitHub releases whose tag starts with <source_dir>/v, newest first."""
     try:
         releases = gh_json(["release", "list", "-R", SOURCE_REPO, "--json", "tagName,publishedAt,isDraft,isPrerelease"])
-        # Filter releases for this extension
         prefix = f"{source_dir}/v"
         extension_releases = [r for r in releases if r["tagName"].startswith(prefix)]
         return sorted(extension_releases, key=lambda r: r["publishedAt"], reverse=True)
@@ -108,17 +89,17 @@ def list_github_releases(source_dir: str) -> list[dict]:
 
 
 def get_latest_release_version(source_dir: str) -> str | None:
-    """Get the latest release version for an extension from GitHub."""
+    """Version of the newest GitHub release, None when there is none."""
     releases = list_github_releases(source_dir)
     if not releases:
         return None
-    # Extract version from tag (e.g., "data_load_csv/v1.0.5" -> "1.0.5")
+    # "data_load_csv/v1.0.5" -> "1.0.5"
     tag = releases[0]["tagName"]
     return tag.split("/v")[-1]
 
 
 def gh_json(args: list[str]) -> dict | list:
-    """Run a gh command and parse its JSON output."""
+    """Run gh and parse its JSON output; raises CalledProcessError on failure."""
     result = subprocess.run(
         ["gh"] + args,
         capture_output=True,
@@ -129,7 +110,7 @@ def gh_json(args: list[str]) -> dict | list:
 
 
 def validate_release_exists(tag: str) -> None:
-    """Validate that the release exists on GitHub."""
+    """Exit unless the release exists on GitHub."""
     try:
         gh_json(["release", "view", tag, "-R", SOURCE_REPO, "--json", "tagName"])
     except subprocess.CalledProcessError:
@@ -137,20 +118,19 @@ def validate_release_exists(tag: str) -> None:
 
 
 def fetch_release_assets(tag: str) -> list[dict]:
-    """Fetch release assets for the given tag from GitHub."""
+    """Assets of the release for the given tag."""
     data = gh_json(["release", "view", tag, "-R", SOURCE_REPO, "--json", "assets"])
     return data.get("assets", [])
 
 
 def download_and_verify_asset(asset: dict, expected_checksum: str) -> bool:
-    """Download asset and verify SHA256 checksum."""
+    """True when the downloaded asset's SHA256 equals expected_checksum."""
     result = subprocess.run(
         ["gh", "api", asset["apiUrl"], "-H", "Accept: application/octet-stream"],
         capture_output=True,
         check=True,
     )
 
-    # Calculate SHA256 using release_tools
     sha256 = compute_sha256_bytes(result.stdout)
 
     if sha256 != expected_checksum:
@@ -163,7 +143,7 @@ def download_and_verify_asset(asset: dict, expected_checksum: str) -> bool:
 
 
 def download_asset_text(url: str) -> str:
-    """Download a release asset's content as text via gh."""
+    """Release asset content as text."""
     result = subprocess.run(
         ["gh", "api", url, "-H", "Accept: application/octet-stream"],
         capture_output=True,
@@ -174,7 +154,7 @@ def download_asset_text(url: str) -> str:
 
 
 def build_platforms(assets: list[dict], extension_id: str, version: str, verify_checksums: bool = True) -> dict:
-    """Build the platforms dict from release assets."""
+    """Map platform -> {url, checksum} from the release's <id>-<version>-*.zip assets and their .sha256 files."""
     platforms = {}
     asset_map = {a["name"]: a for a in assets}
 
@@ -199,7 +179,6 @@ def build_platforms(assets: list[dict], extension_id: str, version: str, verify_
         sha_content = download_asset_text(sha_asset["apiUrl"])
         checksum = sha_content.strip().split()[0]
 
-        # Verify checksum by downloading and checking
         if verify_checksums:
             print(f"  Verifying {name}...")
             if not download_and_verify_asset(asset, checksum):
@@ -215,7 +194,7 @@ def build_platforms(assets: list[dict], extension_id: str, version: str, verify_
 
 
 def build_registry_entry(manifest: dict, platforms: dict) -> dict:
-    """Build a complete registry extension entry from manifest + platform assets."""
+    """Registry entry: the whitelisted MANIFEST_FIELDS plus platforms."""
     entry = {}
     for field in MANIFEST_FIELDS:
         if field in manifest:
@@ -227,7 +206,7 @@ def build_registry_entry(manifest: dict, platforms: dict) -> dict:
 
 
 def fetch_registry_json() -> dict:
-    """Fetch current registry.json from the registry repo."""
+    """Current registry.json from the registry repo."""
     result = subprocess.run(
         ["gh", "api", f"repos/{REGISTRY_REPO}/contents/registry.json",
          "--jq", ".content", "-H", "Accept: application/vnd.github.v3+json"],
@@ -361,7 +340,6 @@ def create_registry_pr(entry: dict, dry_run: bool = False, release_notes: str | 
         print(f"  Branch: {branch_name}")
         return "[dry-run]"
 
-    # Get the SHA of the current registry.json file
     result = subprocess.run(
         ["gh", "api", f"repos/{REGISTRY_REPO}/contents/registry.json",
          "--jq", ".sha", "-H", "Accept: application/vnd.github.v3+json"],
@@ -371,7 +349,6 @@ def create_registry_pr(entry: dict, dry_run: bool = False, release_notes: str | 
     )
     base_sha = result.stdout.strip()
 
-    # Get default branch
     result = subprocess.run(
         ["gh", "api", f"repos/{REGISTRY_REPO}", "--jq", ".default_branch"],
         capture_output=True,
@@ -380,7 +357,6 @@ def create_registry_pr(entry: dict, dry_run: bool = False, release_notes: str | 
     )
     default_branch = result.stdout.strip()
 
-    # Get the SHA of the default branch
     result = subprocess.run(
         ["gh", "api", f"repos/{REGISTRY_REPO}/git/ref/heads/{default_branch}",
          "--jq", ".object.sha"],
@@ -390,16 +366,15 @@ def create_registry_pr(entry: dict, dry_run: bool = False, release_notes: str | 
     )
     branch_sha = result.stdout.strip()
 
-    # Delete branch if it already exists (from a previous failed attempt)
+    # Drop a leftover branch from an earlier failed attempt.
     subprocess.run(
         ["gh", "api", f"repos/{REGISTRY_REPO}/git/refs/heads/{branch_name}",
          "-X", "DELETE"],
         capture_output=True,
         text=True,
-        check=False,  # Ignore errors if branch doesn't exist
+        check=False,  # the branch usually does not exist
     )
 
-    # Create branch
     print(f"  Creating branch {branch_name}...")
     subprocess.run(
         ["gh", "api", f"repos/{REGISTRY_REPO}/git/refs", "-X", "POST",
@@ -410,7 +385,6 @@ def create_registry_pr(entry: dict, dry_run: bool = False, release_notes: str | 
         check=True,
     )
 
-    # Update registry.json in the branch
     import base64
     content_b64 = base64.b64encode(
         json.dumps(updated_registry, indent=2).encode("utf-8")
@@ -428,7 +402,6 @@ def create_registry_pr(entry: dict, dry_run: bool = False, release_notes: str | 
         check=True,
     )
 
-    # Create PR
     print(f"  Creating PR...")
     stored_platforms = next(
         ext["platforms"]
@@ -510,11 +483,9 @@ def main():
 
     SOURCE_REPO = args.releases_repo
 
-    # Find source directory
     source_dir = find_source_dir(args.source)
     manifest_path = Path(source_dir) / "manifest.json"
 
-    # Read and validate manifest
     manifest, validation_errors = validate_manifest_file(manifest_path)
     if manifest is None:
         sys.exit(f"Error: Could not read {manifest_path}")
@@ -530,7 +501,6 @@ def main():
     print(f"Extension: {extension_id}")
     print(f"Source repo: {SOURCE_REPO}")
 
-    # List releases if requested
     if args.list_releases:
         print(f"\nAvailable releases for {source_dir}:")
         releases = list_github_releases(source_dir)
@@ -550,7 +520,6 @@ def main():
                 print(f"  {version} - {date}{flag_str}")
         return
 
-    # Determine version
     if args.version:
         version = args.version
         print(f"\nUsing specified version: {version}")
@@ -571,26 +540,22 @@ def main():
             f"{manifest_path}. Check out the release tag first: git checkout {tag}"
         )
 
-    # Check if tag exists locally (warning only, not required)
     local_commit = get_local_tag(tag)
     if local_commit:
         print(f"\nLocal tag: exists at {local_commit[:12]}")
     else:
         print(f"\nLocal tag: not found (will use GitHub release)")
 
-    # Validate release exists on GitHub
     print(f"\nValidating release on GitHub...")
     validate_release_exists(tag)
     print(f"  ✓ Release exists on {SOURCE_REPO}")
 
-    # Fetch release assets
     print(f"\nFetching release assets...")
     assets = fetch_release_assets(tag)
     if not assets:
         sys.exit(f"Error: No assets found for release '{tag}'")
     print(f"  Found {len(assets)} assets")
 
-    # Build platforms (with checksum verification)
     print(f"\nBuilding platform entries...")
     platforms = build_platforms(
         assets, extension_id, version,
@@ -603,7 +568,6 @@ def main():
     if missing:
         print(f"  Warning: missing platforms: {', '.join(sorted(missing))}", file=sys.stderr)
 
-    # Build registry entry
     entry = build_registry_entry(manifest, platforms)
     release_notes = None
     if args.release_notes:
@@ -619,7 +583,6 @@ def main():
             print(f"\nRelease notes (dry-run):")
             print(release_notes)
 
-    # Create PR
     print(f"\nCreating PR on {REGISTRY_REPO}...")
     pr_url = create_registry_pr(entry, dry_run=args.dry_run, release_notes=release_notes)
 

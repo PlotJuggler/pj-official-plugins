@@ -1,12 +1,8 @@
 #pragma once
 
 /// @file ros2_dialog.hpp
-/// @brief Topic-selection dialog for the ROS 2 streaming source.
-///
-/// Lifecycle: the dialog opens its own short-lived rclcpp Context and Node
-/// so it can poll `get_topic_names_and_types()` while the user is choosing.
-/// The Context is torn down on accept/reject — the source plugin builds its
-/// own Context in `onStart()` independently.
+/// Topic-selection dialog. It opens its own short-lived rclcpp Context and Node to poll `get_topic_names_and_types()`
+/// while the user chooses, and tears them down on accept/reject; the source builds its own Context in `onStart()`.
 
 #include <algorithm>
 #include <atomic>
@@ -49,8 +45,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Rows, selection, and the transform rows (selected, locked, tooltipped). Restored by topic
-    // name: the host matches rows by first-column text, which survives a user sort of the table.
+    // Selection is restored by topic name: the host matches rows by first-column text, which survives a user sort.
     auto visible = visibleRows();
     if (visible.empty()) {
       wd.setText("labelStatus", "Scanning ROS 2 topics...");
@@ -67,11 +62,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     wd.setChecked("checkBoxStringSuffix", remove_suffix_from_strings_);
     wd.setChecked("checkBoxStringBoolean", boolean_strings_to_number_);
 
-    // OK button: discovery-running-only. Topic selection is no longer a hard
-    // requirement — see selected_topics_'s dual role in Ros2StreamSource
-    // (buildAvailableTopics): on a host that supports demand subscriptions it
-    // becomes an OPTIONAL advertise filter (empty = advertise everything); on
-    // a legacy host it keeps its original meaning, the subscribe list.
+    // The selection is not required (see selected_topics_'s dual role in Ros2StreamSource::buildAvailableTopics).
     wd.setOkEnabled(discovery_running_);
     return wd.toJson();
   }
@@ -80,8 +71,7 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     if (!discovery_running_) {
       return false;
     }
-    // Match PJ3 cadence: poll get_topic_names_and_types() once per second.
-    // The engine drives onTick at ~50 ms; throttle to 1 Hz here.
+    // The engine ticks at ~50 ms; poll get_topic_names_and_types() once per second (PJ3 cadence).
     const auto now = std::chrono::steady_clock::now();
     if (now - last_refresh_ < std::chrono::seconds(1)) {
       return false;
@@ -94,7 +84,6 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   bool onTextChanged(std::string_view widget_name, std::string_view text) override {
     if (widget_name == "lineEditFilter") {
       filter_.assign(text);
-      // Force widget_data to rebuild — visibleTopics now resolves differently.
       return true;
     }
     return false;
@@ -141,18 +130,13 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     if (widget_name != "listRosTopics") {
       return false;
     }
-    // The host emits column-0 strings (topic names) for QTableWidget — and
-    // only for the selectable rows currently visible under the active filter.
-    // Preserve selections of topics filtered out of view; otherwise typing in
-    // the filter then changing visible-row selection would silently drop
-    // previously-selected hidden topics.
+    // The host reports topic names only for the selectable rows visible under the filter; applyReported keeps
+    // selections of filtered-out topics instead of silently dropping them.
     PJ::AlwaysIncluded::applyReported(selected_topics_, selected, visibleRows());
-    // Re-render so widget_data() refreshes the OK-enabled state.
     return true;
   }
 
   bool onClicked(std::string_view widget_name) override {
-    // Select All / Deselect All; true re-renders the table selection and OK state.
     return PJ::AlwaysIncluded::applySelectButton(widget_name, selected_topics_, visibleRows());
   }
 
@@ -164,22 +148,15 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
   }
 
   std::string saveConfig() const override {
-    // "selected_topics" is dual-purpose (see the OK-gate comment in
-    // widget_data() above and Ros2StreamSource::buildAvailableTopics): a
-    // legacy host subscribes exactly this list; a demand-subscription host
-    // treats it as an OPTIONAL advertise filter (empty = advertise
-    // everything) and asks for what it actually wants via set_active_topics.
-    // The format itself is unchanged by that dual role.
+    // "selected_topics" is dual-purpose (see Ros2StreamSource::buildAvailableTopics): a legacy host subscribes exactly
+    // this list; a demand-subscription host treats it as an optional advertise filter (empty = advertise everything)
+    // and asks for what it wants via set_active_topics.
     nlohmann::json arr = nlohmann::json::array();
     {
-      // Emit (and persist) a selection only while its topic is still being
-      // advertised. A restored selection (loadConfig) for a topic that is no
-      // longer published would otherwise be subscribed silently — no publisher,
-      // no data — and never appears as a table row, so the user could not
-      // deselect it; it also leaks back into the next session's config. A
-      // still-advertised restored topic is kept, preserving last-selection
-      // recall. Before discovery has populated, emit as-is rather than drop
-      // every selection.
+      // Emit a selection only while its topic is still advertised: a restored selection for a topic no longer
+      // published would be subscribed silently (no publisher, no data), has no table row so the user could not
+      // deselect it, and would leak into the next session's config. Before discovery has populated, emit as-is rather
+      // than drop every selection.
       std::lock_guard<std::mutex> lock(topics_mutex_);
       const bool have_discovery = !discovered_topics_.empty();
       for (const auto& name : selected_topics_) {
@@ -193,8 +170,8 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
     }
     nlohmann::json cfg;
     cfg["selected_topics"] = arr;
-    // Keys mirror parser_ros's loadConfig schema. The streamer forwards this
-    // sub-object verbatim as PJ_parser_binding_request_t::parser_config_json.
+    // Keys mirror parser_ros's loadConfig schema; the streamer forwards this sub-object verbatim as
+    // PJ_parser_binding_request_t::parser_config_json.
     nlohmann::json parser_config = {
         {"use_embedded_timestamp", use_embedded_timestamp_},
         {"boolean_strings_to_number", boolean_strings_to_number_},
@@ -229,18 +206,14 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
         remove_suffix_from_strings_ = pc.value("remove_suffix_from_strings", remove_suffix_from_strings_);
       }
     }
-    // PJ3 parity: open the dialog with discovery already running. onTick()
-    // throttles get_topic_names_and_types() to 1 Hz; the user sees topics
-    // appear in the list while it is open. stopDiscovery() runs on
-    // accept/reject and in the destructor.
+    // Discovery runs as soon as the dialog opens (PJ3 behavior); stopDiscovery() runs on accept/reject and in the
+    // destructor.
     startDiscovery();
     return !cfg.is_discarded();
   }
 
  private:
-  // Snapshot of the rows passing the current filter, ordered as the table
-  // displays them. Locks the topics mutex briefly; callers must not already
-  // hold it.
+  // Rows passing the filter, in display order. Locks topics_mutex_; callers must not hold it.
   PJ::AlwaysIncluded::TableRows visibleRows() {
     std::lock_guard<std::mutex> lock(topics_mutex_);
     return ros2_streamer::topicRows(discovered_topics_, filter_);
@@ -314,20 +287,16 @@ class Ros2Dialog : public PJ::DialogPluginTyped {
 
   mutable std::mutex topics_mutex_;
   std::map<std::string, std::string> discovered_topics_;
-  // The user's selection by topic name, what saveConfig() saves; locked rows are shown selected
-  // without being in it.
+  // What saveConfig() saves; locked rows are shown selected without being in it.
   std::set<std::string> selected_topics_;
   // The types of the loaded selection, saved back for topics not discovered yet.
   std::map<std::string, std::string> saved_types_;
 
-  // Current filter substring (case-insensitive match on topic name); empty
-  // means "show everything". In-session only — not persisted via saveConfig.
+  // Case-insensitive topic-name substring; empty shows everything. Not persisted.
   std::string filter_;
 
-  // Parser options — forwarded verbatim to parser_ros via the streamer's
-  // ensureParserBinding call (PJ_parser_binding_request_t::parser_config_json).
-  // Defaults mirror parser_ros's RosParser defaults so an unsent JSON behaves
-  // identically to "send the parser's own defaults".
+  // Forwarded verbatim to parser_ros via ensureParserBinding. Defaults mirror parser_ros's own, so an unsent JSON
+  // behaves like sending the defaults.
   bool use_embedded_timestamp_ = false;
   int max_array_size_ = 500;
   bool discard_large_arrays_ = false;

@@ -8,7 +8,6 @@ end-of-stream marker is ignored. Arrow IPC **file** format payloads are not
 accepted. The payload is self-describing, so the binding's `schema` bytes are
 informational and ignored.
 
-The parser uses Arrow C++ for IPC decoding and nanoarrow for scalar column shaping.
 LZ4, Zstandard, dictionaries, and view types are decoded after the host recording tap.
 Producers preserve the source schema and values; host plotting limits are applied here.
 
@@ -189,13 +188,11 @@ configuration. Native timestamp columns also retain their units on replay.
 
 ## Producer contract
 
-- Encode one complete Arrow IPC **stream** per message, with one topic per binding.
-- Preserve source fields and metadata. LZ4 and Zstandard compression are supported.
-- Prefer native Arrow timestamps so units travel with the data. Source-derived
-  synthetic timing must be in the payload if default replay needs to reproduce it.
-- For canonical Mosaico objects, supply the ontology as `type_name` and one row
-  per message. ROS/CDR-native payloads still belong to `parser_ros`.
-- Primitive lists follow the width and array-limit rules above.
+- One complete Arrow IPC **stream** per message, one topic per binding; LZ4 and Zstandard are supported.
+- Prefer native Arrow timestamps so units travel with the data. Source-derived synthetic timing must be in the
+  payload for default replay to reproduce it.
+- For canonical Mosaico objects, supply the ontology as `type_name` and one row per message. ROS/CDR-native
+  payloads belong to `parser_ros`.
 
 ## Build and test
 

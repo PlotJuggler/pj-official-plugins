@@ -12,7 +12,9 @@ receives that camera's H.264 RTP on its own `PeerConnection` — one
 
 ## Quick start
 
-1. **Get and run mediamtx** with the demo config (loopback-only by default):
+1. **Get and run mediamtx** with the demo config: RTSP ingest on `:8554`, WHEP egress on `:8889`, Control API on
+   `:9997` (path discovery), all bound to `127.0.0.1`. To expose it to a LAN, change the `*Address` fields to
+   `0.0.0.0:<port>` and configure `authInternalUsers` first.
 
    ```bash
    # download a release from https://github.com/bluenviron/mediamtx/releases
@@ -50,21 +52,6 @@ ffplay /tmp/cam0.h264
 
 `--token T` sends `Authorization: Bearer T` if the server requires auth.
 
-## Files
-
-- `mediamtx.yml` — demo server config: RTSP ingest on `:8554`, WHEP egress on
-  `:8889`, Control API on `:9997` (used for path discovery). All three are
-  bound to `127.0.0.1` — loopback only. To expose to a LAN, change the
-  `*Address` fields to `0.0.0.0:<port>` and configure `authInternalUsers`
-  (mediamtx's auth mechanism) before doing so.
-- `publish_cameras.sh` — publishes two H.264 test-pattern cameras (`cam0`,
-  `cam1`) to mediamtx over RTSP using `ffmpeg` or `gstreamer`, whichever is
-  found first. Pass a `/dev/videoN` path as `$1` to feed a real webcam into
-  `cam0` instead. Supervises both publisher processes and exits/kills the
-  sibling if either dies.
-- `recv_probe.cpp` — headless WHEP client probe (`webrtc_recv_probe`), see
-  above.
-
 ## Notes
 
 - **Discovery.** The dialog's "Refresh list" polls the mediamtx Control API
@@ -83,7 +70,7 @@ ffplay /tmp/cam0.h264
 - **NAT/WAN.** For anything beyond a LAN/loopback, add STUN/TURN entries in
   the dialog's ICE Servers table — mediamtx and the plugin otherwise rely on
   host candidates.
-- **Known WHEP-scope limitations** (future work, not bugs): no trickle-ICE via
+- **Known WHEP limitations:** no trickle-ICE via
   `PATCH`, no 406 counter-offer handling, no redirect following, no
   `Retry-After` parsing, an RFC3986-lite `Location` header resolution, and
   Bearer tokens are allowed over plain `http://` (fine on a LAN; prefer

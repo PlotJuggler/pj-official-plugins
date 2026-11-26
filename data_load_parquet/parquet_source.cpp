@@ -31,9 +31,7 @@ using PJ::ParquetHelpers::findTimestampColumn;
 /// could not be downloaded yet) is retried on the next file.
 using ZoneCache = std::unordered_map<std::string, const date::time_zone*>;
 
-/// Replicates the original PlotJuggler DataLoadParquet timezone adjustment:
-/// subtracts the UTC offset of the named timezone from the nanosecond timestamp.
-/// Uses Howard Hinnant's date library for cross-platform timezone support.
+/// Matches the PlotJuggler 3 loader: subtracts the UTC offset of the named timezone from the nanosecond timestamp.
 int64_t adjustTimezoneNanos(int64_t nanos, const std::string& tz_str, ZoneCache& zones) {
   if (tz_str.empty() || tz_str == "UTC") {
     return nanos;
@@ -61,8 +59,7 @@ int64_t adjustTimezoneNanos(int64_t nanos, const std::string& tz_str, ZoneCache&
   }
 }
 
-/// Pull the Arrow `timezone()` string off a TIMESTAMP-typed array. Empty for
-/// other array types or unset timezones.
+/// Arrow `timezone()` of a TIMESTAMP array; empty for other types or an unset timezone.
 std::string timestampTimezone(const std::shared_ptr<arrow::Array>& array, arrow::Type::type arrow_type) {
   if (arrow_type != arrow::Type::TIMESTAMP) {
     return {};
@@ -70,9 +67,7 @@ std::string timestampTimezone(const std::shared_ptr<arrow::Array>& array, arrow:
   return std::static_pointer_cast<arrow::TimestampType>(array->type())->timezone();
 }
 
-/// Production wrapper around pj::arrow_helpers::getArrowValueRef that adds the
-/// host timezone adjustment to TIMESTAMP cells (which the generic helper
-/// intentionally omits).
+/// pj::arrow_helpers::getArrowValueRef plus the timezone adjustment of TIMESTAMP cells, which the generic helper omits.
 PJ::sdk::ValueRef getArrowValueRef(
     const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type, ZoneCache& zones) {
   auto value = pj::arrow_helpers::getArrowValueRef(array, index, arrow_type);
@@ -82,8 +77,7 @@ PJ::sdk::ValueRef getArrowValueRef(
   return value;
 }
 
-/// Production wrapper around PJ::ParquetHelpers::getTimestampNanos that adds
-/// the host timezone adjustment to TIMESTAMP cells.
+/// PJ::ParquetHelpers::getTimestampNanos plus the timezone adjustment of TIMESTAMP cells.
 int64_t getTimestampNanos(
     const std::shared_ptr<arrow::Array>& array, int64_t index, arrow::Type::type arrow_type, ZoneCache& zones) {
   const int64_t value = PJ::ParquetHelpers::getTimestampNanos(array, index, arrow_type);
@@ -121,7 +115,6 @@ class ParquetSource : public PJ::FileSourceBase {
   }
 
   PJ::Status importData() override {
-    // Extract configuration from dialog state
     std::string filepath;
     {
       auto cfg_str = dialog_.saveConfig();
@@ -154,14 +147,13 @@ class ParquetSource : public PJ::FileSourceBase {
       return PJ::unexpected("failed to read schema: " + status.ToString());
     }
 
-    // Determine time column: dialog selection takes priority, then heuristic
+    // The dialog selection wins over the heuristic.
     int ts_col = dialog_.timeColumnIndex();
     if (ts_col < 0) {
       ts_col = findTimestampColumn(schema);
     }
     auto ts_arrow_type = ts_col >= 0 ? schema->field(ts_col)->type()->id() : arrow::Type::NA;
 
-    // Collect numeric data columns (excluding time column)
     std::vector<ColumnInfo> columns;
     for (int i = 0; i < schema->num_fields(); i++) {
       if (i == ts_col) {
@@ -177,7 +169,6 @@ class ParquetSource : public PJ::FileSourceBase {
       return PJ::unexpected(std::string("no supported columns found"));
     }
 
-    // Create a SINGLE topic from the file basename
     std::string topic_name = basenameWithoutExt(filepath);
     if (topic_name.empty()) {
       topic_name = "data";
@@ -188,7 +179,6 @@ class ParquetSource : public PJ::FileSourceBase {
       return PJ::unexpected(topic.error());
     }
 
-    // Pre-register ALL numeric columns before writing any data
     for (const auto& col : columns) {
       auto field = writeHost().ensureField(*topic, col.name, arrowTypeToPrimitive(col.arrow_type));
       if (!field) {
@@ -200,7 +190,6 @@ class ParquetSource : public PJ::FileSourceBase {
     int64_t total_rows = metadata->num_rows();
     (void)runtimeHost().progressStart("Importing Parquet", static_cast<uint64_t>(total_rows), true);
 
-    // Read via RecordBatchReader
     auto batch_reader_result = reader->GetRecordBatchReader();
     if (!batch_reader_result.ok()) {
       return PJ::unexpected("failed to create batch reader: " + batch_reader_result.status().ToString());
@@ -211,7 +200,6 @@ class ParquetSource : public PJ::FileSourceBase {
     std::shared_ptr<arrow::RecordBatch> batch;
     ZoneCache zones;
 
-    // Pre-allocate row fields vector (reused per row)
     std::vector<PJ::sdk::NamedFieldValue> row_fields;
     row_fields.reserve(columns.size());
 
@@ -219,7 +207,6 @@ class ParquetSource : public PJ::FileSourceBase {
     while ((read_status = batch_reader->ReadNext(&batch)).ok() && batch) {
       int64_t batch_rows = batch->num_rows();
 
-      // Cache column arrays for this batch
       std::vector<std::shared_ptr<arrow::Array>> col_arrays;
       col_arrays.reserve(columns.size());
       for (const auto& col : columns) {
@@ -231,8 +218,7 @@ class ParquetSource : public PJ::FileSourceBase {
         ts_array = batch->column(ts_col);
       }
 
-      // Build per-row timestamps, then sort by timestamp to ensure monotonic order
-      // (matches original PlotJuggler behavior)
+      // Rows are sorted by timestamp within each batch only (as in PlotJuggler 3).
       std::vector<std::pair<int64_t, int64_t>> ts_row_pairs;  // (timestamp_ns, row_index)
       ts_row_pairs.reserve(static_cast<size_t>(batch_rows));
       for (int64_t row = 0; row < batch_rows; row++) {
@@ -246,13 +232,12 @@ class ParquetSource : public PJ::FileSourceBase {
       }
       std::sort(ts_row_pairs.begin(), ts_row_pairs.end());
 
-      // Iterate in sorted order, building a multi-field record per row
       for (const auto& [ts_ns, row] : ts_row_pairs) {
         row_fields.clear();
 
         for (size_t c = 0; c < columns.size(); c++) {
           auto val = getArrowValueRef(col_arrays[c], row, columns[c].arrow_type, zones);
-          // Skip null cells — finishRow() auto-fills with null
+          // Null cells are omitted; the host fills them with null.
           if (PJ::sdk::isNull(val)) {
             continue;
           }
@@ -276,9 +261,8 @@ class ParquetSource : public PJ::FileSourceBase {
       rows_processed += batch_rows;
 
       if (runtimeHost().isStopRequested()) {
-        // Stop but KEEP the rows written so far: break instead of returning an error,
-        // so the host's "Stop and Keep" flushes the partial data (returning unexpected
-        // makes the multi-file/fanout path treat it as a failure and drop it).
+        // Break rather than return an error so the host's "Stop and Keep" flushes the rows written so far; an error
+        // makes the multi-file/fanout path drop them.
         break;
       }
       (void)runtimeHost().progressUpdate(static_cast<uint64_t>(rows_processed));

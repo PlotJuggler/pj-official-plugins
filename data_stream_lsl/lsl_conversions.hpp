@@ -72,8 +72,7 @@ inline bool isStringFormat(lsl::channel_format_t fmt) {
   return fmt == lsl::cf_string;
 }
 
-/// LSL sample stamp (seconds) -> absolute epoch nanoseconds, per mode.
-/// `now_epoch_ns` is used by kReceiver and by the kSync s==0 fallback.
+/// `now_epoch_ns` is used by kReceiver and by the kSync zero-stamp fallback.
 inline int64_t computeTimestampNs(
     TimestampMode mode, double sample_time_s, double time_correction_s, int64_t epoch_offset_ns, int64_t now_epoch_ns) {
   switch (mode) {
@@ -90,9 +89,9 @@ inline int64_t computeTimestampNs(
   }
 }
 
-/// Wrap a pulled double as a ValueRef of the field's native type. Integer
-/// formats produce integer columns. (int64 values above 2^53 lose precision
-/// through the double pull path — see spec future work.)
+/// Wrap a pulled double as a ValueRef of the field's native type, so integer
+/// formats produce integer columns. int64 values above 2^53 lose precision
+/// through the double pull path.
 inline PJ::sdk::ValueRef numericValueRef(PJ::PrimitiveType type, double v) {
   switch (type) {
     case PJ::PrimitiveType::kFloat32:
@@ -153,7 +152,7 @@ inline std::vector<std::string> uniqueTopicNames(const std::vector<StreamKey>& s
 /// lsl::stream_info::desc() is non-const.
 inline std::vector<std::string> channelLabels(const lsl::stream_info& info) {
   const int n = info.channel_count();
-  lsl::stream_info info_copy = info;  // desc() is non-const; copy is a deep copy
+  lsl::stream_info info_copy = info;  // desc() is non-const; the copy is deep
   lsl::xml_element channels = info_copy.desc().child("channels");
   lsl::xml_element ch = channels.empty() ? lsl::xml_element() : channels.child("channel");
 
@@ -212,9 +211,8 @@ inline std::string serializeConfig(const DialogConfig& cfg) {
 
 inline DialogConfig parseConfig(std::string_view json) {
   DialogConfig cfg;
-  // Config comes from saved layouts and may be hand-edited/corrupted. Guard the
-  // shape explicitly and catch nlohmann type_errors so nothing propagates across
-  // the plugin's loadConfig() boundary; a malformed config just yields defaults.
+  // Saved layouts may be hand-edited or corrupted: nothing may propagate across
+  // the loadConfig() boundary, a malformed config just yields defaults.
   try {
     auto j = nlohmann::json::parse(json, nullptr, false);
     if (j.is_discarded() || !j.is_object()) {

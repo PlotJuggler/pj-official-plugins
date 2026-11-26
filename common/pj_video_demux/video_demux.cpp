@@ -1,6 +1,3 @@
-// pj_video_demux implementation. Indexing uses libavformat to walk packets
-// (no decode); the fetch path is pure file I/O + parameter-set rewrite (no libav)
-// so the compressed video is never resident — only the index + parameter sets.
 #include "pj_video_demux/video_demux.hpp"
 
 #include <ios>
@@ -31,8 +28,8 @@ void appendAnnexBNal(std::vector<uint8_t>& out, const uint8_t* nal, size_t len) 
   out.insert(out.end(), nal, nal + len);
 }
 
-// Parse an `avcC` (AVCDecoderConfigurationRecord) into Annex-B SPS/PPS + the
-// NAL length-prefix width. MP4 H.264 extradata always starts with version=1.
+// Parses an `avcC` (AVCDecoderConfigurationRecord) into Annex-B SPS/PPS + the NAL length-prefix
+// width. MP4 H.264 extradata always starts with version=1.
 Expected<ParsedParamSets> parseAvcc(Span<const uint8_t> ed) {
   const uint8_t* d = ed.data();
   const size_t n = ed.size();
@@ -77,11 +74,11 @@ Expected<ParsedParamSets> parseAvcc(Span<const uint8_t> ed) {
   return out;
 }
 
-// Parse an `hvcC` (HEVCDecoderConfigurationRecord) into Annex-B VPS/SPS/PPS +
-// the NAL length-prefix width. Layout: a 22-byte fixed header (version=1 at
-// byte 0, lengthSizeMinusOne in the low 2 bits of byte 21), then byte 22 =
-// numOfArrays, then per array: {1 type byte, uint16 numNalus, numNalus×(uint16
-// len + NAL bytes)}. Only the parameter-set arrays (NAL types 32/33/34) are kept.
+// Parses an `hvcC` (HEVCDecoderConfigurationRecord) into Annex-B VPS/SPS/PPS + the NAL
+// length-prefix width. Layout: a 22-byte fixed header (version=1 at byte 0, lengthSizeMinusOne in
+// the low 2 bits of byte 21), then byte 22 = numOfArrays, then per array: {1 type byte, uint16
+// numNalus, numNalus x (uint16 len + NAL bytes)}. Only the parameter-set arrays (NAL types
+// 32/33/34) are kept.
 Expected<ParsedParamSets> parseHvcc(Span<const uint8_t> ed) {
   const uint8_t* d = ed.data();
   const size_t n = ed.size();
@@ -119,10 +116,9 @@ Expected<ParsedParamSets> parseHvcc(Span<const uint8_t> ed) {
   return out;
 }
 
-// Parse an `av1C` (AV1CodecConfigurationRecord) into the raw sequence-header
-// configOBUs. Layout: byte 0 = marker(1)|version(7) (= 0x81); the configOBUs —
-// the sequence header, with obu_has_size_field set — start at byte 4. They are
-// returned verbatim (no start codes; AV1 has none) for prepending to keyframes.
+// Parses an `av1C` (AV1CodecConfigurationRecord) into the raw sequence-header configOBUs. Layout:
+// byte 0 = marker(1)|version(7) (= 0x81); the configOBUs (the sequence header, with
+// obu_has_size_field set) start at byte 4. Returned verbatim (AV1 has no start codes).
 Expected<std::vector<uint8_t>> parseAv1c(Span<const uint8_t> ed) {
   const uint8_t* d = ed.data();
   const size_t n = ed.size();
@@ -230,16 +226,16 @@ Expected<VideoIndex> indexFile(const std::string& path) {
       return unexpected(seq.error());
     }
     index.param_sets = std::move(*seq);
-    index.nal_length_size = 0;  // AV1 has no length-prefixed NALs.
+    index.nal_length_size = 0;
   } else {
     return unexpected(
         "video_demux: unsupported codec (only h264/h265/av1; codec_id=" +
         std::to_string(static_cast<int>(par->codec_id)) + ") in " + path);
   }
-  // H.264/H.265 keyframes are only self-decodable with their SPS/PPS(/VPS)
-  // prepended; an empty param set (malformed/stripped config box, or an hvcC
-  // carrying no parameter-set arrays) would silently emit undecodable keyframes.
-  // (AV1 always yields a non-empty seq header — parseAv1c rejects a 4-byte box.)
+  // H.264/H.265 keyframes are only self-decodable with their SPS/PPS(/VPS) prepended; an empty
+  // param set (malformed/stripped config box, or an hvcC with no parameter-set arrays) would
+  // silently emit undecodable keyframes. AV1 always yields a non-empty seq header (parseAv1c
+  // rejects a 4-byte box).
   if (index.format != "av1" && index.param_sets.empty()) {
     return unexpected("video_demux: " + index.format + " config box carried no parameter sets in " + path);
   }
@@ -313,7 +309,7 @@ Expected<std::vector<uint8_t>> LazyAccessUnitReader::readUnit(const AccessUnit& 
   }
 
   std::vector<uint8_t> raw(static_cast<size_t>(unit.size));
-  stream_.clear();  // drop any EOF/fail state from a prior read
+  stream_.clear();  // drop EOF/fail state left by a prior read
   stream_.seekg(unit.file_offset, std::ios::beg);
   stream_.read(reinterpret_cast<char*>(raw.data()), unit.size);
   if (stream_.gcount() != static_cast<std::streamsize>(unit.size)) {

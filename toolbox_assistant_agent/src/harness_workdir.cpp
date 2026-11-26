@@ -14,17 +14,12 @@ bool ensureWorkDir(std::string& work_dir, std::string& err) {
   if (!work_dir.empty()) {
     return true;
   }
-  // PJ::sdk::userDataDir() is the SDK's own answer to "where does a plugin keep
-  // per-user state" -- %LOCALAPPDATA% on Windows, Application Support on macOS,
-  // XDG data home on Linux, and never empty. toolbox_transform_editor resolves
-  // its snippet library the same way. Using it is what makes this function work
-  // on every platform without a #if.
+  // PJ::sdk::userDataDir() is never empty and platform-correct (%LOCALAPPDATA%, Application
+  // Support, XDG data home), so no #if is needed.
   //
-  // Nothing of ours is ever written in here: the directory exists so the CLI
-  // runs somewhere fixed instead of inheriting whatever project PlotJuggler was
-  // launched from, and so its own session store (~/.claude, ~/.codex) is keyed
-  // by a cwd that does not change between runs. It still gets owner-only
-  // permissions, since it is the only thing naming this user's conversations.
+  // Nothing of ours is written here: it only gives the CLI a fixed cwd, which keys its own
+  // session store (~/.claude, ~/.codex). It still gets owner-only permissions, since its name
+  // is the only thing tying conversations to this user.
   const std::filesystem::path dir = PJ::sdk::userDataDir() / "pj-assistant-cli";
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);

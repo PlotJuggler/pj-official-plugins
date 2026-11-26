@@ -8,9 +8,7 @@
 #include <string_view>
 #include <vector>
 
-// Phase 1 scaffold check: mdflib links into the test executable and its reader
-// reports a bad path cleanly. Real reader/value/can_decoder unit tests (with
-// synthetic mdflib-writer fixtures) land in Phases 2-4.
+// mdflib links into the test executable and its reader reports a bad path cleanly.
 TEST(Mf4Scaffold, MdflibLinksAndReportsBadFile) {
   // Explicit std::string: a bare literal is ambiguous between MdfReader's
   // std::string and std::string_view overloads.
@@ -18,12 +16,9 @@ TEST(Mf4Scaffold, MdflibLinksAndReportsBadFile) {
   EXPECT_FALSE(reader.IsOk());
 }
 
-// Helper-level test for the CAN-decode path importData() runs for MF4 "CAN
-// bus logging" groups: a synthetic frame decoded through a DBC with a VAL_
-// value table, fed to the SAME SignalRowBuilder importData() uses (see
-// mf4_source.cpp's readCanGroup callback -- it calls can_row_builder.build()
-// directly on the decoded signals, so this pins that exact routing without
-// needing a real CAN-bus-logging MF4 fixture).
+// Helper-level test of the CAN-decode path importData() runs for "CAN bus logging" groups: a synthetic frame is
+// decoded through a DBC with a VAL_ value table and fed to the same SignalRowBuilder, which mf4_source.cpp's
+// readCanGroup callback calls directly on the decoded signals. This pins that routing without a real CAN MF4.
 TEST(Mf4CanDecode, DecodedSignalsRouteThroughSignalRowBuilder) {
   const char* const kDbc = R"DBC(VERSION "1.0.0"
 

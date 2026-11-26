@@ -23,7 +23,6 @@
 namespace pj::parser_arrow {
 namespace {
 
-/// Verify one flat fixture batch starting at the requested source row.
 void verifyFlatBatch(
     const ArrowSchema* schema, const ArrowArray* batch, int64_t source_row_offset, int64_t expected_length) {
   auto array_view = test::bindArrayView(schema, batch);
@@ -45,14 +44,12 @@ void verifyFlatBatch(
   }
 }
 
-/// Verify that get_next reports the Arrow stream end sentinel.
 void verifyEndOfStream(ArrowArrayStream* stream) {
   PJ::sdk::ArrowArrayHolder end_of_stream;
   ASSERT_EQ(stream->get_next(stream, end_of_stream.out()), NANOARROW_OK) << ArrowArrayStreamGetLastError(stream);
   EXPECT_FALSE(end_of_stream.valid());
 }
 
-/// Flat IPC streams expose the exact schema and one batch of expected values.
 TEST(IpcDecoderTest, DecodesFlatStreamSchemaValuesAndEndOfStream) {
   const auto bytes = test::readFile(test::fixturePath("flat.arrows"));
   auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
@@ -74,7 +71,6 @@ TEST(IpcDecoderTest, DecodesFlatStreamSchemaValuesAndEndOfStream) {
   verifyEndOfStream(stream.get());
 }
 
-/// A stream with two record batches preserves batch boundaries and reaches EOS.
 TEST(IpcDecoderTest, IteratesMultipleRecordBatches) {
   const auto bytes = test::readFile(test::fixturePath("flat_two_batches.arrows"));
   auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
@@ -92,7 +88,6 @@ TEST(IpcDecoderTest, IteratesMultipleRecordBatches) {
   verifyEndOfStream(stream.get());
 }
 
-/// Zstd-compressed record-batch bodies decode to the original values.
 TEST(IpcDecoderTest, DecodesZstdCompressedBodies) {
   const auto bytes = test::readFile(test::fixturePath("flat_zstd.arrows"));
   auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
@@ -156,7 +151,6 @@ TEST(IpcDecoderTest, DecodesDictionaryValuesAfterTheRecordBoundary) {
   verifyEndOfStream(decoded->get());
 }
 
-/// Empty payloads are rejected before constructing a stream.
 TEST(IpcDecoderTest, RejectsEmptyInput) {
   const std::vector<uint8_t> bytes;
   const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
@@ -164,7 +158,6 @@ TEST(IpcDecoderTest, RejectsEmptyInput) {
   EXPECT_NE(decoded.error().find("parser_arrow:"), std::string::npos);
 }
 
-/// Invalid framing is surfaced at decode time without crashing.
 TEST(IpcDecoderTest, RejectsGarbageInput) {
   const std::vector<uint8_t> bytes(16, uint8_t{0xFF});
   const auto decoded = decodeIpcStream(PJ::Span<const uint8_t>(bytes.data(), bytes.size()));
@@ -184,7 +177,6 @@ TEST(IpcDecoderTest, DecodesViewFields) {
   verifyEndOfStream(decoded->get());
 }
 
-/// The borrowing decoder can consume the complete stream while its caller-owned payload remains alive and unchanged.
 TEST(IpcDecoderTest, BorrowsPayloadWithoutModifyingItWhileStreamIsConsumed) {
   auto bytes = test::readFile(test::fixturePath("flat.arrows"));
   const auto original_bytes = bytes;

@@ -1,10 +1,6 @@
 #pragma once
 
-// Mf4Dialog: a preview dialog for the MF4/MDF data source. It parses the file's
-// metadata (channel groups + channels, no sample data) and displays it as a
-// table so the user can see what will be imported. v1 is display-only;
-// interactive channel selection and DBC-file management are future work (they
-// require round-tripping widget input through the dialog engine).
+// Display-only preview of the file's metadata (channel groups + channels, no sample data).
 
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <string>
@@ -14,12 +10,11 @@ namespace mf4_detail {
 
 class Mf4Dialog : public PJ::DialogPluginTyped {
  public:
-  /// Point the dialog at a file; (re)parses its metadata for the preview.
+  /// (Re)parses the file's metadata for the preview.
   void setFilePath(const std::string& filepath);
 
-  /// DBC databases configured on the source. The dialog does not edit them
-  /// (v1 has no DBC picker) but must carry them: the host replaces the source
-  /// config with this dialog's saveConfig() after accept.
+  /// The dialog has no DBC picker but must carry the configured databases: the host replaces the source config
+  /// with this dialog's saveConfig() after accept.
   void setDbcPaths(std::vector<std::string> dbc_paths);
 
   /// Config state the source reads back (the dialog owns the JSON round-trip).
@@ -32,7 +27,6 @@ class Mf4Dialog : public PJ::DialogPluginTyped {
     return dbc_paths_;
   }
 
-  // --- Dialog protocol ---
   std::string manifest() const override;
   std::string ui_content() const override;
   std::string widget_data() override;

@@ -36,10 +36,6 @@ Schema sampleSchema() {
   };
 }
 
-// ---------------------------------------------------------------------------
-// computeVisibleSequences — PJ3 validity gating (TASK 2)
-// ---------------------------------------------------------------------------
-
 TEST(VisibleSequences, EmptyQueryShowsAll) {
   auto seqs = sampleSequences();
   FilterParams p;  // empty query, empty name filter
@@ -77,9 +73,8 @@ TEST(VisibleSequences, AndQueryNarrows) {
 }
 
 TEST(VisibleSequences, InvalidQueryDoesNotFilter) {
-  // PJ3 parity: an invalid query must NOT hide rows (if (!valid) return;).
-  // "robot ==" falls back to raw "robot ==" which is invalid Lua → all rows
-  // stay visible (the query contributes no exclusion).
+  // An invalid query must NOT hide rows (PJ3 behavior): "robot ==" falls back to raw "robot ==", which is invalid
+  // Lua, so all rows stay visible (the query contributes no exclusion).
   auto seqs = sampleSequences();
   FilterParams p;
   p.query_text = "robot ==";

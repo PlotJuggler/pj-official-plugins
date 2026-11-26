@@ -4,7 +4,6 @@ find_package(protobuf REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# --- Plugin shared library ---
 add_library(parser_protobuf_plugin SHARED protobuf_parser.cpp foxglove_pointcloud_codec.cpp foxglove_object_codecs.cpp foxglove_voxelgrid_codec.cpp foxglove_grid_codec.cpp)
 target_compile_features(parser_protobuf_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_protobuf_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -21,19 +20,15 @@ pj_embed_manifest(parser_protobuf_plugin
   VAR_NAME kProtobufManifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
 pj_emit_plugin_manifest(parser_protobuf_plugin
   FAMILY        message_parser
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# The object route returns sdk::BuiltinObject (std::any) through the in-process
-# C++ plugin pointer. On macOS, hidden RTTI in the dylib gives libc++ distinct
-# type identities for the concrete builtin structs (e.g. sdk::VideoFrame), so
-# std::any_cast in the host/test executable fails even though the parser
-# returned the right object. Keep the ELF isolation defaults from
-# pj_emit_plugin_manifest, but let Darwin export C++ RTTI for this parser plugin.
+# The object route returns sdk::BuiltinObject (std::any) through the in-process C++ plugin pointer. On macOS, hidden
+# RTTI in the dylib gives libc++ distinct type identities for the builtin structs (e.g. sdk::VideoFrame), so
+# std::any_cast in the host/test executable fails even though the parser returned the right object. Darwin therefore
+# exports C++ RTTI for this plugin; the ELF isolation defaults from pj_emit_plugin_manifest stay.
 if(APPLE)
   set_target_properties(parser_protobuf_plugin PROPERTIES
     CXX_VISIBILITY_PRESET default
@@ -42,7 +37,7 @@ if(APPLE)
   )
 endif()
 
-# --- Integration test (loads plugin .so via host library) ---
+# Integration test: loads the plugin .so through the host library.
 add_executable(protobuf_parser_test tests/protobuf_parser_test.cpp foxglove_pointcloud_codec.cpp foxglove_object_codecs.cpp foxglove_voxelgrid_codec.cpp foxglove_grid_codec.cpp)
 target_compile_features(protobuf_parser_test PRIVATE cxx_std_20)
 target_compile_options(protobuf_parser_test PRIVATE ${PJ_WARNING_FLAGS})

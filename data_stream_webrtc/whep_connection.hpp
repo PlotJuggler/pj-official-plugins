@@ -1,19 +1,14 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Qt-free WHEP receive connection: ONE rtc::PeerConnection carrying ONE
-// recvonly H.264 track for ONE camera path. The plugin is the OFFERER (WHEP
-// contract): open() adds the track, waits for ICE gathering to complete on a
-// worker thread, POSTs the offer via whep_client, applies the answer, and
-// primes the Annex-B normalizer from the answer's sprop-parameter-sets.
+// WHEP receive connection: one rtc::PeerConnection carrying one recvonly H.264 track for one camera path. The plugin
+// is the offerer (WHEP contract): open() adds the track, waits for ICE gathering on a worker thread, POSTs the offer
+// via whep_client, applies the answer, and primes the Annex-B normalizer from the answer's sprop-parameter-sets.
 //
-// THREADING: onFrame fires on a libdatachannel worker thread; the connect
-// sequence runs on this object's own worker thread (blocking HTTP must never
-// run on the poll thread or a libdatachannel callback). frames_mutex_ guards
-// the queue + normalizer. close() aborts any in-flight WHEP POST (connect
-// phase included), joins the worker, best-effort DELETEs the session (bounded
-// by delete_timeout), and detaches every callback. This class never calls
-// host methods.
+// THREADING: onFrame fires on a libdatachannel worker thread; the connect sequence runs on this object's own worker
+// thread (blocking HTTP must never run on the poll thread or a libdatachannel callback). frames_mutex_ guards the
+// queue + normalizer. close() aborts any in-flight WHEP POST (connect phase included), joins the worker, best-effort
+// DELETEs the session (bounded by delete_timeout), and detaches every callback. This class never calls host methods.
 #pragma once
 
 #include <atomic>
@@ -39,8 +34,7 @@ class Track;
 namespace PJ {
 namespace webrtc {
 
-// A single ICE server entry. STUN: leave username/credential empty. TURN:
-// supply both.
+// STUN: leave username/credential empty. TURN: supply both.
 struct IceServerConfig {
   std::string url;
   std::string username;
@@ -76,26 +70,20 @@ class WhepConnection {
   WhepConnection(const WhepConnection&) = delete;
   WhepConnection& operator=(const WhepConnection&) = delete;
 
-  // Callbacks fire on internal threads (worker / libdatachannel pool). Do NOT
-  // call close() or destroy this object from inside a callback — set a flag
-  // and act from your own thread.
+  // Callbacks fire on internal threads (worker / libdatachannel pool). Never call close() or destroy this object from
+  // inside a callback: set a flag and act from your own thread.
   void setStateCallback(StateCallback cb) {
     on_state_ = std::move(cb);
   }
-  // Fired once per failed connect attempt (HTTP error, gathering timeout,
-  // rejected answer). The owner classifies terminal (kUnauthorized) vs retry.
-  // Same threading rule as setStateCallback: never close()/destroy from
-  // inside the callback.
+  // Fired once per failed connect attempt (HTTP error, gathering timeout, rejected answer); the owner classifies
+  // terminal (kUnauthorized) vs retry. Same threading rule as setStateCallback.
   void setErrorCallback(ErrorCallback cb) {
     on_error_ = std::move(cb);
   }
 
-  // Build the PC + track and start the connect worker. Set callbacks BEFORE
-  // open(). Idempotent teardown via close(). A failed open() leaves the
-  // object fully closed (safe to retry or destroy).
+  // Set callbacks before open(). A failed open() leaves the object fully closed (safe to retry or destroy).
   [[nodiscard]] PJ::Status open(const WhepConnectionConfig& config);
-  // Join worker, DELETE the session (best effort, bounded), drop callbacks,
-  // close the PC, clear the queue. Safe to call twice / without open().
+  // Safe to call twice or without open().
   void close();
 
   // Swap-drain the reassembled frames. onPoll() only.
@@ -105,9 +93,8 @@ class WhepConnection {
     return state_.load();
   }
 
-  // --- test seams (no PeerConnection involved) ---
-  // Normalize one depacketized access unit with a normalizer primed from the
-  // given sprop-parameter-sets (same path the live onFrame uses).
+  // Test seams (no PeerConnection involved).
+  // Normalize one access unit with a normalizer primed from the sprop-parameter-sets (same path as the live onFrame).
   static EncodedFrame normalizeAccessUnit(
       const uint8_t* au, size_t size, int64_t ts_ns, const std::string& sprop_parameter_sets);
   // First sprop-parameter-sets value of the first video m-line in the SDP.
@@ -120,17 +107,15 @@ class WhepConnection {
   void primeFromAnswerForTest(const std::string& answer_sdp);
 
  private:
-  // Bound on the reassembled-frame queue: a stalled consumer must not grow
-  // memory without limit (onFrame drops oldest beyond this).
+  // A stalled consumer must not grow memory without limit: onFrame drops the oldest beyond this.
   static constexpr size_t kMaxQueuedFrames = 256;
 
   void onFrame(const uint8_t* data, size_t size);
   void runConnect();    // worker thread body
   void teardownPeer();  // detach all libdatachannel callbacks, drop PC + track
   void reportState(ConnectionState s);
-  // Finalize a failed connect attempt: state -> kFailed (plain store — the
-  // error callback IS the notification; reportState would double-notify) and
-  // fire on_error_.
+  // Sets kFailed with a plain store (the error callback is the notification; reportState would double-notify), then
+  // fires on_error_.
   void failConnect(WhepErrorKind kind, const std::string& reason);
   static int64_t wallClockNs();
 

@@ -1,27 +1,21 @@
 #!/usr/bin/env bash
 # Configure the shared PlotJuggler Artifactory repository ahead of ConanCenter.
 #
-# The repository allows anonymous READ, so the remote is useful to every job:
-# without credentials (pull requests, fork PRs, local use) it is added
-# anonymously and serves prebuilt binaries; with JFROG_USER / JFROG_TOKEN
-# (push / tag jobs) the script also logs in so upload_conan_artifacts.sh can
-# publish. Keep credentials scoped to the workflow step that calls this script.
+# The repository allows anonymous READ: without credentials (PRs, fork PRs, local use) the remote is
+# added anonymously; with JFROG_USER / JFROG_TOKEN (push / tag jobs) the script also logs in so
+# upload_conan_artifacts.sh can publish. Keep credentials scoped to the calling workflow step.
 #
-# The remote is a build ACCELERATOR, not a correctness requirement: everything
-# it serves is also resolvable from ConanCenter, and ensure_core.sh falls back
-# to building the SDK from its pinned git tag. So an
-# unreachable Artifactory degrades to slower builds instead of failing the job
-# -- a third-party outage must not be able to take down every CI leg and every
-# release at once. Problems are reported as ::warning:: so they stay visible in
-# the run summary rather than passing unnoticed.
+# The remote is a build accelerator, not a correctness requirement: everything it serves is also
+# resolvable from ConanCenter, and ensure_core.sh falls back to building the SDK from its pinned
+# tag. An unreachable Artifactory therefore degrades to slower builds instead of failing the job;
+# problems surface as ::warning:: in the run summary.
 set -euo pipefail
 
 REMOTE_NAME="plotjuggler-conan"
 REMOTE_URL="https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan"
 
-# Never leave a half-configured remote behind: an added-but-unauthenticated
-# remote makes every later `conan install` query a server that cannot serve it,
-# which is slower and noisier than having no remote at all.
+# Never leave a half-configured remote behind: every later `conan install` would query a server
+# that cannot serve it.
 drop_remote() {
   conan remote remove "${REMOTE_NAME}" >/dev/null 2>&1 || true
 }
@@ -35,8 +29,7 @@ fi
 if [[ -z "${JFROG_USER:-}" || -z "${JFROG_TOKEN:-}" ]]; then
   echo "::notice::JFROG_USER / JFROG_TOKEN are unset; using ${REMOTE_NAME} anonymously (read-only)"
 elif ! conan remote login "${REMOTE_NAME}" "${JFROG_USER}" -p "${JFROG_TOKEN}"; then
-  # Anonymous read still works, so keep the remote for downloads; only the
-  # upload step (which checks for a logged-in user) will be skipped.
+  # Anonymous read still works; only the upload step (which checks for a logged-in user) is skipped.
   echo "::warning::login to ${REMOTE_NAME} failed (invalid credentials, or Artifactory unavailable); continuing anonymously (read-only)"
   conan remote logout "${REMOTE_NAME}" >/dev/null 2>&1 || true
 fi

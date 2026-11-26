@@ -1,25 +1,23 @@
 #pragma once
 
-// Portable dictionary (DBC / CSV) paths for the loaders that keep per-channel
-// dictionaries in their config (data_load_mf4, data_load_blf, data_load_candump).
+// Portable dictionary (DBC / CSV) paths for the loaders that keep per-channel dictionaries in
+// their config (data_load_mf4, data_load_blf, data_load_candump).
 //
-// Why: a layout normally keeps the data file and its dictionaries in one
-// folder. Absolute dictionary paths stop working when that folder is moved and
-// silently point at the OLD folder's files when it is copied. So a dictionary
-// that lies under the data file's directory is saved relative to it, and on
+// A layout normally keeps the data file and its dictionaries in one folder. Absolute dictionary
+// paths stop working when that folder is moved and silently point at the OLD folder's files when
+// it is copied. So a dictionary under the data file's directory is saved relative to it, and on
 // load a relative path is resolved against the data file that is open now.
 //
-// Layout replay: PlotJuggler rewrites "filepath" to the file it actually opens
-// and, when that replaces a different absolute path, passes the replaced path
-// as the host-private key kSavedFilepathKey. Configs saved before this feature
-// hold absolute dictionary paths; those that lie under the folder that moved
-// (e.g. a dbc/ folder next to data/) are rebased onto its new location.
-// Plugins read that key in loadConfig() and never write it from saveConfig().
+// Layout replay: PlotJuggler rewrites "filepath" to the file it actually opens and, when that
+// replaces a different absolute path, passes the replaced path as the host-private key
+// kSavedFilepathKey. Absolute dictionary paths under the folder that moved (e.g. a dbc/ folder
+// next to data/) are rebased onto its new location. Plugins read that key in loadConfig() and
+// never write it from saveConfig().
 //
-// Containment is LEXICAL (no symlink resolution): "/run2/x" is not under "/run", and "/run/../other/x" is not
-// under "/run". The only filesystem access is resolveAuxPath checking whether a rebased candidate exists.
-// A string containing "://" is a URL, never a filesystem path: it is never
-// rewritten, and a data file given as a URL has no directory.
+// Containment is LEXICAL (no symlink resolution): "/run2/x" is not under "/run", and
+// "/run/../other/x" is not under "/run". The only filesystem access is resolveAuxPath checking
+// whether a rebased candidate exists. A string containing "://" is a URL, never a filesystem
+// path: it is never rewritten, and a data file given as a URL has no directory.
 
 #include <optional>
 #include <pj_base/expected.hpp>

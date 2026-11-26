@@ -85,7 +85,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/HardenPluginExports.cmake)
 pj_harden_plugin_exports(toolbox_transform_editor_plugin
   REQUIRED_EXPORTS PJ_get_toolbox_vtable PJ_get_dialog_vtable)
 
-# --- Unit tests (also manifest.json suggested_sdk_version / floor_test) ---
+# Unit tests (also manifest.json suggested_sdk_version / floor_test).
 # One executable, so the plugin source is compiled into the tests once: the trial run, Create / Modify /
 # load of on-demand recipes, the asynchronous preview with cancellation on close, and the real toolbox
 # against a floor host that predates the typed requests and catalog snapshot v2.

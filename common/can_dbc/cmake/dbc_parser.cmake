@@ -7,23 +7,21 @@ include_guard(GLOBAL)
 include(${CMAKE_CURRENT_LIST_DIR}/../../../cmake/VendoredPatch.cmake)
 
 function(pj_add_dbc_parser_library target source_dir fast_float_dir)
-# Absolute, so list(REMOVE_ITEM) below matches the globbed (absolute) originals:
-# a missed match would compile the unpatched copy beside the patched one.
+# Absolute, so list(REMOVE_ITEM) below matches the globbed (absolute) originals: a missed
+# match would compile the unpatched copy beside the patched one.
 get_filename_component(source_dir "${source_dir}" ABSOLUTE)
 file(GLOB _dbc_sources CONFIGURE_DEPENDS ${source_dir}/src/*.cpp)
 
-# Vendored fix: upstream masks unsigned signals with a 32-bit `1 << size`,
-# which is UB for size >= 32 (an unsigned 32-bit signal decodes as 0 on x86).
-# Rewrite message.cpp with a 64-bit-safe mask and compile the patched copy.
+# Upstream masks unsigned signals with a 32-bit `1 << size`, UB for size >= 32 (an unsigned
+# 32-bit signal decodes as 0 on x86). The patched message.cpp uses a 64-bit-safe mask.
 set(_dbc_mask_bug "value = value & ((1 << signal.size) - 1); // masking")
 set(_dbc_mask_fix "value = (signal.size >= 64) ? value : (value & ((1ULL << signal.size) - 1)); // masking (PJ fix)")
 file(READ ${source_dir}/src/message.cpp _dbc_message_cpp)
 pj_apply_vendored_patch(_dbc_message_cpp _dbc_mask_bug _dbc_mask_fix "can_dbc: dbc_parser_cpp unsigned-mask")
 
-# Vendored fix: upstream converts a signed 64-bit signal straight from the
-# unsigned raw word, so a negative value decodes as a huge positive one. The
-# anchor spans the `case` line because the push_back text alone also matches
-# the unsigned branch.
+# Upstream converts a signed 64-bit signal straight from the unsigned raw word, so a negative
+# value decodes as a huge positive one. The anchor spans the `case` line because the push_back
+# text alone also matches the unsigned branch.
 set(_dbc_s64_bug "case EIGHT_BYTES:\n\t\t\t\tvalues.push_back(static_cast<double>(value) * signal.factor + signal.offset);")
 set(_dbc_s64_fix "case EIGHT_BYTES:\n\t\t\t\tvalues.push_back(static_cast<double>(static_cast<int64_t>(value)) * signal.factor + signal.offset); // two's complement (PJ fix)")
 pj_apply_vendored_patch(_dbc_message_cpp _dbc_s64_bug _dbc_s64_fix "can_dbc: dbc_parser_cpp signed 64-bit")
@@ -32,29 +30,21 @@ file(CONFIGURE OUTPUT ${_dbc_patched_dir}/message.cpp CONTENT "${_dbc_message_cp
 list(REMOVE_ITEM _dbc_sources ${source_dir}/src/message.cpp)
 list(APPEND _dbc_sources ${_dbc_patched_dir}/message.cpp)
 
-# Vendored fix: dbc.cpp's SG_/BO_ number and whitespace patterns are too
-# narrow, and a signal whose factor/offset/min/max does not match is dropped
-# SILENTLY (signal_re just fails to match, parse_dbc_messages() skips the
-# line) -- this already affects real Vector DBCs (negative factors, float
-# min/max like "[-3.4E+38|3.4E+38]") consumed by data_load_blf/data_load_mf4.
+# dbc.cpp's SG_/BO_ number and whitespace patterns are too narrow, and a signal whose
+# factor/offset/min/max does not match is dropped SILENTLY (signal_re fails to match and
+# parse_dbc_messages() skips the line). Real Vector DBCs hit this (negative factors, float
+# min/max like "[-3.4E+38|3.4E+38]").
 #
-# 1) floatPattern/scalePattern: one signed-mantissa + optional-exponent number
-#    pattern for factor, offset, min AND max (was: factor non-negative only,
-#    offset/min/max signed but no exponent support at all). A leading '+' is
-#    matched but kept OUTSIDE the capture group, so the captured text is
-#    never handed a '+' mantissa sign -- Utils::String::convert_to_double
-#    (== fast_float::from_chars) rejects that, same rule as std::from_chars,
-#    which would otherwise silently leave the field at its default (0.0).
-#    This keeps EXACTLY 2 capturing groups per use (the whole value + one
-#    filler group, same as upstream's (whole value, fractional digits)), so
-#    SIGNAL_FACTOR_GROUP=7 / SIGNAL_OFFSET_GROUP=9 / SIGNAL_MIN_GROUP=11 /
-#    SIGNAL_MAX_GROUP=13 / SIGNAL_UNIT_GROUP=15 / SIGNAL_RECIEVER_GROUP=16
-#    below are untouched -- pj_can_dbc_test pins this mapping.
-# 2) whiteSpace/message_re: single "\s" separators reject tabs and repeated
-#    spaces; split into a mandatory "\s+" between two real tokens and a
-#    permissive "\s*" next to punctuation (":", "(", "[", the quote), which
-#    also happens to tolerate the punctuation-adjacent spacing some DBC
-#    exporters omit.
+# 1) floatPattern/scalePattern: one signed-mantissa + optional-exponent pattern for factor,
+#    offset, min and max. A leading '+' is matched but kept OUTSIDE the capture group:
+#    Utils::String::convert_to_double (fast_float::from_chars) rejects a '+' mantissa sign and
+#    would silently leave the field at 0.0. The pattern keeps EXACTLY 2 capture groups per use
+#    (like upstream), so SIGNAL_FACTOR_GROUP=7 / SIGNAL_OFFSET_GROUP=9 / SIGNAL_MIN_GROUP=11 /
+#    SIGNAL_MAX_GROUP=13 / SIGNAL_UNIT_GROUP=15 / SIGNAL_RECIEVER_GROUP=16 stay valid;
+#    pj_can_dbc_test pins this mapping.
+# 2) whiteSpace/message_re: a single "\s" separator rejects tabs and repeated spaces. A
+#    mandatory "\s+" goes between two real tokens and a permissive "\s*" next to punctuation
+#    (":", "(", "[", the quote), which also tolerates exporters that omit that spacing.
 set(_dbc_float_bug [==[const auto floatPattern = "(-?\\d+\\.?(\\d+)?)"; // Can be negative]==])
 set(_dbc_float_fix [==[const auto floatPattern = "\\+?([-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?(\\d+))?)"; // PJ fix: signed mantissa (leading-dot too) + optional exponent, uncaptured leading '+'; still exactly 2 capture groups (whole value, exponent digits) like upstream (whole value, fractional digits)]==])
 set(_dbc_scale_bug [==[const auto scalePattern = "(\\d+\\.?(\\d+)?)"; // Non negative float]==])
@@ -78,18 +68,15 @@ pj_apply_vendored_patch(_dbc_dbc_cpp _dbc_whitespace_bug _dbc_whitespace_fix "ca
 pj_apply_vendored_patch(_dbc_dbc_cpp _dbc_signal_re_bug _dbc_signal_re_fix "can_dbc: dbc_parser_cpp signal_re whitespace")
 pj_apply_vendored_patch(_dbc_dbc_cpp _dbc_message_re_bug _dbc_message_re_fix "can_dbc: dbc_parser_cpp message_re whitespace")
 
-# Vendored fix: VAL_ (value tables) parsing rejects tabs/repeated whitespace
-# (value_re predates the shared whiteSpace variable) and reads every key as
-# non-negative (std::stoul), so a negative key ("-1 \"ERROR\"") throws and
-# drops the WHOLE VAL_ line silently. Its repeated pair group also makes
-# MSVC's std::regex throw error_stack from about 50 pairs on, which fails the
-# load of the WHOLE DBC on Windows. Fix: value_re/description_re tolerate
-# flexible whitespace, and value_re takes the pairs as one plain `.*` run
-# (group 4, the only body group consumed) that description_re's iterator
-# below already splits into pairs; the key is read with std::stoll and narrowed to uint32_t's bit pattern --
-# pj_can_dbc::normalizeValueKey (can_decoder.cpp) restores the sign at load
-# time. Out of scope: VAL_TABLE_, an env-var VAL_, a multi-line VAL_, and an
-# escaped quote in label text.
+# VAL_ (value tables): upstream rejects tabs/repeated whitespace and reads every key with
+# std::stoul, so a negative key ("-1 \"ERROR\"") throws and drops the WHOLE VAL_ line
+# silently. Its repeated pair group also makes MSVC's std::regex throw error_stack from about
+# 50 pairs on, failing the load of the WHOLE DBC on Windows. The patch makes value_re/
+# description_re whitespace-tolerant, has value_re take the pairs as one plain `.*` run (group 4,
+# the only body group consumed) that description_re's iterator splits into pairs, and reads the
+# key with std::stoll narrowed to uint32_t's bit pattern; pj_can_dbc::normalizeValueKey
+# (can_decoder.cpp) restores the sign at load time. Out of scope: VAL_TABLE_, an env-var VAL_,
+# a multi-line VAL_, and an escaped quote in label text.
 set(_dbc_value_re_bug [==[	, value_re("^(VAL_)\\s(\\d+)\\s(\\w+)((?:\\s(\\d+)\\s\"([^\"]*)\")+)\\s;$")]==])
 set(_dbc_value_re_fix [==[	, value_re("^(VAL_)\\s+(\\d+)\\s+(\\w+)(\\s.*)\\s*;\\s*$")]==])
 set(_dbc_description_re_bug [==[			std::regex description_re("\\s(\\d+)\\s\"([^\"]*)\"");]==])

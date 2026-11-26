@@ -413,10 +413,9 @@ TEST(DataExporterHostTest, EmptyMultiFileGroupIsSkippedWhilePopulatedGroupSuccee
   EXPECT_EQ(status.find("range_zulu.csv"), std::string::npos);
 }
 
-// ToolboxTestStore intentionally serves float64 only and has no validity or
-// UTF-8 population API. M3's Arrow-reader suite therefore remains the direct
-// string/null integration coverage (including sliced arrays and embedded NULs),
-// while this bound-host test covers the production toolbox orchestration.
+// ToolboxTestStore intentionally serves float64 only and has no validity or UTF-8 population API, so the
+// Arrow-reader suite is the direct string/null integration coverage (including sliced arrays and embedded
+// NULs); this bound-host test covers the production toolbox orchestration.
 
 using assistant_agent::testing::FakeMultiDatasetHost;
 using DroppedItem = DataExporterDialog::DroppedItem;

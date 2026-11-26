@@ -9,12 +9,8 @@ The extension has a proxy + per-distro split:
 - A **per-distro** `.so` per supported ROS 2 distribution (`humble`, `jazzy`,
   `kilted`, `lyrical`, `rolling`), linked against that distro's `rclcpp`.
 
-These images cover two roles:
-
-1. **Reproducible builds** of the proxy and per-distro artifacts on a
-   developer machine, regardless of the host's ROS install (or absence).
-2. **Release packaging**: assembling the proxy + every per-distro `.so`
-   into the marketplace zip layout consumed by PlotJuggler 4.x.
+These images give reproducible builds regardless of the host's ROS install, and assemble the proxy plus every
+per-distro `.so` into the marketplace zip layout consumed by PlotJuggler 4.x.
 
 ## Layout
 
@@ -33,7 +29,7 @@ These images cover two roles:
 ## Why two Docker images
 
 The proxy `.so` must NOT depend on `librclcpp` — that is the whole point of
-the dispatch design. Building it inside any `osrf/ros:*-desktop` image would
+the dispatch design. Building it inside any ROS image would
 risk pulling ROS symbols transitively through `CMAKE_PREFIX_PATH` or system
 libraries. A plain Ubuntu 22.04 image with no ROS installed enforces the
 constraint by construction.
@@ -105,8 +101,7 @@ forces `PJ_BUILD_TESTS`, `PJ_BUILD_PORTED_PLUGINS` and
 them on the cmake command line.
 
 Image tags are namespaced (`pj-ros2-builder:<distro>-with-pj-app`) so the
-heavier image never replaces the lean one used by CI. The plain-build path
-(without the flag) is unchanged in every respect.
+heavier image never replaces the lean one used by CI.
 
 The single `build/` directory under `<pj4>` is intentional — `pj4` is
 ROS-agnostic. If you switch between toolchains (each distro's Ubuntu base
@@ -155,5 +150,4 @@ local helper and CI workflows.
 
 ## Windows
 
-Linux only today. A Windows variant (Chocolatey-based ROS 2 installs) is a
-follow-up.
+Linux only: Windows would need a different bootstrap (Chocolatey-based ROS 2 installs).

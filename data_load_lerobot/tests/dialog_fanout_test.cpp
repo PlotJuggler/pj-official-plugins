@@ -1,13 +1,6 @@
-// Verifies LeRobotDialog's per-instance fanout serialization API.
-//
-// The dialog persists both the UI selection (multi-episode list) and the
-// per-instance fanout configs the host issues when spawning one LeRobotSource
-// per episode. Loading a fanout sub-config (with `episode: int`) must populate
-// singleEpisode() so importData reads exactly one episode.
-//
-// Note: the dialog is defined in an anonymous namespace inside the header,
-// so we get our own copy of the class here — fine for unit testing, since
-// the production plugin .so has its own copy via lerobot_plugin.cpp.
+// LeRobotDialog's fanout serialization. Loading a per-instance fanout sub-config (`episode: int`) must populate
+// singleEpisode() so importData reads exactly one episode. The dialog lives in an anonymous namespace in the
+// header, so this test has its own copy of the class.
 
 #include <gtest/gtest.h>
 
@@ -54,8 +47,7 @@ fs::path makeDatasetFixture(const std::string& prefix = "pusht_v21_dialogfix", i
 
 TEST(LeRobotDialogFanout, LoadsSingleEpisodeFromFanoutConfig) {
   LeRobotDialog d;
-  // Per-instance fanout payload: single episode int. filepath empty so
-  // loadDatasetModel fails (we're not testing model parsing here).
+  // Per-instance fanout payload; filepath is empty so loadDatasetModel fails (model parsing is not under test).
   ASSERT_TRUE(d.loadConfig(R"({"episode":5,"display_suffix":"ep_5"})"));
   ASSERT_TRUE(d.singleEpisode().has_value());
   EXPECT_EQ(*d.singleEpisode(), 5);
@@ -63,9 +55,8 @@ TEST(LeRobotDialogFanout, LoadsSingleEpisodeFromFanoutConfig) {
 
 TEST(LeRobotDialogFanout, DialogUiConfigHasNoSingleEpisode) {
   LeRobotDialog d;
-  // Dialog/UI mode (no `episode`, has `selected_episodes`). With no real
-  // dataset loaded, selected_eps_ stays empty (loadModel fails silently);
-  // what matters is that singleEpisode() remains nullopt.
+  // Dialog mode (no `episode`, has `selected_episodes`): with no dataset loaded the selection stays empty; what
+  // matters is that singleEpisode() remains nullopt.
   ASSERT_TRUE(d.loadConfig(R"({"selected_episodes":[1,2,3]})"));
   EXPECT_FALSE(d.singleEpisode().has_value());
 }
@@ -80,21 +71,19 @@ TEST(LeRobotDialogFanout, SaveConfigOmitsFanoutWhenSelectionEmpty) {
   ASSERT_TRUE(d.loadConfig(R"({})"));
   const std::string out = d.saveConfig();
   auto j = nlohmann::json::parse(out);
-  // Empty selection → no fanout key (FileLoader treats absence as
-  // single-instance and reuses the scratch handle).
+  // Empty selection -> no fanout key (the host treats absence as a single instance).
   EXPECT_FALSE(j.contains("__pj_fanout"));
 }
 
 TEST(LeRobotDialogFanout, IgnoresLegacyVideoModeKey) {
-  // Old QSettings configs may carry `video_mode:"jpeg"` or similar from the
-  // retired JPEG transcode era. We just ignore unknown keys.
+  // Unknown keys (e.g. a legacy `video_mode`) are ignored.
   LeRobotDialog d;
   EXPECT_TRUE(d.loadConfig(R"({"episode":0,"video_mode":"jpeg"})"));
   EXPECT_TRUE(d.singleEpisode().has_value());
 }
 
-// issue #98: the dialog names the dataset after its root folder so the host's
-// catalog tree shows e.g. "pusht_v21", not the opened file's basename ("info").
+// The dialog names the dataset after its root folder, so the catalog shows "pusht_v21", not the opened file's
+// basename ("info").
 TEST(LeRobotDialogFanout, SaveConfigEmitsDisplayNameFromDatasetRoot) {
   const fs::path root = makeDatasetFixture();
   LeRobotDialog d;
@@ -137,7 +126,7 @@ TEST(LeRobotDialogSelection, KeptForItsDatasetAndNotCarriedToAnother) {
   const auto pusht_info = (pusht / "meta" / "info.json").string();
   const auto other_info = (other / "meta" / "info.json").string();
 
-  // A config saved without the dataset name (an older plugin, an older layout) keeps its selection.
+  // A config without the dataset name keeps its selection.
   LeRobotDialog first;
   ASSERT_TRUE(first.loadConfig(nlohmann::json{{"filepath", pusht_info}, {"selected_episodes", {1, 3}}}.dump()));
   ASSERT_EQ(selectedEpisodes(first), (std::vector<int64_t>{1, 3}));

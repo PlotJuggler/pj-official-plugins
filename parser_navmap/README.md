@@ -17,9 +17,9 @@ topic (`navmap` + `navmap_updates`) and applies the updates over time.
 
 ## How it is selected
 
-This is a regular MessageParser that registers a `SchemaHandler` for exactly
-these two types and claims both routes, so the scalar route plots a summary
-instead of the generic flattening of million-element arrays:
+A regular MessageParser with a `SchemaHandler` for exactly these two types,
+claiming both routes, so the scalar route plots a summary instead of the generic
+flattening of million-element arrays:
 
 - NavMap: `/header/stamp`, `/header/frame_id`, `/num_vertices`, `/num_navcels`,
   `/num_surfaces`, `/num_layers`, `/dropped_layers`, `/dropped_links` (0 for a
@@ -35,9 +35,9 @@ marketplace or a plugin directory, `parser_ros` takes the scalar route of
 NavMap topics (its generic flattening, without these summaries). The object
 route, which the 3D view uses, is unaffected: only this parser claims it.
 
-The host also gives every parser a catch-all scalar claim for each encoding in
-its manifest and accepts it whenever `bindSchema()` succeeds. `bindSchema()`
-therefore rejects every other type; keep it that way.
+The host gives every parser a catch-all scalar claim for each manifest encoding
+and accepts it whenever `bindSchema()` succeeds, so `bindSchema()` must reject
+every other type.
 
 ## Timestamps
 
@@ -50,9 +50,8 @@ message time.
 
 ## Conversion
 
-`MeshMap` stores one array per channel, as NavMap does, so the layers pass
-through in their own type; only the geometry is
-repacked (`navmap_mesh.hpp`):
+`MeshMap` stores one array per channel, as NavMap does, so layers pass through
+in their own type; only the geometry is repacked (`navmap_mesh.hpp`):
 
 - **Geometry:** NavMap's per-axis positions and per-corner indices are
   interleaved into float32 xyz and uint32 triplets.
@@ -100,11 +99,10 @@ otherwise. An update for a name a map drops (empty or reserved) fails.
 
 ## Message layouts
 
-The NavMap messages changed across releases (layers gained metadata, `int16`
-data and sparse indices; the map gained `geometry_id` and links). The parser
-compiles the `.msg` bundle each topic carries (`navmap_msg_decoder.hpp`) and
-decodes by it, so every layout works and future fields are skipped by type. A
-topic without a schema is decoded with the current layout.
+The parser compiles the `.msg` bundle each topic carries
+(`navmap_msg_decoder.hpp`) and decodes by it, so every NavMap layout works and
+unknown fields are skipped by type. A topic without a schema is decoded with the
+current layout.
 
 Every array, fixed-size or not, is bounded by the remaining payload divided by
 the fewest bytes one element takes (computed per type when the bundle is
@@ -129,20 +127,14 @@ checker does not track builtin object types, so this floor is set by hand.
 
 ## Tests
 
-`tests/navmap_parser_test.cpp` loads the built `.so` through the host loader and
-serializes messages by hand (current and first released layouts). It covers the
-claims and the bind guard, the geometry and channels, every layer encoding (U8,
-F32, F64, I16; unit, unknown value, sparse coverage, a type/array mismatch) in
-maps and updates, the naming and datatype rules shared by the two, NavMapLayer
-updates, `use_embedded_timestamp`, the scalar summaries and dropped counts, and
-malformed input: every truncated prefix of a message (run it under
-AddressSanitizer to catch an unchecked read), big-endian payloads, oversized
-sequence lengths, arrays of field-less types and NaN in integer fields.
+`tests/navmap_parser_test.cpp` loads the built `.so` through the host loader
+and serializes messages by hand (current and first released layouts). Run it
+under AddressSanitizer: the truncated-prefix cases only fail there on an
+unchecked read.
 
 `tests/data/` holds messages serialized by rclpy from the real
-`navmap_ros_interfaces` and recorded with rosbag2, for the current and the
-first released layout: the schema text each MCAP channel carries (`*.msg`) and
-the raw CDR payload of one NavMap and one NavMapLayer (`*.cdr`).
+`navmap_ros_interfaces` and recorded with rosbag2: the schema text each MCAP
+channel carries (`*.msg`) and the raw CDR payload (`*.cdr`).
 
 ```bash
 ctest --test-dir build -R navmap_parser

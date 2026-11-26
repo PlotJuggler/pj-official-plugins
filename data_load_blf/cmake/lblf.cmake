@@ -1,23 +1,18 @@
-# lblf.cmake -- the patched lblf (PetStr/lblf) BLF reader as a static library.
-# Shared by this plugin and PlotJuggler's WebAssembly build: each fetches the
-# same pinned source and calls pj_add_lblf_library(<target> <lblf source dir>),
-# so the hardening below lives in one place. Needs ZLIB::ZLIB.
-# Only its two library sources are built (blf_reader.cc + print.cc):
+# The patched lblf (PetStr/lblf) BLF reader as a static library, shared by this plugin and PlotJuggler's
+# WebAssembly build: each fetches the same pinned source and calls pj_add_lblf_library(<target> <lblf source dir>),
+# so the hardening below lives in one place. Needs ZLIB::ZLIB. Only blf_reader.cc + print.cc are built:
 # object_types.cc and the read*.cc files are example programs with a main().
 include_guard(GLOBAL)
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/VendoredPatch.cmake)
 
 function(pj_add_lblf_library target source_dir)
-# Vendored hardening: the pinned lblf computes a log container's blob size as
-# `objSize - headerSize - sizeof(LogContainer)`. A forged objSize below that
-# sum underflows to ~4 GB; a forged objSize far above the file makes the same
-# math (or unCompressedFileSize) resize() a multi-GB buffer before the short
-# read fails — an allocation DoS from a tiny file either way. Inject a bounds
-# check right after the container header is read: reject objSize outside
-# [header, fileLength]. `fileLength` is the reader's own member, set from the
-# real file size in the constructor. Done via string(REPLACE) (no `patch`
-# executable needed on Windows CI); each pj_apply_vendored_patch FATAL_ERRORs if
-# its anchor moves, so a pin bump can never silently drop a guard.
+# Vendored hardening. The pinned lblf computes a log container's blob size as
+# `objSize - headerSize - sizeof(LogContainer)`: a forged objSize below that sum underflows to ~4 GB, and one far
+# above the file makes the same math (or unCompressedFileSize) resize() a multi-GB buffer before the short read
+# fails (an allocation DoS from a tiny file). A bounds check right after the container header is read rejects
+# objSize outside [header, fileLength] (`fileLength` is the reader's member, set from the real file size). Applied
+# via string(REPLACE) (no `patch` executable on Windows CI); each pj_apply_vendored_patch FATAL_ERRORs if its anchor
+# moves, so a pin bump can never silently drop a guard.
 file(READ ${source_dir}/blf_reader.cc _lblf_reader_cc)
 
 set(_lblf_anchor [==[            read_logcontainer(fileStream, lc, ohb);]==])
@@ -28,10 +23,9 @@ set(_lblf_fixed [==[            if (ohb.objSize < ohb.headerSize + sizeof(blf_st
             read_logcontainer(fileStream, lc, ohb);]==])
 pj_apply_vendored_patch(_lblf_reader_cc _lblf_anchor _lblf_fixed "data_load_blf: lblf log-container size")
 
-# Second guard: the zlib output buffer is sized from the container's own
-# unCompressedFileSize field, which is independent of objSize. Cap it against
-# the compressed blob size (zlib's theoretical max expansion is ~1032:1) so a
-# forged value cannot resize() a multi-GB buffer.
+# The zlib output buffer is sized from the container's own unCompressedFileSize, independent of objSize. Capped
+# against the compressed blob size (zlib's maximum expansion is ~1032:1) so a forged value cannot resize() a multi-GB
+# buffer.
 set(_lblf_zlib_anchor [==[                    uLong uncompressedFileSize = lc.unCompressedFileSize;
                     std::vector<uint8_t> uncompressedData {};
 
@@ -46,12 +40,10 @@ set(_lblf_zlib_fixed [==[                    uLong uncompressedFileSize = lc.unC
                     uncompressedData.resize(uncompressedFileSize);]==])
 pj_apply_vendored_patch(_lblf_reader_cc _lblf_zlib_anchor _lblf_zlib_fixed "data_load_blf: lblf zlib output size")
 
-# Third guard: blf_reader::data() computes an inner object's payload length as
-# `objSize - sizeof(BaseHeader) + objSize % 4`. A forged inner objSize below
-# sizeof(BaseHeader) underflows that size_t, and the following pop loop then
-# reads past an emptied deque (front()/pop_front() on empty = undefined). Bail
-# to the end-of-stream sentinel (0x888, already used above) when the object is
-# undersized or the stream ran short.
+# blf_reader::data() computes an inner object's payload length as `objSize - sizeof(BaseHeader) + objSize % 4`. A
+# forged inner objSize below sizeof(BaseHeader) underflows that size_t, and the pop loop then reads past an emptied
+# deque (undefined behavior). Bail to the end-of-stream sentinel (0x888) when the object is undersized or the stream
+# ran short.
 set(_lblf_data_anchor [==[    if (logcontainer_que.size() < size_of_data)
         {
             fill_deque();

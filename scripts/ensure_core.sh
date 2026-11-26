@@ -7,10 +7,9 @@
 #      binary (`--build=never`: a missing per-OS binary falls through) -> done.
 #   3. Otherwise clone tag v<SDK_VERSION> from GitHub and build it via `conan create`.
 #
-# PJ_SANITIZE=asan skips straight to step 3 every run — see the resolution block
-# below for why neither shortcut can be trusted to hold an instrumented package.
+# PJ_SANITIZE=asan/tsan skips straight to step 3 every run (see the resolution block below).
 #
-# Single source of truth for the version: the SDK_VERSION file (exact, e.g. 0.6.0).
+# Version source of truth: the SDK_VERSION file (exact, e.g. 0.6.0).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,33 +20,25 @@ REF="plotjuggler_sdk/${CORE_VERSION}"
 REMOTE="plotjuggler-conan"
 SETTINGS=(-s build_type="${BUILD_TYPE:-Release}" -s compiler.cppstd=20)
 
-# The SDK package must match the plugins' instrumentation: an uninstrumented SDK
-# linked into an instrumented plugin reports nothing for a use-after-free inside
-# it.
+# The SDK package must match the plugins' instrumentation: an uninstrumented SDK linked into an
+# instrumented plugin reports nothing for a use-after-free inside it.
 #
-# Every conf is scoped to plotjuggler_sdk/* rather than applied graph-wide. An
-# unscoped tools.build:* combines with --build=missing to instrument any THIRD-
-# PARTY dependency that happens to need a source build, and writes it under its
-# uninstrumented package_id into a cache the plugin build shares — silently
-# swapping the binary behind the plugins' own deps. Scoping matches what
-# build.sh does for the plugin targets, which likewise keeps sanitizer flags out
-# of Conan's dependency graph.
+# Every conf is scoped to plotjuggler_sdk/*, not graph-wide: an unscoped tools.build:* plus
+# --build=missing would instrument any THIRD-PARTY dependency needing a source build and write it
+# under its uninstrumented package_id into the shared cache. build.sh scopes the plugin targets the
+# same way.
 #
-# These confs do NOT participate in the Conan package_id, so the ASan lane MUST
-# run with a dedicated CONAN_HOME — otherwise an instrumented package silently
-# overwrites the Release one under the same id, and a later Release build links
-# instrumented code (or the reverse) with no error. The app repo's AppImage
-# wrapper supplies that isolation via a separate cache volume for the lane.
+# These confs do NOT participate in the Conan package_id, so the sanitizer lanes MUST run with a
+# dedicated CONAN_HOME, else an instrumented package silently overwrites the Release one under the
+# same id (or the reverse) with no error.
 #
-# Set before the local-SDK branch below, so `--sdk-local --asan` instruments the
-# local tree too rather than registering an uninstrumented build under the pin.
+# Set before the local-SDK branch below so `--sdk-local --asan` instruments the local tree too.
 case "${PJ_SANITIZE:-}" in
   asan) SAN_FLAG="-fsanitize=address" ;;
   tsan) SAN_FLAG="-fsanitize=thread" ;;
   *)    SAN_FLAG="" ;;
 esac
-# The SDK must be compiled by the same compiler as the plugins that link it; see
-# scripts/sanitizer_compiler.sh.
+# Same compiler as the plugins that link the SDK; see scripts/sanitizer_compiler.sh.
 # shellcheck source=scripts/sanitizer_compiler.sh
 source "$(dirname "${BASH_SOURCE[0]}")/sanitizer_compiler.sh"
 pj_select_sanitizer_compiler "${PJ_SANITIZE:-}" || exit 1
@@ -60,11 +51,9 @@ if [[ -n "${SAN_FLAG}" ]]; then
   )
 fi
 
-# Local-SDK development mode (build.sh --sdk-local): register the given working
-# tree in the Conan cache AS the pinned version, so every downstream plugin
-# recipe resolves unchanged. Always re-created — a stale cached build of a
-# changed local tree must never be silently reused. Refused in CI: the result
-# is whatever the tree holds, not a reproducible release.
+# Local-SDK development mode (build.sh --sdk-local): register the working tree in the Conan cache AS
+# the pinned version so every plugin recipe resolves unchanged. Always re-created (a stale build of
+# a changed tree must not be reused). Refused in CI: not reproducible.
 if [[ -n "${SDK_LOCAL_DIR:-}" ]]; then
   if [[ -n "${CI:-}" ]]; then
     echo "ensure_core: SDK_LOCAL_DIR is forbidden in CI (not reproducible)" >&2
@@ -74,9 +63,8 @@ if [[ -n "${SDK_LOCAL_DIR:-}" ]]; then
     echo "ensure_core: ${SDK_LOCAL_DIR} has no conanfile.py — not an SDK checkout" >&2
     exit 1
   fi
-  # The SDK recipe's set_version() reads its own VERSION file and would
-  # override any --version we pass — so require the tree to BE the pinned
-  # version instead of pretending to relabel it.
+  # The SDK recipe's set_version() reads its own VERSION file and overrides any --version, so the
+  # tree must BE the pinned version.
   LOCAL_VERSION="$(tr -d '[:space:]' < "${SDK_LOCAL_DIR}/VERSION")"
   if [[ "${LOCAL_VERSION}" != "${CORE_VERSION}" ]]; then
     echo "ensure_core: local SDK VERSION ${LOCAL_VERSION} != pinned SDK_VERSION ${CORE_VERSION}" >&2
@@ -89,16 +77,12 @@ if [[ -n "${SDK_LOCAL_DIR:-}" ]]; then
   exit 0
 fi
 
-# Use `conan cache path` (errors when the recipe is truly absent) rather than
-# `conan list | grep`: conan list echoes the queried reference in its "not found"
-# output, which made the grep false-positive and skip building the real package.
-# An instrumented lane must never accept a cached or prebuilt binary. Conan's
-# tools.build:* configuration does NOT participate in package_id, so the Release
-# package and an ASan one share an id: `conan cache path` hits, and the prebuilt
-# fetch below succeeds with --build=never, and the plugins then link an
-# UNinstrumented SDK while every log line claims the lane is active. That is the
-# exact silent half-instrumentation this lane exists to prevent, so skip both
-# shortcuts and always build the SDK from source here.
+# `conan cache path` (errors when the recipe is absent) rather than `conan list | grep`: conan list
+# echoes the queried reference in its "not found" output, so the grep false-positives.
+# An instrumented lane must never accept a cached or prebuilt binary: tools.build:* is not part of
+# package_id, so the Release package and a sanitizer one share an id, both shortcuts would hit, and
+# the plugins would link an UNinstrumented SDK while every log line claims the lane is active.
+# Both are skipped and the SDK is always built from source.
 if [[ -n "${SAN_FLAG}" ]]; then
   echo "ensure_core: ${PJ_SANITIZE} lane — building ${REF} from source (cache and prebuilt binaries are not lane-tagged)"
 elif conan cache path "${REF}" >/dev/null 2>&1; then
@@ -118,9 +102,7 @@ echo "ensure_core: building ${REF} from source (git tag v${CORE_VERSION})"
 CORE_DIR="$(mktemp -d)"
 git clone --branch "v${CORE_VERSION}" --depth 1 \
   https://github.com/PlotJuggler/plotjuggler_sdk.git "${CORE_DIR}"
-# Force a from-source build of core. We only reach here because JFrog has no
-# matching binary (or is unavailable). The explicit `plotjuggler_sdk/*` build
-# pattern builds the recipe we just exported; --build=missing covers its deps.
+# `--build=plotjuggler_sdk/*` builds the recipe just cloned; --build=missing covers its deps.
 conan create "${CORE_DIR}" --version "${CORE_VERSION}" "${SETTINGS[@]}" \
   --build="plotjuggler_sdk/*" --build=missing
 echo "ensure_core: built ${REF} from source"

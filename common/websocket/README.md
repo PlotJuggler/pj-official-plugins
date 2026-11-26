@@ -44,8 +44,8 @@ The PlotJuggler Bridge and Foxglove Bridge dialogs take the server as one URL li
   forbids in a WebSocket URI). A token in the query is accepted and dialed as typed.
 - **Saved** under `url` normalized, its query included, so it reaches PlotJuggler's saved
   dialog configuration and layouts; a line that is not a URL is not saved. A loaded `url`
-  loses its userinfo and fragment before the check (IXWebSocket ignored both, so configs that
-  hold them connected). The legacy `address` and `port` keys are read only when `url` is
+  loses its userinfo and fragment before the check, so a config that holds them still connects
+  (IXWebSocket ignores both). The legacy `address` and `port` keys are read only when `url` is
   absent, composed into `ws://address:port` and checked by the same rules; they are never
   written.
 - **Remembered.** Once a connection opens, the URL it dialed is stored, cleaned, in

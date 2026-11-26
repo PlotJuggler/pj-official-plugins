@@ -12,8 +12,8 @@ namespace pj3d {
 
 struct LasResult {
   PJ::sdk::PointCloud cloud;
-  /// Added back to the cloud's x/y/z to recover file coordinates. Per axis: 0, or
-  /// the floor of the axis' midpoint when its coordinates exceed 1e4 in magnitude.
+  /// Added back to the cloud's x/y/z to recover file coordinates. Per axis: 0, or the floor of the axis' midpoint
+  /// when its coordinates exceed 1e4 in magnitude.
   std::array<double, 3> origin{0.0, 0.0, 0.0};
 };
 

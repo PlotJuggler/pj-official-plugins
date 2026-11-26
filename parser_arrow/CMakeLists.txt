@@ -4,7 +4,7 @@ find_package(nlohmann_json REQUIRED)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# --- Arrow IPC decoder and table shaper shared by the plugin and unit tests ---
+# Decoder and shaper, shared by the plugin and the unit tests.
 add_library(parser_arrow_core STATIC
   src/mosaico_objects.cpp
   src/ipc_decoder.cpp
@@ -21,7 +21,6 @@ target_link_libraries(parser_arrow_core PUBLIC
   nlohmann_json::nlohmann_json
 )
 
-# --- Plugin shared library ---
 add_library(parser_arrow_plugin SHARED src/arrow_parser.cpp)
 target_compile_features(parser_arrow_plugin PRIVATE cxx_std_20)
 target_compile_options(parser_arrow_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -36,14 +35,12 @@ pj_embed_manifest(parser_arrow_plugin
   VAR_NAME kArrowManifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
 pj_emit_plugin_manifest(parser_arrow_plugin
   FAMILY        message_parser
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Integration test (loads plugin .so via host library) ---
+# Integration test: loads the plugin .so through the host library.
 add_executable(arrow_parser_test tests/arrow_parser_test.cpp)
 target_compile_features(arrow_parser_test PRIVATE cxx_std_20)
 target_compile_options(arrow_parser_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -61,7 +58,6 @@ target_link_libraries(arrow_parser_test PRIVATE
 add_dependencies(arrow_parser_test parser_arrow_plugin)
 add_test(NAME arrow_parser_test COMMAND arrow_parser_test)
 
-# --- Unit test for the Arrow IPC decoder ---
 add_executable(ipc_decoder_test tests/ipc_decoder_test.cpp)
 target_compile_features(ipc_decoder_test PRIVATE cxx_std_20)
 target_compile_options(ipc_decoder_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -78,7 +74,6 @@ target_link_libraries(ipc_decoder_test PRIVATE
 )
 add_test(NAME ipc_decoder_test COMMAND ipc_decoder_test)
 
-# --- Unit test for decoded Arrow stream shaping ---
 add_executable(table_shaper_test tests/table_shaper_test.cpp)
 target_compile_features(table_shaper_test PRIVATE cxx_std_20)
 target_compile_options(table_shaper_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -115,7 +110,6 @@ if(APPLE)
     VISIBILITY_INLINES_HIDDEN OFF)
 endif()
 
-# Canonical Mosaico object conversion belongs to the parser, independent of Flight.
 foreach(_name image_serialize object_serialize image_real_fixture)
   add_executable(mosaico_${_name}_test tests/mosaico_${_name}_test.cpp)
   target_link_libraries(mosaico_${_name}_test PRIVATE parser_arrow_core GTest::gtest_main)

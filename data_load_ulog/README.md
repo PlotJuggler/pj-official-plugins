@@ -1,55 +1,28 @@
 # ULog Data Loader
 
-Imports [PX4 ULog](https://docs.px4.io/main/en/dev_log/ulog_file_format.html)
-flight log files. Requires PlotJuggler 4.2 or later.
+Imports [PX4 ULog](https://docs.px4.io/main/en/dev_log/ulog_file_format.html) flight logs, parsed with `ulog_cpp`.
+Requires PlotJuggler 4.2 or later.
 
 ## Features
 
-- Full ULog binary format parsing via the `ulog_cpp` library
-- Multi-instance message support (appends `.00`, `.01` suffixes)
-- Array field flattening with index suffixes
-- `char[N]` fields imported as **string** series (one series per field, not
-  N numeric series); the value stops at the first NUL or spans the whole
-  array when there is none
-- Padding field skipping (`_padding*` fields ignored). A record is only
-  rejected as corrupt when it is shorter than the format's *logged* size,
-  which excludes a trailing `_padding*` field: per the ULog spec, "if the
-  padding field is the last field, then this field may not be logged, to
-  avoid writing unnecessary data" — so a record with no bytes for that
-  trailing padding is normal, not truncated. Padding anywhere else in the
-  format (including one nested inside another message, where it is needed to
-  keep sibling field offsets correct) still counts toward the required size.
-- Parameters written to one `_parameters` topic, one field per parameter: the
-  initial values at the start of the log (the earliest of the header timestamp,
-  the first record and the first logged message), plus every
-  **in-flight parameter change** as a further point of that parameter
-- File info written to one `_info` topic, one field per key (numeric or text,
-  such as `sys_name` and `ver_hw`), at the start of the log
-- Embedded log messages published as `kLog` objects on an object topic named
-  `_log`, for the Log panel: severity `0`..`7` mapped to fatal (0-2), error,
-  warning, info (5-6), debug; a PX4 module prefix (`[commander] ...`) becomes
-  the source, and the tag of a tagged message the category
-- No load dialog. The INFO messages and the last value of each parameter are
-  also published as dataset metadata (`info`, `parameters`), which the host
-  shows in its dataset info view
-- Progress reporting with "Stop and keep" support
-- Truncated or partially corrupt files import everything decodable; recoverable
-  parse problems are surfaced as a warning
-
-## Upgrade note: parameter and info series names
-
-Up to 1.3.0 each parameter and info key was a topic with one `value` field:
-`_parameters/<name>/value`, `_info/<key>/value`. They are now fields of one
-topic each: `_parameters/<name>`, `_info/<key>`. The scalar `_log` topic
-(`level`, `message`) is gone; logged messages are in the Log panel. Saved
-layouts that plot the old names must be pointed at the new ones.
-
-## Upgrade note: `char[N]` series names
-
-Before this change a `char[N]` field produced N numeric series named
-`<topic>/<field>.00` … `<field>.NN`. It now produces one string series named
-`<topic>/<field>`. Saved layouts that reference the old per-byte names will not
-find those curves after upgrading.
+- Multi-instance messages get `.00`, `.01` suffixes; array fields are flattened with index suffixes.
+- `char[N]` fields are one **string** series (not N numeric series); the value stops at the first NUL, or spans the
+  whole array when there is none.
+- `_padding*` fields are skipped. A record is rejected as corrupt only when it is shorter than the format's *logged*
+  size, which excludes a trailing `_padding*` field: per the ULog spec that field may be omitted from the data. Padding
+  anywhere else (including inside a nested message) still counts toward the required size.
+- Parameters go to one `_parameters` topic with a field per parameter: the initial values at the start of the log (the
+  earliest of the header timestamp, the first record and the first logged message), plus every in-flight change as a
+  further point.
+- File info goes to one `_info` topic with a field per key (numeric or text, e.g. `sys_name`, `ver_hw`), at the start of
+  the log.
+- Embedded log messages become `kLog` objects on the object topic `_log`, for the Log panel: severity `0`..`7` maps to
+  fatal (0-2), error, warning, info (5-6), debug; a PX4 module prefix (`[commander] ...`) becomes the source, and the
+  tag of a tagged message the category.
+- No load dialog. The INFO messages and the last value of each parameter are also published as dataset metadata
+  (`info`, `parameters`), shown in the host's dataset info view.
+- Truncated or partially corrupt files import everything decodable; recoverable parse problems are reported as a
+  warning.
 
 ## Timestamp Handling
 
@@ -65,10 +38,8 @@ start when none has been seen yet).
 
 ## Benchmark
 
-`ulog_import_bench` loads the built plugin and imports a `.ulg` file into a host
-that discards every record, so it measures the plugin's own cost: file read,
-`ulog_cpp` parse, decode and the calls into the host. The host datastore, which
-dominates a real import, is left out.
+`ulog_import_bench` imports a `.ulg` file through the built plugin into a host that discards every record, so it
+measures the plugin's own cost (file read, `ulog_cpp` parse, decode, host calls) without the host datastore.
 
 ```bash
 ./build.sh data_load_ulog
@@ -79,17 +50,12 @@ build/data_load_ulog/Release/data_load_ulog/ulog_import_bench /path/to/flight.ul
 ulog_import_bench [--values] [--plugin <path.so>] [file.ulg] [iterations]
 ```
 
-- `file.ulg`: the log to import. The default is the committed 1 MB sample, good
-  only as a smoke run.
+- `file.ulg`: the log to import. The default is the committed 1 MB sample, good only as a smoke run.
 - `iterations`: default 3. The best run is summarised.
-- `--plugin`: run another build of the plugin (for instance one built from
-  `main`) through the same host, to compare two builds.
-- `--values`: fold every decoded value into the checksum. This costs time in
-  the host, so use it to check two builds produce the same data and leave it
-  off when timing.
+- `--plugin`: run another build of the plugin (e.g. one built from `main`) through the same host, to compare builds.
+- `--values`: fold every decoded value into the checksum. This costs time in the host: use it to check two builds
+  produce the same data, leave it off when timing.
 
-Per run it prints the time of `loadConfig`, of the first pass (`parse_s`, which
-only collects the subscriptions) and of the second pass (`decode_s`, which
-reads, decodes and writes the records).
-Then come throughput for the best run, the peak RSS, and the topic, field,
-record and value counts with a checksum that does not depend on record order.
+Per run it prints the time of `loadConfig`, of the first pass (`parse_s`, which only collects the subscriptions) and of
+the second pass (`decode_s`, which reads, decodes and writes the records), then throughput and peak RSS for the best
+run, and the topic, field, record and value counts with an order-independent checksum.

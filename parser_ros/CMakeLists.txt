@@ -4,12 +4,12 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# Prevent rosx_introspection from invoking ament_package() when ROS is installed
-# on the host but we are not building inside a colcon workspace.
+# Keeps rosx_introspection from calling ament_package() when ROS is installed on the
+# host but this is not a colcon workspace.
 set(CMAKE_DISABLE_FIND_PACKAGE_ament_cmake TRUE)
 
-# Pin rosx_introspection 3.x for IDL-support APIs used by the PJ3 ROS parser lineage.
-# 3.1.3: quoted text in IDL annotation arguments (#48), null/truncated CDR headers (#49).
+# 3.1.3: IDL-support APIs, quoted text in IDL annotation arguments (#48), null/truncated
+# CDR headers (#49).
 CPMAddPackage(
   NAME rosx_introspection
   URL https://github.com/facontidavide/rosx_introspection/archive/refs/tags/3.1.3.zip
@@ -17,24 +17,22 @@ CPMAddPackage(
   OPTIONS "ROSX_HAS_JSON OFF"
 )
 
-# Ensure rosx_introspection is statically linked into the plugin .so.
+# PIC: it is statically linked into the plugin .so.
 set_target_properties(rosx_introspection PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# rosx_introspection bundles peglib.h, which requires __cplusplus >= 201703L.
-# MSVC reports 199711L unless /Zc:__cplusplus is set, so the Windows build
-# otherwise fails with C1189 "Requires complete C++17 support".
+# rosx_introspection bundles peglib.h, which requires __cplusplus >= 201703L; MSVC
+# reports 199711L without /Zc:__cplusplus (C1189 "Requires complete C++17 support").
 target_compile_options(rosx_introspection PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/Zc:__cplusplus>)
 
-# Mark rosx_introspection include dirs as SYSTEM to suppress -Werror on
-# third-party headers (old-style casts, narrowing conversions, etc.).
+# SYSTEM include dirs, so -Werror does not fire on the third-party headers.
 get_target_property(_rosx_includes rosx_introspection INTERFACE_INCLUDE_DIRECTORIES)
 if(_rosx_includes)
   set_target_properties(rosx_introspection PROPERTIES
     INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_rosx_includes}")
 endif()
 
-# data_tamer_parser — header-only library for DataTamer schema/snapshot parsing.
-# data_tamer 2.0.0, the same CPM package parser_data_tamer declares: keep the two in step.
+# Header-only DataTamer parsing library. parser_data_tamer declares the same CPM package:
+# keep the two in step.
 CPMAddPackage(
   NAME data_tamer_2
   URL https://github.com/facontidavide/data_tamer/archive/refs/tags/2.0.0.zip
@@ -61,7 +59,6 @@ function(configure_parser_ros_target TARGET)
     pj_laser_scan pj_grid_map pj_pointcloud_color)
 endfunction()
 
-# --- Plugin shared libraries ---
 add_library(parser_ros_plugin SHARED
   ${PARSER_ROS_COMMON_SOURCES}
   ros_parser_plugin.cpp
@@ -80,19 +77,16 @@ pj_embed_ui(parser_ros_plugin
   VAR_NAME kRosParserOptionsUi
 )
 
-# v4 plugin discovery: emit sidecar .pjmanifest.json files the host can scan
-# pre-dlopen. Content derived from the embedded parser manifest + {abi_major, family}.
+# Sidecar .pjmanifest.json the host scans before dlopen.
 pj_emit_plugin_manifest(parser_ros_plugin
   FAMILY        message_parser
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# The object route returns sdk::BuiltinObject (std::any) through the in-process
-# C++ plugin pointer. On macOS, hidden RTTI in the dylib gives libc++ distinct
-# type identities for the concrete builtin structs, so std::any_cast in the
-# host/test executable fails even though the parser returned the right object.
-# Keep the ELF isolation defaults from pj_emit_plugin_manifest, but let Darwin
-# export C++ RTTI for this parser plugin.
+# The object route returns sdk::BuiltinObject (std::any) through the in-process C++ plugin
+# pointer. On macOS, hidden RTTI in the dylib gives libc++ distinct type identities for the
+# builtin structs, so std::any_cast in the host/test executable fails on a correct object.
+# Darwin therefore exports C++ RTTI for this plugin; ELF keeps the isolation defaults.
 if(APPLE)
   set_target_properties(parser_ros_plugin PROPERTIES
     CXX_VISIBILITY_PRESET default
@@ -101,13 +95,11 @@ if(APPLE)
   )
 endif()
 
-# --- Integration test (loads plugin .so via host library) ---
 add_executable(ros_parser_test tests/ros_parser_test.cpp)
 target_compile_features(ros_parser_test PRIVATE cxx_std_20)
 target_compile_options(ros_parser_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(ros_parser_test PRIVATE
   PJ_ROS_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_ros_plugin>"
-  # Committed real-recording fixtures (e.g. one CDR LaserScan message).
   PJ_ROS_PARSER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
 )
 target_link_libraries(ros_parser_test PRIVATE
@@ -119,7 +111,6 @@ target_link_libraries(ros_parser_test PRIVATE
 )
 add_test(NAME ros_parser_test COMMAND ros_parser_test)
 
-# --- BoundFieldCache unit test (header-only; SDK types + a simulated write host) ---
 add_executable(bound_field_cache_test tests/bound_field_cache_test.cpp)
 target_compile_features(bound_field_cache_test PRIVATE cxx_std_20)
 target_compile_options(bound_field_cache_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -127,7 +118,6 @@ target_include_directories(bound_field_cache_test PRIVATE ${CMAKE_CURRENT_SOURCE
 target_link_libraries(bound_field_cache_test PRIVATE plotjuggler_sdk::plugin_sdk GTest::gtest_main)
 add_test(NAME bound_field_cache_test COMMAND bound_field_cache_test)
 
-# --- Benchmark (optional, only if benchmark library is available) ---
 find_package(benchmark QUIET)
 if(benchmark_FOUND)
   add_executable(ros_parser_bench benchmarks/ros_parser_bench.cpp)
@@ -139,13 +129,12 @@ if(benchmark_FOUND)
     plotjuggler_sdk::plugin_sdk plotjuggler_sdk::plugin_host rosx_introspection benchmark::benchmark)
 endif()
 
-# --- Real-file decode benchmark (opt-in: a dev tool, never built by CI) ---
-#   mcap_decode_bench [--read-only] [--hash] file.mcap...
-# The vendored mcap reader needs lz4 + zstd. The root conanfile pins both (the
-# aggregate build has them); a per-plugin build installs them next to its own
-# deps, e.g. `conan install --requires=lz4/1.9.4 --requires=zstd/1.5.7 -g CMakeDeps
-# --output-folder=<dir>` and adds <dir> to CMAKE_PREFIX_PATH. System libraries are
-# not used: Ubuntu 22.04's lz4 is older than the reader needs.
+# Opt-in dev tool, never built by CI: mcap_decode_bench [--read-only] [--hash] file.mcap...
+# The vendored mcap reader needs lz4 + zstd. The root conanfile pins both (the aggregate
+# build has them); a per-plugin build installs them next to its own deps, e.g.
+# `conan install --requires=lz4/1.9.4 --requires=zstd/1.5.7 -g CMakeDeps --output-folder=<dir>`
+# plus <dir> in CMAKE_PREFIX_PATH. System libraries are not used: Ubuntu 22.04's lz4 is
+# older than the reader needs.
 option(PARSER_ROS_BUILD_DECODE_BENCH "Build mcap_decode_bench (needs the Conan lz4 and zstd packages)" OFF)
 if(PARSER_ROS_BUILD_DECODE_BENCH)
   find_package(lz4 QUIET)

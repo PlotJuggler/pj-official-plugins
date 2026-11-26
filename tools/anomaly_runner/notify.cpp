@@ -58,8 +58,8 @@ std::string sinkLabel(const Sink& s) {
   return "sink";
 }
 
-// ---- libcurl one-time global init (curl_global_init is not thread-safe; we are
-// single-threaded, and dispatch is the only entry point that needs it). ----
+// curl_global_init is not thread-safe; dispatch is the only entry point that needs it and we are
+// single-threaded.
 struct CurlGlobal {
   CurlGlobal() {
     curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -77,7 +77,6 @@ size_t discardWrite(char*, size_t size, size_t nmemb, void*) {
   return size * nmemb;  // swallow the endpoint's response body
 }
 
-// --- webhook: HTTP(S) POST the report JSON ---
 bool sendWebhook(const Sink& s, const std::string& body, std::string* err) {
   CURL* curl = curl_easy_init();
   if (curl == nullptr) {
@@ -112,7 +111,6 @@ bool sendWebhook(const Sink& s, const std::string& body, std::string* err) {
   return true;
 }
 
-// --- email: SMTP upload via libcurl ---
 struct UploadCtx {
   const std::string* msg;
   size_t offset;
@@ -165,7 +163,6 @@ bool sendEmail(const Sink& s, const std::string& report_json, const nlohmann::js
   return true;
 }
 
-// --- command: exec argv, pipe the report JSON to its stdin ---
 bool runCommand(const Sink& s, const std::string& body, std::string* err) {
   if (s.exec.empty()) {
     *err = "empty command";

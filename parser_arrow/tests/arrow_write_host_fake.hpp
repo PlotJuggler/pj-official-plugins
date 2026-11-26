@@ -16,24 +16,17 @@
 
 namespace pj::parser_arrow::test {
 
-/// One Arrow stream consumed by ArrowWriteHostFake.
 struct RecordedArrowStream {
-  /// Child names from the stream schema, in schema order.
   std::vector<std::string> schema_names;
-  /// Child formats from the stream schema, in schema order.
   std::vector<std::string> schema_formats;
-  /// Row count of each record batch, in stream order.
   std::vector<int64_t> batch_row_counts;
-  /// Int64 values pulled from the selected timestamp column.
   std::vector<int64_t> timestamp_values;
-  /// Timestamp column selected by the parser.
   std::string timestamp_column;
 };
 
 /// Arrow-capable parser write host used by parser DSO integration tests.
 class ArrowWriteHostFake {
  public:
-  /// Build a full-size parser write host whose context points at this fake.
   [[nodiscard]] PJ_parser_write_host_t makeHost() noexcept {
     static const PJ_parser_write_host_vtable_t vtable = [] {
       PJ_parser_write_host_vtable_t table{};
@@ -53,33 +46,27 @@ class ArrowWriteHostFake {
     fail_next_ = true;
   }
 
-  /// Return every successfully consumed Arrow stream.
   [[nodiscard]] const std::vector<RecordedArrowStream>& streams() const noexcept {
     return streams_;
   }
 
-  /// Return the number of ensure_field calls.
   [[nodiscard]] uint64_t ensureFieldCalls() const noexcept {
     return ensure_field_calls_;
   }
 
-  /// Return the number of append_record calls.
   [[nodiscard]] uint64_t appendRecordCalls() const noexcept {
     return append_record_calls_;
   }
 
-  /// Return the number of append_bound_record calls.
   [[nodiscard]] uint64_t appendBoundRecordCalls() const noexcept {
     return append_bound_record_calls_;
   }
 
-  /// Return the number of append_arrow_stream calls, including failures.
   [[nodiscard]] uint64_t appendArrowStreamCalls() const noexcept {
     return append_arrow_stream_calls_;
   }
 
  private:
-  /// Copy a C ABI string view into owned storage.
   [[nodiscard]] static std::string copyString(PJ_string_view_t value) {
     if (value.data == nullptr) {
       return {};
@@ -87,13 +74,11 @@ class ArrowWriteHostFake {
     return std::string(value.data, static_cast<std::size_t>(value.size));
   }
 
-  /// Fill a deterministic test-host error and return false.
   static bool fail(PJ_error_t* error, std::string_view message) noexcept {
     PJ::sdk::fillError(error, 1, "parser_arrow_test", message);
     return false;
   }
 
-  /// Count an ensure_field call and return a stable dummy field handle.
   static bool trampolineEnsureField(
       void* context, PJ_string_view_t, PJ_primitive_type_t, PJ_field_handle_t* output_field, PJ_error_t*) noexcept {
     auto* self = static_cast<ArrowWriteHostFake*>(context);
@@ -102,14 +87,12 @@ class ArrowWriteHostFake {
     return true;
   }
 
-  /// Count an append_record call and accept it.
   static bool trampolineAppendRecord(
       void* context, int64_t, const PJ_named_field_value_t*, uint64_t, PJ_error_t*) noexcept {
     ++static_cast<ArrowWriteHostFake*>(context)->append_record_calls_;
     return true;
   }
 
-  /// Count an append_bound_record call and accept it.
   static bool trampolineAppendBoundRecord(
       void* context, int64_t, const PJ_bound_field_value_t*, uint64_t, PJ_error_t*) noexcept {
     ++static_cast<ArrowWriteHostFake*>(context)->append_bound_record_calls_;
@@ -182,7 +165,6 @@ class ArrowWriteHostFake {
     }
   }
 
-  /// Return a stream diagnostic with a deterministic fallback.
   [[nodiscard]] static std::string_view streamError(ArrowArrayStream* stream, std::string_view fallback) noexcept {
     const char* message = ArrowArrayStreamGetLastError(stream);
     return message != nullptr && message[0] != '\0' ? std::string_view(message) : fallback;

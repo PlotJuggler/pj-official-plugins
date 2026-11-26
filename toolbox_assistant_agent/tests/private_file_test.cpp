@@ -21,9 +21,7 @@ namespace {
 using assistant_agent::removePrivateTempFile;
 using assistant_agent::writePrivateTempFile;
 
-// A bare file-name prefix works on every platform: POSIX's writePrivateTempFile
-// prepends "/tmp/" itself, and Windows writes under its own
-// temp_directory_path() regardless — see private_file.hpp's contract comment.
+// A bare file-name prefix works everywhere: each platform picks its own temp directory.
 constexpr const char* kPrefix = "pj_assistant_platform_test_";
 
 std::string readWholeFile(const std::string& path) {
@@ -63,7 +61,7 @@ TEST(PrivateFile, RemovingAnAlreadyGoneFileIsHarmless) {
   std::string path;
   ASSERT_TRUE(writePrivateTempFile(kPrefix, "x", path));
   removePrivateTempFile(path);
-  removePrivateTempFile(path);  // must not throw or crash on a second call
+  removePrivateTempFile(path);  // a second call must not throw or crash
 }
 
 TEST(PrivateFile, NameStartsWithThePrefixsFilename) {

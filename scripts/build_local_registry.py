@@ -1,31 +1,14 @@
 #!/usr/bin/env python3
-"""Build a *local* registry.json from already-compiled plugins — no GitHub release.
+"""Build a *local* registry.json from already-compiled plugins, with no GitHub release.
 
-This is the offline counterpart of ``submit_to_registry.py``. Instead of pulling
-artifacts from a GitHub release and pointing the registry at github.com URLs, it
-packages the plugin binaries sitting in a local build directory into ZIPs on disk
-and writes a registry.json whose platform URLs are ``file://`` links to those
-ZIPs. The result is directly loadable by the marketplace client's registry URL
-(which accepts the ``file`` scheme), so you can exercise install/update/uninstall
-end-to-end without cutting a release.
+Offline counterpart of ``submit_to_registry.py``: packages plugin binaries from a local build
+directory into ZIPs (same layout as a release artifact) and writes a registry.json whose platform
+URLs are ``file://`` links, loadable by the marketplace client's registry URL.
 
-It reuses the packaging and registry-entry logic from ``release_tools.py`` and
-``submit_to_registry.py`` verbatim, so a locally produced ZIP has the same layout
-(``<extension_id>/`` at the archive root) as a real release artifact.
-
-Platforms
----------
-By default only the host platform is packaged (``--host-platform``, default
-``linux-x86_64``) from ``--build-dir``. Other platforms — e.g. a Windows build
-cross-mounted from another machine — are added with repeatable ``--platform``
-flags:
-
-    --platform windows-x86_64="$WINDOWS_BUILD_DIR"
-
-A platform whose build directory is absent, or that has no matching binary, is
-skipped with a warning rather than failing the whole run; the registry entry then
-simply omits that platform. Coverage vs. the full platform set is reported at the
-end so the gaps are visible.
+By default only the host platform is packaged (``--host-platform``) from ``--build-dir``. Add other
+platforms with repeatable ``--platform NAME=BUILDDIR``. A platform whose build directory is absent
+or has no matching binary is skipped with a warning and omitted from the registry entry; uncovered
+platforms are listed at the end.
 
 Usage
 -----
@@ -48,7 +31,6 @@ import zipfile
 from argparse import Namespace
 from pathlib import Path
 
-# The scripts directory must be importable so the shared release logic resolves.
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -66,43 +48,29 @@ from submit_to_registry import (  # noqa: E402
     update_registry,
 )
 
-# The top-level schema version the marketplace client and the registry validator
-# expect. Kept in sync with pj-plugin-registry/registry.json.
+# Top-level schema version the marketplace client and registry validator expect (pj-plugin-registry/registry.json).
 REGISTRY_VERSION = "1.0"
 
-# Repository root (the pj_ported_plugins checkout), where the plugin source
-# directories with their manifest.json live.
 REPO_ROOT = SCRIPT_DIR.parent
 
 
 def platform_labels(platform: str) -> tuple[str, str]:
-    """Split a registry platform key into (os_label, arch) for the ZIP filename.
-
-    The ZIP name is cosmetic for a local registry — the entry maps the platform
-    key to a URL regardless — so a plain split is enough (e.g. ``windows-x86_64``
-    -> ``("windows", "x86_64")``).
-    """
+    """Split a platform key into (os_label, arch), e.g. ``windows-x86_64`` -> ``("windows", "x86_64")``."""
     os_label, _, arch = platform.partition("-")
     return os_label, arch
 
 
 def package_platform(source_arg: str, extension_id: str, version: str, platform: str, build_dir: Path,
                      staging_root: Path, zip_dir: Path) -> Path | None:
-    """Package one plugin for one platform into a ZIP on disk.
-
-    Returns the path to the created ZIP, or ``None`` if the platform's build
-    directory is missing or contains no matching binary (a skipped, non-fatal
-    case — that platform is simply left out of the registry entry).
-    """
+    """Package one plugin for one platform into a ZIP; ``None`` (non-fatal) if the build dir or binary is missing."""
     if not build_dir.is_dir():
         print(f"  - {platform}: build dir '{build_dir}' not found — skipping", file=sys.stderr)
         return None
 
     os_label, arch = platform_labels(platform)
 
-    # cmd_create_distribution_package writes <output_dir>/<extension_id>/. Give
-    # each (plugin, platform) its own output_dir so the later zip walk captures
-    # exactly one extension tree, matching the release artifact layout.
+    # cmd_create_distribution_package writes <output_dir>/<extension_id>/; a per-(plugin, platform)
+    # output_dir keeps the zip walk to exactly one extension tree.
     pkg_root = staging_root / platform / extension_id
     if pkg_root.exists():
         shutil.rmtree(pkg_root)
@@ -133,7 +101,7 @@ def package_platform(source_arg: str, extension_id: str, version: str, platform:
 
 
 def parse_platform_flag(value: str) -> tuple[str, Path]:
-    """Parse a ``--platform NAME=BUILDDIR`` flag value."""
+    """Parse ``NAME=BUILDDIR``."""
     name, sep, build_dir = value.partition("=")
     if not sep or not name or not build_dir:
         raise argparse.ArgumentTypeError(f"expected NAME=BUILDDIR, got '{value}'")
@@ -143,7 +111,7 @@ def parse_platform_flag(value: str) -> tuple[str, Path]:
 
 
 def discover_plugins() -> list[str]:
-    """Return every source directory name that has a manifest.json."""
+    """Source directory names that have a manifest.json."""
     return sorted(p.parent.name for p in REPO_ROOT.glob("*/manifest.json"))
 
 
@@ -194,8 +162,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Platform -> build dir. Host platform first; explicit --platform entries
-    # override it if they name the same key.
+    # An explicit --platform overrides the host platform when it names the same key.
     platforms: dict[str, Path] = {args.host_platform: args.build_dir}
     for name, build_dir in args.extra_platforms:
         platforms[name] = build_dir
@@ -294,7 +261,7 @@ def main() -> int:
 
 
 def _dump_registry(registry: dict) -> str:
-    """Serialize the registry with a trailing newline, matching the real file."""
+    """Serialize with a trailing newline, matching the real registry file."""
     import json
 
     return json.dumps(registry, indent=2) + "\n"

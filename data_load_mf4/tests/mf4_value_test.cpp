@@ -36,8 +36,7 @@ TEST(Mf4Value, StringTypesMapToString) {
 }
 
 TEST(Mf4Value, UnsupportedTypesMapToUnspecified) {
-  // Byte arrays, MIME, CANopen date/time, and complex are out of v1 scope;
-  // the reader skips these with a counted warning.
+  // Byte arrays, MIME, CANopen date/time and complex are unsupported; the reader skips them with a counted warning.
   for (const auto t :
        {ChannelDataType::ByteArray, ChannelDataType::MimeSample, ChannelDataType::MimeStream,
         ChannelDataType::CanOpenDate, ChannelDataType::CanOpenTime, ChannelDataType::ComplexLe,

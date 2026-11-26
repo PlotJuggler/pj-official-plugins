@@ -5,15 +5,6 @@ find_package(ixwebsocket REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 
-# ---------------------------------------------------------------------------
-# Plugin shared library.
-#
-# Source split mirrors the project's core-vs-Qt convention:
-#   * video_emit / whep_client / whep_connection are Qt-FREE and only use
-#     libdatachannel + the plugin SDK host views (no Qt6::Widgets).
-#   * webrtc_source.cpp holds the StreamSourceBase subclass + the (Qt) dialog
-#     plumbing and the plugin export macros.
-# ---------------------------------------------------------------------------
 add_library(webrtc_source_plugin SHARED
   webrtc_dialog.cpp
   webrtc_source.cpp
@@ -42,17 +33,13 @@ pj_embed_manifest(webrtc_source_plugin
   VAR_NAME kWebrtcManifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+# Sidecar .pjmanifest.json (manifest.json + abi_major + family) the host scans before dlopen.
 pj_emit_plugin_manifest(webrtc_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# ---------------------------------------------------------------------------
-# Tests (Qt-free). Each test links the Qt-free cores directly and the SDK
-# (for serializeVideoFrame / PayloadView). No libdatachannel network use.
-# ---------------------------------------------------------------------------
+# Tests link the cores directly plus the SDK (serializeVideoFrame / PayloadView); none uses the libdatachannel network.
 add_executable(webrtc_video_emit_test
   tests/video_emit_test.cpp
   video_emit.cpp
@@ -119,11 +106,8 @@ target_link_libraries(webrtc_dialog_test PRIVATE
 )
 add_test(NAME webrtc_dialog_test COMMAND webrtc_dialog_test)
 
-# ---------------------------------------------------------------------------
-# Headless receiver probe (demo/dev tool): a standalone WHEP client without
-# PlotJuggler. Pairs with the mediamtx rig / any WHEP endpoint to confirm the
-# WHEP -> plugin receive path end-to-end. Not part of the plugin.
-# ---------------------------------------------------------------------------
+# Dev tool, not part of the plugin: a standalone WHEP client that confirms the receive path against the mediamtx rig or
+# any WHEP endpoint.
 add_executable(webrtc_recv_probe
   demo/recv_probe.cpp
   whep_connection.cpp

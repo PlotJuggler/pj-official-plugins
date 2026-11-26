@@ -4,10 +4,8 @@
 
 #include <string>
 
-// Small value types exchanged across the FetchWorker <-> MosaicoDialog
-// boundary. They live in a dependency-light header (no Flight/Arrow includes)
-// so MosaicoDialog can keep forward-declaring FetchWorker instead of pulling in
-// the heavy mosaico_client.hpp, while still naming these types in its slots.
+// Small value types exchanged across the FetchWorker <-> MosaicoDialog boundary. They live in a dependency-light
+// header (no Flight/Arrow includes) so MosaicoDialog can keep forward-declaring FetchWorker.
 
 namespace mosaico {
 

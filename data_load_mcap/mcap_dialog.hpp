@@ -38,7 +38,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
  public:
-  // --- Accessors for McapSource ---
   const std::string& filepath() const {
     return filepath_;
   }
@@ -52,22 +51,19 @@ class McapDialog : public PJ::DialogPluginTyped {
   bool useLogTime() const {
     return use_log_time_;
   }
-  /// When true, the parser should extract the timestamp from inside the message
-  /// payload (e.g. ROS Header.stamp) via use_embedded_timestamp in parser config.
+  /// When true, the parser extracts the timestamp from inside the message payload (e.g. ROS Header.stamp) via
+  /// use_embedded_timestamp in its config.
   bool useHeaderTimestamp() const {
     return use_header_timestamp_;
   }
   const std::unordered_set<std::string>& selectedTopics() const {
     return selected_topics_;
   }
-  /// Non-empty when the file could not be analyzed (unreadable, damaged
-  /// beyond the reader's fallback scan). Surfaced in the dialog so an empty
-  /// channel table is never mistaken for a recording without topics.
+  /// Non-empty when the file could not be analyzed (unreadable, damaged beyond the reader's fallback scan). Shown in
+  /// the dialog so an empty channel table is never mistaken for a recording without topics.
   const std::string& analyzeError() const {
     return analyze_error_;
   }
-
-  // --- Dialog protocol ---
 
   std::string manifest() const override {
     return kMcapManifest;
@@ -80,21 +76,17 @@ class McapDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData wd;
 
-    // Array size row
     wd.setRange("spinBox", 0, 9999);
     wd.setValue("spinBox", static_cast<int>(max_array_size_));
     wd.setChecked("radioClamp", clamp_large_arrays_);
     wd.setChecked("radioSkip", !clamp_large_arrays_);
 
-    // Timestamp row
     wd.setChecked("radioPublishTime", !use_log_time_);
     wd.setChecked("radioLogTime", use_log_time_);
     wd.setChecked("checkBoxUseTimestamp", use_header_timestamp_);
 
-    // Filter
     wd.setText("lineEditFilter", filter_text_);
 
-    // Channel table — apply filter and build rows
     auto filtered = filteredChannels();
     std::vector<std::string> headers = {"Channel name", "Schema", "Encoding", "Msg Count"};
     wd.setTableHeaders("tableWidget", headers);
@@ -106,8 +98,7 @@ class McapDialog : public PJ::DialogPluginTyped {
 
     for (size_t i = 0; i < filtered.size(); ++i) {
       const auto& ch = *filtered[i];
-      // Msg Count carries its native uint64 so the column sorts numerically;
-      // without it the host could only compare the rendered digits.
+      // Msg Count carries its native uint64 so the column sorts numerically (the host could only compare the digits).
       rows.push_back({ch.topic, ch.schema, ch.encoding, PJ::TableItem(ch.msg_count)});
       if (selected_topics_.count(ch.topic) > 0) {
         selected_topic_names.push_back(ch.topic);
@@ -122,16 +113,14 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
     wd.setTableRows("tableWidget", rows);
     wd.setDisabledRows("tableWidget", disabled_row_indices);
-    // Restore selection by first-column text (the topic name), not row index:
-    // the host matches items by text, which is sort-agnostic, so the selection
-    // survives the table's built-in column sorting (sortingEnabled=true).
+    // Restore the selection by first-column text (the topic name), not row index: the host matches items by text, which
+    // is sort-agnostic, so the selection survives the table's built-in column sorting (sortingEnabled=true).
     wd.setSelectedItems("tableWidget", selected_topic_names);
 
     wd.setShortcut("btnSelectAll", "Ctrl+A");
     wd.setShortcut("btnDeselectAll", "Ctrl+Shift+A");
 
-    // Explain an empty table rather than leaving it looking like a recording
-    // with no topics.
+    // Explains an empty table, which would otherwise look like a recording with no topics.
     wd.setVisible("labelAnalyzeError", !analyze_error_.empty());
     if (!analyze_error_.empty()) {
       wd.setLabel("labelAnalyzeError", analyze_error_);
@@ -187,10 +176,8 @@ class McapDialog : public PJ::DialogPluginTyped {
 
   bool onSelectionChanged(std::string_view widget_name, const std::vector<std::string>& selected) override {
     if (widget_name == "tableWidget") {
-      // The table only reports the rows currently visible under the filter, so a
-      // plain clear()+re-add would drop any selection the filter is hiding.
-      // Reconcile only the visible topics: forget the visible ones that are no
-      // longer selected, and leave everything the filter hides untouched.
+      // The table only reports the rows visible under the filter, so a plain clear()+re-add would drop any selection
+      // the filter is hiding. Reconcile only the visible topics and leave everything the filter hides untouched.
       std::unordered_set<std::string> visible;
       for (const auto* ch : filteredChannels()) {
         visible.insert(ch->topic);
@@ -253,8 +240,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     max_array_size_ = cfg.value("max_array_size", 500u);
     clamp_large_arrays_ = cfg.value("clamp_large_arrays", true);
     use_log_time_ = cfg.value("use_log_time", cfg.value("use_mcap_log_time", false));
-    // Backward compatibility: old MCAP configs used "use_timestamp" for the
-    // parser-level embedded timestamp option before the controls were split.
+    // "use_timestamp" is the legacy key of this option; it keeps older saved configs loading.
     use_header_timestamp_ = cfg.value("use_header_timestamp", cfg.value("use_timestamp", false));
 
     selected_topics_.clear();
@@ -281,10 +267,9 @@ class McapDialog : public PJ::DialogPluginTyped {
       return "Code: " + std::to_string(static_cast<int>(s.code)) + "\nMessage: " + s.message;
     };
 
-    // A restored config still holds the PREVIOUS recording's selection. The
-    // pruning step near the end of this function is what normally reconciles
-    // it, so any early return has to drop it here — otherwise OK stays enabled
-    // over an empty table and starts an import that can bind nothing.
+    // A restored config still holds the PREVIOUS recording's selection. The pruning step near the end normally
+    // reconciles it, so any early return must drop it here: otherwise OK stays enabled over an empty table and starts
+    // an import that can bind nothing.
     const auto fail = [this](std::string message) {
       analyze_error_ = std::move(message);
       selected_topics_.clear();
@@ -297,8 +282,7 @@ class McapDialog : public PJ::DialogPluginTyped {
     }
     const bool multi_file = recording.paths.size() > 1;
 
-    // A split rosbag2 bag repeats its channels in every file: merge them by
-    // topic and sum the per-file message counts.
+    // A split rosbag2 bag repeats its channels in every file: merge them by topic and sum the message counts.
     std::unordered_map<std::string, size_t> channel_index_by_topic;
     size_t channels_with_dangling_schema = 0;
     for (const std::string& path : recording.paths) {
@@ -310,8 +294,8 @@ class McapDialog : public PJ::DialogPluginTyped {
         return;
       }
 
-      // A failure here means neither the summary nor the data section could
-      // be read: readChannelSummary falls back to a scan for a bad summary.
+      // A failure here means neither the summary nor the data section could be read: readChannelSummary already falls
+      // back to a scan for a bad summary.
       PJ::McapHelpers::McapSummaryInfo summary;
       status = PJ::McapHelpers::readChannelSummary(reader, summary);
       if (!status.ok()) {
@@ -320,7 +304,6 @@ class McapDialog : public PJ::DialogPluginTyped {
         return;
       }
 
-      // Build message count map from statistics
       std::unordered_map<mcap::ChannelId, uint64_t> msg_counts;
       if (summary.statistics) {
         msg_counts = summary.statistics->channelMessageCounts;
@@ -328,12 +311,10 @@ class McapDialog : public PJ::DialogPluginTyped {
 
       const auto& schemas = summary.schemas;
       for (const auto& [id, channel_ptr] : summary.channels) {
-        // schema_id 0 is the MCAP spec's "no schema" sentinel, not an error:
-        // the channel is self-describing (schemaless JSON is the common case)
-        // and binds on its message encoding alone. Schema ids are 1-based, so a
-        // NON-zero id that resolves to nothing is a dangling reference in a
-        // damaged file — no parser can ever be bound to that, and offering it in
-        // the picker would promise data that never arrives.
+        // schema_id 0 is the MCAP spec's "no schema" sentinel, not an error: the channel is self-describing (schemaless
+        // JSON is the common case) and binds on its message encoding alone. Schema ids are 1-based, so a NON-zero id
+        // that resolves to nothing is a dangling reference in a damaged file: no parser can bind to it, and offering it
+        // in the picker would promise data that never arrives.
         const bool schemaless = PJ::McapHelpers::isSchemaless(channel_ptr->schemaId);
         auto schema_it = schemas.find(channel_ptr->schemaId);
         if (!schemaless && schema_it == schemas.end()) {
@@ -373,14 +354,12 @@ class McapDialog : public PJ::DialogPluginTyped {
                            : "No channels were found in this MCAP file.";
     }
 
-    // Sort by topic name
     std::sort(all_channels_.begin(), all_channels_.end(), [](const ChannelInfo& a, const ChannelInfo& b) {
       return a.topic < b.topic;
     });
 
-    // Saved selections belong to the previously opened recording. Drop names
-    // that do not exist (or have no messages) in this one; otherwise a stale,
-    // non-empty set leaves the dialog with no selected rows and OK disabled.
+    // Saved selections belong to the previously opened recording. Drop names that do not exist (or have no messages) in
+    // this one; otherwise a stale, non-empty set leaves the dialog with no selected rows and OK disabled.
     std::unordered_set<std::string> selectable_topics;
     for (const auto& ch : all_channels_) {
       if (ch.msg_count > 0) {
@@ -397,10 +376,8 @@ class McapDialog : public PJ::DialogPluginTyped {
     reassertAlwaysIncluded();
   }
 
-  /// Channels matching kAlwaysIncludeRules are always loaded: 3D rendering
-  /// depends on them even when the user narrows their selection to a handful
-  /// of unrelated topics. Idempotent -- safe to call after any mutation of
-  /// selected_topics_.
+  /// Re-adds the always-included channels (3D rendering depends on them even when the user narrows the selection).
+  /// Idempotent: call it after any mutation of selected_topics_.
   void reassertAlwaysIncluded() {
     for (const auto& ch : all_channels_) {
       if (ch.msg_count > 0 && isAlwaysIncluded(ch)) {
@@ -425,8 +402,7 @@ class McapDialog : public PJ::DialogPluginTyped {
       return s;
     };
 
-    // Split filter by spaces — AND logic (all words must match), matched
-    // case-insensitively like the streaming pickers' filters.
+    // Space-separated words, ALL of which must match, case-insensitively like the streaming pickers' filters.
     std::vector<std::string> words;
     std::string word;
     for (char c : filter_text_) {
@@ -459,7 +435,6 @@ class McapDialog : public PJ::DialogPluginTyped {
     return result;
   }
 
-  // Config state
   std::string analyze_error_;
   std::string filepath_;
   unsigned max_array_size_ = 500;
@@ -469,7 +444,6 @@ class McapDialog : public PJ::DialogPluginTyped {
   std::unordered_set<std::string> selected_topics_;
   std::string filter_text_;
 
-  // File analysis results
   std::vector<ChannelInfo> all_channels_;
 };
 

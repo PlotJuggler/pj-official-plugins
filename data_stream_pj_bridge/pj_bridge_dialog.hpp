@@ -37,22 +37,13 @@ struct DiscoveredTopic {
   std::string schema_definition;
 };
 
-/// Smart dialog plugin for the PlotJuggler Bridge streamer.
-/// Owns the WebSocket connection for topic discovery during the dialog session.
-/// The dialog flow matches the original PlotJuggler plugin:
-///   1. User enters the server URL (a bare host[:port] gets ws:// and port 9090), clicks Connect
-///   2. Dialog connects via WebSocket, sends get_topics. A refused, timed-out or dropped
-///      connection is retried with a capped backoff until the user cancels; the status label
-///      shows connecting / retrying in N s with the last error / connected.
-///   3. Topics populate the table, user selects topics (Select All / Deselect All act on the rows
-///      the filter shows). Transform topics are locked rows (PJ::AlwaysIncluded's locked table):
-///      shown selected and tooltipped, never saved with the selection.
-///   4. User clicks OK
-///   5. saveConfig() returns the full config for the source plugin
+/// Owns the WebSocket connection used for topic discovery while the dialog is open. A bare host[:port] URL gets ws://
+/// and port 9090. A refused, timed-out or dropped connection is retried with a capped backoff until the user cancels.
+/// Select All / Deselect All act on the rows the filter shows. Transform topics are locked rows
+/// (PJ::AlwaysIncluded's locked table): shown selected, never saved with the selection.
 ///
-/// The array-size / clamp-skip / use-timestamp parser options are not exposed
-/// in the dialog (matching the PJ3 websocket client window); they keep their
-/// defaults and are still emitted in saveConfig() for the source plugin.
+/// The array-size / clamp-skip / use-timestamp parser options are not exposed (matching the PJ3 websocket client
+/// window); they keep their defaults and are still emitted by saveConfig().
 class PjBridgeDialog : public PJ::DialogPluginTyped {
   using PJ::DialogPluginTyped::onValueChanged;
 
@@ -74,8 +65,8 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     disconnect();
   }
 
-  /// Transfer the connection to the caller (source plugin); its socket is null when the dialog
-  /// never connected. Events not yet drained by onTick() stay queued for the new owner.
+  /// Its socket is null when the dialog never connected. Events not yet drained by onTick() stay queued for the new
+  /// owner.
   PJ::WebSocket::Handoff takeConnection() {
     return link_.take();
   }
@@ -88,14 +79,10 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     return endpoint_;
   }
 
-  /// Full catalog of topics discovered during this dialog's connection session
-  /// (thread-safe snapshot), regardless of what the user selected. When the
-  /// source adopts an already-open socket (see takeConnection()), this seeds the
-  /// source's advertise catalog immediately so the host can list every topic on
-  /// demand — not just the user's (now optional) filter selection — while the
-  /// source's own get_topics round-trip is still in flight. `TopicInfo::encoding`
-  /// carries the schema encoding and `schema` the schema text (both may be empty
-  /// until the source re-fetches with include_schemas).
+  /// Thread-safe snapshot of every topic discovered, regardless of the selection. When the source adopts the open
+  /// socket (takeConnection()), this seeds its advertise catalog so the host can list every topic while the source's
+  /// own get_topics is in flight. `encoding` and `schema` may be empty until the source re-fetches with
+  /// include_schemas.
   std::vector<PJ::BridgeProtocol::TopicInfo> allDiscoveredTopics() const {
     std::lock_guard<std::mutex> lock(topics_mutex_);
     std::vector<PJ::BridgeProtocol::TopicInfo> out;
@@ -105,8 +92,6 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     }
     return out;
   }
-
-  // --- Dialog protocol ---
 
   std::string manifest() const override {
     return kPjBridgeManifest;
@@ -126,11 +111,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     wd.setTableHeaders("topicsList", {"Topic", "Type"});
     PJ::AlwaysIncluded::tableToWidgets(wd, "topicsList", visibleRows(), selected_topic_names_);
 
-    // OK button: connected-only. The topic selection below is no longer a
-    // subscribe requirement — see the "topics" config key's dual role in
-    // PjBridgeSource: on a host that supports demand subscriptions it becomes an
-    // OPTIONAL advertise filter (empty = advertise everything); on a legacy host
-    // it keeps its original meaning, the subscribe list.
+    // Connected-only: the selection is not required (see the "topics" key's dual role in PjBridgeSource).
     wd.setOkEnabled(link_.connected());
 
     return wd.toJson();
@@ -175,7 +156,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   bool onTick() override {
     const bool changed = link_.tick();
 
-    // Periodic topic refresh (every ~1s = 20 ticks at 50ms)
+    // ~1 s: 20 ticks at 50 ms
     if (link_.connected() && ++tick_count_ >= 20) {
       tick_count_ = 0;
       requestTopics();
@@ -185,7 +166,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
   }
 
   void onAccepted(std::string_view /*json*/) override {
-    // Do NOT disconnect — the source's onStart() adopts the open connection.
+    // Do not disconnect: the source's onStart() adopts the open connection.
   }
   void onRejected() override {
     disconnect();
@@ -197,7 +178,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     PJ::sdk::arrayLimitToJson(cfg, static_cast<uint32_t>(max_array_size_), clamp_large_arrays_);
     cfg["use_timestamp"] = use_timestamp_;
 
-    // Use the snapshot — topics_ may already be cleared by disconnect()
+    // Snapshot: topics_ may already be cleared by disconnect().
     nlohmann::json topics_json = nlohmann::json::array();
     for (const auto& t : selected_topics_snapshot_) {
       topics_json.push_back({
@@ -237,7 +218,6 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     clamp_large_arrays_ = array_limit.clamp();
     use_timestamp_ = cfg.value("use_timestamp", false);
 
-    // Restore previously selected topic names and snapshot for re-selection after connect
     if (cfg.contains("topics") && cfg["topics"].is_array()) {
       selected_topic_names_.clear();
       selected_topics_snapshot_.clear();
@@ -309,8 +289,7 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     std::erase_if(selected_topic_names_, [&](const std::string& name) { return !listed.contains(name); });
   }
 
-  /// Snapshot the full schema info for selected topics so saveConfig()
-  /// doesn't depend on topics_ (which gets cleared on disconnect).
+  /// saveConfig() reads this copy because topics_ is cleared on disconnect.
   void snapshotSelectedTopics() {
     std::lock_guard<std::mutex> lock(topics_mutex_);
     selected_topics_snapshot_.clear();
@@ -334,25 +313,21 @@ class PjBridgeDialog : public PJ::DialogPluginTyped {
     return rows;
   }
 
-  /// A transform: a locked row.
   static bool isLocked(const DiscoveredTopic& t) {
     return PJ::AlwaysIncluded::matchesRos2(t.schema_name);
   }
 
-  /// Case-insensitive substring match on topic name and type.
-  /// Selected and locked topics always match (so they remain visible even when filtered).
+  /// Case-insensitive substring match on name and type; selected and locked topics always match.
   bool matchesFilter(const DiscoveredTopic& t) const {
     if (filter_.empty() || isLocked(t) || selected_topic_names_.contains(t.name)) {
       return true;
     }
-    // Case-insensitive search
     const std::string lower_filter = PJ::sdk::lowerAscii(filter_);
     const std::string lower_name = PJ::sdk::lowerAscii(t.name);
     const std::string lower_type = PJ::sdk::lowerAscii(t.type);
     return lower_name.find(lower_filter) != std::string::npos || lower_type.find(lower_filter) != std::string::npos;
   }
 
-  // --- State ---
   static constexpr uint16_t kDefaultPort = 9090;  ///< the bridge server's own default
   PJ::WebSocket::Endpoint endpoint_{"127.0.0.1", kDefaultPort};
   int max_array_size_ = 500;

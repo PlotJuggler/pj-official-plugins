@@ -9,13 +9,10 @@
 
 namespace mosaico {
 
-// Stable sort permutation for one table column. `keys[i]` is the comparable
-// value for row i (std::string for Name columns, std::int64_t for Date/Size).
-// Returns row indices in ascending or descending order. Stable: equal keys
-// keep their original relative order (PJ3 sortable-column parity, where a
-// secondary sort isn't applied). Numeric keys sort numerically, never
-// lexicographically — the reason the plugin owns sorting instead of relying
-// on table widgets to compare display strings.
+// Stable sort permutation for one table column. `keys[i]` is the comparable value for row i (std::string for
+// Name columns, std::int64_t for Date/Size). Returns row indices in ascending or descending order; equal keys keep
+// their original order. Numeric keys sort numerically, never lexicographically: this is why the plugin owns
+// sorting instead of letting table widgets compare display strings.
 template <typename Key>
 std::vector<std::size_t> sortedPermutation(const std::vector<Key>& keys, bool ascending) {
   std::vector<std::size_t> perm(keys.size());

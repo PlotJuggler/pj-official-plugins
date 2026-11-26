@@ -1,7 +1,5 @@
 // Copyright 2026 PlotJuggler contributors
 // SPDX-License-Identifier: MIT
-//
-// Unit tests for the shared separate-channel colour collapse.
 
 #include <gtest/gtest.h>
 
@@ -106,8 +104,6 @@ TEST(PointCloudColor, LeavesPlainCloudUntouched) {
   EXPECT_FALSE(collapseSeparateColorChannels(cloud));
   EXPECT_EQ(cloud.fields.size(), 4u);
 }
-
-// --- PCL packed-colour repack (the ROS case) ------------------------------------
 
 TEST(PointCloudColor, RepacksPclRgbFloatIntoCanonicalOrder) {
   // PCL "rgb" float: bits 0x00RRGGBB -> little-endian memory [B, G, R, 0].

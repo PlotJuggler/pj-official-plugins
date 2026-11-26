@@ -1,10 +1,6 @@
-/**
- * @file udp_endpoint_test.cpp
- * @brief SharedUdpEndpoint::acquire failure paths. A failed open (invalid address, port held by another socket)
- *  must come back as an error, not freeze the calling thread, and must leave the registry usable.
- *
- * The plugin translation unit is included so its anonymous-namespace classes are reachable.
- */
+// SharedUdpEndpoint::acquire failure paths: a failed open (invalid address, port held by another socket) must
+// come back as an error, not freeze the calling thread, and must leave the registry usable.
+// The plugin translation unit is included so its anonymous-namespace classes are reachable.
 
 #include <gtest/gtest.h>
 

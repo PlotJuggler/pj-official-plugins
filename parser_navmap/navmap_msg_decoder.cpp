@@ -172,7 +172,7 @@ void readNumber(CdrReader& reader, Value& value) {
   }
 }
 
-// Dispatches one primitive type name to F<T>; returns false for "string".
+// Calls visit with a value of the primitive's C++ type; false for anything else.
 template <typename Visitor>
 bool visitPrimitive(std::string_view type, Visitor&& visit) {
   if (type == "bool" || type == "byte" || type == "uint8" || type == "char") {
@@ -345,7 +345,6 @@ PJ::Expected<MsgSchema> compileMsgBundle(std::string_view root_type, std::string
   MsgSchema schema;
   schema.root = normalizeRosTypeName(root_type);
 
-  // Split into (type, body) sections.
   std::string current_type = schema.root;
   std::string current_body;
   std::vector<std::pair<std::string, std::string>> sections;
@@ -388,7 +387,6 @@ PJ::Expected<MsgSchema> compileMsgBundle(std::string_view root_type, std::string
   }
   addImplicitTypes(schema);
 
-  // Every referenced message type must be defined.
   for (const auto& [type, fields] : schema.types) {
     for (const MsgField& field : fields) {
       if (!primitiveTypes().contains(field.type) && !schema.types.contains(field.type)) {

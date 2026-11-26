@@ -128,8 +128,6 @@ bool onClose(int, const EmscriptenWebSocketCloseEvent* event, void* user_data) {
   return true;
 }
 
-// --- Main runtime thread tasks ---
-
 void createSocket(Task& task) {
   auto& state = *task.state;
   if (state.stop_requested) {

@@ -14,9 +14,8 @@
  *
  * The list names every family entry point; a plugin only defines the ones for
  * the families it implements (naming an absent symbol is a no-op).
- * pj_plugin_descriptor_* is the (future) SDK descriptor-section blob whose
- * exported symbol doubles as the section's gc-root; keep it exported when
- * plugins are rebuilt against an SDK that emits it.
+ * pj_plugin_descriptor_* is the SDK descriptor-section blob; its exported symbol
+ * doubles as the section's gc-root.
  */
 {
   global:

@@ -98,9 +98,8 @@ TEST(ParseClaudeLine, ResultErrorSubtypeMarksError) {
   EXPECT_TRUE(evs[0].is_error);
 }
 
-// The usage-window status is a family, not a flag. Treating every value that is
-// not exactly "allowed" as a block once stopped a batch run that had plenty of
-// window left, on nothing worse than a warning.
+// The usage-window status is a family, not a flag: treating every value other than exactly
+// "allowed" as a block would stop a batch run on a mere warning.
 TEST(ParseClaudeLine, RateLimitAllowedFamilyIsNotAnError) {
   for (const char* status : {"allowed", "allowed_warning"}) {
     const std::string line =
@@ -121,8 +120,7 @@ TEST(ParseClaudeLine, RateLimitRejectedIsAnError) {
 }
 
 TEST(ParseClaudeLine, ResultCarriesTheTurnCountAndToleratesANullResult) {
-  // Verbatim shape of what the CLI emits for `--resume <unknown id>`: an
-  // error, zero turns, and `"result": null` rather than a string.
+  // What the CLI emits for `--resume <unknown id>`: an error, zero turns, `"result": null`.
   auto evs = parseClaudeLine(
       R"({"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"result":null,"session_id":"gone"})");
   ASSERT_EQ(evs.size(), 1u);
@@ -139,13 +137,9 @@ TEST(ParseClaudeLine, ResultCarriesTheTurnCountAndToleratesANullResult) {
   EXPECT_EQ(silent[0].num_turns, -1) << "absent means unknown, not zero";
 }
 
-// Verbatim (trimmed) shape of what the CLI emits when it never reaches the
-// API at all -- an unrecognized --model value, verified live. Neither
-// `is_error` nor `subtype` is set on the real line itself; `terminal_reason`
-// paired with an all-zero (invalid) usage block is the only signal, so the
-// parser folds that pairing into `is_error` (the same "business rule in the
-// parser" precedent as the rate-limit event) -- ClaudeBackend then only has
-// to react to is_error + terminal_reason, not re-derive the condition.
+// What the CLI emits when it never reaches the API (an unrecognized --model). Neither `is_error`
+// nor `subtype` is set; `terminal_reason` with an all-zero (invalid) usage block is the only
+// signal, so the parser folds that pairing into `is_error`.
 TEST(ParseClaudeLine, ResultCarriesTerminalReasonAndAllZeroUsageIsInvalidMetrics) {
   auto evs = parseClaudeLine(
       R"({"duration_api_ms":0,"stop_reason":"stop_sequence",)"

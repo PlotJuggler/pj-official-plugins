@@ -13,7 +13,6 @@
 
 namespace PJ::query {
 
-// What kind of token the cursor is positioned to receive.
 enum class Expect {
   kKey,         // a metadata key name
   kOperator,    // ==, ~=, <, >, <=, >=
@@ -22,38 +21,33 @@ enum class Expect {
   kAny,         // beginning of expression or after open paren
 };
 
-// Result from the completion engine.
 struct Completions {
   Expect expect = Expect::kAny;
   std::string current_key;               // the key in context (for Value completions)
   std::vector<std::string> suggestions;  // valid items to insert
 };
 
-// Operators the user can choose between.
 inline const std::vector<std::string>& operators() {
   static const std::vector<std::string> ops = {"==", "~=", "<", ">", "<=", ">="};
   return ops;
 }
 
-// Connectives.
 inline const std::vector<std::string>& connectives() {
   static const std::vector<std::string> conns = {"and", "or", "not"};
   return conns;
 }
 
-// Compute completions from the tokens preceding the cursor (the caller slices
-// the Lexer's token stream — this never re-scans bytes).
+// Computes completions from the tokens preceding the cursor (the caller slices the Lexer's token
+// stream; this never re-scans bytes).
 //
-// `last_token_complete` distinguishes the two callers: complete(text, cursor)
-// truncates the text at the cursor, so a trailing word may be a partial key
-// still being typed (filter schema keys by prefix); analyze() passes the FULL
-// token the cursor sits on, so a trailing key means "an operator goes next"
-// even when the key is not in the schema.
+// `last_token_complete` distinguishes the two callers: complete(text, cursor) truncates the text
+// at the cursor, so a trailing word may be a partial key still being typed (filter schema keys by
+// prefix); analyze() passes the FULL token the cursor sits on, so a trailing key means "an
+// operator goes next" even when the key is not in the schema.
 [[nodiscard]] inline Completions complete(
     const std::vector<Token>& tokens, const Schema& schema, bool last_token_complete = false) {
   Completions result;
 
-  // No tokens yet — expect a key (or not, or open paren).
   if (tokens.empty()) {
     result.expect = Expect::kAny;
     for (const auto& [key, vals] : schema) {
@@ -64,7 +58,6 @@ inline const std::vector<std::string>& connectives() {
 
   const auto& last = tokens.back();
 
-  // After a connective or open paren — expect a key.
   if (last.type == TokenType::kAnd || last.type == TokenType::kOr || last.type == TokenType::kNot ||
       last.type == TokenType::kOpenParen) {
     result.expect = Expect::kKey;
@@ -74,7 +67,6 @@ inline const std::vector<std::string>& connectives() {
     return result;
   }
 
-  // After an operator — expect a value. The key is the token before it.
   if (last.type == TokenType::kOperator) {
     result.expect = Expect::kValue;
     if (tokens.size() >= 2) {
@@ -128,9 +120,7 @@ inline const std::vector<std::string>& connectives() {
   return result;
 }
 
-// Compute completions for the given query text at the given cursor position.
-// The schema provides known keys and their values; the cursor is the character
-// offset where the user's cursor sits (end of text for appending).
+// The cursor is a character offset into `text` (the end of the text for appending).
 [[nodiscard]] inline Completions complete(std::string_view text, std::size_t cursor, const Schema& schema) {
   const auto prefix = text.substr(0, std::min(cursor, text.size()));
   return complete(Lexer(prefix).tokenize(), schema);

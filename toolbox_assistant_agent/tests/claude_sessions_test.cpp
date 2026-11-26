@@ -1,14 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Fixtures under tests/fixtures/sessions/ are cut from real Claude Code
-// session files this plugin's own harness store produced (paths and the
-// user's own name anonymized), plus a few hand-built ones for shapes that do
-// not occur naturally (a corrupt line, an unknown future record type, the
-// resume note) or that would otherwise pull in a much larger real payload
-// just to exercise one field. Every test runs against a throwaway copy (see
-// ClaudeSessionsTest::SetUp) — nothing here ever touches the checked-in
-// files, so DeleteRemovesFileAndIgnoresAbsence is safe to run repeatedly.
+// Fixtures under tests/fixtures/sessions/ are cut from real Claude Code session files (paths and
+// names anonymized) plus hand-built ones for shapes that do not occur naturally (a corrupt line, an
+// unknown record type, the resume note). Every test runs against a throwaway copy (see
+// ClaudeSessionsTest::SetUp), so DeleteRemovesFileAndIgnoresAbsence is repeatable.
 #include "claude_sessions.hpp"
 
 #include <gtest/gtest.h>
@@ -45,9 +41,7 @@ using assistant_agent::testing::findById;
 using toolbox_testing::makeTempDir;
 using toolbox_testing::ScopedEnv;
 
-// Copies every fixture into a fresh temp directory per test, so
-// listConversations/loadTranscript/deleteConversation run against a
-// throwaway store rather than the checked-in fixtures.
+// Copies every fixture into a fresh temp directory per test.
 class ClaudeSessionsTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -70,16 +64,11 @@ class ClaudeSessionsTest : public ::testing::Test {
   std::filesystem::path dir_;
 };
 
-// --- (f) the cwd slug and the directory it resolves to --------------------
-
 TEST(ClaudeCwdSlug, ReplacesEveryNonAlphanumeric) {
-  // Verified against a real store: the plugin's fixed cwd
-  // "/home/user/.local/state/pj-assistant-cli" maps to exactly this
-  // directory name under ~/.claude/projects/ (still holds under the new
-  // rule: only '/', '.' and '-' appear, and '-' maps to itself).
+  // The plugin's fixed cwd maps to exactly this directory name under ~/.claude/projects/.
   EXPECT_EQ(claudeCwdSlug("/home/user/.local/state/pj-assistant-cli"), "-home-user--local-state-pj-assistant-cli");
 
-  // '_' -- missed by the old '/'+'.' -only rule -- now turns into '-' too.
+  // '_' turns into '-' too.
   EXPECT_EQ(claudeCwdSlug("/home/alvvm/Work/plotjuggler_sdk"), "-home-alvvm-Work-plotjuggler-sdk");
 
   // A Windows path: ':' and '\' both turn into '-'.
@@ -87,8 +76,7 @@ TEST(ClaudeCwdSlug, ReplacesEveryNonAlphanumeric) {
       claudeCwdSlug(R"(C:\Users\Ana\AppData\Local\plotjuggler\pj-assistant-cli)"),
       "C--Users-Ana-AppData-Local-plotjuggler-pj-assistant-cli");
 
-  // A multi-byte UTF-8 code point collapses to exactly ONE '-', not one per
-  // byte: 'é' (2 bytes) and '😀' (4 bytes) both yield a single '-'.
+  // A multi-byte UTF-8 code point collapses to exactly ONE '-': 'é' (2 bytes) and '😀' (4 bytes).
   EXPECT_EQ(claudeCwdSlug("caf\xC3\xA9"), "caf-");
   EXPECT_EQ(claudeCwdSlug("\xF0\x9F\x98\x80robot"), "-robot");
 }
@@ -108,8 +96,7 @@ TEST(ClaudeSessionsDir, FallsBackToHomeDotClaude) {
       std::filesystem::path("/home/testuser/.claude/projects/-home-testuser--local-state-pj-assistant-cli"));
 }
 
-// Windows only: HOME is not always set there, so the drawer's own store
-// resolution falls back to USERPROFILE the same way userHomeDir() does.
+// Windows only: HOME is not always set there, so resolution falls back to USERPROFILE.
 #if defined(_WIN32)
 TEST(ClaudeSessionsDir, FallsBackToUserProfileDotClaudeWhenHomeIsUnset) {
   ScopedEnv cfg("CLAUDE_CONFIG_DIR", nullptr);
@@ -131,8 +118,6 @@ TEST(ClaudeSessionsDir, EmptyWhenNeitherVariableResolves) {
 TEST(ClaudeSessionsDir, MissingDirectoryListsAsEmptyNotAnError) {
   EXPECT_TRUE(listConversations("/does/not/exist/at/all").empty());
 }
-
-// --- (c) stripCatalogPrefix, as a pure function ----------------------------
 
 TEST(StripCatalogPrefix, LeavesOrdinaryTextAlone) {
   EXPECT_EQ(stripCatalogPrefix("derivative of /a/b"), "derivative of /a/b");
@@ -174,10 +159,9 @@ TEST(StripCatalogPrefix, ShortCatalogWithResumedNote) {
 }
 
 TEST(StripCatalogPrefix, NotesAreRecognizedByTheirOpeningWordsAlone) {
-  // A listing that ends with its own newline puts a blank line BETWEEN the
-  // catalog and the note, so the note has to be recognized on its own — and
-  // by its opening words only, so a session written with an earlier wording
-  // of the sentence still strips cleanly.
+  // A listing ending in its own newline puts a blank line BETWEEN catalog and note, so the note
+  // must be recognized on its own, by its opening words only, so a session written with an earlier
+  // wording still strips.
   const std::string text =
       "Loaded data (1 topic(s)):\n"
       "  /imu: x (double)\n"
@@ -189,8 +173,8 @@ TEST(StripCatalogPrefix, NotesAreRecognizedByTheirOpeningWordsAlone) {
   EXPECT_EQ(stripCatalogPrefix(text), "what tabs?");
 }
 
-// The payload shapes composePayload (harness_memory.hpp) writes once a
-// features block rides ahead of the catalog.
+// The payload shapes composePayload (harness_memory.hpp) writes with a features block ahead of the
+// catalog.
 TEST(StripCatalogPrefix, FeaturesAndCatalogBlocks) {
   const std::string features =
       "PlotJuggler features (PlotJuggler 4.1.0, from the host):\n"
@@ -223,14 +207,13 @@ TEST(StripCatalogPrefix, MalformedFeaturesBlockWithNoBlankLineIsLeftAlone) {
       "PlotJuggler features (from the host):\n- and nothing after it");
 }
 
-// A features block is recognized by its whole header line, not by its first
-// words: user text that happens to open the same way, on a later turn that
-// carries no listing, is the user's own message.
+// A features block is recognized by its whole header line: user text that merely opens the same way
+// is the user's own message.
 TEST(StripCatalogPrefix, UserTextOpeningLikeAFeaturesBlockIsKept) {
   const std::string mine = "PlotJuggler features I need:\n\nShow images.";
   EXPECT_EQ(stripCatalogPrefix(mine), mine);
   EXPECT_EQ(stripCatalogPrefix("PlotJuggler features (from the host):\n- one\n\n" + mine), mine);
-  // Every header the producers write, whatever the version.
+  // Every producer header, whatever the version.
   for (const std::string& header :
        {std::string(assistant_agent::kFallbackFeaturesHeader), assistant_agent::featuresHostHeader(""),
         assistant_agent::featuresHostHeader("4.2.0-rc1"),
@@ -240,14 +223,12 @@ TEST(StripCatalogPrefix, UserTextOpeningLikeAFeaturesBlockIsKept) {
 }
 
 TEST(StripCatalogPrefix, MalformedCatalogWithNoBlankLineIsLeftAlone) {
-  // Starts with the marker but never resolves to a blank line -- a truncated
-  // record, say. Guessing here would risk eating real user text.
+  // Starts with the marker but never reaches a blank line (a truncated record); guessing could eat
+  // real user text.
   EXPECT_EQ(
       stripCatalogPrefix("Loaded data (nothing else here, no blank line)"),
       "Loaded data (nothing else here, no blank line)");
 }
-
-// --- formatShortDate --------------------------------------------------------
 
 TEST(ParseIso8601Utc, EpochSecondsAcrossLeapYearsAndCenturies) {
   EXPECT_EQ(parseIso8601Utc("1970-01-01T00:00:00.000Z"), 0);
@@ -256,9 +237,7 @@ TEST(ParseIso8601Utc, EpochSecondsAcrossLeapYearsAndCenturies) {
   EXPECT_FALSE(parseIso8601Utc("").has_value());
   EXPECT_FALSE(parseIso8601Utc("not a timestamp").has_value());
   EXPECT_FALSE(parseIso8601Utc("2026-13-01T00:00:00Z").has_value());
-  // What the SDK parser gives that a fixed-offset read of the first 19
-  // characters could not: the calendar is actually checked, and a numeric zone
-  // is applied rather than assumed to be UTC.
+  // The calendar is actually checked (a fixed-offset read of 19 characters would not).
   EXPECT_FALSE(parseIso8601Utc("2026-02-31T00:00:00Z").has_value());
   EXPECT_EQ(parseIso8601Utc("2026-09-01T17:17:30.326+02:00"), 1788275850);
 }
@@ -295,12 +274,9 @@ TEST_F(ClaudeSessionsTest, FallbackTitleNeverSplitsAMultiByteCharacter) {
   EXPECT_EQ(accent->title, std::string(47, 'a'));
 }
 
-// --- (a)/(b)/(e) listConversations: order, filter, title chain, corruption -
-
 TEST_F(ClaudeSessionsTest, ListsNewestFirstAndExcludesSessionsWithNoAssistantReply) {
   const std::vector<ConversationSummary> convs = listConversations(dir_);
-  // session_delta_no_assistant has zero `assistant` records (a cancelled
-  // turn, or a smoke test run against this cwd) and must not appear.
+  // session_delta_no_assistant has zero `assistant` records and must not appear.
   ASSERT_EQ(convs.size(), 5u);
   EXPECT_EQ(convs[0].id, "session_gamma");
   EXPECT_EQ(convs[1].id, "session_epsilon_corrupt");
@@ -313,8 +289,7 @@ TEST_F(ClaudeSessionsTest, ListsNewestFirstAndExcludesSessionsWithNoAssistantRep
 TEST_F(ClaudeSessionsTest, TitleResolutionChain) {
   const std::vector<ConversationSummary> convs = listConversations(dir_);
 
-  // ai-title wins when present, even alongside a corrupt line and an unknown
-  // record type elsewhere in the same file.
+  // ai-title wins, even alongside a corrupt line and an unknown record type in the same file.
   ASSERT_NE(findById(convs, "session_alpha"), nullptr);
   EXPECT_EQ(findById(convs, "session_alpha")->title, "PlotJuggler demo");
   ASSERT_NE(findById(convs, "session_beta"), nullptr);
@@ -322,18 +297,14 @@ TEST_F(ClaudeSessionsTest, TitleResolutionChain) {
   ASSERT_NE(findById(convs, "session_epsilon_corrupt"), nullptr);
   EXPECT_EQ(findById(convs, "session_epsilon_corrupt")->title, "Resumed tabs question");
 
-  // No ai-title: falls back to the first prompt, catalog stripped, cut to 48
-  // chars.
+  // No ai-title: the first prompt, catalog stripped, cut to 48 chars.
   ASSERT_NE(findById(convs, "session_gamma"), nullptr);
   EXPECT_EQ(findById(convs, "session_gamma")->title, "Can you plot the vehicle speed against the steer");
 
-  // Neither an ai-title nor any user text block (its one user record carries
-  // only a tool_result): Untitled.
+  // Neither an ai-title nor a user text block (its one user record is only a tool_result).
   ASSERT_NE(findById(convs, "session_zeta_untitled"), nullptr);
   EXPECT_EQ(findById(convs, "session_zeta_untitled")->title, "Untitled");
 }
-
-// --- (d) loadTranscript: row order, roles, tool formatting, tool_result ----
 
 TEST_F(ClaudeSessionsTest, TranscriptOrdersUserAssistantAndToolRowsIgnoringToolResult) {
   const std::vector<ChatMessage> rows = loadTranscript(dir_, "session_gamma");
@@ -342,13 +313,11 @@ TEST_F(ClaudeSessionsTest, TranscriptOrdersUserAssistantAndToolRowsIgnoringToolR
   EXPECT_EQ(rows[0].role, ChatMessage::Role::User);
   EXPECT_EQ(rows[0].text, "Can you plot the vehicle speed against the steering angle?");
 
-  // tool_use -> a Tool row, "mcp__pj__" stripped -- the same text the live
-  // BackendEvent::ToolActivity path renders (claude_backend.cpp), so a
-  // replayed transcript reads exactly like it did live.
+  // tool_use -> a Tool row with "mcp__pj__" stripped, the text the live ToolActivity path renders.
   EXPECT_EQ(rows[1].role, ChatMessage::Role::Tool);
   EXPECT_EQ(rows[1].text, "list_topics");
 
-  // The tool_result that answered it carries no row of its own.
+  // The answering tool_result has no row.
   EXPECT_EQ(rows[2].role, ChatMessage::Role::Assistant);
   EXPECT_EQ(rows[2].text, "I opened a new tab plotting vehicle_speed against vehicle_steering.");
 }
@@ -383,15 +352,12 @@ TEST_F(ClaudeSessionsTest, TranscriptForMissingIdIsEmpty) {
   EXPECT_TRUE(loadTranscript(dir_, "no-such-session").empty());
 }
 
-// --- (g) delete --------------------------------------------------------
-
 TEST_F(ClaudeSessionsTest, DeleteRemovesFileAndIgnoresAbsence) {
   ASSERT_TRUE(std::filesystem::exists(dir_ / "session_alpha.jsonl"));
   EXPECT_TRUE(deleteConversation(dir_, "session_alpha"));
   EXPECT_FALSE(std::filesystem::exists(dir_ / "session_alpha.jsonl"));
 
-  // Deleting an already-gone conversation is a no-op success, not a failure
-  // the caller has to special-case (a double click, a race with retention).
+  // An already-gone conversation is a no-op success (double click, race with retention).
   EXPECT_TRUE(deleteConversation(dir_, "session_alpha"));
 
   EXPECT_EQ(findById(listConversations(dir_), "session_alpha"), nullptr);

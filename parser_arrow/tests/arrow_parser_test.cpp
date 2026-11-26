@@ -26,7 +26,6 @@
 
 namespace {
 
-/// Host-side fixture that loads and binds the Arrow parser plugin DSO.
 struct ArrowParserFixture {
   PJ::MessageParserLibrary library;
   PJ::MessageParserHandle handle{static_cast<const PJ_message_parser_vtable_t*>(nullptr)};
@@ -35,7 +34,6 @@ struct ArrowParserFixture {
   PJ::sdk::testing::ParserWriteRecorder legacy_write_host;
   PJ::sdk::testing::ParserRuntimeRecorder runtime_host;
 
-  /// Load the plugin, create a parser instance, and bind the selected host services.
   void setUp(bool arrow_capable = true, bool bind_runtime = false) {
     auto loaded_library = PJ::MessageParserLibrary::load(PJ_ARROW_PARSER_PLUGIN_PATH);
     ASSERT_TRUE(loaded_library) << loaded_library.error();
@@ -54,14 +52,12 @@ struct ArrowParserFixture {
   }
 };
 
-/// Read and parse one checked-in Arrow IPC fixture.
 [[nodiscard]] PJ::Status parseFixture(
     ArrowParserFixture& fixture, std::string_view filename, PJ::Timestamp timestamp_ns = 0) {
   const auto payload = pj::parser_arrow::test::readFile(pj::parser_arrow::test::fixturePath(filename));
   return fixture.handle.parse(timestamp_ns, PJ::Span<const uint8_t>(payload.data(), payload.size()));
 }
 
-/// Return the recorded format for one schema child name.
 [[nodiscard]] std::string_view formatFor(
     const pj::parser_arrow::test::RecordedArrowStream& stream, std::string_view name) {
   const auto found = std::find(stream.schema_names.begin(), stream.schema_names.end(), name);
@@ -72,7 +68,6 @@ struct ArrowParserFixture {
   return stream.schema_formats[index];
 }
 
-/// Assert that the parser used only the Arrow bulk path.
 void expectOnlyArrowWrites(const pj::parser_arrow::test::ArrowWriteHostFake& write_host, uint64_t expected_calls) {
   EXPECT_EQ(write_host.ensureFieldCalls(), 0);
   EXPECT_EQ(write_host.appendRecordCalls(), 0);
@@ -80,14 +75,12 @@ void expectOnlyArrowWrites(const pj::parser_arrow::test::ArrowWriteHostFake& wri
   EXPECT_EQ(write_host.appendArrowStreamCalls(), expected_calls);
 }
 
-/// Verify that plugin discovery advertises the Arrow IPC wire encoding.
 TEST(ArrowParserTest, ManifestContainsArrowIpcEncoding) {
   ArrowParserFixture fixture;
   fixture.setUp();
   EXPECT_NE(fixture.handle.manifest().find("\"arrow-ipc\""), std::string::npos);
 }
 
-/// Verify that every schema is classified as a non-canonical object.
 TEST(ArrowParserTest, ClassifiesSchemasAsNonCanonical) {
   ArrowParserFixture fixture;
   fixture.setUp();
@@ -97,7 +90,6 @@ TEST(ArrowParserTest, ClassifiesSchemasAsNonCanonical) {
   EXPECT_EQ(fixture.handle.classifySchema("anything", schema), PJ::sdk::BuiltinObjectType::kNone);
 }
 
-/// Verify that all supported configuration values survive load and save.
 TEST(ArrowParserTest, ConfigRoundTrip) {
   ArrowParserFixture fixture;
   fixture.setUp();
@@ -114,7 +106,6 @@ TEST(ArrowParserTest, ConfigRoundTrip) {
   EXPECT_NE(saved_config.find("\"array_policy\":\"skip\""), std::string::npos);
 }
 
-/// Verify that an untouched parser saves every documented default.
 TEST(ArrowParserTest, ConfigDefaultsMatchContract) {
   ArrowParserFixture fixture;
   fixture.setUp();
@@ -129,7 +120,6 @@ TEST(ArrowParserTest, ConfigDefaultsMatchContract) {
   EXPECT_NE(saved_config.find("\"array_policy\":\"clamp\""), std::string::npos);
 }
 
-/// Verify that malformed JSON is reported through the parser Status API.
 TEST(ArrowParserTest, MalformedConfigReturnsError) {
   ArrowParserFixture fixture;
   fixture.setUp();
@@ -152,7 +142,6 @@ TEST(ArrowParserTest, ParsesFlatStreamThroughArrowHostPath) {
   expectOnlyArrowWrites(fixture.arrow_write_host, 1);
 }
 
-/// Primitive lists expand end-to-end through the plugin DSO and Arrow-capable fake host.
 TEST(ArrowParserTest, ExpandsListsThroughArrowHostPathWithoutDiagnostics) {
   ArrowParserFixture fixture;
   fixture.setUp(true, true);
@@ -278,7 +267,6 @@ TEST(ArrowParserTest, ReportsEmptyFirstBatchListReasonWithoutTruncation) {
   expectOnlyArrowWrites(fixture.arrow_write_host, 1);
 }
 
-/// Record-batch boundaries survive decoding and shaping.
 TEST(ArrowParserTest, PreservesRecordBatchBoundaries) {
   ArrowParserFixture fixture;
   fixture.setUp();
@@ -290,7 +278,6 @@ TEST(ArrowParserTest, PreservesRecordBatchBoundaries) {
   expectOnlyArrowWrites(fixture.arrow_write_host, 1);
 }
 
-/// Default shaping flattens nested structs depth-first before host ingest.
 TEST(ArrowParserTest, FlattensNestedStructsForHostIngest) {
   ArrowParserFixture fixture;
   fixture.setUp();
@@ -354,7 +341,6 @@ TEST(ArrowParserTest, SynthesizesTimestampValuesUsingConfiguredInterval) {
   expectOnlyArrowWrites(fixture.arrow_write_host, 3);
 }
 
-/// Typed Arrow timestamps are normalized to int64 nanoseconds before ingest.
 TEST(ArrowParserTest, NormalizesTypedTimestampColumnToInt64) {
   ArrowParserFixture fixture;
   fixture.setUp();
@@ -394,7 +380,6 @@ TEST(ArrowParserTest, ReportsExplicitNarrowTimestampAxisOnce) {
   expectOnlyArrowWrites(fixture.arrow_write_host, 2);
 }
 
-/// A configured timestamp column must exist before a stream reaches the host.
 TEST(ArrowParserTest, RejectsMissingConfiguredTimestampColumn) {
   ArrowParserFixture fixture;
   fixture.setUp();

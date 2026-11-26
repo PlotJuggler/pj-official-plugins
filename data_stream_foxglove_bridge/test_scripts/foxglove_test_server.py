@@ -23,10 +23,6 @@ from foxglove_websocket.server import FoxgloveServer, FoxgloveServerListener
 from foxglove_websocket.types import ChannelId
 
 
-# ---------------------------------------------------------------------------
-# CDR encoding helpers
-# ---------------------------------------------------------------------------
-
 CDR_HEADER = b"\x00\x01\x00\x00"  # little-endian CDR header
 
 
@@ -45,18 +41,10 @@ def encode_point(x: float, y: float, z: float) -> bytes:
     return CDR_HEADER + struct.pack("<ddd", x, y, z)
 
 
-# ---------------------------------------------------------------------------
-# ROS2 message schemas (.msg format)
-# ---------------------------------------------------------------------------
-
 SCHEMA_FLOAT64 = "float64 data"
 SCHEMA_INT32 = "int32 data"
 SCHEMA_POINT = "float64 x\nfloat64 y\nfloat64 z"
 
-
-# ---------------------------------------------------------------------------
-# Server
-# ---------------------------------------------------------------------------
 
 class Listener(FoxgloveServerListener):
     def on_subscribe(self, server: FoxgloveServer, channel_id: ChannelId):
@@ -70,7 +58,6 @@ async def main():
     async with FoxgloveServer("0.0.0.0", 8765, "PlotJuggler test server") as server:
         server.set_listener(Listener())
 
-        # Advertise channels
         ch_temperature = await server.add_channel({
             "topic": "/sensor/temperature",
             "encoding": "cdr",

@@ -6,33 +6,20 @@
 
 namespace assistant_agent {
 
-// Writes `contents` to a fresh 0600 temp file (mkstemp) named `name_prefix` +
-// "XXXXXX" under the platform's own temp directory (e.g. name_prefix
-// "pj_assistant_mcp_" -> POSIX "/tmp/pj_assistant_mcp_XXXXXX"), and sets
-// `out_path` to the file actually created. A short write unlinks the file and
-// returns false, leaving `out_path` untouched. Shared by
-// ClaudeBackend::mcpConfigFile (the --mcp-config file, bearer token inside)
-// and CodexBackend::ensureInstructionsFile (the model_instructions_file) —
-// both want a private file that never lands its sensitive contents on argv,
+// Writes `contents` to a fresh private temp file named `name_prefix` + random
+// suffix under the platform's temp directory, and sets `out_path` to it. A
+// short write removes the file and returns false, leaving `out_path` untouched.
+// For contents (MCP bearer token, instructions) that must not land on argv,
 // which /proc/<pid>/cmdline exposes to every local user.
 //
-// `name_prefix` is a bare file-name prefix such as "pj_assistant_mcp_"; each
-// platform chooses the directory.
-//
-// POSIX and Windows, same fallback shape as subprocess.hpp's runProcess for
-// other platforms. Windows has no mode bits: the stand-in for 0600 is the
-// per-user ACL that already guards everything under %TEMP% (it lives inside
-// the signed-in user's own profile), and CREATE_NEW is what gives the same
-// "nobody else could have raced this name into existence" guarantee mkstemp
-// gets from O_EXCL. There is no FILE_FLAG_DELETE_ON_CLOSE, unlike a POSIX
-// unlink-after-open pattern would use: the file has to still be openable by
-// the CLI process this plugin spawns afterwards.
+// POSIX: mkstemp, mode 0600. Windows has no mode bits: privacy comes from the
+// per-user ACL on %TEMP%, and CREATE_NEW gives mkstemp's O_EXCL guarantee. No
+// FILE_FLAG_DELETE_ON_CLOSE: the spawned CLI must still be able to open the file.
+// Other platforms: always returns false.
 [[nodiscard]] bool writePrivateTempFile(const char* name_prefix, const std::string& contents, std::string& out_path);
 
-// Removes a file writePrivateTempFile created. Callers hold these paths in a
-// member and drop them in a destructor, so this cannot report failure: an
-// already-gone file is the outcome they wanted. No-op off POSIX and Windows,
-// where writePrivateTempFile never created one.
+// Removes a file writePrivateTempFile created. Callers use it in destructors, so
+// it reports no failure; an already-gone file is the desired outcome.
 void removePrivateTempFile(const std::string& path);
 
 }  // namespace assistant_agent
@@ -99,10 +86,7 @@ inline bool writePrivateTempFile(const char* name_prefix, const std::string& con
     char suffix[17];
     std::snprintf(suffix, sizeof(suffix), "%08x%08x", rd(), rd());
     const std::filesystem::path candidate = dir / (std::string(name_prefix) + suffix);
-    // CREATE_NEW is the Windows equivalent of mkstemp's O_EXCL guarantee:
-    // this call fails instead of silently reusing a name another process (or
-    // another attempt in this same loop, astronomically unlikely as that is)
-    // already claimed.
+    // CREATE_NEW fails instead of reusing a name another process already claimed.
     const HANDLE h =
         CreateFileW(candidate.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {

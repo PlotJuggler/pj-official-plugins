@@ -33,12 +33,9 @@ EOF
 }
 
 SDK_LOCAL_DIR=""
-# --asan (or PJ_SANITIZE=asan) instruments the plugins' OWN targets with
-# AddressSanitizer. Deliberately NOT injected through Conan's tools.build:*
-# config: that applies to the whole dependency graph, which would rebuild
-# Arrow + Flight + gRPC + protobuf under ASan with a fresh package_id — hours of
-# work for code we are not hunting in. Prebuilt Conan deps stay as-is. The SDK
-# is the one exception, instrumented in scripts/ensure_core.sh, because an
+# --asan / --tsan instrument only the plugins' own targets. Conan's tools.build:* config is not
+# used because it would rebuild the whole dependency graph (Arrow, Flight, gRPC, protobuf)
+# under the sanitizer. The SDK is the exception (instrumented in scripts/ensure_core.sh): an
 # uninstrumented SDK linked into an instrumented plugin reports nothing.
 SANITIZE="${PJ_SANITIZE:-}"
 while [[ "${1:-}" == -* ]]; do
@@ -75,8 +72,7 @@ if [[ "$#" -gt 1 ]]; then
   exit 1
 fi
 
-# --asan/--tsan must reach scripts/ensure_core.sh as well, which reads PJ_SANITIZE
-# to instrument the SDK, including a --sdk-local tree registered below.
+# ensure_core.sh reads PJ_SANITIZE to instrument the SDK, including a --sdk-local tree.
 if [[ -n "$SANITIZE" ]]; then
   export PJ_SANITIZE="$SANITIZE"
 fi
@@ -124,27 +120,22 @@ CMAKE_BUILD_DIR="$BUILD_DIR/$BUILD_TYPE"
 CONAN_ARGS=()
 
 if [[ "$SANITIZE" == "asan" ]]; then
-  # Lane trees nest under build/, mirroring the app repo, so the AppImage
-  # builder's recursive chown of the build directory reaches them and the host
-  # is not left with root-owned output.
+  # Lane trees nest under build/ so the app repo's AppImage builder (recursive chown of build/)
+  # reaches them.
   BUILD_DIR="${BUILD_DIR/\/build\//\/build\/asan\/}"
   CMAKE_BUILD_DIR="$BUILD_DIR/$BUILD_TYPE"
-  # -g is explicit: an ASan report without file and line is not actionable, and
-  # this repo has no debug-info policy of its own to supply it.
+  # -g is explicit: this repo has no debug-info policy, and an ASan report without file and line is
+  # not actionable.
   CMAKE_ARGS+=(
     "-DCMAKE_CXX_FLAGS=-fsanitize=address -fno-omit-frame-pointer -g"
     "-DCMAKE_C_FLAGS=-fsanitize=address -fno-omit-frame-pointer -g"
     "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address"
     "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address"
-    # ASan's instrumented codegen changes inlining and value-range propagation,
-    # which flips optimization-dependent warnings (-Wmaybe-uninitialized) to
-    # false positives on otherwise-clean vendored code. See PJ_PLUGINS_NO_WERROR
-    # in the root CMakeLists.txt.
+    # Instrumented codegen yields false-positive warnings; see PJ_PLUGINS_NO_WERROR in the root
+    # CMakeLists.txt.
     "-DPJ_PLUGINS_NO_WERROR=ON"
-    # ASan plus -g makes every object large, and each test executable statically
-    # links the instrumented libraries. This lane exists to produce plugin .so
-    # files for an instrumented AppImage; the plugin tests are not run from it,
-    # so building them is cost without a consumer.
+    # This lane only produces plugin .so files for an instrumented AppImage; ASan plus -g makes
+    # every test executable large and nothing runs them.
     "-DBUILD_TESTING=OFF"
   )
   echo "Sanitizer: AddressSanitizer (plugin targets only; Conan deps unchanged)"
@@ -159,9 +150,7 @@ if [[ "$SANITIZE" == "tsan" ]]; then
     "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread"
     "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread"
     "-DPJ_PLUGINS_NO_WERROR=ON"
-    # Unlike the ASan lane, tests are the POINT here. TSan reports races only in
-    # code that actually runs, so a lane that builds plugin .so files without
-    # executing anything would report nothing no matter how racy the plugins are.
+    # TSan reports races only in code that runs, so this lane must build and run the tests.
     "-DBUILD_TESTING=ON"
   )
   echo "Sanitizer: ThreadSanitizer (plugin targets only; Conan deps unchanged)"
@@ -179,38 +168,20 @@ else
 fi
 
 if [[ "$IS_WINDOWS" != true ]]; then
-  # liblsl 1.16.2 vendors asio 1.20.0, whose detail/type_traits.hpp falls back to
-  # `using std::result_of;` unless ASIO_HAS_STD_INVOKE_RESULT is defined -- and its
-  # autodetection in detail/config.hpp only implements the MSVC branch, none for
-  # clang or gcc. std::result_of was removed in C++20, and libc++ actually dropped
-  # it, so without this macOS cannot build liblsl at all.
-  #
-  # Everywhere-but-Windows, and that asymmetry is not arbitrary. liblsl's own
-  # CMakeLists.txt has:
-  #
-  #     if(NOT MSVC_VERSION VERSION_LESS 1700)
-  #       set(CMAKE_CXX_STANDARD 14)
-  #     endif()
-  #
-  # MSVC_VERSION is empty on non-MSVC compilers, so "" VERSION_LESS 1700 is true and
-  # the NOT makes it false: the set() runs *only* under MSVC, overriding the C++20 the
-  # toolchain asked for. So MSVC compiles liblsl as C++14 -- where std::result_of still
-  # exists and std::invoke_result does not yet -- while clang and gcc get C++20, where
-  # it is the other way round. Defining the macro on MSVC forces the invoke_result
-  # branch in a C++14 translation unit and fails with C2143/C2059 at type_traits.hpp:86.
-  #
-  # Bumping liblsl is not an option: ConanCenter has 1.16.2 at most.
+  # liblsl 1.16.2 vendors asio 1.20.0, which falls back to `std::result_of` (removed in C++20, and
+  # absent from libc++) unless ASIO_HAS_STD_INVOKE_RESULT is defined; its autodetection only covers
+  # MSVC. Not applied on Windows: liblsl's CMakeLists forces CMAKE_CXX_STANDARD 14 under MSVC only,
+  # where std::invoke_result does not exist yet, so defining the macro there fails with C2143/C2059
+  # at type_traits.hpp:86. liblsl cannot be bumped (ConanCenter has 1.16.2 at most).
   CONAN_ARGS+=("-c" 'liblsl/*:tools.build:defines=["ASIO_HAS_STD_INVOKE_RESULT=1"]')
 fi
 
 echo "Conan recipe: $CONAN_RECIPE"
 echo "Build directory: $CMAKE_BUILD_DIR"
 
-# -s:b compiler.cppstd=20: the aggregate root recipe pulls protobuf into the
-# BUILD context (tool_requires, for the Conan protoc). protobuf 6.x requires
-# C++17, but a default build profile (e.g. MSVC's cppstd=14) fails its validate()
-# with "Current cppstd is lower than the required C++ standard". Host -s only
-# covers the host context, so the build context needs its own cppstd.
+# -s:b compiler.cppstd=20: the root recipe pulls protobuf into the build context (tool_requires,
+# for protoc). protobuf 6.x requires C++17 and a default build profile (e.g. MSVC cppstd=14) fails
+# its validate(); host -s does not cover the build context.
 conan install "$CONAN_RECIPE" --output-folder="$BUILD_DIR" --build=missing \
   -s build_type="$BUILD_TYPE" \
   -s compiler.cppstd=20 \
@@ -227,22 +198,19 @@ cmake -S "$SCRIPT_DIR" -B "$CMAKE_BUILD_DIR" -G Ninja \
 cmake --build "$CMAKE_BUILD_DIR" --config "$BUILD_TYPE" --parallel
 
 if [[ "$SANITIZE" == "tsan" ]]; then
-  # ThreadSanitizer needs mmap randomisation narrower than current kernels use
-  # (vm.mmap_rnd_bits=32). GCC's runtime aborts with "unexpected memory mapping"
-  # before running any test; Clang's re-executes itself without randomisation.
-  # Disabling randomisation for the test process up front avoids a host sysctl
-  # change. The personality syscall it needs is denied by Docker's default seccomp
-  # profile, so the app repo's container wrapper relaxes seccomp for this lane. If
-  # the call is still refused, run unwrapped and let the runtime report, rather
-  # than reporting a lane that passed without executing anything.
+  # ThreadSanitizer needs narrower mmap randomisation than current kernels use
+  # (vm.mmap_rnd_bits=32); GCC's runtime aborts with "unexpected memory mapping", Clang's
+  # re-executes itself without randomisation. `setarch -R` disables it for the test process without
+  # a host sysctl change, but needs the personality syscall that Docker's default seccomp profile
+  # denies (the app repo's container wrapper relaxes it for this lane). If refused, run unwrapped
+  # and let the runtime report rather than pass without executing anything.
   tsan_launch=()
   if setarch -R true >/dev/null 2>&1; then
     tsan_launch=(setarch -R)
   else
     echo "warning: 'setarch -R' unavailable; ThreadSanitizer may abort before running tests." >&2
   fi
-  # Clang's sanitizer runtimes name stack frames only through an llvm-symbolizer
-  # on PATH; without one a report is a list of bare addresses.
+  # Clang's sanitizer runtimes symbolize only through an llvm-symbolizer on PATH.
   symbolizer_path=""
   if [[ -x "/usr/lib/llvm-${PJ_SANITIZER_CLANG_VERSION:-22}/bin/llvm-symbolizer" ]]; then
     symbolizer_path="/usr/lib/llvm-${PJ_SANITIZER_CLANG_VERSION:-22}/bin:"

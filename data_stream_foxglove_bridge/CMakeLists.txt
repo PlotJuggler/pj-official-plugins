@@ -26,14 +26,12 @@ pj_embed_manifest(foxglove_source_plugin
   VAR_NAME kFoxgloveManifest
 )
 
-# v4 plugin discovery: emit a sidecar .pjmanifest.json the host can scan
-# pre-dlopen. Content derived from manifest.json + {abi_major, family}.
+# Sidecar .pjmanifest.json (manifest.json + abi_major + family) the host scans before dlopen.
 pj_emit_plugin_manifest(foxglove_source_plugin
   FAMILY        data_source
   MANIFEST_FILE ${CMAKE_CURRENT_SOURCE_DIR}/manifest.json
 )
 
-# --- Unit test for Foxglove protocol (header-only) ---
 add_executable(foxglove_protocol_test tests/foxglove_protocol_test.cpp)
 target_compile_features(foxglove_protocol_test PRIVATE cxx_std_20)
 target_compile_options(foxglove_protocol_test PRIVATE ${PJ_WARNING_FLAGS})

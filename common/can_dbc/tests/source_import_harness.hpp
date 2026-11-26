@@ -1,10 +1,9 @@
 #pragma once
 
-// Shared by the layout-path tests of data_load_blf / data_load_candump /
-// data_load_mf4: drives a BUILT data-source plugin the way the host does
-// (bind -> loadConfig -> start -> saveConfig -> stop) against an in-memory
-// write host and runtime host, and returns what the plugin wrote, said and
-// saved. Header-only so each plugin's test target stays self-contained.
+// Shared by the layout-path tests of data_load_blf / data_load_candump / data_load_mf4: drives a
+// BUILT data-source plugin the way the host does (bind -> loadConfig -> start -> saveConfig ->
+// stop) against an in-memory write host and runtime host, and returns what the plugin wrote,
+// said and saved.
 
 #include <gtest/gtest.h>
 

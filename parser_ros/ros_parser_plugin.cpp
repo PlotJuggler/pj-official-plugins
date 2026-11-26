@@ -2,8 +2,8 @@
 #include "ros_parser_dialog.hpp"
 #include "ros_parser_internal.hpp"
 
-// Newer SDKs let the exported symbol be named separately from the plugin type.
-// Keep the alias fallback until that API is available in a released SDK.
+// PJ_MESSAGE_PARSER_PLUGIN_NAMED (newer SDKs) names the exported symbol separately from
+// the plugin type; the other branches are the fallback for SDKs without it.
 #ifdef PJ_MESSAGE_PARSER_PLUGIN_NAMED
 PJ_MESSAGE_PARSER_PLUGIN_NAMED(ros_parser_detail::RosParser, RosParserPlugin, kRosManifest)
 #elif defined(PJ_STATIC_PLUGINS)

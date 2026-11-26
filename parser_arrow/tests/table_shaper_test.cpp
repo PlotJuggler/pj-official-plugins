@@ -39,7 +39,6 @@ using test::decodeFixture;
 using test::readBatch;
 using test::readSchema;
 
-/// Construct a flat struct schema with the requested child names and types.
 [[nodiscard]] PJ::sdk::ArrowSchemaHolder makeSchema(const std::vector<std::pair<std::string, ArrowType>>& fields) {
   PJ::sdk::ArrowSchemaHolder schema;
   ArrowSchemaInit(schema.out());
@@ -56,7 +55,6 @@ using test::readSchema;
   return schema;
 }
 
-/// Wrap a schema in an empty basic stream for observable shapeStream assertions.
 [[nodiscard]] PJ::sdk::ArrowStreamHolder emptyStream(ArrowSchema* schema) {
   ArrowArrayStream stream{};
   if (ArrowBasicArrayStreamInit(&stream, schema, 0) != NANOARROW_OK) {
@@ -65,7 +63,6 @@ using test::readSchema;
   return PJ::sdk::ArrowStreamHolder(stream);
 }
 
-/// Wrap one owned batch in a basic stream using the supplied schema.
 [[nodiscard]] PJ::sdk::ArrowStreamHolder oneBatchStream(ArrowSchema* schema, ArrowArray* batch) {
   ArrowArrayStream stream{};
   if (ArrowBasicArrayStreamInit(&stream, schema, 1) != NANOARROW_OK) {
@@ -75,7 +72,6 @@ using test::readSchema;
   return PJ::sdk::ArrowStreamHolder(stream);
 }
 
-/// Initialize one of the logical scalar schemas accepted by supportsScalarCopy, including parameterized types.
 [[nodiscard]] PJ::sdk::ArrowSchemaHolder makeCopyableScalarSchema(ArrowType type) {
   PJ::sdk::ArrowSchemaHolder schema;
   int result = NANOARROW_OK;
@@ -111,7 +107,6 @@ using test::readSchema;
   return schema;
 }
 
-/// Append a representative value using the logical type's nanoarrow storage representation.
 [[nodiscard]] int appendCopyableScalar(ArrowArray* array, ArrowType type) {
   switch (type) {
     case NANOARROW_TYPE_NA:
@@ -182,7 +177,6 @@ using test::readSchema;
   }
 }
 
-/// Build and finish a one-row array whose schema retains the requested logical type.
 [[nodiscard]] PJ::sdk::ArrowArrayHolder makeCopyableScalarArray(const ArrowSchema* schema, ArrowType type) {
   PJ::sdk::ArrowArrayHolder array;
   ArrowError error{};
@@ -276,7 +270,6 @@ using test::readSchema;
   return oneBatchStream(schema.get(), batch.get());
 }
 
-/// Build a one-batch stream whose `time` axis carries the requested nanosecond ticks in `axis_type`.
 [[nodiscard]] PJ::sdk::ArrowStreamHolder makeIntegerAxisStream(ArrowType axis_type, const std::vector<int64_t>& ticks) {
   auto schema = makeSchema({{"time", axis_type}, {"value", NANOARROW_TYPE_DOUBLE}});
   PJ::sdk::ArrowArrayHolder batch;
@@ -300,7 +293,6 @@ using test::readSchema;
   return oneBatchStream(schema.get(), batch.get());
 }
 
-/// Build a one-batch stream whose explicit `time` axis stores floating-point seconds.
 [[nodiscard]] PJ::sdk::ArrowStreamHolder makeFloatingAxisStream(
     ArrowType axis_type, const std::vector<double>& seconds) {
   auto schema = makeSchema({{"time", axis_type}, {"value", NANOARROW_TYPE_DOUBLE}});
@@ -536,7 +528,6 @@ void failingPeekRelease(ArrowArrayStream* stream) noexcept {
   return PJ::sdk::ArrowStreamHolder(stream);
 }
 
-/// Return a schema child index by exact output name or fail the current test.
 [[nodiscard]] int64_t childIndex(const ArrowSchema* schema, std::string_view name) {
   for (int64_t index = 0; index < schema->n_children; ++index) {
     if (schema->children[index] != nullptr && schema->children[index]->name != nullptr &&
@@ -946,7 +937,6 @@ TEST(TableShaperTest, SynthesizesTimestampColumnForEveryRow) {
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), 5014);
 }
 
-/// The synthetic row index continues across record-batch boundaries.
 TEST(TableShaperTest, ContinuesSyntheticTimestampAcrossBatches) {
   ShapeOptions options;
   options.message_timestamp_ns = 5000;
@@ -967,7 +957,6 @@ TEST(TableShaperTest, ContinuesSyntheticTimestampAcrossBatches) {
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(second_view.get()->children[0], 0), 5014);
 }
 
-/// A zero synthetic interval repeats the message timestamp for every row.
 TEST(TableShaperTest, RepeatsAnchorWhenSyntheticIntervalIsZero) {
   ShapeOptions options;
   options.message_timestamp_ns = 5000;
@@ -981,7 +970,6 @@ TEST(TableShaperTest, RepeatsAnchorWhenSyntheticIntervalIsZero) {
   }
 }
 
-/// Positive synthetic sequences report the exact overflowing stream row.
 TEST(TableShaperTest, ReportsPositiveSyntheticTimestampOverflow) {
   ShapeOptions options;
   options.message_timestamp_ns = std::numeric_limits<int64_t>::max();
@@ -996,7 +984,6 @@ TEST(TableShaperTest, ReportsPositiveSyntheticTimestampOverflow) {
       std::string::npos);
 }
 
-/// Negative synthetic sequences report underflow with the same row-specific diagnostic.
 TEST(TableShaperTest, ReportsNegativeSyntheticTimestampOverflow) {
   ShapeOptions options;
   options.message_timestamp_ns = std::numeric_limits<int64_t>::min();
@@ -1011,7 +998,6 @@ TEST(TableShaperTest, ReportsNegativeSyntheticTimestampOverflow) {
       std::string::npos);
 }
 
-/// Typed nanosecond timestamp axes are exposed to the host as int64 nanoseconds.
 TEST(TableShaperTest, CastsTypedTimestampAxisToInt64Nanoseconds) {
   auto shaped = shapeStream(decodeFixture("timestamp_typed.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
@@ -1041,7 +1027,6 @@ TEST(TableShaperTest, ScalesAllTypedTimestampColumnsToNanoseconds) {
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[1], 2), 6000);
 }
 
-/// Nested structs flatten depth-first into slash-separated leaves with preserved values.
 TEST(TableShaperTest, FlattensNestedStructsDepthFirst) {
   auto shaped = shapeStream(decodeFixture("nested.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
@@ -1068,7 +1053,6 @@ TEST(TableShaperTest, FlattensNestedStructsDepthFirst) {
   }
 }
 
-/// Flattened leaves become nullable when any source struct ancestor is nullable.
 TEST(TableShaperTest, MarksLeafNullableWhenStructAncestorIsNullable) {
   PJ::sdk::ArrowSchemaHolder input_schema;
   ArrowSchemaInit(input_schema.out());
@@ -1094,7 +1078,6 @@ TEST(TableShaperTest, MarksLeafNullableWhenStructAncestorIsNullable) {
   EXPECT_NE(output_schema.get()->children[1]->flags & ARROW_FLAG_NULLABLE, 0);
 }
 
-/// Null parent struct slots become null in every flattened descendant leaf.
 TEST(TableShaperTest, PropagatesNullStructParentToFlattenedLeaves) {
   auto shaped = shapeStream(decodeFixture("nested.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
@@ -1108,7 +1091,6 @@ TEST(TableShaperTest, PropagatesNullStructParentToFlattenedLeaves) {
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[8], 2), 7.5);
 }
 
-/// A sliced record-batch struct applies its parent offset before copying flattened leaves.
 TEST(TableShaperTest, AppliesSlicedStructParentOffsetWhenFlattening) {
   auto decoded = decodeFixture("nested.arrows");
   auto input_schema = readSchema(decoded);
@@ -1133,7 +1115,6 @@ TEST(TableShaperTest, AppliesSlicedStructParentOffsetWhenFlattening) {
   EXPECT_DOUBLE_EQ(ArrowArrayViewGetDoubleUnsafe(view.get()->children[8], 1), 7.5);
 }
 
-/// Disabling flattening removes the unsupported struct while preserving supported siblings.
 TEST(TableShaperTest, RemovesStructColumnWhenFlatteningDisabled) {
   ShapeOptions options;
   options.flatten_structs = false;
@@ -1292,7 +1273,6 @@ TEST(TableShaperTest, ExpandsNestedFixedSizeListAndDropsStructList) {
   EXPECT_TRUE(ArrowArrayViewIsNull(view.get()->children[2], 2));
 }
 
-/// Clamp policy keeps the configured prefix of an oversized list.
 TEST(TableShaperTest, ClampsWideListToArrayLimit) {
   ShapeOptions options;
   options.array_limit.max_size = 4;
@@ -1310,7 +1290,6 @@ TEST(TableShaperTest, ClampsWideListToArrayLimit) {
   EXPECT_EQ(shaped->runtime->first_truncated_column, "wide");
 }
 
-/// Skip policy removes an oversized list as one dropped source column.
 TEST(TableShaperTest, SkipsWideListAtArrayLimit) {
   ShapeOptions options;
   options.array_limit.max_size = 4;
@@ -1530,7 +1509,6 @@ TEST(TableShaperTest, WarnsForExactlyTheExplicitNarrowAxisTypes) {
   EXPECT_TRUE(shaped->warnings.empty());
 }
 
-/// Half-float remains unsupported even when the column is selected explicitly.
 TEST(TableShaperTest, RejectsExplicitHalfFloatTimestampAxis) {
   ShapeOptions options;
   options.timestamp_column = "time";
@@ -1554,7 +1532,6 @@ TEST(TableShaperTest, ConvertsDoubleSecondsTimestampAxis) {
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 2), -500'000'000);
 }
 
-/// Float timestamp axes use the same seconds-to-rounded-nanoseconds contract.
 TEST(TableShaperTest, ConvertsFloatSecondsTimestampAxis) {
   ShapeOptions options;
   options.timestamp_column = "time";
@@ -1619,7 +1596,6 @@ TEST(TableShaperTest, DetectsFloat32AxisMagnitudeAtExactBoundary) {
   EXPECT_EQ(negative_boundary->runtime->float_axis_column, "time");
 }
 
-/// Fractional nanoseconds are rounded symmetrically instead of truncated.
 TEST(TableShaperTest, RoundsFractionalNanosecondTimestampAxis) {
   auto shaped = shapeStream(decodeFixture("axis_fractional_ns.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
@@ -1643,7 +1619,6 @@ TEST(TableShaperTest, ConvertsFloatingSecondsWithPortableIntegerArithmetic) {
   EXPECT_EQ(ArrowArrayViewGetIntUnsafe(view.get()->children[0], 1), -2);
 }
 
-/// Non-finite floating timestamp seconds fail instead of invoking an invalid integer conversion.
 TEST(TableShaperTest, RejectsNonFiniteFloatingTimestampAxis) {
   auto shaped = shapeStream(decodeFixture("axis_double_nonfinite.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
@@ -1653,7 +1628,6 @@ TEST(TableShaperTest, RejectsNonFiniteFloatingTimestampAxis) {
       std::string(ArrowArrayStreamGetLastError(shaped->stream.get())).find("cannot be represented"), std::string::npos);
 }
 
-/// Timestamp unit multiplication reports overflow instead of wrapping.
 TEST(TableShaperTest, RejectsTypedTimestampScalingOverflow) {
   auto shaped = shapeStream(decodeFixture("timestamp_seconds_overflow.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
@@ -1691,7 +1665,6 @@ TEST(TableShaperTest, ReportsFirstExpandedColumnWhenTimestampListOverflowsCompet
       "parser_arrow: timestamp column 'times[0]' overflows int64 nanoseconds");
 }
 
-/// Unsigned 64-bit timestamp ticks outside int64 fail instead of changing sign.
 TEST(TableShaperTest, RejectsUint64TimestampAboveInt64Max) {
   auto shaped = shapeStream(decodeFixture("axis_uint64_overflow.arrows"), ShapeOptions{});
   ASSERT_TRUE(shaped) << shaped.error();
@@ -1768,7 +1741,6 @@ TEST(TableShaperTest, ReportsLaterAxisNullBeforeEarlierDataTimestampOverflow) {
       "parser_arrow: timestamp column 'time' contains a null value");
 }
 
-/// Host-skipped final output columns are reported and absent from the shaped schema.
 TEST(TableShaperTest, ReportsDroppedOutputColumns) {
   auto schema =
       makeSchema({{"timestamp_ns", NANOARROW_TYPE_INT64}, {"a", NANOARROW_TYPE_LIST}, {"b", NANOARROW_TYPE_DOUBLE}});
@@ -1926,7 +1898,6 @@ TEST(TableShaperTest, RejectsSchemaWhenAllDataColumnsWouldBeDropped) {
   EXPECT_NE(shaped.error().find("a:+l"), std::string::npos);
 }
 
-/// Flattening rejects output names that collide with an already-flat field.
 TEST(TableShaperTest, RejectsDuplicateOutputNames) {
   PJ::sdk::ArrowSchemaHolder schema;
   ArrowSchemaInit(schema.out());
@@ -1992,7 +1963,6 @@ TEST(TableShaperTest, ReportsFirstBatchPeekErrorDuringShapeStream) {
   EXPECT_NE(shaped.error().find("configured first-batch failure"), std::string::npos);
 }
 
-/// Empty field names are replaced with stable child-index placeholders.
 TEST(TableShaperTest, SubstitutesEmptyOutputNames) {
   auto schema = makeSchema({{"timestamp_ns", NANOARROW_TYPE_INT64}, {"", NANOARROW_TYPE_DOUBLE}});
   ArrowArrayStream raw_stream{};
@@ -2020,7 +1990,6 @@ TEST(TableShaperTest, SubstitutesNullOutputNames) {
   EXPECT_STREQ(output_schema.get()->children[1]->name, "_1");
 }
 
-/// Nested empty names use their child index after the sanitized parent path.
 TEST(TableShaperTest, SubstitutesNestedEmptyOutputNames) {
   PJ::sdk::ArrowSchemaHolder schema;
   ArrowSchemaInit(schema.out());

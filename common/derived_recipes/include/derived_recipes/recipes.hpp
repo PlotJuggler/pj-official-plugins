@@ -6,8 +6,7 @@
 // "on_demand") through pj.data_processors.v1: catalog path resolution (scalar series and
 // object topics, dataset qualifiers), input resolution, the generated Luau chunk, and the
 // display<->raw time conversion. Used by the Transform Editor and the assistant's catalog digest.
-//
-// Nothing here owns host state: every function takes the host views it needs explicitly.
+// Nothing here owns host state: every function takes the host views it needs.
 
 #include <cstddef>
 #include <cstdint>
@@ -22,8 +21,6 @@
 
 namespace derived_recipes {
 
-// --- Luau text -------------------------------------------------------------
-
 // Escape a string for embedding inside a double-quoted Luau or Python string literal (names, labels
 // and series paths land verbatim in generated scripts): backslash, quote, line break and tab.
 [[nodiscard]] std::string luaStringEscape(std::string_view s);
@@ -37,8 +34,6 @@ namespace derived_recipes {
 // "    " in front of every line of `code` (an empty line stays empty); a blank body becomes `pass`.
 // Python is whitespace-sensitive, so a body that becomes the inside of a `def` goes through this.
 [[nodiscard]] std::string indentPython(const std::string& code);
-
-// --- script layout ---------------------------------------------------------
 
 // How many lines `text` takes when a line break follows it ("a\nb" -> 2, "" -> 1).
 [[nodiscard]] int physicalLines(const std::string& text);
@@ -77,8 +72,6 @@ struct ParsedTransformScript {
 // shaped differently, a class that does not end exactly as the builder writes it (an `output` other than
 // "double" or "string" included), or a chunk with more than one line that looks like the function's signature.
 [[nodiscard]] std::optional<ParsedTransformScript> parseTransformScript(std::string_view script);
-
-// --- catalog helpers -------------------------------------------------------
 
 // Cap on how many near misses an error names, so a wide catalog does not turn one error into a
 // wall of paths.
@@ -150,8 +143,6 @@ struct SeriesLookup {
 [[nodiscard]] std::optional<PJ::sdk::DataSourceHandle> dataSourceHandleFor(
     const PJ::sdk::CatalogSnapshot& catalog, const std::string& dataset_name);
 
-// --- on-demand inputs / outputs -------------------------------------------
-
 // One resolved input: either a scalar series or an object topic. `host_path` is the literal
 // name the script's `inputs["<host_path>"]` addresses; `display_path` is what gets echoed
 // back; `request_path` is the dataset-qualified ABI input. `source`/`has_source` carry the
@@ -212,9 +203,9 @@ struct ResolvedEvalInputs {
 [[nodiscard]] ResolvedEvalInputs resolveEvalInputs(
     PJ::sdk::ToolboxHostView& host, const PJ::sdk::CatalogSnapshotV2& v2, const std::vector<std::string>& raw_inputs);
 
-// Build the on-demand chunk for resolved inputs: keeps both the requested and the historical
-// bare script aliases without textual substitution in user code. `layout` says where `body` starts
-// (only body_first_line and body_lines are set).
+// Build the on-demand chunk for resolved inputs: keeps both the requested and the bare script
+// aliases without textual substitution in user code. `layout` says where `body` starts (only
+// body_first_line and body_lines are set).
 [[nodiscard]] BuiltScript buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved);
 
 // Python counterpart of buildResolvedOnDemandChunk (language="python"): a module whose top

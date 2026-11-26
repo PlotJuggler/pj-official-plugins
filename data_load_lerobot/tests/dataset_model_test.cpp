@@ -50,24 +50,18 @@ fs::path makeFixture(const std::string& version = "v2.1", const std::string& cam
 }  // namespace
 
 TEST(ExpandPathTemplate, ZeroPadsAndSubstitutes) {
-  // Arrange
   const std::string tmpl = "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4";
 
-  // Act
   const std::string out = expandPathTemplate(tmpl, 0, 7, "cam_high");
 
-  // Assert
   EXPECT_EQ(out, "videos/chunk-000/cam_high/episode_000007.mp4");
 }
 
 TEST(LoadDatasetModel, ParsesInfoEpisodesAndTasks) {
-  // Arrange
   const fs::path root = makeFixture();
 
-  // Act
   auto model = loadDatasetModel(root / "meta" / "info.json");
 
-  // Assert
   ASSERT_TRUE(model.has_value()) << (model.has_value() ? "" : model.error());
   EXPECT_EQ(model->codebase_version, "v2.1");
   EXPECT_DOUBLE_EQ(model->fps, 20.0);
@@ -89,13 +83,11 @@ TEST(LoadDatasetModel, ParsesInfoEpisodesAndTasks) {
 }
 
 TEST(LoadDatasetModel, WalksUpFromParquetFile) {
-  // Arrange
   const fs::path root = makeFixture();
 
-  // Act — user picked a deep episode parquet, not meta/info.json
+  // The user picked a deep episode parquet, not meta/info.json.
   auto model = loadDatasetModel(root / "data" / "chunk-000" / "episode_000000.parquet");
 
-  // Assert
   ASSERT_TRUE(model.has_value()) << (model.has_value() ? "" : model.error());
   EXPECT_EQ(model->root, root);
   EXPECT_EQ(model->episodeParquet(0), root / "data" / "chunk-000" / "episode_000000.parquet");
@@ -108,15 +100,12 @@ TEST(LoadDatasetModel, WalksUpFromParquetFile) {
 
 // The host hands over UTF-8: a camera name with non-ASCII characters is a folder name in the video path.
 TEST(LoadDatasetModel, NonAsciiCameraNameJoinsIntoTheVideoPath) {
-  // Arrange
   const std::string camera =
       PJ::utf8_path::utf8String(u8"observation.images.\u043a\u0430\u043c\u0435\u0440\u0430_\u52d5\u753b");
   const fs::path root = makeFixture("v2.1", camera);
 
-  // Act
   auto model = loadDatasetModel(root / "meta" / "info.json");
 
-  // Assert
   ASSERT_TRUE(model.has_value()) << (model.has_value() ? "" : model.error());
   ASSERT_EQ(model->camera_names.size(), 1u);
   EXPECT_EQ(model->camera_names[0], camera);
@@ -129,24 +118,15 @@ TEST(LoadDatasetModel, NonAsciiCameraNameJoinsIntoTheVideoPath) {
   fs::remove_all(root);
 }
 
-// The old `RejectsV3WithClearMessage` test was removed when v3.0 became a
-// supported on-disk layout. End-to-end v3.0 loading is exercised by the
-// new fixture in dataset_model_test_v3 (see E9): it builds a real
-// meta/episodes/chunk-000/file-000.parquet plus a multi-episode
-// data/chunk-000/file-000.parquet with Arrow, and asserts
-// `model.version == DatasetVersion::V3_0` plus a populated `episode_shards`.
-
 TEST(LoadDatasetModel, FailsWhenNotADataset) {
-  // Act
   auto model = loadDatasetModel(fs::temp_directory_path() / "definitely_not_a_lerobot_dataset_xyz" / "foo.parquet");
 
-  // Assert
   ASSERT_FALSE(model.has_value());
   EXPECT_NE(model.error().find("not a LeRobot dataset"), std::string::npos);
 }
 
 TEST(LoadDatasetModel, ParsesDictFormFeatureNames) {
-  // Arrange: real lerobot/pusht v2.1 stores names as {"motors": [...]}, not [...]
+  // Real lerobot/pusht v2.1 stores names as {"motors": [...]}, not [...].
   const fs::path root = fs::temp_directory_path() / "lerobot_dictnames_fixture";
   fs::remove_all(root);
   fs::create_directories(root / "meta");
@@ -160,10 +140,8 @@ TEST(LoadDatasetModel, ParsesDictFormFeatureNames) {
   })";
   std::ofstream(root / "meta" / "episodes.jsonl") << R"({"episode_index": 0, "tasks": ["push"], "length": 5})" << "\n";
 
-  // Act
   auto model = loadDatasetModel(root / "meta" / "info.json");
 
-  // Assert
   ASSERT_TRUE(model.has_value()) << (model.has_value() ? "" : model.error());
   const FeatureSpec* st = model->feature("observation.state");
   ASSERT_NE(st, nullptr);

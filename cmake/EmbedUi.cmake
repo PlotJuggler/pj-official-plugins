@@ -11,8 +11,7 @@
 # This reads the .ui file at configure time and generates a header like:
 #   inline constexpr char kDialogUi[] = R"PJ_UI(... xml ...)PJ_UI";
 #
-# The .ui file is tracked as a configure dependency — editing it triggers
-# CMake reconfiguration and header regeneration.
+# The .ui file is a configure dependency: editing it regenerates the header.
 
 function(pj_embed_ui TARGET)
   cmake_parse_arguments(ARG "" "UI_FILE;HEADER;VAR_NAME" "" ${ARGN})
@@ -21,23 +20,16 @@ function(pj_embed_ui TARGET)
     message(FATAL_ERROR "pj_embed_ui: UI_FILE, HEADER, and VAR_NAME are required")
   endif()
 
-  # Track the .ui file so CMake reconfigures when it changes
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ARG_UI_FILE}")
 
-  # Read the .ui XML content
   file(READ "${ARG_UI_FILE}" _ui_content)
 
-  # Get just the filename for the comment
   get_filename_component(_ui_filename "${ARG_UI_FILE}" NAME)
 
-  # Use a configure_file approach with a hex-encoded char array to avoid
-  # MSVC's 16380-char string literal limit (C2026).
-  # cmake's file(READ ... HEX) gives us a hex string we can split into bytes.
+  # Hex-encoded char array avoids MSVC's 16380-char string literal limit (C2026).
   file(READ "${ARG_UI_FILE}" _ui_hex HEX)
-  # Insert "0x" prefix and ", 0x" between each pair of hex digits
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _byte_list "${_ui_hex}")
 
-  # Generate the header with a char array initializer + null terminator
   file(WRITE "${ARG_HEADER}"
     "#pragma once\n"
     "// Auto-generated from ${_ui_filename} — edit the .ui file, not this header.\n"
@@ -46,7 +38,6 @@ function(pj_embed_ui TARGET)
     "${_byte_list}0x00};\n"
   )
 
-  # Add the generated directory to include path
   get_filename_component(_gen_dir "${ARG_HEADER}" DIRECTORY)
   target_include_directories(${TARGET} PRIVATE "${_gen_dir}")
 endfunction()

@@ -10,12 +10,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CPM.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedManifest.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/EmbedUi.cmake)
 
-# ---------------------------------------------------------------------------
-# lblf (PetStr/lblf, MIT) via CPM — DOWNLOAD_ONLY.
-#
-# Vector BLF reader (classic CAN + LIN + zlib-compressed LogContainers), built
-# by cmake/lblf.cmake. Pinned by commit tarball + SHA256.
-# ---------------------------------------------------------------------------
+# lblf (PetStr/lblf, MIT), DOWNLOAD_ONLY, built by cmake/lblf.cmake; pinned by commit tarball + SHA256.
 CPMAddPackage(
   NAME lblf
   URL https://github.com/PetStr/lblf/archive/a453f188f67637a75e470c272cc76b475080f778.tar.gz
@@ -25,11 +20,8 @@ CPMAddPackage(
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/lblf.cmake)
 pj_add_lblf_library(blf ${lblf_SOURCE_DIR})
 
-# ---------------------------------------------------------------------------
-# Internal static lib: BLF -> CanFrame adapter, shared by the plugin + tests.
-# blf is PRIVATE so lblf headers stay out of consumers (blf_frames.hpp is
-# lblf-free).
-# ---------------------------------------------------------------------------
+# BLF -> CanFrame adapter shared by the plugin and tests. blf is PRIVATE so lblf headers stay out of consumers
+# (blf_frames.hpp is lblf-free).
 add_library(blf_core STATIC blf_frames.cpp)
 set_target_properties(blf_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(blf_core PUBLIC cxx_std_20)
@@ -37,9 +29,6 @@ target_compile_options(blf_core PRIVATE ${PJ_WARNING_FLAGS})
 target_include_directories(blf_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(blf_core PUBLIC plotjuggler_sdk::base PRIVATE blf)
 
-# ---------------------------------------------------------------------------
-# Plugin shared library
-# ---------------------------------------------------------------------------
 add_library(blf_source_plugin SHARED blf_source.cpp blf_dialog.cpp)
 target_compile_features(blf_source_plugin PRIVATE cxx_std_20)
 target_compile_options(blf_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
@@ -66,9 +55,6 @@ pj_embed_ui(blf_source_plugin
   VAR_NAME kBlfDialogUi
 )
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 add_executable(blf_source_test
   tests/blf_frames_test.cpp
   tests/blf_dialog_test.cpp

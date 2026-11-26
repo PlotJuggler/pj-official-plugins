@@ -87,9 +87,9 @@ class Endpoint {
 
   /// Reads "url", else the legacy "address" / "port", composed into ws://address:port (the
   /// default host or port for the missing one). Either way the URL must pass normalizeUrl. A
-  /// "url" loses its userinfo and fragment first: configs saved by earlier versions may hold
-  /// them, and IXWebSocket ignored both and connected. A config with none of these keys leaves
-  /// the URL as it is. False for a "url" that is not a string, or a URL normalizeUrl refuses.
+  /// "url" loses its userinfo and fragment first: IXWebSocket ignores both, so a saved config
+  /// that holds them still connects. A config with none of these keys leaves the URL as it is.
+  /// False for a "url" that is not a string, or a URL normalizeUrl refuses.
   /// Throws nlohmann::json::exception for a wrong-typed address or port.
   [[nodiscard]] bool load(const nlohmann::json& cfg) {
     std::string text;

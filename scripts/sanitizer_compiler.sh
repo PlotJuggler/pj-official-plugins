@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
-# Compiler selection for the instrumented lanes. Sourced by build.sh and
-# scripts/ensure_core.sh, which must agree: the SDK and the plugins that link it
-# have to be instrumented for the same compiler's sanitizer runtime, and code
-# instrumented for one runtime cannot be loaded into a process running another.
+# Compiler selection for the asan/tsan lanes. Sourced by build.sh and scripts/ensure_core.sh, which
+# must agree: the SDK and the plugins linking it have to be instrumented for the same compiler's
+# sanitizer runtime (code instrumented for one runtime cannot load into a process running another).
 #
-# The asan and tsan lanes compile with Clang PJ_SANITIZER_CLANG_VERSION (default
-# 22, from apt.llvm.org: clang-<v>, libclang-rt-<v>-dev, llvm-<v>). That is the
-# compiler PlotJuggler 4's instrumented lanes use, and its container builds this
-# repository the same way. A compiler the caller already chose through CC/CXX is
-# kept. The Conan profile is left alone, so prebuilt dependency binaries keep their
-# GCC package ids instead of being rebuilt from source.
+# Compiles with Clang PJ_SANITIZER_CLANG_VERSION (default 22, apt.llvm.org: clang-<v>,
+# libclang-rt-<v>-dev, llvm-<v>), matching PlotJuggler 4's instrumented lanes. A CC/CXX the caller
+# already set is kept. The Conan profile is left alone so prebuilt dependency binaries keep their
+# GCC package ids.
 
 # pj_select_sanitizer_compiler <lane>
-#   Exports CC/CXX (and PJ_SANITIZER_CLANG_VERSION) for the asan and tsan lanes;
-#   does nothing for any other lane. Returns 1 when the required Clang is missing.
+#   Exports CC/CXX (and PJ_SANITIZER_CLANG_VERSION) for asan/tsan, no-op otherwise; returns 1 when
+#   the required Clang is missing.
 pj_select_sanitizer_compiler() {
   local lane="${1:-}"
   case "$lane" in

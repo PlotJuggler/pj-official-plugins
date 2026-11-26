@@ -110,7 +110,6 @@ class FoxgloveMcapPlayer:
         # sensor-frame TF lookup fails. channel_id → [(log_time_ns, data), ...]
         self.latched: dict = {}
 
-        # Build advertise list from channels
         self.advertise_channels = [
             {
                 "id": ch["id"],
@@ -188,15 +187,10 @@ class FoxgloveMcapPlayer:
         while True:
             loop_count += 1
             print(f"\n→ Loop {loop_count} — reading {Path(self.mcap_path).name}")
-            # Stream straight off the reader. Materializing the file
-            # (list(read_messages(...))) holds every DECOMPRESSED payload in RAM
-            # at once — tens of GiB for a real robot bag — and delays playback
-            # until the whole file has been read. Memory now stays bounded by
-            # one chunk, and the first message plays immediately.
-            # Don't consume the file until a client is connected — otherwise the
-            # single pass streams past (advancing the generator) with nobody
-            # listening, and a client that connects a moment later gets only
-            # advertisements + latched replay, never the live data.
+            # Stream straight off the reader: materializing the file would hold every decompressed payload in RAM
+            # (tens of GiB for a real robot bag) and delay playback until the whole file is read.
+            # Don't consume the file until a client is connected, or the single pass streams past with nobody
+            # listening and a client connecting a moment later gets only advertisements + latched replay.
             while not self.clients:
                 await asyncio.sleep(0.05)
 

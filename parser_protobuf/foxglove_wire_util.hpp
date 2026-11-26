@@ -3,10 +3,9 @@
 // SPDX-License-Identifier: MIT
 //
 // Protobuf wire-level helpers shared by the hand-rolled foxglove codecs that
-// scan a known layout with CodedInputStream (PointCloud, VoxelGrid, Grid). The nested
-// geometry messages (Timestamp, Vector2/3, Quaternion, Pose) carry no frame_id
-// and are never renumbered by the variant schemas PR #153 handles, so their
-// field numbers stay hardcoded here.
+// scan a known layout with CodedInputStream (PointCloud, VoxelGrid, Grid). The nested geometry messages (Timestamp,
+// Vector2/3, Quaternion, Pose) carry no frame_id and are never renumbered by variant schemas, so their field numbers
+// stay hardcoded here.
 
 #include <google/protobuf/io/coded_stream.h>
 
@@ -22,13 +21,11 @@ namespace pj_protobuf::wire {
 
 namespace gpio = google::protobuf::io;
 
-// Protobuf wire types.
 constexpr uint32_t kWireVarint = 0;
 constexpr uint32_t kWireI64 = 1;
 constexpr uint32_t kWireLen = 2;
 constexpr uint32_t kWireI32 = 5;
 
-/// Skip a field whose value we do not consume, given its wire type.
 [[nodiscard]] inline bool skipField(gpio::CodedInputStream& in, uint32_t wire_type) {
   switch (wire_type) {
     case kWireVarint: {
@@ -62,8 +59,7 @@ constexpr uint32_t kWireI32 = 5;
   return true;
 }
 
-/// Read a fixed32 scalar field into `out` (the Foxglove counts/strides are all
-/// fixed32).
+/// Read a fixed32 scalar field into `out` (Foxglove counts and strides are all fixed32).
 [[nodiscard]] inline bool readFixed32(gpio::CodedInputStream& in, uint32_t wire_type, uint32_t& out) {
   return wire_type == kWireI32 && in.ReadLittleEndian32(&out);
 }

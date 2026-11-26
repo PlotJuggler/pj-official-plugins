@@ -2,10 +2,9 @@
 // Copyright 2026 PlotJuggler contributors
 // SPDX-License-Identifier: MIT
 //
-// Zero-copy decoder for the well-known `foxglove.Grid` protobuf schema into the
-// canonical sdk::GridMap builtin object (plotjuggler_sdk 0.26.0). Same approach
-// as foxglove_voxelgrid_codec.hpp: the wire layout is known, so we scan it
-// directly with CodedInputStream and alias the packed cell bytes in place.
+// Zero-copy decoder for the well-known `foxglove.Grid` protobuf schema into the canonical sdk::GridMap builtin
+// object. The wire layout is known, so it is scanned directly with CodedInputStream and the packed cell bytes are
+// aliased in place.
 //
 //   message foxglove.Grid {
 //     google.protobuf.Timestamp timestamp = 1;

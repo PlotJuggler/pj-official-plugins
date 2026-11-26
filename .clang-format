@@ -1,11 +1,9 @@
-# We base our styles on the standard Google C++ guide with some tweaks
+# Google C++ style with some tweaks
 Language:      Cpp
 BasedOnStyle:  Google
 
 UseTab: Never
 
-# Tab width is defined as four spaces, as is the indent width. This means each
-# indentation level will be a single tab.
 TabWidth:    2
 IndentWidth: 2
 

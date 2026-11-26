@@ -1,44 +1,33 @@
 # MF4 / MDF Data Loader
 
-Imports [ASAM MDF](https://www.asam.net/standards/detail/mdf/) measurement files
-(`.mf4`, `.mdf`, `.dat`) — the standard automotive measurement/logging format.
+Imports [ASAM MDF](https://www.asam.net/standards/detail/mdf/) measurement files (`.mf4`, `.mdf`, `.dat`).
 
-Parsing is done with [`ihedvall/mdflib`](https://github.com/ihedvall/mdflib)
-(MIT); optional CAN bus-signal decoding uses
-[`dbc_parser_cpp`](https://github.com/LinuxDevon/dbc_parser_cpp) (MIT). Both are
-vendored via CPM and statically linked, so the plugin `.so` has no extra runtime
-dependencies.
+Parsing uses [`ihedvall/mdflib`](https://github.com/ihedvall/mdflib) (MIT); optional CAN bus-signal decoding uses
+[`dbc_parser_cpp`](https://github.com/LinuxDevon/dbc_parser_cpp) (MIT). Both are vendored via CPM and statically
+linked, so the plugin `.so` has no extra runtime dependencies.
 
 ## Features
 
-- Reads MDF v3 and v4, including `##DZ` compressed data blocks and unfinalized
-  (`UnFinMF`) files (e.g. from CANedge loggers)
-- One topic per channel group; one field per channel
-- Numeric channels are imported as engineering (CC-conversion-applied) values;
-  text channels as strings
-- **DBC-based CAN decoding**: bus-logging channel groups are decoded into named
-  physical signals when one or more `.dbc` databases are supplied (via config;
-  see `dbc_paths`). One topic per CAN message, namespaced by the frame's bus
-  channel (`CAN/ch<N>/<message>`, or `CAN/<message>` when the file records no
-  bus channel), one field per signal. Standard and extended (29-bit / J1939)
-  frames are disambiguated. CAN FD frames decode like classic ones, including
-  signals past byte 7. Frames that match a message id but cannot be decoded
-  (shorter than the message, or a signal reaching past the payload) are
-  counted and reported, not silently dropped. A signal decoded from a DBC
-  `VAL_` value table also gets a **`<signal>_label`** text field (decoded label, or the raw value as text
-  when unmatched) — see `common/can_dbc`'s `signal_row.hpp` for the full
-  convention. It is `<signal>_label_2` (then `_3`, ...) when the message
-  already has a signal named `<signal>_label`. Distinct from MDF's own native
-  enum/value-to-text channel conversion (out of scope — see Known
-  Limitations).
-- Preview dialog listing the file's channel groups (name, sample count, channel
-  count, bus type)
+- Reads MDF v3 and v4, including `##DZ` compressed data blocks and unfinalized (`UnFinMF`) files (e.g. from CANedge
+  loggers).
+- One topic per channel group, one field per channel. Numeric channels are imported as engineering
+  (conversion-applied) values, text channels as strings.
+- **DBC-based CAN decoding**: bus-logging channel groups are decoded into named physical signals when one or more
+  `.dbc` databases are supplied via the config (`dbc_paths`). One topic per CAN message, namespaced by the frame's bus
+  channel (`CAN/ch<N>/<message>`, or `CAN/<message>` when the file records no bus channel), one field per signal.
+  - Standard and extended (29-bit / J1939) frames are disambiguated. CAN FD frames decode like classic ones,
+    including signals past byte 7.
+  - Frames that match a message id but cannot be decoded (shorter than the message, or a signal reaching past the
+    payload) are counted and reported.
+  - A signal with a DBC `VAL_` value table also gets a **`<signal>_label`** text field (the label, or the raw value as
+    text when unmatched); see `common/can_dbc`'s `signal_row.hpp`. It is `<signal>_label_2` (then `_3`, ...) when the
+    message already has a signal named `<signal>_label`. MDF's own value-to-text channel conversion is not applied.
+- A preview dialog lists the file's channel groups (name, sample count, channel count, bus type).
 
-## Timestamp Handling
+## Timestamps
 
-Absolute nanoseconds = the file header start time (`GetStartTime()`) plus the
-channel group's master (time) channel offset. CAN frame times come from the
-frame's own relative timestamp added to the header start time.
+Absolute nanoseconds: the file header start time (`GetStartTime()`) plus the channel group's master (time) channel
+offset. CAN frame times are the frame's own relative timestamp plus the header start time.
 
 ## Configuration
 
@@ -50,31 +39,24 @@ frame's own relative timestamp added to the header start time.
 }
 ```
 
-Dictionary paths are portable. A dictionary that lies inside the data file's
-folder is saved relative to it (`"powertrain.dbc"`, `"dbc/powertrain.dbc"`), so
-a moved or copied layout folder decodes with the dictionary beside the data;
-other paths are saved as given. `aux_base_dir` records the data file's folder
-at save time, so settings reused for a different data file still find relative
-entries. Absolute paths saved by earlier versions that lie under the folder
-that moved (for example a `dbc/` folder next to `data/`) are rebased onto the
-data file that is open; the moved folder is worked out from the old and new
-data file paths.
+Dictionary paths are portable: a dictionary inside the data file's folder is saved relative to it
+(`"powertrain.dbc"`, `"dbc/powertrain.dbc"`), so a moved or copied layout folder decodes with the dictionary beside the
+data; other paths are saved as given. `aux_base_dir` records the data file's folder at save time, so settings reused
+for a different data file still find relative entries. An absolute path under a folder that has moved (for example
+`dbc/` next to `data/`) is rebased onto the data file that is open.
 
 ## Testing
 
-Unit tests are hermetic (they synthesize MF4 files in-memory with mdflib's
-writer and use an inline DBC), so they need no external files. Use a filter that
-covers both the MF4 reader tests and the shared CAN/DBC decoder tests:
+Unit tests are hermetic (they synthesize MF4 files with mdflib's writer and use an inline DBC). The filter covers
+both the MF4 reader tests and the shared CAN/DBC decoder tests:
 
 ```bash
 ctest --test-dir <build> -R "mf4|can_dbc"
 ```
 
-Two additional **integration tests** run against real files but are **skipped**
-unless the environment variable `MF4_TEST_DATA_DIR` points at a directory
-containing the two sample files below. The files are **not** committed (they are
-third-party assets and larger than the repo's binary-fixture budget) — download
-them from their upstream homes:
+Two **integration tests** run against real files and are skipped unless `MF4_TEST_DATA_DIR` points at a directory
+containing the two sample files below. The files are not committed (third-party assets, larger than the repo's
+binary-fixture budget); download them from upstream:
 
 | File | ~Size | Download |
 |------|-------|----------|
@@ -91,11 +73,8 @@ MF4_TEST_DATA_DIR="$MF4_SAMPLES" ctest --test-dir <build> -R mf4 --output-on-fai
 
 ## Known Limitations
 
-- Numeric channels are read as engineering doubles (`kFloat64`); native integer
-  column types are not preserved.
-- Out of scope in v1: enum (value→text) channels, multidimensional channel
-  arrays, multiplexed CAN signals, and correct epochs for *appended* files with
-  multiple measurements at distinct start times.
-- The dialog is a read-only preview. Interactive channel selection and a DBC
-  file picker are follow-ups (they need dialog-engine input round-tripping); for
-  now, DBC databases are supplied through the saved config (`dbc_paths`).
+- Numeric channels are read as engineering doubles (`kFloat64`); native integer column types are not preserved.
+- Not supported: enum (value-to-text) channels, multidimensional channel arrays, multiplexed CAN signals, and correct
+  epochs for *appended* files with multiple measurements at distinct start times.
+- The dialog is a read-only preview: there is no channel selection or DBC file picker; supply DBC databases through
+  the saved config (`dbc_paths`).

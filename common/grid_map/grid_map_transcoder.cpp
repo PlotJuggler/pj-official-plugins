@@ -41,7 +41,7 @@ bool sameLayout(const MultiArrayDimension& a, const MultiArrayDimension& b) {
 }  // namespace
 
 Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg) {
-  // ---- Header-level checks, all before touching any array ----
+  // Header-level checks, all before touching any array.
   if (msg.layers.empty()) {
     return unexpected(std::string("GridMap: no layers"));
   }
@@ -71,7 +71,7 @@ Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg) {
     return unexpected(std::string("GridMap: resolution and lengths must be finite and positive"));
   }
 
-  // ---- Layout from layer 0; every other layer must match it ----
+  // Layout from layer 0; every other layer must match it.
   const auto& dims = msg.data.front().dims;
   if (dims.size() != 2 || dims[0].label != "column_index" || dims[1].label != "row_index") {
     return unexpected(std::string("GridMap: layer layout must be dim[0]=column_index, dim[1]=row_index"));
@@ -117,7 +117,7 @@ Expected<sdk::GridMap> transcodeGridMap(const GridMapMessage& msg) {
     }
   }
 
-  // ---- Transcode: column-major ring buffer -> row-major interleaved records ----
+  // Transcode the column-major ring buffer into row-major interleaved records.
   auto owned = std::make_shared<std::vector<float>>(static_cast<size_t>(cells) * layer_count);
   float* out = owned->data();
 

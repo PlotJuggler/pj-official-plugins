@@ -179,10 +179,7 @@ TEST(CloudCommon, CountFieldAsciiPacksEachElement) {
 }
 
 TEST(CloudCommon, CopySurvivesOriginalExpectedDestruction) {
-  // Proves the BufferAnchor pattern: build inside a scope, copy the
-  // PointCloud out, let the original Expected<PointCloud> (and its shared_ptr
-  // reference) be destroyed, then verify the copy's data span still reads
-  // correctly.
+  // The copy must keep the data span valid after the original Expected<PointCloud> is destroyed.
   PJ::sdk::PointCloud copy;
   {
     std::vector<uint8_t> body;

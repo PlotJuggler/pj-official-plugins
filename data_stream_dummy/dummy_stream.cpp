@@ -16,7 +16,6 @@ class DummyStreamer : public PJ::StreamSourceBase {
   }
 
   PJ::Status onStart() override {
-    // Create topics
     auto sin_cos = writeHost().ensureTopic("dummy/sin_cos");
     if (!sin_cos) {
       return PJ::unexpected(sin_cos.error());
@@ -35,7 +34,6 @@ class DummyStreamer : public PJ::StreamSourceBase {
     }
     topic_noise_ = *noise;
 
-    // Pre-register fields with bound handles
     auto f_sin = writeHost().ensureField(topic_sin_cos_, "sin", PJ::PrimitiveType::kFloat64);
     if (!f_sin) {
       return PJ::unexpected(f_sin.error());
@@ -61,9 +59,8 @@ class DummyStreamer : public PJ::StreamSourceBase {
     field_noise_ = *f_noise;
 
     // Rotating quaternion + the Euler angles it is built from, to exercise the
-    // quaternion toolbox against a live stream: derived rpy/* should overlay
-    // euler_gt/* exactly. Field names x/y/z/w match the toolbox's sibling
-    // auto-binding pattern.
+    // quaternion toolbox: derived rpy/* should overlay euler_gt/* exactly. Field
+    // names x/y/z/w match the toolbox's sibling auto-binding pattern.
     auto orientation = writeHost().ensureTopic("dummy/orientation");
     if (!orientation) {
       return PJ::unexpected(orientation.error());
@@ -112,14 +109,14 @@ class DummyStreamer : public PJ::StreamSourceBase {
     double dt_since_last = std::chrono::duration<double>(now - last_poll_time_).count();
     last_poll_time_ = now;
 
-    // Generate samples at ~100 Hz covering the time since last poll
+    // ~100 Hz samples covering the time since the last poll.
     constexpr double kSampleRate = 100.0;
     auto num_samples = static_cast<int>(dt_since_last * kSampleRate);
     if (num_samples < 1) {
       num_samples = 1;
     }
     if (num_samples > 20) {
-      num_samples = 20;  // cap to avoid burst after long stall
+      num_samples = 20;  // cap the burst after a long stall
     }
 
     double sample_dt = dt_since_last / static_cast<double>(num_samples);
@@ -133,7 +130,6 @@ class DummyStreamer : public PJ::StreamSourceBase {
 
       constexpr double kTwoPi = 2.0 * 3.14159265358979323846;
 
-      // sin/cos topic
       {
         const PJ::sdk::BoundFieldValue fields[] = {
             {.field = field_sin_, .value = std::sin(kTwoPi * t)},
@@ -145,7 +141,6 @@ class DummyStreamer : public PJ::StreamSourceBase {
         }
       }
 
-      // sawtooth topic
       {
         const PJ::sdk::BoundFieldValue fields[] = {
             {.field = field_sawtooth_, .value = std::fmod(t, 1.0)},
@@ -156,7 +151,6 @@ class DummyStreamer : public PJ::StreamSourceBase {
         }
       }
 
-      // noise topic
       {
         const PJ::sdk::BoundFieldValue fields[] = {
             {.field = field_noise_, .value = dist_(rng_)},

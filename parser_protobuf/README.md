@@ -81,18 +81,16 @@ with `foxglove.Log`), which keeps messages of any length; the flatten drops
 strings of 100 bytes or more. `name` becomes the log source; `file` and `line`
 are not kept in the object.
 
-`PJ.PosesInFrame` and `foxglove.PosesInFrame` are wire-identical (the SDK proto
-mirrors Foxglove field-for-field), so both names bind to the same SDK codec
-(`deserializePosesInFrame`) — no plugin-local decoder, mirroring the
-`VideoFrame` fast path. The message is small (scalars + a `frame_id`), so the
-decode is owning rather than zero-copy; the scalar route emits `num_poses`.
+`PJ.PosesInFrame` and `foxglove.PosesInFrame` are wire-identical, so both names
+bind to the same SDK codec (`deserializePosesInFrame`). The message is small
+(scalars + a `frame_id`), so the decode is owning rather than zero-copy; the
+scalar route emits `num_poses`.
 
-`foxglove.PointCloud` mirrors how the ROS parser handles
-`sensor_msgs/PointCloud2`: geometry is kept in `frame_id` and resolved through
-the TF tree. Foxglove's inline `pose` field has no slot in the canonical
-`sdk::PointCloud`, so a **non-identity `pose` is dropped** (a one-time warning is
-logged). For correct multi-sensor placement, provide the matching
-`foxglove.FrameTransform` (`/tf`) stream.
+`foxglove.PointCloud` keeps geometry in `frame_id`, resolved through the TF
+tree, like the ROS parser does for `sensor_msgs/PointCloud2`. Foxglove's inline
+`pose` field has no slot in the canonical `sdk::PointCloud`, so a **non-identity
+`pose` is dropped** (a one-time warning is logged). For correct multi-sensor
+placement, provide the matching `foxglove.FrameTransform` (`/tf`) stream.
 
 Per-point colour is normalized to the canonical packed field via the shared
 `pj_pointcloud_color` helper (`common/pointcloud_color`): foxglove's separate
@@ -101,8 +99,8 @@ Per-point colour is normalized to the canonical packed field via the shared
 increasing-address order. The bytes are already in that order, so the collapse is a
 **pure metadata rewrite that keeps the zero-copy span**. The host then renders one
 per-point colour (its "RGB" colour mode) instead of treating each channel as a
-separate colormap source. `parser_ros` produces the **same** canonical `rgba` field
-(repacking a PCL `0x00RRGGBB` packed colour), so the host has one colour rule.
+separate colormap source. `parser_ros` produces the same `rgba` field (repacking a
+PCL `0x00RRGGBB` packed colour).
 
 ## Known Limitations
 
