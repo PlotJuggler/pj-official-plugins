@@ -9,6 +9,10 @@ One entry per released version (newest first).
 - J1939 and NMEA 2000 per interface: frames find their DBC message by PGN, so one DBC message decodes that parameter group from every source address and priority. Topics name the source address (and a PDU1 message its destination): `CAN/{interface}/{message}/0x{SA}`.
 - NMEA 2000 fast-packet messages (DBC messages longer than 8 bytes) are reassembled from their frames and decoded; signals past the end of a shorter message are left out of that row. Frames that cannot be reassembled are counted in the import summary.
 
+### Fixed
+
+- A signed 64-bit DBC signal is read as two's complement. A negative value used to show as a huge positive one.
+
 ## [0.1.2] - 2026-11-19
 
 ### Fixed

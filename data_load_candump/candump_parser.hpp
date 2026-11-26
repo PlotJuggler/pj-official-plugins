@@ -67,7 +67,7 @@ bool parseHexU32(std::string_view text, std::uint32_t& out);
 enum class LineKind {
   kData,         ///< classic CAN data frame (payload 0-8 bytes) -- decodable
   kRtr,          ///< RTR frame -- recognized, no payload to decode
-  kFd,           ///< CAN FD frame -- recognized; dbc_parser_cpp rejects payloads > 8 bytes
+  kFd,           ///< CAN FD frame -- recognized, not decoded (out of scope)
   kXl,           ///< CAN XL frame -- recognized, not decoded (out of scope)
   kError,        ///< error frame (CAN_ERR_FLAG set on the id) -- recognized, not decoded
   kErrorDetail,  ///< a `-e` TAB-continuation detail line for the PRECEDING error frame

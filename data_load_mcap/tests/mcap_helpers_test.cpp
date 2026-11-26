@@ -22,8 +22,11 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mcap/writer.hpp>
 #include <sstream>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #ifndef _WIN32
@@ -86,7 +89,9 @@ class MemoryReadable : public mcap::IReadable {
 // The writer chunks by default; pass chunked=false for a flat recording, or
 // with_message_index=false to suppress Message Index records — a valid,
 // spec-conformant writer mode that the read-order tests below depend on.
-std::vector<uint8_t> createTestMcap(uint64_t message_count = 10, bool chunked = true, bool with_message_index = true) {
+std::vector<uint8_t> createTestMcap(
+    uint64_t message_count = 10, bool chunked = true, bool with_message_index = true,
+    const std::function<void(mcap::McapWriterOptions&)>& tweak_options = {}) {
   MemoryWritable writable;
   mcap::McapWriter writer;
 
@@ -95,6 +100,9 @@ std::vector<uint8_t> createTestMcap(uint64_t message_count = 10, bool chunked = 
   options.chunkSize = 1024;  // small, so a multi-message fixture spans many chunks
   options.noChunking = !chunked;
   options.noMessageIndex = !with_message_index;
+  if (tweak_options) {
+    tweak_options(options);
+  }
   writer.open(writable, options);
 
   // Add a schema
@@ -203,6 +211,279 @@ TEST(McapHelpersTest, PopulateSummaryFromReader) {
   auto& schema = info.schemas.begin()->second;
   EXPECT_EQ(schema->name, "test_msg");
   EXPECT_EQ(schema->encoding, "json");
+}
+
+// --- readChannelSummary: what the import dialog reads on the GUI thread ---
+
+// Records every read, so a test can tell which parts of the file were touched.
+class RecordingReadable : public MemoryReadable {
+ public:
+  using MemoryReadable::MemoryReadable;
+
+  uint64_t read(std::byte** output, uint64_t offset, uint64_t size) override {
+    const uint64_t n = MemoryReadable::read(output, offset, size);
+    ranges.emplace_back(offset, offset + n);
+    return n;
+  }
+
+  std::vector<std::pair<uint64_t, uint64_t>> ranges;
+};
+
+// [start, end) of the ChunkIndex group, from the summary's SummaryOffset records.
+std::pair<uint64_t, uint64_t> chunkIndexGroup(const std::vector<uint8_t>& data) {
+  MemoryReadable readable(data);
+  mcap::Footer footer;
+  EXPECT_TRUE(mcap::McapReader::ReadFooter(readable, data.size() - mcap::internal::FooterLength, &footer).ok());
+  mcap::RecordReader records(readable, footer.summaryOffsetStart, data.size() - mcap::internal::FooterLength);
+  while (auto record = records.next()) {
+    mcap::SummaryOffset offset{};
+    if (record->opcode == mcap::OpCode::SummaryOffset && mcap::McapReader::ParseSummaryOffset(*record, &offset).ok() &&
+        offset.groupOpCode == mcap::OpCode::ChunkIndex) {
+      return {offset.groupStart, offset.groupStart + offset.groupLength};
+    }
+  }
+  ADD_FAILURE() << "no ChunkIndex SummaryOffset";
+  return {0, 0};
+}
+
+// The dialog needs schemas, channels and counts only. Parsing the chunk
+// indexes of a bag with one chunk per message (300k of them) froze the GUI for
+// half a second per call.
+TEST(McapReadChannelSummaryTest, DoesNotReadTheChunkIndexes) {
+  const auto data = createTestMcap(
+      /*message_count=*/200, /*chunked=*/true, /*with_message_index=*/true,
+      [](mcap::McapWriterOptions& options) { options.chunkSize = 1; });
+  const auto [index_start, index_end] = chunkIndexGroup(data);
+  ASSERT_GT(index_end - index_start, 200u) << "fixture needs a chunk index to skip";
+
+  RecordingReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+  readable.ranges.clear();
+
+  McapSummaryInfo info;
+  ASSERT_TRUE(readChannelSummary(reader, info).ok());
+
+  EXPECT_EQ(info.schemas.size(), 1u);
+  ASSERT_EQ(info.channels.size(), 1u);
+  EXPECT_EQ(info.channels.begin()->second->topic, "/test/topic");
+  ASSERT_TRUE(info.statistics.has_value());
+  EXPECT_EQ(info.statistics->messageCount, 200u);
+  EXPECT_EQ(info.statistics->channelMessageCounts.at(info.channels.begin()->first), 200u);
+
+  const auto overlapping = std::count_if(readable.ranges.begin(), readable.ranges.end(), [&](const auto& range) {
+    return range.first < index_end && range.second > index_start;
+  });
+  EXPECT_EQ(overlapping, 0) << "reads inside the chunk indexes [" << index_start << ", " << index_end << ")";
+}
+
+// Each file below has a summary the selective read cannot use; the full read
+// must still deliver the same channels and counts.
+void expectChannelSummaryViaFallback(const std::vector<uint8_t>& data) {
+  MemoryReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+
+  McapSummaryInfo info;
+  ASSERT_TRUE(readChannelSummary(reader, info).ok());
+
+  EXPECT_EQ(info.schemas.size(), 1u);
+  ASSERT_EQ(info.channels.size(), 1u);
+  EXPECT_EQ(info.channels.begin()->second->topic, "/test/topic");
+  ASSERT_TRUE(info.statistics.has_value());
+  EXPECT_EQ(info.statistics->messageCount, 20u);
+  EXPECT_EQ(info.statistics->channelMessageCounts.at(info.channels.begin()->first), 20u);
+}
+
+TEST(McapReadChannelSummaryTest, FallsBackWithoutSummaryOffsets) {
+  expectChannelSummaryViaFallback(
+      createTestMcap(20, true, true, [](mcap::McapWriterOptions& options) { options.noSummaryOffsets = true; }));
+}
+
+TEST(McapReadChannelSummaryTest, FallsBackWithoutStatistics) {
+  // The scan rebuilds the statistics the writer left out.
+  expectChannelSummaryViaFallback(
+      createTestMcap(20, true, true, [](mcap::McapWriterOptions& options) { options.noStatistics = true; }));
+}
+
+TEST(McapReadChannelSummaryTest, FallsBackWithoutASummary) {
+  expectChannelSummaryViaFallback(
+      createTestMcap(20, true, true, [](mcap::McapWriterOptions& options) { options.noSummary = true; }));
+}
+
+TEST(McapReadChannelSummaryTest, FallsBackWhenTheFooterIsDamaged) {
+  auto data = createTestMcap(20);
+  data[data.size() - 4] ^= 0xFF;  // trailing magic
+  expectChannelSummaryViaFallback(data);
+}
+
+// --- A summary whose offsets or records are damaged must not lose channels ---
+
+// Two channels with different message counts, so a lost one shows in the table and the counts.
+std::vector<uint8_t> createTwoChannelMcap() {
+  MemoryWritable writable;
+  mcap::McapWriter writer;
+  mcap::McapWriterOptions options("test_profile");
+  options.compression = mcap::Compression::None;
+  writer.open(writable, options);
+
+  mcap::Schema schema("test_msg", "json", "{}");
+  writer.addSchema(schema);
+  mcap::Channel a("/a", "json", schema.id);
+  mcap::Channel b("/b", "json", schema.id);
+  writer.addChannel(a);
+  writer.addChannel(b);
+
+  const std::string payload = "{}";
+  const std::pair<mcap::ChannelId, int> counts[] = {{a.id, 3}, {b.id, 5}};
+  for (const auto& [channel_id, count] : counts) {
+    for (int i = 0; i < count; ++i) {
+      mcap::Message msg;
+      msg.channelId = channel_id;
+      msg.logTime = msg.publishTime = static_cast<mcap::Timestamp>(1000 + i);
+      msg.data = reinterpret_cast<const std::byte*>(payload.data());
+      msg.dataSize = payload.size();
+      EXPECT_TRUE(writer.write(msg).ok());
+    }
+  }
+  writer.close();
+  return writable.data();
+}
+
+uint64_t readU64(const std::vector<uint8_t>& data, uint64_t pos) {
+  uint64_t value = 0;
+  std::memcpy(&value, data.data() + pos, sizeof(value));  // MCAP is little-endian, like the hosts that run this
+  return value;
+}
+
+void writeU64(std::vector<uint8_t>& data, uint64_t pos, uint64_t value) {
+  std::memcpy(data.data() + pos, &value, sizeof(value));
+}
+
+// File offset of the SummaryOffset record that describes the group of `group`.
+uint64_t summaryOffsetRecordOf(const std::vector<uint8_t>& data, mcap::OpCode group) {
+  MemoryReadable readable(data);
+  mcap::Footer footer;
+  EXPECT_TRUE(mcap::McapReader::ReadFooter(readable, data.size() - mcap::internal::FooterLength, &footer).ok());
+  mcap::RecordReader records(readable, footer.summaryOffsetStart, data.size() - mcap::internal::FooterLength);
+  while (auto record = records.next()) {
+    mcap::SummaryOffset offset{};
+    if (record->opcode == mcap::OpCode::SummaryOffset && mcap::McapReader::ParseSummaryOffset(*record, &offset).ok() &&
+        offset.groupOpCode == group) {
+      return records.curRecordOffset();
+    }
+  }
+  ADD_FAILURE() << "no SummaryOffset record for the group";
+  return 0;
+}
+
+// SummaryOffset body: group opcode (1), group start (8), group length (8), after the 9-byte record header.
+constexpr uint64_t kGroupStartField = 9 + 1;
+constexpr uint64_t kGroupLengthField = 9 + 1 + 8;
+
+// Both channels, with their counts, whatever damage the summary has; and the selective read itself must
+// refuse the file so the full read gets to run.
+void expectBothChannels(const std::vector<uint8_t>& data) {
+  {
+    MemoryReadable readable(data);
+    McapSummaryInfo selective;
+    EXPECT_FALSE(readSelectiveSummary(readable, selective).ok()) << "a damaged summary must not pass as complete";
+  }
+
+  MemoryReadable readable(data);
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(readable).ok());
+  McapSummaryInfo info;
+  ASSERT_TRUE(readChannelSummary(reader, info).ok());
+
+  ASSERT_TRUE(info.statistics.has_value());
+  std::unordered_map<std::string, uint64_t> count_by_topic;
+  for (const auto& [id, channel] : info.channels) {
+    count_by_topic[channel->topic] = info.statistics->channelMessageCounts.at(id);
+  }
+  EXPECT_EQ(count_by_topic, (std::unordered_map<std::string, uint64_t>{{"/a", 3}, {"/b", 5}}));
+}
+
+TEST(McapReadChannelSummaryTest, UndamagedTwoChannelFileIsReadSelectively) {
+  const auto data = createTwoChannelMcap();
+  MemoryReadable readable(data);
+  McapSummaryInfo info;
+  ASSERT_TRUE(readSelectiveSummary(readable, info).ok());
+  EXPECT_EQ(info.channels.size(), 2u);
+}
+
+// A Channel record that does not parse used to be skipped: its topic vanished from the picker.
+TEST(McapReadChannelSummaryTest, ACorruptChannelRecordInTheSummaryFallsBack) {
+  auto data = createTwoChannelMcap();
+  const uint64_t offset_record = summaryOffsetRecordOf(data, mcap::OpCode::Channel);
+  const uint64_t group_start = readU64(data, offset_record + kGroupStartField);
+  const uint64_t second_record = group_start + 9 + readU64(data, group_start + 1);
+  const uint64_t topic_length_field = second_record + 9 + 2 + 2;  // after the id and the schema id
+  const uint32_t absurd = 0xFFFFFFFFu;
+  std::memcpy(data.data() + topic_length_field, &absurd, sizeof(absurd));
+  expectBothChannels(data);
+}
+
+// A SummaryOffset that stops short of the last Channel record drops it without any read error: only the
+// Statistics count gives it away.
+TEST(McapReadChannelSummaryTest, AChannelGroupCutShortFallsBack) {
+  auto data = createTwoChannelMcap();
+  const uint64_t offset_record = summaryOffsetRecordOf(data, mcap::OpCode::Channel);
+  const uint64_t group_start = readU64(data, offset_record + kGroupStartField);
+  writeU64(data, offset_record + kGroupLengthField, 9 + readU64(data, group_start + 1));  // first record only
+  expectBothChannels(data);
+}
+
+TEST(McapReadChannelSummaryTest, AChannelGroupRunningPastTheSummaryFallsBack) {
+  auto data = createTwoChannelMcap();
+  const uint64_t offset_record = summaryOffsetRecordOf(data, mcap::OpCode::Channel);
+  writeU64(data, offset_record + kGroupLengthField, readU64(data, offset_record + kGroupLengthField) + 100000);
+  expectBothChannels(data);
+}
+
+// Two SummaryOffset records for one opcode, each covering part of the channels (a writer that emits the
+// group in two runs): the last record used to win and the first run's channels were lost.
+TEST(McapReadChannelSummaryTest, ChannelGroupsSplitAcrossTwoSummaryOffsetsAreBothRead) {
+  auto data = createTwoChannelMcap();
+  const uint64_t offset_record = summaryOffsetRecordOf(data, mcap::OpCode::Channel);
+  const uint64_t group_start = readU64(data, offset_record + kGroupStartField);
+  const uint64_t group_length = readU64(data, offset_record + kGroupLengthField);
+  const uint64_t first_length = 9 + readU64(data, group_start + 1);
+  writeU64(data, offset_record + kGroupLengthField, first_length);
+
+  std::vector<uint8_t> second(9 + 17, 0);
+  second[0] = static_cast<uint8_t>(mcap::OpCode::SummaryOffset);
+  writeU64(second, 1, 17);
+  second[9] = static_cast<uint8_t>(mcap::OpCode::Channel);
+  writeU64(second, 9 + 1, group_start + first_length);
+  writeU64(second, 9 + 1 + 8, group_length - first_length);
+  data.insert(data.end() - static_cast<std::ptrdiff_t>(mcap::internal::FooterLength), second.begin(), second.end());
+
+  MemoryReadable readable(data);
+  McapSummaryInfo info;
+  ASSERT_TRUE(readSelectiveSummary(readable, info).ok());
+  EXPECT_EQ(info.channels.size(), 2u);
+}
+
+// Some writers count only the channels that hold messages in Statistics: that is no reason to fall back.
+TEST(McapReadChannelSummaryTest, MoreChannelsThanStatisticsCountsIsStillReadSelectively) {
+  auto data = createTwoChannelMcap();
+  const uint64_t stats_start = readU64(data, summaryOffsetRecordOf(data, mcap::OpCode::Statistics) + kGroupStartField);
+  const uint32_t one = 1;
+  // Statistics body: message_count (u64), schema_count (u16), channel_count (u32).
+  std::memcpy(data.data() + stats_start + 9 + 8 + 2, &one, sizeof(one));
+
+  MemoryReadable readable(data);
+  McapSummaryInfo info;
+  ASSERT_TRUE(readSelectiveSummary(readable, info).ok());
+  EXPECT_EQ(info.channels.size(), 2u);
+  EXPECT_EQ(info.statistics->channelCount, 1u);
+}
+
+TEST(McapReadChannelSummaryTest, FailsOnAReaderThatWasNotOpened) {
+  mcap::McapReader reader;
+  McapSummaryInfo info;
+  EXPECT_FALSE(readChannelSummary(reader, info).ok());
 }
 
 TEST(McapHelpersTest, ReadMessagesIteration) {

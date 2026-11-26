@@ -8,6 +8,9 @@ below; for earlier releases see the git history of `data_load_mf4/`.
 ### Added
 - CAN FD frames (payloads longer than 8 bytes) are decoded with the DBC, including signals past byte 7. They used to be counted as "could not be decoded".
 
+### Fixed
+- A signed 64-bit DBC signal is read as two's complement. A negative value used to show as a huge positive one.
+
 ## [0.1.5] - 2026-11-09
 
 ### Changed

@@ -3,9 +3,9 @@
 // blf_frames: reads a Vector BLF file and yields classic-CAN frames. lblf is
 // used only in the .cpp, so this header pulls in no lblf types.
 //
-// Scope (v1): classic CAN (CAN_MESSAGE / CAN_MESSAGE2). CAN FD is out — lblf
-// has no CAN-FD parse struct, and the DBC decoder rejects payloads >8 bytes;
-// CAN-FD/LIN/other objects are counted in BlfStats::skipped_objects. Timestamps
+// Scope (v1): classic CAN (CAN_MESSAGE / CAN_MESSAGE2). CAN FD is out: lblf
+// has no CAN-FD parse struct, so CAN-FD/LIN/other objects are counted in
+// BlfStats::skipped_objects. Timestamps
 // are absolute ns = the file's measurement-start time (a Windows SYSTEMTIME,
 // treated as UTC) plus the per-object relative timestamp.
 

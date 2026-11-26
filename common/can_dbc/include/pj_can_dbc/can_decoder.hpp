@@ -40,9 +40,9 @@ struct DecodedSignal {
 };
 
 /// Outcome of decoding one frame. kUndecodable means the id matched a message
-/// but the payload could not be decoded (frame shorter than the message, a
-/// signal reaching past the payload, ...) — callers should count these; they
-/// are not "unmatched".
+/// but the payload could not be decoded: the frame is shorter than the
+/// message, or it is longer than 8 bytes and a signal reaches past its end.
+/// Callers should count these; they are not "unmatched".
 enum class DecodeResult {
   kNoMatch,
   kDecoded,
@@ -108,7 +108,9 @@ class CanDecoder {
   /// (only non-multiplexed signals in a message decode); unsigned 64-bit raw
   /// values above 2^53 lose precision (double). A standard and an extended
   /// message that share a numeric id in an ambiguous DBC (extended flag not
-  /// set) cannot be told apart.
+  /// set) cannot be told apart. In a frame of 8 bytes or less, a signal that
+  /// reaches past the frame's end reads the missing bits as zero. A message
+  /// length above 255 bytes wraps: the parser keeps it in 8 bits.
   ///
   /// `variable_length` is for a payload whose length varies per message (an
   /// NMEA 2000 fast packet, where repeated fields make the DBC length only an
