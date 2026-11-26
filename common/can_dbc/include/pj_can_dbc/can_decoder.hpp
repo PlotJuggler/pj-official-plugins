@@ -39,8 +39,9 @@ struct DecodedSignal {
 };
 
 /// Outcome of decoding one frame. kUndecodable means the id matched a message
-/// but the payload could not be decoded (truncated frame, CAN FD payload
-/// > 8 bytes, ...) — callers should count these; they are not "unmatched".
+/// but the payload could not be decoded: the frame is shorter than the
+/// message, or it is longer than 8 bytes and a signal reaches past its end.
+/// Callers should count these; they are not "unmatched".
 enum class DecodeResult {
   kNoMatch,
   kDecoded,
@@ -83,11 +84,17 @@ class CanDecoder {
   /// an extended frame with a standard message's layout. `result` reports
   /// match/decoded/undecodable; the returned signals are empty unless kDecoded.
   ///
+  /// `data` may be longer than 8 bytes (a CAN FD frame, or a payload
+  /// reassembled from several frames): signals are then read past byte 7 with
+  /// the same Intel/Motorola bit numbering as a classic frame.
+  ///
   /// Known dbc_parser_cpp limitations: multiplexed signals are silently skipped
   /// (only non-multiplexed signals in a message decode); unsigned 64-bit raw
   /// values above 2^53 lose precision (double). A standard and an extended
   /// message that share a numeric id in an ambiguous DBC (extended flag not
-  /// set) cannot be told apart.
+  /// set) cannot be told apart. In a frame of 8 bytes or less, a signal that
+  /// reaches past the frame's end reads the missing bits as zero. A message
+  /// length above 255 bytes wraps: the parser keeps it in 8 bits.
   std::vector<DecodedSignal> decode(
       std::uint32_t can_id, bool extended, const std::vector<std::uint8_t>& data, DecodeResult& result) const;
 
