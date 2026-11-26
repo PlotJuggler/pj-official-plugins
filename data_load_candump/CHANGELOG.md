@@ -2,6 +2,12 @@
 
 One entry per released version (newest first).
 
+## Upcoming
+
+### Fixed
+
+- A signed 64-bit DBC signal is read as two's complement. A negative value used to show as a huge positive one.
+
 ## [0.1.2] - 2026-11-19
 
 ### Fixed

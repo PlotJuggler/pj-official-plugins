@@ -65,9 +65,8 @@ ctest --test-dir <build> -R 'blf|can_dbc'
 
 ## Known Limitations
 
-- **CAN FD is out of scope in v1** — lblf has no CAN-FD parse struct, and the DBC
-  decoder rejects payloads larger than 8 bytes. CAN-FD / LIN / other objects are
-  counted as skipped.
+- **CAN FD is out of scope in v1** — lblf has no CAN-FD parse struct. CAN-FD /
+  LIN / other objects are counted as skipped.
 - Multiplexed CAN signals are not decoded (a `dbc_parser_cpp` limitation).
 - The dialog exposes channels 1-4; additional channels are configured via the
   saved `channel_dbcs` map.

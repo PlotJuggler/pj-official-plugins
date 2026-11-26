@@ -76,7 +76,7 @@ bool messageLayoutInRange(const Libdbc::Message& msg) {
 }
 }  // namespace
 
-/// Name/unit/value-table of one signal, cached at DBC load.
+/// Name, unit, value table and bit layout of one signal, cached at DBC load.
 /// Libdbc::Message::get_signals() returns the whole Signal vector *by value*
 /// (each Signal owns strings plus unused receiver/value-description
 /// vectors), so calling it per frame would deep-copy on every decode;
@@ -219,8 +219,7 @@ struct CanDecoder::Impl {
 
   void addFrom(const Libdbc::DbcParser& parser) {
     for (const auto& msg : parser.get_messages()) {
-      // Drop messages whose signal layout would make dbc_parser_cpp shift a
-      // 64-bit value out of range (undefined behavior) on decode.
+      // Drop messages with a signal neither decode path can read (see signalLayoutInRange()).
       if (!messageLayoutInRange(msg)) {
         continue;
       }

@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_blf/`.
 
+## Upcoming
+
+### Fixed
+- A signed 64-bit DBC signal is read as two's complement. A negative value used to show as a huge positive one.
+
 ## [0.1.6] - 2026-11-09
 
 ### Changed

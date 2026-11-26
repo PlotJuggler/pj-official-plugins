@@ -152,7 +152,8 @@ class BlfSource : public PJ::FileSourceBase {
       summary += "; " + std::to_string(unmatched) + " frame(s) had no DBC match";
     }
     if (undecodable > 0) {
-      summary += "; " + std::to_string(undecodable) + " matched frame(s) could not be decoded (truncated frame)";
+      summary += "; " + std::to_string(undecodable) +
+                 " matched frame(s) could not be decoded (frame shorter than its message)";
     }
     if (no_dbc_channel > 0) {
       summary += "; " + std::to_string(no_dbc_channel) + " frame(s) on channels with no DBC";

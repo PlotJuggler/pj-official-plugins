@@ -19,6 +19,14 @@ set(_dbc_mask_bug "value = value & ((1 << signal.size) - 1); // masking")
 set(_dbc_mask_fix "value = (signal.size >= 64) ? value : (value & ((1ULL << signal.size) - 1)); // masking (PJ fix)")
 file(READ ${source_dir}/src/message.cpp _dbc_message_cpp)
 pj_apply_vendored_patch(_dbc_message_cpp _dbc_mask_bug _dbc_mask_fix "can_dbc: dbc_parser_cpp unsigned-mask")
+
+# Vendored fix: upstream converts a signed 64-bit signal straight from the
+# unsigned raw word, so a negative value decodes as a huge positive one. The
+# anchor spans the `case` line because the push_back text alone also matches
+# the unsigned branch.
+set(_dbc_s64_bug "case EIGHT_BYTES:\n\t\t\t\tvalues.push_back(static_cast<double>(value) * signal.factor + signal.offset);")
+set(_dbc_s64_fix "case EIGHT_BYTES:\n\t\t\t\tvalues.push_back(static_cast<double>(static_cast<int64_t>(value)) * signal.factor + signal.offset); // two's complement (PJ fix)")
+pj_apply_vendored_patch(_dbc_message_cpp _dbc_s64_bug _dbc_s64_fix "can_dbc: dbc_parser_cpp signed 64-bit")
 set(_dbc_patched_dir ${CMAKE_CURRENT_BINARY_DIR}/${target}_patched)
 file(CONFIGURE OUTPUT ${_dbc_patched_dir}/message.cpp CONTENT "${_dbc_message_cpp}" @ONLY)
 list(REMOVE_ITEM _dbc_sources ${source_dir}/src/message.cpp)

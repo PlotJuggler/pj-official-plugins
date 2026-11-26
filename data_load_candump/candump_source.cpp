@@ -326,7 +326,8 @@ class CandumpSource : public PJ::FileSourceBase {
       summary += "; " + std::to_string(unmatched) + " frame(s) had no dictionary match";
     }
     if (undecodable > 0) {
-      summary += "; " + std::to_string(undecodable) + " matched frame(s) could not be decoded (truncated frame)";
+      summary += "; " + std::to_string(undecodable) +
+                 " matched frame(s) could not be decoded (frame shorter than its message)";
     }
     if (counters.rtr > 0) {
       summary += "; " + std::to_string(counters.rtr) + " RTR frame(s) (recognized, not decoded)";

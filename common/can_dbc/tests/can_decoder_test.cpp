@@ -362,6 +362,87 @@ TEST(CanDecoderLongPayload, FrameShorterThanLongMessageIsUndecodable) {
   EXPECT_TRUE(sigs.empty());
 }
 
+// The sizes where the two decode paths could disagree: 64-bit signed (Intel and
+// Motorola), 63- and 32-bit signed, a 1-bit signed signal, a 64-bit unsigned
+// Motorola one. ShortWide (8 bytes) goes through dbc_parser_cpp, LongWide (16
+// bytes, same layout) through CanDecoder's own reader.
+//  - PastEndBe (16 bytes): a Motorola signal whose last bits lie past the message.
+const char* const kWideDbc = R"DBC(VERSION "1.0.0"
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 780 ShortWide: 8 ECU
+ SG_ S64 : 0|64@1- (1,0) [0|0] "" ECU
+ SG_ M64 : 7|64@0- (1,0) [0|0] "" ECU
+ SG_ S63 : 0|63@1- (1,0) [0|0] "" ECU
+ SG_ S32 : 16|32@1- (1,0) [0|0] "" ECU
+ SG_ M32 : 23|32@0- (1,0) [0|0] "" ECU
+ SG_ B1 : 5|1@1- (1,0) [0|1] "" ECU
+ SG_ U64 : 7|64@0+ (1,0) [0|0] "" ECU
+
+BO_ 781 LongWide: 16 ECU
+ SG_ S64 : 0|64@1- (1,0) [0|0] "" ECU
+ SG_ M64 : 7|64@0- (1,0) [0|0] "" ECU
+ SG_ S63 : 0|63@1- (1,0) [0|0] "" ECU
+ SG_ S32 : 16|32@1- (1,0) [0|0] "" ECU
+ SG_ M32 : 23|32@0- (1,0) [0|0] "" ECU
+ SG_ B1 : 5|1@1- (1,0) [0|1] "" ECU
+ SG_ U64 : 7|64@0+ (1,0) [0|0] "" ECU
+
+BO_ 782 PastEndBe: 16 ECU
+ SG_ OverBe : 127|16@0+ (1,0) [0|65535] "" ECU
+)DBC";
+
+TEST(CanDecoderLongPayload, SignedAndWideSignalsReadLikeTheClassicPath) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kWideDbc).has_value());
+  // Bits 63 and 62 (byte 7) and the top bit of bytes 0 and 2 are set: S64, M64, S63 and M32 are negative.
+  const std::vector<std::uint8_t> classic{0xF3, 0x9A, 0x81, 0x7E, 0xC5, 0x2D, 0xB7, 0xC8};
+  std::vector<std::uint8_t> extended = classic;
+  extended.resize(16, 0xFF);
+
+  DecodeResult classic_result = DecodeResult::kNoMatch;
+  DecodeResult long_result = DecodeResult::kNoMatch;
+  const auto from_parser = dec.decode(780, false, classic, classic_result);
+  const auto from_long_path = dec.decode(781, false, extended, long_result);
+  ASSERT_EQ(classic_result, DecodeResult::kDecoded);
+  ASSERT_EQ(long_result, DecodeResult::kDecoded);
+  ASSERT_EQ(from_parser.size(), 7u);
+  ASSERT_EQ(from_long_path.size(), from_parser.size());
+  for (std::size_t i = 0; i < from_parser.size(); ++i) {
+    EXPECT_EQ(from_long_path[i].name, from_parser[i].name);
+    EXPECT_DOUBLE_EQ(from_long_path[i].value, from_parser[i].value) << from_parser[i].name;
+  }
+  // Pinned by hand, so the comparison cannot pass on two equal mistakes.
+  const auto value = [&from_parser](const std::string& name) {
+    const auto* sig = find(from_parser, name);
+    EXPECT_NE(sig, nullptr) << name;
+    return sig != nullptr ? sig->value : 0.0;
+  };
+  const auto as_signed = [](std::uint64_t bits) { return static_cast<double>(static_cast<std::int64_t>(bits)); };
+  EXPECT_DOUBLE_EQ(value("S64"), as_signed(0xC8B72DC57E819AF3ull));  // bytes 7..0
+  EXPECT_DOUBLE_EQ(value("M64"), as_signed(0xF39A817EC52DB7C8ull));  // bytes 0..7
+  EXPECT_DOUBLE_EQ(value("S63"), as_signed(0xC8B72DC57E819AF3ull));  // 0x48B7... with its sign bit (62) extended
+  EXPECT_DOUBLE_EQ(value("S32"), static_cast<double>(0x2DC57E81));   // bytes 5..2, positive
+  EXPECT_DOUBLE_EQ(value("M32"), as_signed(0xFFFFFFFF817EC52Dull));  // bytes 2..5, negative
+  EXPECT_DOUBLE_EQ(value("B1"), 1.0);                                // bit 5 of 0xF3; a 1-bit signed signal stays 0/1
+  EXPECT_DOUBLE_EQ(value("U64"), static_cast<double>(0xF39A817EC52DB7C8ull));
+}
+
+TEST(CanDecoderLongPayload, MotorolaSignalPastThePayloadIsUndecodable) {
+  CanDecoder dec;
+  ASSERT_TRUE(dec.loadDbcString(kWideDbc).has_value());
+  // OverBe's MSB is the top bit of byte 15; its 16 bits run 8 bits past the 16-byte message.
+  DecodeResult result = DecodeResult::kNoMatch;
+  const auto sigs = dec.decode(782, false, std::vector<std::uint8_t>(16, 0), result);
+  EXPECT_EQ(result, DecodeResult::kUndecodable);
+  EXPECT_TRUE(sigs.empty());
+}
+
 TEST(CanDecoder, UnknownIdIsNotMatched) {
   CanDecoder dec;
   ASSERT_TRUE(dec.loadDbcString(kDbc).has_value());
