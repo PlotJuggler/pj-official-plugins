@@ -14,6 +14,7 @@
 #include <pj_plugins/host/data_source_library.hpp>
 #include <pj_plugins/host/service_registry_builder.hpp>
 #include <pj_plugins/testing/delegated_ingest_fixture.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <vector>
 
@@ -29,7 +30,7 @@ void writeSplit(
     const fs::path& path, const std::vector<std::string>& topics, int count, mcap::Timestamp t0,
     std::optional<mcap::Timestamp> latched_publish = std::nullopt) {
   mcap::McapWriter writer;
-  ASSERT_TRUE(writer.open(path.string(), mcap::McapWriterOptions("ros2")).ok());
+  ASSERT_TRUE(writer.open(PJ::utf8_path::pathToUtf8(path), mcap::McapWriterOptions("ros2")).ok());
   mcap::Schema schema("std_msgs/msg/Int32", "ros2msg", "int32 data");
   writer.addSchema(schema);
   const std::string payload("\x00\x01\x00\x00\x2a\x00\x00\x00", 8);
@@ -118,7 +119,8 @@ ImportResult importPath(const fs::path& path, const std::string& refused_topic =
     result.error = "bind: " + st.error();
     return result;
   }
-  if (auto st = handle.loadConfig(R"({"filepath":")" + path.generic_string() + R"("})"); !st) {
+  if (auto st = handle.loadConfig(R"({"filepath":")" + PJ::utf8_path::utf8String(path.generic_u8string()) + R"("})");
+      !st) {
     result.error = "loadConfig: " + st.error();
     return result;
   }
@@ -144,8 +146,10 @@ class SplitBagImport : public ::testing::Test {
     std::error_code ignored;  // best effort: never fail a test on cleanup
     fs::remove_all(dir_, ignored);
   }
-  void writeYaml(const std::string& body) {
-    std::ofstream(dir_ / "metadata.yaml", std::ios::binary) << "rosbag2_bagfile_information:\n" << body;
+  void writeYaml(const std::string& body, const fs::path& folder = {}) {
+    std::ofstream((folder.empty() ? dir_ : folder) / "metadata.yaml", std::ios::binary)
+        << "rosbag2_bagfile_information:\n"
+        << body;
   }
   fs::path dir_;
 };
@@ -211,6 +215,42 @@ TEST_F(SplitBagImport, PlainMcapStillImportsOnItsOwn) {
   ASSERT_TRUE(result.ok) << result.error;
   EXPECT_EQ(result.recording.bindings.size(), 2u);
   EXPECT_EQ(result.recording.pushes.size(), 6u);
+}
+
+// The host hands the plugin its paths as UTF-8; on Windows a narrow open reads them in the ANSI code page.
+TEST_F(SplitBagImport, PlainMcapInAFolderWithNonAsciiNameImports) {
+  const fs::path folder = dir_ / fs::path(u8"utf8_\u043f\u0443\u0442\u044c_\u98db\u884c");
+  fs::create_directories(folder);
+  const fs::path file = folder / fs::path(u8"\u0437\u0430\u043f\u0438\u0441\u044c_\u8a18\u9332.mcap");
+  writeSplit(file, {"/a", "/b"}, 3, 2000);
+
+  const ImportResult result = importPath(file);
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.recording.bindings.size(), 2u);
+  EXPECT_EQ(result.recording.pushes.size(), 6u);
+}
+
+TEST_F(SplitBagImport, SplitBagWithNonAsciiNamesImports) {
+  const fs::path folder = dir_ / fs::path(u8"utf8_\u043f\u0443\u0442\u044c_\u98db\u884c");
+  fs::create_directories(folder);
+  const std::u8string first = u8"\u0447\u0430\u0441\u0442\u044c_0.mcap";
+  const std::u8string second = u8"\u90e8\u5206_1.mcap";
+  writeSplit(folder / fs::path(first), {"/a"}, 2, 1000);
+  writeSplit(folder / fs::path(second), {"/a", "/b"}, 3, 2000);
+  writeYaml(
+      "  storage_identifier: mcap\n"
+      "  relative_file_paths:\n"
+      "    - " +
+          PJ::utf8_path::utf8String(first) +
+          "\n"
+          "    - " +
+          PJ::utf8_path::utf8String(second) + "\n",
+      folder);
+
+  const ImportResult result = importPath(folder / "metadata.yaml");
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.recording.bindings.size(), 2u);
+  EXPECT_EQ(result.recording.pushes.size(), 8u);
 }
 
 TEST_F(SplitBagImport, SqliteBagIsRejectedWithoutPushingAnything) {

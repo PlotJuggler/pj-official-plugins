@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -37,8 +38,8 @@ struct ExportTable {
   std::vector<std::vector<uint8_t>> string_has_value;
 };
 
-std::filesystem::path pathFromUtf8(std::string_view path);
-std::string pathToUtf8(const std::filesystem::path& path);
+using PJ::utf8_path::pathFromUtf8;
+using PJ::utf8_path::pathToUtf8;
 int indexFromTime(const std::vector<double>& t, double x);
 double estimateMinDt(const std::vector<double>& t, size_t start_idx, double t_end);
 ExportTable buildExportTable(

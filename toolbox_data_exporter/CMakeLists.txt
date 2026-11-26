@@ -16,6 +16,7 @@ target_compile_options(toolbox_data_exporter_plugin PRIVATE ${PJ_WARNING_FLAGS})
 
 target_link_libraries(toolbox_data_exporter_plugin PRIVATE
   plotjuggler_sdk::plugin_sdk
+  pj_utf8_path
   nlohmann_json::nlohmann_json
   Arrow::arrow_static
   Parquet::parquet_static
@@ -59,6 +60,7 @@ target_include_directories(data_exporter_testcore PRIVATE
 )
 target_link_libraries(data_exporter_testcore PUBLIC
   plotjuggler_sdk::plugin_sdk
+  pj_utf8_path
   nlohmann_json::nlohmann_json
   Arrow::arrow_static
   Parquet::parquet_static

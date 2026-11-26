@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_mf4/`.
 
+## Upcoming
+
+### Fixed
+- A file in a folder or with a name that has non-ASCII characters (Cyrillic, Chinese, accents) opens instead of failing with "cannot open MDF file", on Windows and on the Linux release builds.
+
 ## [0.1.5] - 2026-11-09
 
 ### Changed

@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -450,6 +451,32 @@ TEST(AnomalyDialogSource, ALoadedRuleSurvivesALaterSourceClick) {
   const std::string code = wd.codeContent("code_editor").value_or(std::string{});
   EXPECT_NE(code.find("handwritten rule"), std::string::npos) << code;
   std::remove(path.c_str());
+}
+
+// The host hands the picked path over as UTF-8; on Windows a narrow open reads it in the ANSI code page.
+TEST(AnomalyDialogSource, SavesAndLoadsARuleUnderANonAsciiPath) {
+  auto fixture = makeFixture();
+  fixture.addSeries("alpha", "x");
+  fixture.bind();
+  auto dialog = fixture.dialog();
+
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                                    std::filesystem::path(u8"pj_anomaly_utf8_\u043f\u0443\u0442\u044c_\u98db\u884c");
+  std::filesystem::create_directories(dir);
+  const std::string path = PJ::utf8_path::pathToUtf8(
+      dir / std::filesystem::path(u8"\u043f\u0440\u0430\u0432\u0438\u043b\u043e_\u30eb\u30fc\u30eb.json"));
+
+  EXPECT_FALSE(dialog.sendEvent("code_editor", PJ::WidgetEventBuilder::codeChanged("-- utf8 rule")));
+  ASSERT_TRUE(dialog.sendEvent("save_rule_button", PJ::WidgetEventBuilder::fileSelected(path)));
+  EXPECT_TRUE(std::filesystem::exists(PJ::utf8_path::pathFromUtf8(path)));
+
+  EXPECT_FALSE(dialog.sendEvent("code_editor", PJ::WidgetEventBuilder::codeChanged("-- something else")));
+  ASSERT_TRUE(dialog.sendEvent("load_rule_button", PJ::WidgetEventBuilder::fileSelected(path)));
+  const std::string code = widgetData(dialog).codeContent("code_editor").value_or(std::string{});
+  EXPECT_NE(code.find("-- utf8 rule"), std::string::npos) << code;
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
 }
 
 }  // namespace

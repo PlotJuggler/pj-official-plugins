@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 
 namespace {
@@ -97,6 +98,36 @@ TEST(ProtobufParserDialogTest, KeepsEmbeddedDescriptorWhenPresentSourceDoesNotCo
   EXPECT_EQ(saved["message_type"], "example.telemetry.Status");
   EXPECT_EQ(saved["compiled_schema_base64"], config["compiled_schema_base64"]);
   EXPECT_NE(dialog.widget_data().find("SOURCE COMPILE ERROR (USING SAVED DESCRIPTOR)"), std::string::npos);
+}
+
+// The host hands over the .proto path as UTF-8; on Windows a narrow open reads it in the ANSI code page.
+TEST(ProtobufParserDialogTest, CompilesProtoFileUnderNonAsciiFolder) {
+  const auto dir = std::filesystem::temp_directory_path() /
+                   std::filesystem::path(u8"pj_proto_utf8_\u043f\u0443\u0442\u044c_\u98db\u884c");
+  std::filesystem::create_directories(dir);
+  struct Cleanup {
+    std::filesystem::path dir;
+    ~Cleanup() {
+      std::error_code ec;
+      std::filesystem::remove_all(dir, ec);
+    }
+  } cleanup{dir};
+  const auto path = dir / std::filesystem::path(u8"\u0441\u0445\u0435\u043c\u0430_\u30b9\u30ad\u30fc\u30de.proto");
+  {
+    std::ofstream source(path);
+    ASSERT_TRUE(source.is_open());
+    source << "syntax = \"proto3\";\npackage example.utf8;\nmessage Hello { int32 value = 1; }\n";
+  }
+
+  nlohmann::json config;
+  config["proto_file_path"] = PJ::utf8_path::pathToUtf8(path);
+  ProtobufParserDialog dialog;
+  ASSERT_TRUE(dialog.loadConfig(config.dump()));
+
+  const auto saved = nlohmann::json::parse(dialog.saveConfig());
+  EXPECT_EQ(saved["message_type"], "example.utf8.Hello");
+  EXPECT_TRUE(saved.contains("compiled_schema_base64"));
+  EXPECT_EQ(saved["proto_file_path"], config["proto_file_path"]);
 }
 
 }  // namespace

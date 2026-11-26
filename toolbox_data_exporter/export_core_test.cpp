@@ -49,11 +49,6 @@ std::string platformCsv(std::string expected) {
 #endif
 }
 
-TEST(Utf8Path, RoundTripsProtocolBytesThroughFilesystemPath) {
-  constexpr std::string_view utf8 = "übung_日本語.csv";
-  EXPECT_EQ(pathToUtf8(pathFromUtf8(utf8)), utf8);
-}
-
 TEST(BuildExportTable, AlignedSeriesMergeWithoutDrift) {
   const std::vector<NumericSeriesData> numeric{
       {"first", {0.0, 1.0, 2.0}, {10.0, 11.0, 12.0}},

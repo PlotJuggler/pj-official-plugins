@@ -13,6 +13,9 @@
 #include <mdf/mdfwriter.h>
 
 #include <cstdint>
+#include <fstream>
+#include <memory>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 
 namespace mf4_test {
@@ -25,7 +28,10 @@ inline constexpr std::uint64_t kFixturePeriodNs = 10'000'000ULL;                
 /// extended id 0x18FEF100 on bus 2.
 inline void writeCanBusMf4(const std::string& path) {
   auto writer = mdf::MdfFactory::CreateMdfWriter(mdf::MdfWriterType::MdfBusLogger);
-  EXPECT_TRUE(writer->Init(path));
+  // Through a buffer opened here: mdflib's Init(std::string) fails on a non-ASCII name with libstdc++ 11.
+  auto file = std::make_shared<std::filebuf>();
+  EXPECT_NE(file->open(PJ::utf8_path::pathFromUtf8(path), std::ios::out | std::ios::binary | std::ios::trunc), nullptr);
+  EXPECT_TRUE(writer->Init(std::shared_ptr<std::streambuf>(std::move(file))));
   writer->Header()->StartTime(kFixtureStartNs);
   writer->BusType(mdf::MdfBusType::CAN);
   writer->StorageType(mdf::MdfStorageType::FixedLengthStorage);

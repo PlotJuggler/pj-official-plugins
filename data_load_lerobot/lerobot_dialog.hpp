@@ -7,6 +7,7 @@
 #include <optional>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <string>
 #include <vector>
 
@@ -133,7 +134,7 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     // the shared prefix combined with each entry's `display_suffix` in fanout).
     // model_->root is the resolved dataset root (walked up to meta/info.json).
     if (model_) {
-      const std::string name = model_->root.filename().string();
+      const std::string name = PJ::utf8_path::pathToUtf8(model_->root.filename());
       if (!name.empty()) {
         cfg["display_name"] = name;
         cfg[kSelectionDatasetKey] = name;
@@ -199,7 +200,7 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
       // this config, "filepath" rewritten, and episode indices of one dataset mean nothing in another. A config
       // without the name (an older plugin version) keeps its selection.
       const auto chosen_for = cfg.value(kSelectionDatasetKey, std::string{});
-      if (!chosen_for.empty() && chosen_for != model_->root.filename().string()) {
+      if (!chosen_for.empty() && chosen_for != PJ::utf8_path::pathToUtf8(model_->root.filename())) {
         restored.clear();
       }
       // Keep only restored indices still present (the dataset may have
@@ -222,7 +223,7 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
 
  private:
   void loadModel() {
-    auto m = lerobot::loadDatasetModel(filepath_);
+    auto m = lerobot::loadDatasetModel(PJ::utf8_path::pathFromUtf8(filepath_));
     if (m) {
       model_ = std::move(*m);
       model_error_.clear();
@@ -274,7 +275,7 @@ class LeRobotDialog : public PJ::DialogPluginTyped {
     }
     char fps[32];
     std::snprintf(fps, sizeof(fps), "%g", model_->fps);  // %g: "10", "29.97" — no fake truncation
-    return model_->root.string() + "  -  " + model_->codebase_version + "  -  fps=" + fps + "  -  " +
+    return PJ::utf8_path::pathToUtf8(model_->root) + "  -  " + model_->codebase_version + "  -  fps=" + fps + "  -  " +
            std::to_string(model_->episodes.size()) + " episodes  -  cams: " + (cams.empty() ? "(none)" : cams);
   }
 

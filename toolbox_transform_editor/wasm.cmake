@@ -1,6 +1,6 @@
 # WebAssembly build of this plugin, included by PlotJuggler's browser build (cmake/PjWasmPlugin.cmake).
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/PjWasmPlugin.cmake")
-pj_wasm_common_library(derived_recipes)
+pj_wasm_common_library(derived_recipes utf8_path)
 
 # One archive for what the native build splits into the plugin and its script_text helper library.
 pj_wasm_official_plugin(pj_wasm_transform_editor
@@ -10,4 +10,4 @@ pj_wasm_official_plugin(pj_wasm_transform_editor
      function_library.ui=kFunctionLibraryUi save_function_name.ui=kSaveNameUi
      overwrite_function.ui=kOverwriteUi create_recipe.ui=kCreateRecipeUi rename_var.ui=kRenameVarUi
   TOOLBOX TransformEditorToolbox DIALOG TransformEditorDialog
-  LINKS nlohmann_json::nlohmann_json pj_derived_recipes)
+  LINKS nlohmann_json::nlohmann_json pj_derived_recipes pj_utf8_path)

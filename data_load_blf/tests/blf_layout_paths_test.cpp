@@ -61,6 +61,10 @@ TEST_F(BlfLayoutPaths, SiblingDictionaryFolderFollowsCopy) {
   checkCopiedLayoutUsesTheCopysDbc("data", "dbc");
 }
 
+TEST_F(BlfLayoutPaths, NonAsciiFolderImports) {
+  checkNonAsciiFolderImports();
+}
+
 TEST_F(BlfLayoutPaths, MissingDbcReportsNotFoundWarning) {
   checkMissingDbcReportsNotFoundWarning();
 }

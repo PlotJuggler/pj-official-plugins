@@ -9,8 +9,10 @@
 
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
+#include <pj_utf8_path/utf8_path.hpp>
 #include <system_error>
 #include <unordered_set>
 #include <utility>
@@ -35,10 +37,17 @@ struct ReadStopRequested : std::exception {
 
 PJ::Status Mf4Reader::open(const std::string& path) {
   std::error_code ec;
-  const auto fs_size = std::filesystem::file_size(path, ec);
+  const auto fs_size = std::filesystem::file_size(PJ::utf8_path::pathFromUtf8(path), ec);
   file_size_bytes_ = ec ? 0 : static_cast<std::uint64_t>(fs_size);
 
-  reader_ = std::make_unique<mdf::MdfReader>(path);
+  // mdflib's file-name constructors go through std::wstring and std::filesystem::path(wstring), which libstdc++ 11
+  // (the Linux release toolchain) converts through the C locale, failing on non-ASCII names. Open the file here and
+  // hand mdflib the buffer: it then never touches the name.
+  auto buffer = std::make_shared<std::filebuf>();
+  if (buffer->open(PJ::utf8_path::pathFromUtf8(path), std::ios::in | std::ios::binary) == nullptr) {
+    return PJ::unexpected(std::string("cannot open MDF file: ") + path);
+  }
+  reader_ = std::make_unique<mdf::MdfReader>(std::shared_ptr<std::streambuf>(std::move(buffer)));
   if (!reader_->IsOk()) {
     return PJ::unexpected(std::string("cannot open MDF file: ") + path);
   }

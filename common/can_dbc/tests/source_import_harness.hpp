@@ -305,6 +305,17 @@ class LayoutPathsFixture : public ::testing::Test {
     EXPECT_FALSE(result.hasMessage(PJ_DATA_SOURCE_MESSAGE_WARNING, "not found"));
   }
 
+  /// The data file and its dictionary sit in a folder with non-ASCII characters in its name. The host hands the
+  /// path over as UTF-8; a narrow open would read it in the ANSI code page on Windows and miss the file.
+  void checkNonAsciiFolderImports() {
+    const fs::path folder(u8"utf8_\u043f\u0443\u0442\u044c_\u98db\u884c");
+    const auto place = layOutOld(folder, folder, "Engine");
+    const auto result = runWith(old_ / place.data, json::array({"vehicle.dbc"}));
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_TRUE(result.hasTopic(topic("Engine")));
+    EXPECT_FALSE(result.hasMessage(PJ_DATA_SOURCE_MESSAGE_WARNING, "not found"));
+  }
+
   void checkCopiedLayoutUsesTheCopysDbc(const fs::path& data_sub = {}, const fs::path& dbc_sub = {}) {
     const auto place = layOutOld(data_sub, dbc_sub, "OldEngine");
     const fs::path copy = scratch_.root() / "new";

@@ -114,20 +114,6 @@ arrow::Result<std::shared_ptr<arrow::Array>> makeStringArray(
 
 }  // namespace
 
-std::filesystem::path pathFromUtf8(std::string_view path) {
-  std::u8string utf8;
-  utf8.reserve(path.size());
-  for (const char character : path) {
-    utf8.push_back(static_cast<char8_t>(static_cast<unsigned char>(character)));
-  }
-  return std::filesystem::path(std::move(utf8));
-}
-
-std::string pathToUtf8(const std::filesystem::path& path) {
-  const std::u8string utf8 = path.u8string();
-  return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
-}
-
 // PJ3 pj3_timeseries.h:151-175 — lower_bound plus strict nearest-neighbor selection.
 int indexFromTime(const std::vector<double>& t, double x) {
   if (t.empty()) {
