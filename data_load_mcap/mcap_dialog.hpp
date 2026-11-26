@@ -310,10 +310,10 @@ class McapDialog : public PJ::DialogPluginTyped {
         return;
       }
 
-      // AllowFallbackScan reconstructs channels, schemas and statistics by
-      // scanning when the summary section is unusable, so a failure here means
-      // the data section itself could not be read.
-      status = reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan);
+      // A failure here means neither the summary nor the data section could
+      // be read: readChannelSummary falls back to a scan for a bad summary.
+      PJ::McapHelpers::McapSummaryInfo summary;
+      status = PJ::McapHelpers::readChannelSummary(reader, summary);
       if (!status.ok()) {
         fail("Cannot read the contents of this MCAP file." + where + "\n" + describe(status));
         reader.close();
@@ -322,12 +322,12 @@ class McapDialog : public PJ::DialogPluginTyped {
 
       // Build message count map from statistics
       std::unordered_map<mcap::ChannelId, uint64_t> msg_counts;
-      if (auto stats = reader.statistics()) {
-        msg_counts = stats->channelMessageCounts;
+      if (summary.statistics) {
+        msg_counts = summary.statistics->channelMessageCounts;
       }
 
-      const auto& schemas = reader.schemas();
-      for (const auto& [id, channel_ptr] : reader.channels()) {
+      const auto& schemas = summary.schemas;
+      for (const auto& [id, channel_ptr] : summary.channels) {
         // schema_id 0 is the MCAP spec's "no schema" sentinel, not an error:
         // the channel is self-describing (schemaless JSON is the common case)
         // and binds on its message encoding alone. Schema ids are 1-based, so a

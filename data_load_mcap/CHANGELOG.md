@@ -3,6 +3,11 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_mcap/`.
 
+## Upcoming
+
+### Fixed
+- Opening an MCAP whose index has many chunks (one per message, hundreds of thousands in total) no longer freezes the window while the dialog reads it: the dialog takes its channels, schemas and message counts from the summary's offset records instead of parsing every chunk index.
+
 ## [1.3.4] - 2026-11-24
 
 ### Changed
