@@ -1256,12 +1256,17 @@ struct ImportOutcome {
   std::string error;
 };
 
-/// Writes `bytes` to a temp .ulg and imports it through the built plugin into `host`.
-ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host) {
+/// Writes `bytes` to a temp .ulg (inside `subdir` of the temp directory, when given) and imports it through the built
+/// plugin into `host`. The plugin gets the path as UTF-8, as the host passes it.
+ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host, const std::u8string& subdir = {}) {
+  auto dir = std::filesystem::temp_directory_path();
+  if (!subdir.empty()) {
+    dir /= std::filesystem::path(subdir);
+    std::filesystem::create_directories(dir);
+  }
   const auto path =
-      std::filesystem::temp_directory_path() /
-      ("ulog_import_test_" + std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + "_" +
-       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".ulg");
+      dir / ("ulog_import_test_" + std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + "_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".ulg");
   {
     std::ofstream out(path, std::ios::binary);
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -1328,6 +1333,8 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
     return vtable;
   }();
 
+  const auto u8_path = path.generic_u8string();
+  const std::string utf8_path(u8_path.begin(), u8_path.end());
   ImportOutcome outcome;
   auto library = PJ::DataSourceLibrary::load(std::string(ULOG_SOURCE_PLUGIN_PATH));
   if (!library) {
@@ -1345,7 +1352,7 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
   }
   if (auto status = handle.bind(registry.view()); !status) {
     outcome.error = "bind: " + status.error();
-  } else if (status = handle.loadConfig(R"({"filepath":")" + path.generic_string() + R"("})"); !status) {
+  } else if (status = handle.loadConfig(R"({"filepath":")" + utf8_path + R"("})"); !status) {
     outcome.error = "loadConfig: " + status.error();
   } else if (status = handle.start(); !status) {
     outcome.error = status.error();
@@ -1353,6 +1360,9 @@ ImportOutcome importBytes(const std::vector<uint8_t>& bytes, RecordingHost& host
     outcome.ok = true;
   }
   std::filesystem::remove(path);
+  if (!subdir.empty()) {
+    std::filesystem::remove(dir);
+  }
   return outcome;
 }
 
@@ -1679,6 +1689,70 @@ TEST(ULogImportTest, EmptyStringInfoImportsAsAnEmptyString) {
   ASSERT_TRUE(document.is_object()) << host.metadata;
   EXPECT_EQ(document["info"]["empty"], "");
   EXPECT_EQ(document["info"]["sys_name"], "PX4");
+}
+
+// The host passes UTF-8 paths; on Windows a narrow std::string path is read in the ANSI code page instead.
+TEST(ULogImportTest, NonAsciiPathOpens) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host, u8"ulog_\u043f\u043e\u043b\u0456\u0442_\u98db\u884c");
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+  EXPECT_EQ(host.rows["dummy"].size(), 1u);
+}
+
+// ulog_cpp throws more than ParsingException on a damaged key (std::stoi on a bad array length): the records read
+// before it are kept and a warning names the problem, instead of failing the whole import.
+TEST(ULogImportTest, ReaderExceptionKeepsTheRecordsBeforeIt) {
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeData(1, dummyRecord(2000000, 2.0F));
+  builder.writeInfo("float[r] damaged", {0, 0, 0, 0});
+  builder.writeData(1, dummyRecord(3000000, 3.0F));
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+  EXPECT_EQ(host.rows["dummy"].size(), 2u);
+  ASSERT_FALSE(host.warnings.empty());
+  EXPECT_NE(host.warnings.front().find("stopped reading"), std::string::npos) << host.warnings.front();
+}
+
+// A damaged timestamp beyond what int64 nanoseconds can hold (about 292 years) is skipped and counted, never
+// wrapped into a negative time.
+TEST(ULogImportTest, TimestampBeyondTheNanosecondRangeIsSkipped) {
+  constexpr uint64_t kDamaged = uint64_t{1} << 62;
+  ULogBuilder builder;
+  builder.writeHeader(0);
+  builder.writeFlagBits();
+  builder.writeFormat("dummy:uint64_t timestamp;float val");
+  builder.writeSubscription(1, 0, "dummy");
+  builder.writeData(1, dummyRecord(1000000, 1.0F));
+  builder.writeData(1, dummyRecord(kDamaged, 2.0F));
+  builder.writeLogging('6', kDamaged, "damaged");
+  builder.writeLogging('6', 1500000, "fine");
+
+  RecordingHost host;
+  const auto outcome = importBytes(builder.data(), host);
+  ASSERT_TRUE(outcome.ok) << outcome.error;
+  ASSERT_EQ(host.rows["dummy"].size(), 1u);
+  EXPECT_EQ(host.rows["dummy"][0].timestamp_ns, 1000000LL * 1000);
+  ASSERT_EQ(host.logs.size(), 1u);
+  EXPECT_EQ(host.logs[0].message, "fine");
+  bool warned = false;
+  for (const auto& warning : host.warnings) {
+    warned = warned || warning.find("timestamp") != std::string::npos;
+  }
+  EXPECT_TRUE(warned);
 }
 
 TEST(ULogImportTest, InitialParametersAndInfoHoldFromTheEarliestRecord) {

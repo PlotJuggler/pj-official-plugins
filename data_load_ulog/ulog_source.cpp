@@ -95,8 +95,10 @@ nlohmann::json ulogValueToJson(const ulog_cpp::Value& value) {
   }
 }
 
+/// Clamped to kMaxTimestampUs: a damaged header timestamp must not overflow. Records and logged messages beyond it
+/// are skipped before they get here.
 PJ::Timestamp fromMicros(uint64_t us) {
-  return PJ::Timestamp{static_cast<int64_t>(us) * 1000};
+  return PJ::Timestamp{static_cast<int64_t>(std::min(us, ulog_container::kMaxTimestampUs)) * 1000};
 }
 
 /// A plottable `ulogValueToJson` result: numbers and booleans as double; nullopt for text, arrays and nested types.
@@ -289,6 +291,10 @@ class StreamingContainer : public ulog_container::ULogContainer {
     if (topic.ts_offset) {
       std::memcpy(&timestamp_us, raw.data() + *topic.ts_offset, sizeof(timestamp_us));
     }
+    if (timestamp_us > ulog_container::kMaxTimestampUs) {
+      ++result.out_of_range_timestamps;
+      return;
+    }
     const auto ts_ns = static_cast<int64_t>(timestamp_us) * 1000;
     result.earliest_record_us = std::min(result.earliest_record_us, timestamp_us);
 
@@ -314,6 +320,7 @@ class StreamingContainer : public ulog_container::ULogContainer {
     // host (whose dedup is by exact text).
     std::vector<std::string> topics_without_timestamp;
     size_t short_records = 0;
+    size_t out_of_range_timestamps = 0;  // records skipped: their nanoseconds would overflow int64
     std::string first_short_record_topic;
   };
   Result result;
@@ -438,7 +445,10 @@ class ULogSource : public PJ::FileSourceBase {
     }
 
     std::error_code size_error;
-    const auto file_size = std::max<uint64_t>(std::filesystem::file_size(filepath_, size_error), 1);
+    const auto file_size = std::max<uint64_t>(
+        std::filesystem::file_size(
+            std::filesystem::path(std::u8string(filepath_.begin(), filepath_.end())), size_error),
+        1);
 
     // One bar over both passes. The first only parses, so it gets a small share;
     // the second also writes every record to the host, which is where the time goes.
@@ -457,13 +467,13 @@ class ULogSource : public PJ::FileSourceBase {
     bool stopped_in_scan = false;
     {
       auto scan = std::make_shared<ulog_container::ULogContainer>(false);
-      const bool opened = ulog_container::readLog(filepath_, scan, [&](uint64_t bytes_read) {
+      const auto scan_read = ulog_container::readLog(filepath_, scan, [&](uint64_t bytes_read) {
         scanned_bytes = bytes_read;
         stopped_in_scan = runtimeHost().isStopRequested();
         (void)runtimeHost().progressUpdate(steps(bytes_read, kScanSteps));
         return !stopped_in_scan;
       });
-      if (!opened) {
+      if (!scan_read.opened) {
         return PJ::unexpected(std::string("cannot open file: ") + filepath_);
       }
       for (const auto& [key, sub] : scan->subscriptionsByNameAndMultiId()) {
@@ -479,7 +489,7 @@ class ULogSource : public PJ::FileSourceBase {
     // that came during the first pass keeps the part of the file read by then.
     auto data_container = std::make_shared<StreamingContainer>(writeHost(), std::move(multi_instance));
     const auto& result = data_container->result;
-    const bool reopened = ulog_container::readLog(filepath_, data_container, [&](uint64_t bytes_read) {
+    const auto read = ulog_container::readLog(filepath_, data_container, [&](uint64_t bytes_read) {
       if (!result.write_error.empty()) {
         return false;
       }
@@ -489,11 +499,21 @@ class ULogSource : public PJ::FileSourceBase {
       (void)runtimeHost().progressUpdate(kScanSteps + steps(bytes_read, kProgressSteps - kScanSteps));
       return !runtimeHost().isStopRequested();
     });
-    if (!reopened) {
+    if (!read.opened) {
       return PJ::unexpected(std::string("cannot open file: ") + filepath_);
     }
     if (!result.write_error.empty()) {
       return PJ::unexpected(result.write_error);
+    }
+    if (!read.error.empty()) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning,
+          "ULog: stopped reading at a damaged message (" + read.error + "); the data before it is imported");
+    }
+    if (result.out_of_range_timestamps > 0) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning, "ULog: skipped " + std::to_string(result.out_of_range_timestamps) +
+                                                    " data record(s) with a damaged timestamp (beyond year 2262)");
     }
 
     if (data_container->hadFatalError()) {
@@ -521,7 +541,9 @@ class ULogSource : public PJ::FileSourceBase {
     // parameter changes never precede the header timestamp (ULogContainer clamps them).
     uint64_t snapshot_time_us = std::min(data_container->fileHeader().header().timestamp, result.earliest_record_us);
     for (const auto& log : data_container->logging()) {
-      snapshot_time_us = std::min(snapshot_time_us, log.timestamp());
+      if (log.timestamp() <= ulog_container::kMaxTimestampUs) {
+        snapshot_time_us = std::min(snapshot_time_us, log.timestamp());
+      }
     }
 
     if (!result.topics_without_timestamp.empty()) {
@@ -681,7 +703,12 @@ class ULogSource : public PJ::FileSourceBase {
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "ULog: log objects skipped: " + topic.error());
       return;
     }
+    size_t damaged = 0;
     for (const auto& log : logs) {
+      if (log.timestamp() > ulog_container::kMaxTimestampUs) {
+        ++damaged;
+        continue;
+      }
       PJ::sdk::Log entry;
       entry.timestamp_ns = fromMicros(log.timestamp());
       entry.level = toLogLevel(log.logLevel());
@@ -699,6 +726,11 @@ class ULogSource : public PJ::FileSourceBase {
             PJ::DataSourceMessageLevel::kWarning, "ULog: log objects stopped: " + status.error());
         return;
       }
+    }
+    if (damaged > 0) {
+      runtimeHost().reportMessage(
+          PJ::DataSourceMessageLevel::kWarning, "ULog: skipped " + std::to_string(damaged) +
+                                                    " logged message(s) with a damaged timestamp (beyond year 2262)");
     }
   }
 

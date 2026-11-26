@@ -11,6 +11,14 @@ below; for earlier releases see the git history of `data_load_ulog/`.
   (PlotJuggler#1748). Fixed by moving to ulog_cpp 1.1.0.
 - Logs with appended data no longer warn "File contains appended offsets -
   this is not supported".
+- On Windows, a log in a folder or with a name that has non-ASCII characters
+  (Cyrillic, Chinese, accents) opens instead of failing with "cannot open
+  file".
+- A log damaged partway through keeps everything before the damage, with a
+  warning, instead of failing to load.
+- Records and logged messages with a damaged timestamp (beyond year 2262) are
+  skipped with a warning, instead of landing decades before or after the
+  flight.
 
 ## [1.4.0] - 2026-11-20
 

@@ -57,7 +57,7 @@ void ULogContainer::data(const ulog_cpp::Data& data_msg) {
   if (offset >= 0 && static_cast<size_t>(offset) + sizeof(uint64_t) <= raw.size()) {
     uint64_t ts = 0;
     std::memcpy(&ts, raw.data() + offset, sizeof(ts));
-    if (ts >= file_start_us_) {
+    if (ts >= file_start_us_ && ts <= kMaxTimestampUs) {
       clock_us_ = ts;
     }
   }
