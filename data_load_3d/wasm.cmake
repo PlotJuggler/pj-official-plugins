@@ -8,7 +8,7 @@ target_include_directories(pj_wasm_lzf_d PUBLIC "${CMAKE_CURRENT_LIST_DIR}/contr
 set_target_properties(pj_wasm_lzf_d PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 pj_wasm_official_plugin(pj_wasm_3d_loader
-  SOURCES loader_3d.cpp cloud_common.cpp pcd_reader.cpp ply_reader.cpp
+  SOURCES loader_3d.cpp cloud_common.cpp las_reader.cpp pcd_reader.cpp ply_reader.cpp
   MANIFEST data_load_3d_manifest.hpp=kDataLoad3dManifest
   DATA_SOURCE Load3dSource
   LINKS nlohmann_json::nlohmann_json pj_wasm_lzf_d)

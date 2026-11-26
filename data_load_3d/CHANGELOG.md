@@ -3,6 +3,13 @@
 One entry per released version (newest first). Introduced at the version
 below; for earlier releases see the git history of `data_load_3d/`.
 
+## [1.2.0] - 2026-11-25
+
+### Added
+- LiDAR `.las` files (ASPRS LAS 1.0-1.4, point formats 0-10) load as point clouds, with intensity,
+  returns, classification, scan angle, GPS time and colour per point. Georeferenced coordinates are
+  re-centred and the offset is reported as `origin/x,y,z` in the summary.
+
 ## [1.1.0] - 2026-11-19
 
 ### Added
