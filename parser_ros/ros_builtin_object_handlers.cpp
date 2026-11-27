@@ -16,15 +16,20 @@
  */
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <memory>
 #include <pj_grid_map/grid_map_transcoder.hpp>
 #include <pj_pointcloud_color/pointcloud_color.hpp>
 #include <stdexcept>
 #include <unordered_map>
+#include <vector>
 
 #include "pj_base/builtin/camera_info.hpp"
 #include "pj_base/builtin/log.hpp"
+#include "pj_base/builtin/occupancy_grid.hpp"
 #include "pj_base/builtin/poses_in_frame.hpp"
+#include "pj_base/builtin/scene_entities.hpp"
 #include "ros_parser_internal.hpp"
 
 namespace ros_parser_detail {
@@ -1034,6 +1039,216 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePath(PJ::Timestamp ts, PJ::s
         .object = PJ::sdk::BuiltinObject{std::move(result)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("Path: CDR read error: ") + e.what());
+  }
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePoseWithCovarianceStampedObject(
+    PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    PJ::sdk::PosesInFrame result;
+    result.timestamp_ns = current_timestamp_;
+    result.frame_id = std::move(header.frame_id);
+    result.poses.push_back(readPose());  // the float64[36] covariance after it is left unread
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("PoseWithCovarianceStamped: CDR read error: ") + e.what());
+  }
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseParticleCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    const uint32_t particle_count = deserializer_->deserializeUInt32();
+    // Corrupt-count guard: a Particle is a 56-byte Pose plus a float64 weight.
+    constexpr size_t kParticleWireBytes = 8 * sizeof(double);
+    if (static_cast<size_t>(particle_count) * kParticleWireBytes > deserializer_->bytesLeft()) {
+      return PJ::unexpected(std::string("ParticleCloud: particle count exceeds payload size"));
+    }
+
+    PJ::sdk::PosesInFrame result;
+    result.timestamp_ns = current_timestamp_;
+    result.frame_id = std::move(header.frame_id);
+    result.poses.reserve(particle_count);
+    for (uint32_t i = 0; i < particle_count; ++i) {
+      result.poses.push_back(readPose());
+      (void)deserializer_->deserialize(RosMsgParser::FLOAT64);  // weight
+    }
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(result)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("ParticleCloud: CDR read error: ") + e.what());
+  }
+}
+
+// Frame-locked because a footprint is usually published rarely (or once) in the robot's own frame
+// and must move with it; for a polygon in a fixed frame locking changes nothing. Each message
+// replaces the previous one through the fixed entity id.
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parsePolygonStamped(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    HeaderData header = readHeader();
+
+    const uint32_t point_count = deserializer_->deserializeUInt32();
+    constexpr size_t kPoint32WireBytes = 3 * sizeof(float);
+    if (static_cast<size_t>(point_count) * kPoint32WireBytes > deserializer_->bytesLeft()) {
+      return PJ::unexpected(std::string("PolygonStamped: point count exceeds payload size"));
+    }
+
+    PJ::sdk::LinePrimitive line;
+    line.type = PJ::sdk::LineType::kLineLoop;
+    line.pose.orientation.w = 1.0;
+    line.thickness = 2.0;
+    line.scale_invariant = true;
+    line.color = {.r = 25, .g = 255, .b = 0, .a = 255};  // RViz's Polygon display default
+    line.points.reserve(point_count);
+    for (uint32_t i = 0; i < point_count; ++i) {
+      const double x = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<double>();
+      const double y = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<double>();
+      const double z = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<double>();
+      line.points.push_back({.x = x, .y = y, .z = z});
+    }
+
+    PJ::sdk::SceneEntity entity;
+    entity.timestamp_ns = current_timestamp_;
+    entity.frame_id = std::move(header.frame_id);
+    entity.id = "polygon";
+    entity.frame_locked = true;
+    if (line.points.size() >= 2) {
+      entity.lines.push_back(std::move(line));
+    }
+    PJ::sdk::SceneEntities entities;
+    entities.entities.push_back(std::move(entity));
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(entities)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("PolygonStamped: CDR read error: ") + e.what());
+  }
+}
+
+namespace {
+
+// nav2_costmap_2d's Costmap2DPublisher table: free 0, inscribed 253 -> 99, lethal 254 -> 100,
+// no information 255 -> -1, and 1..252 spread over 1..98.
+uint8_t nav2CostToOccupancy(uint8_t cost) {
+  switch (cost) {
+    case 0:
+      return 0;
+    case 253:
+      return 99;
+    case 254:
+      return 100;
+    case 255:
+      return static_cast<uint8_t>(int8_t{-1});
+    default:
+      return static_cast<uint8_t>(1 + (97 * (cost - 1)) / 251);
+  }
+}
+
+std::shared_ptr<std::vector<uint8_t>> nav2CostsToOccupancy(PJ::Span<const uint8_t> costs) {
+  auto cells = std::make_shared<std::vector<uint8_t>>(costs.size());
+  std::transform(costs.begin(), costs.end(), cells->begin(), nav2CostToOccupancy);
+  return cells;
+}
+
+}  // namespace
+
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseNav2Costmap(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    auto header = readHeader();
+
+    // CostmapMetaData: map_load_time and update_time (read and discarded; the grid uses the
+    // Header stamp), layer name, resolution, size, origin.
+    for (int i = 0; i < 2; ++i) {
+      (void)deserializer_->deserialize(RosMsgParser::INT32);
+      (void)deserializer_->deserialize(RosMsgParser::UINT32);
+    }
+    std::string layer;
+    deserializer_->deserializeString(layer);
+    const float resolution = deserializer_->deserialize(RosMsgParser::FLOAT32).convert<float>();
+    const uint32_t size_x = deserializer_->deserializeUInt32();
+    const uint32_t size_y = deserializer_->deserializeUInt32();
+    const PJ::sdk::Pose origin = readPose();
+
+    const auto costs = readByteSequence();
+    if (static_cast<uint64_t>(size_x) * size_y != costs.size()) {
+      return PJ::unexpected(std::string("Costmap: size_x * size_y does not match data length"));
+    }
+
+    auto cells = nav2CostsToOccupancy(PJ::Span<const uint8_t>(costs.data(), costs.size()));
+
+    PJ::sdk::OccupancyGrid grid;
+    grid.timestamp_ns = current_timestamp_;
+    grid.frame_id = std::move(header.frame_id);
+    grid.origin = origin;
+    grid.resolution = static_cast<double>(resolution);
+    grid.width = size_x;
+    grid.height = size_y;
+    grid.data = PJ::Span<const uint8_t>(cells->data(), cells->size());
+    grid.anchor = std::move(cells);
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(grid)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("Costmap: CDR read error: ") + e.what());
+  }
+}
+
+// The window of a nav2 costmap that changed, placed like a map_msgs/OccupancyGridUpdate: x and y
+// are the cell offset of its first cell into the costmap of the "<topic>" this "<topic>_updates"
+// belongs to. Costs go through the same table as the full costmap.
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseNav2CostmapUpdate(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    auto header = readHeader();
+
+    const uint32_t x = deserializer_->deserializeUInt32();
+    const uint32_t y = deserializer_->deserializeUInt32();
+    const uint32_t size_x = deserializer_->deserializeUInt32();
+    const uint32_t size_y = deserializer_->deserializeUInt32();
+    const auto costs = readByteSequence();
+    if (static_cast<uint64_t>(size_x) * size_y != costs.size()) {
+      return PJ::unexpected(std::string("CostmapUpdate: size_x * size_y does not match data length"));
+    }
+    if (x > static_cast<uint32_t>(INT32_MAX) || y > static_cast<uint32_t>(INT32_MAX)) {
+      return PJ::unexpected(std::string("CostmapUpdate: offset out of range"));
+    }
+
+    auto cells = nav2CostsToOccupancy(PJ::Span<const uint8_t>(costs.data(), costs.size()));
+
+    PJ::sdk::OccupancyGridUpdate update;
+    update.timestamp_ns = current_timestamp_;
+    update.frame_id = std::move(header.frame_id);
+    update.x = static_cast<int32_t>(x);
+    update.y = static_cast<int32_t>(y);
+    update.width = size_x;
+    update.height = size_y;
+    update.data = PJ::Span<const uint8_t>(cells->data(), cells->size());
+    update.anchor = std::move(cells);
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(update)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CostmapUpdate: CDR read error: ") + e.what());
   }
 }
 
