@@ -535,6 +535,22 @@ class RosParser : public PJ::MessageParserPluginBase {
   // PosesInFrame is one frame at one instant).
   PJ::Expected<PJ::sdk::ObjectRecord> parsePath(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // geometry_msgs/PoseWithCovarianceStamped -> sdk::PosesInFrame (single element; the
+  // covariance stays on the generic scalar route).
+  PJ::Expected<PJ::sdk::ObjectRecord> parsePoseWithCovarianceStampedObject(
+      PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // nav2_msgs/ParticleCloud -> sdk::PosesInFrame, one pose per particle (weights dropped).
+  PJ::Expected<PJ::sdk::ObjectRecord> parseParticleCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // geometry_msgs/PolygonStamped -> sdk::SceneEntities: one frame-locked entity holding a
+  // closed line loop through the points.
+  PJ::Expected<PJ::sdk::ObjectRecord> parsePolygonStamped(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
+  // nav2_msgs/Costmap -> sdk::OccupancyGrid. Costs 0..255 are translated to occupancy
+  // percent with nav2's own costmap publisher table, so the cells are newly generated and owned.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseNav2Costmap(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // nav_msgs/OccupancyGrid -> sdk::OccupancyGrid (byte-backed, zero-copy cells)
   PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 

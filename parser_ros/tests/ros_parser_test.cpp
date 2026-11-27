@@ -4191,6 +4191,225 @@ TEST(RosParserTest, PathProducesPosesInFrameObject) {
   EXPECT_DOUBLE_EQ(pf->poses[1].position.x, 2.0);
 }
 
+namespace {
+
+// Binds `type` with `def`, checks it classifies as `expected`, and parses `payload` as an object.
+PJ::Expected<PJ::sdk::ObjectRecord> parseNavObject(
+    RosParserFixture& f, const char* type, const std::string& def, PJ::sdk::BuiltinObjectType expected,
+    const std::vector<uint8_t>& payload) {
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  EXPECT_TRUE(f.bindSchema(type, def));
+  EXPECT_EQ(f.handle.classifySchema(type, def_span), expected);
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  return base->parseObject(1000, view);
+}
+
+const std::string kPoseWithCovarianceStampedDef =
+    std::string("std_msgs/Header header\ngeometry_msgs/PoseWithCovariance pose\n") + kHeaderDef +
+    "================\nMSG: geometry_msgs/PoseWithCovariance\ngeometry_msgs/Pose pose\nfloat64[36] covariance\n" +
+    kGeometryLeavesDef;
+
+const std::string kParticleCloudDef = std::string("std_msgs/Header header\nnav2_msgs/Particle[] particles\n") +
+                                      kHeaderDef +
+                                      "================\nMSG: nav2_msgs/Particle\n"
+                                      "geometry_msgs/Pose pose\nfloat64 weight\n" +
+                                      kGeometryLeavesDef;
+
+const std::string kPolygonStampedDef =
+    std::string("std_msgs/Header header\ngeometry_msgs/Polygon polygon\n") + kHeaderDef +
+    "================\nMSG: geometry_msgs/Polygon\ngeometry_msgs/Point32[] points\n"
+    "================\nMSG: geometry_msgs/Point32\nfloat32 x\nfloat32 y\nfloat32 z\n";
+
+const std::string kCostmapDef =
+    std::string("std_msgs/Header header\nnav2_msgs/CostmapMetaData metadata\nuint8[] data\n") + kHeaderDef +
+    "================\nMSG: nav2_msgs/CostmapMetaData\n"
+    "builtin_interfaces/Time map_load_time\nbuiltin_interfaces/Time update_time\n"
+    "string layer\nfloat32 resolution\nuint32 size_x\nuint32 size_y\n"
+    "geometry_msgs/Pose origin\n" +
+    kGeometryLeavesDef;
+
+std::vector<uint8_t> serializeCostmap(uint32_t size_x, uint32_t size_y, const std::vector<uint8_t>& costs) {
+  return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 4, 0, "odom");
+    for (int i = 0; i < 2; ++i) {  // map_load_time, update_time
+      enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(int32_t{0}));
+      enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(uint32_t{0}));
+    }
+    enc.serializeString("master");
+    enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(0.05f));
+    enc.serializeUInt32(size_x);
+    enc.serializeUInt32(size_y);
+    serializeVector3(enc, -1.0, -2.0, 0.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+    enc.serializeUInt32(static_cast<uint32_t>(costs.size()));
+    for (uint8_t c : costs) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(c));
+    }
+  });
+}
+
+}  // namespace
+
+TEST(RosParserTest, PoseWithCovarianceStampedProducesSinglePosePosesInFrameObject) {
+  RosParserFixture f;
+  f.setUp();
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 3, 0, "map");
+    serializeVector3(enc, 1.5, -2.5, 0.0);
+    serializeQuaternion(enc, 0.0, 0.0, 0.7071, 0.7071);
+    for (int i = 0; i < 36; ++i) {
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(0.25));
+    }
+  });
+  auto rec = parseNavObject(
+      f, "geometry_msgs/PoseWithCovarianceStamped", kPoseWithCovarianceStampedDef,
+      PJ::sdk::BuiltinObjectType::kPosesInFrame, payload);
+  ASSERT_TRUE(rec.has_value());
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "map");
+  ASSERT_EQ(pf->poses.size(), 1u);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.x, 1.5);
+  EXPECT_DOUBLE_EQ(pf->poses[0].position.y, -2.5);
+  EXPECT_DOUBLE_EQ(pf->poses[0].orientation.z, 0.7071);
+
+  // The scalar route keeps the pose and the covariance plottable.
+  f.recorder.clear();
+  ASSERT_TRUE(f.parse(payload, 1000));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+  const auto* pos_x = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/pose/pose/position/x");
+  ASSERT_NE(pos_x, nullptr);
+  EXPECT_DOUBLE_EQ(pos_x->numeric, 1.5);
+  EXPECT_NE(PJ::sdk::testing::ParserWriteRecorder::findField(row, "/pose/covariance[0]"), nullptr);
+}
+
+TEST(RosParserTest, ParticleCloudProducesOnePosePerParticle) {
+  RosParserFixture f;
+  f.setUp();
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 3, 0, "map");
+    enc.serializeUInt32(3);
+    for (int i = 0; i < 3; ++i) {
+      serializeVector3(enc, static_cast<double>(i), 2.0 * i, 0.0);
+      serializeQuaternion(enc, 0.0, 0.0, 0.0, 1.0);
+      enc.serialize(RosMsgParser::FLOAT64, RosMsgParser::Variant(1.0 / 3.0));  // weight
+    }
+  });
+  auto rec = parseNavObject(
+      f, "nav2_msgs/ParticleCloud", kParticleCloudDef, PJ::sdk::BuiltinObjectType::kPosesInFrame, payload);
+  ASSERT_TRUE(rec.has_value());
+  const auto* pf = pj_compat::getBuiltinObject<PJ::sdk::PosesInFrame>(rec->object);
+  ASSERT_NE(pf, nullptr);
+  EXPECT_EQ(pf->frame_id, "map");
+  ASSERT_EQ(pf->poses.size(), 3u);
+  // The weight after each pose is skipped, so every particle stays aligned.
+  EXPECT_DOUBLE_EQ(pf->poses[2].position.x, 2.0);
+  EXPECT_DOUBLE_EQ(pf->poses[2].position.y, 4.0);
+  EXPECT_DOUBLE_EQ(pf->poses[2].orientation.w, 1.0);
+}
+
+TEST(RosParserTest, ParticleCloudRejectsACountBeyondThePayload) {
+  RosParserFixture f;
+  f.setUp();
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 3, 0, "map");
+    enc.serializeUInt32(1'000'000);
+    serializeVector3(enc, 0.0, 0.0, 0.0);
+  });
+  auto rec = parseNavObject(
+      f, "nav2_msgs/ParticleCloud", kParticleCloudDef, PJ::sdk::BuiltinObjectType::kPosesInFrame, payload);
+  EXPECT_FALSE(rec.has_value());
+}
+
+TEST(RosParserTest, PolygonStampedProducesAFrameLockedLineLoop) {
+  RosParserFixture f;
+  f.setUp();
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 3, 0, "base_link");
+    enc.serializeUInt32(4);
+    const float corners[4][2] = {{0.5f, 0.3f}, {-0.5f, 0.3f}, {-0.5f, -0.3f}, {0.5f, -0.3f}};
+    for (const auto& c : corners) {
+      enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(c[0]));
+      enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(c[1]));
+      enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(0.0f));
+    }
+  });
+  auto rec = parseNavObject(
+      f, "geometry_msgs/PolygonStamped", kPolygonStampedDef, PJ::sdk::BuiltinObjectType::kSceneEntities, payload);
+  ASSERT_TRUE(rec.has_value());
+  const auto* se = pj_compat::getBuiltinObject<PJ::sdk::SceneEntities>(rec->object);
+  ASSERT_NE(se, nullptr);
+  ASSERT_EQ(se->entities.size(), 1u);
+  const auto& entity = se->entities[0];
+  EXPECT_EQ(entity.frame_id, "base_link");
+  EXPECT_EQ(entity.id, "polygon");
+  EXPECT_TRUE(entity.frame_locked);
+  EXPECT_EQ(entity.lifetime_ns, 0);
+  ASSERT_EQ(entity.lines.size(), 1u);
+  const auto& line = entity.lines[0];
+  EXPECT_EQ(line.type, PJ::sdk::LineType::kLineLoop);
+  EXPECT_TRUE(line.scale_invariant);
+  EXPECT_GT(line.thickness, 0.0);
+  EXPECT_DOUBLE_EQ(line.pose.orientation.w, 1.0);
+  ASSERT_EQ(line.points.size(), 4u);
+  EXPECT_FLOAT_EQ(static_cast<float>(line.points[2].x), -0.5f);
+  EXPECT_FLOAT_EQ(static_cast<float>(line.points[2].y), -0.3f);
+}
+
+TEST(RosParserTest, PolygonStampedWithOnePointDrawsNoLine) {
+  RosParserFixture f;
+  f.setUp();
+  auto payload = serializeCdr([](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 3, 0, "base_link");
+    enc.serializeUInt32(1);
+    for (int i = 0; i < 3; ++i) {
+      enc.serialize(RosMsgParser::FLOAT32, RosMsgParser::Variant(1.0f));
+    }
+  });
+  auto rec = parseNavObject(
+      f, "geometry_msgs/PolygonStamped", kPolygonStampedDef, PJ::sdk::BuiltinObjectType::kSceneEntities, payload);
+  ASSERT_TRUE(rec.has_value());
+  const auto* se = pj_compat::getBuiltinObject<PJ::sdk::SceneEntities>(rec->object);
+  ASSERT_NE(se, nullptr);
+  ASSERT_EQ(se->entities.size(), 1u);  // still replaces an earlier outline
+  EXPECT_TRUE(se->entities[0].lines.empty());
+}
+
+TEST(RosParserTest, Nav2CostmapTranslatesCostsLikeTheNav2Publisher) {
+  RosParserFixture f;
+  f.setUp();
+  const std::vector<uint8_t> costs = {0, 1, 128, 252, 253, 254, 255, 0};
+  auto rec = parseNavObject(
+      f, "nav2_msgs/Costmap", kCostmapDef, PJ::sdk::BuiltinObjectType::kOccupancyGrid, serializeCostmap(4, 2, costs));
+  ASSERT_TRUE(rec.has_value());
+  const auto* grid = pj_compat::getBuiltinObject<PJ::sdk::OccupancyGrid>(rec->object);
+  ASSERT_NE(grid, nullptr);
+  EXPECT_EQ(grid->frame_id, "odom");
+  EXPECT_EQ(grid->width, 4u);
+  EXPECT_EQ(grid->height, 2u);
+  EXPECT_NEAR(grid->resolution, 0.05, 1e-6);
+  EXPECT_DOUBLE_EQ(grid->origin.position.x, -1.0);
+  EXPECT_DOUBLE_EQ(grid->origin.position.y, -2.0);
+  EXPECT_DOUBLE_EQ(grid->origin.orientation.w, 1.0);
+  ASSERT_EQ(grid->data.size(), costs.size());
+  ASSERT_NE(grid->anchor, nullptr);  // translated cells are owned by the object
+  const std::vector<int8_t> expected = {0, 1, 1 + (97 * 127) / 251, 98, 99, 100, -1, 0};
+  for (size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_EQ(static_cast<int8_t>(grid->data.data()[i]), expected[i]) << "cost " << int(costs[i]);
+  }
+}
+
+TEST(RosParserTest, Nav2CostmapRejectsASizeThatDoesNotMatchTheData) {
+  RosParserFixture f;
+  f.setUp();
+  auto rec = parseNavObject(
+      f, "nav2_msgs/Costmap", kCostmapDef, PJ::sdk::BuiltinObjectType::kOccupancyGrid,
+      serializeCostmap(3, 3, {0, 0, 0, 0}));
+  EXPECT_FALSE(rec.has_value());
+}
+
 TEST(RosParserTest, OdometryProducesSinglePosePosesInFrameObject) {
   // nav_msgs/Odometry: the pose of child_frame_id in the header frame. Dual route: a one-element
   // PosesInFrame object alongside the per-axis scalar flatten (handleOdometry), as for PoseStamped.
