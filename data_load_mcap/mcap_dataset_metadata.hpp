@@ -99,41 +99,6 @@ inline FileFacts gatherFileFacts(mcap::McapReader& reader) {
   return facts;
 }
 
-/// The Metadata record `index` points at, or nullopt when it cannot be fetched or parsed.
-inline std::optional<mcap::Metadata> readMetadataRecord(
-    mcap::IReadable& data_source, const mcap::MetadataIndex& index) {
-  mcap::RecordReader record_reader(data_source, index.offset, index.offset + index.length);
-  const std::optional<mcap::Record> record = record_reader.next();
-  mcap::Metadata metadata;
-  if (!record || !record_reader.status().ok() || !mcap::McapReader::ParseMetadata(*record, &metadata).ok()) {
-    return std::nullopt;
-  }
-  return metadata;
-}
-
-/// The last readable Metadata record named `name` in file order (a writer that records at open and again at close
-/// leaves its final word last), or nullopt. Same index caveat as collectMetadataRecords().
-inline std::optional<mcap::Metadata> lastMetadataRecord(mcap::McapReader& reader, std::string_view name) {
-  mcap::IReadable* data_source = reader.dataSource();
-  if (data_source == nullptr) {
-    return std::nullopt;
-  }
-  std::vector<const mcap::MetadataIndex*> candidates;
-  const auto [first, last] = reader.metadataIndexes().equal_range(std::string(name));
-  for (auto it = first; it != last; ++it) {
-    candidates.push_back(&it->second);
-  }
-  std::sort(candidates.begin(), candidates.end(), [](const mcap::MetadataIndex* lhs, const mcap::MetadataIndex* rhs) {
-    return lhs->offset > rhs->offset;
-  });
-  for (const mcap::MetadataIndex* index : candidates) {
-    if (auto metadata = readMetadataRecord(*data_source, *index)) {
-      return metadata;
-    }
-  }
-  return std::nullopt;
-}
-
 /// Every indexed file-level Metadata record body, in file order; records the reader cannot fetch or parse are skipped
 /// with a diagnostic. A valid summary that OMITS metadata indexes is indistinguishable from one with no metadata (the
 /// fallback scan only reconstructs indexes when there is no summary at all): both yield an empty list.
@@ -156,14 +121,16 @@ inline std::vector<mcap::Metadata> collectMetadataRecords(
   });
 
   for (const mcap::MetadataIndex* index : ordered) {
-    std::optional<mcap::Metadata> metadata = readMetadataRecord(*data_source, *index);
-    if (!metadata) {
+    mcap::RecordReader record_reader(*data_source, index->offset, index->offset + index->length);
+    const std::optional<mcap::Record> record = record_reader.next();
+    mcap::Metadata metadata;
+    if (!record || !record_reader.status().ok() || !mcap::McapReader::ParseMetadata(*record, &metadata).ok()) {
       if (diagnostics != nullptr) {
         diagnostics->push_back("MCAP metadata record '" + index->name + "' could not be read; skipped");
       }
       continue;
     }
-    records.push_back(std::move(*metadata));
+    records.push_back(std::move(metadata));
   }
   return records;
 }

@@ -4,7 +4,6 @@
 #include <zstd.h>
 
 #include <cstdint>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,6 +13,7 @@ namespace {
 using namespace PJ::McapHelpers;
 
 constexpr uint64_t kLargeCap = uint64_t{1} << 30;
+const std::vector<uint8_t> kCdrInt32{0x00, 0x01, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00};
 
 std::vector<uint8_t> payload() {
   std::vector<uint8_t> bytes(4096);
@@ -31,25 +31,38 @@ std::vector<uint8_t> compress(const std::vector<uint8_t>& in) {
   return out;
 }
 
+std::vector<uint8_t> decode(const std::vector<uint8_t>& frame, uint64_t cap = kLargeCap) {
+  const PJ::sdk::PayloadView view = decodeZstdMessage({frame.data(), frame.size()}, cap);
+  return {view.bytes.data(), view.bytes.data() + view.bytes.size()};
+}
+
 // The error text of decoding `frame`, or "" when it decodes.
 std::string decodeError(const std::vector<uint8_t>& frame, uint64_t cap = kLargeCap) {
   try {
-    (void)decodeZstdMessage(frame, cap);
+    (void)decode(frame, cap);
   } catch (const std::runtime_error& e) {
     return e.what();
   }
   return {};
 }
 
-TEST(ZstdMessageDecoder, RoundTripsAFrame) {
-  const auto original = payload();
-  EXPECT_EQ(decodeZstdMessage(compress(original), kLargeCap), original);
+TEST(ZstdMessageDecoder, RecognisesFramesByMagic) {
+  const auto frame = compress(payload());
+  EXPECT_TRUE(isZstdFrame(frame.data(), frame.size()));
+  EXPECT_FALSE(isZstdFrame(kCdrInt32.data(), kCdrInt32.size()));
+  const std::vector<uint8_t> magic_only{0x28, 0xB5, 0x2F};
+  EXPECT_FALSE(isZstdFrame(magic_only.data(), magic_only.size()));
+  EXPECT_FALSE(isZstdFrame(nullptr, 0));
 }
 
-TEST(ZstdMessageDecoder, RejectsBytesThatAreNotAFrame) {
-  // A CDR payload, what an uncompressed rosbag2 message starts with.
-  EXPECT_NE(decodeError({0x00, 0x01, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00}).find("not a zstd frame"), std::string::npos);
-  EXPECT_NE(decodeError({}).find("not a zstd frame"), std::string::npos);
+TEST(ZstdMessageDecoder, RoundTripsAFrame) {
+  const auto original = payload();
+  EXPECT_EQ(decode(compress(original)), original);
+  EXPECT_EQ(decode(compress(kCdrInt32)), kCdrInt32);
+}
+
+TEST(ZstdMessageDecoder, ErrorsNameTheCodec) {
+  EXPECT_EQ(decodeError(kCdrInt32), "zstd decompression failed: not a zstd frame");
 }
 
 TEST(ZstdMessageDecoder, RejectsACorruptFrame) {
@@ -77,7 +90,7 @@ TEST(ZstdMessageDecoder, RefusesADeclaredSizeOverTheCapBeforeDecoding) {
   const auto original = payload();
   const std::string error = decodeError(compress(original), original.size() - 1);
   EXPECT_NE(error.find("declared decompressed size 4096 exceeds the limit of 4095 bytes"), std::string::npos) << error;
-  EXPECT_EQ(decodeZstdMessage(compress(original), original.size()), original);
+  EXPECT_EQ(decode(compress(original), original.size()), original);
 }
 
 TEST(ZstdMessageDecoder, RejectsAFrameWithoutContentSize) {
@@ -92,52 +105,6 @@ TEST(ZstdMessageDecoder, RejectsAFrameWithoutContentSize) {
   frame.resize(written);
 
   EXPECT_NE(decodeError(frame).find("does not declare its decompressed size"), std::string::npos) << decodeError(frame);
-}
-
-TEST(MessageCodecTable, KnowsZstdOnly) {
-  ASSERT_NE(findMessageCodec("zstd"), nullptr);
-  EXPECT_EQ(findMessageCodec("lz4"), nullptr);
-  EXPECT_EQ(findMessageCodec(""), nullptr);
-  EXPECT_EQ(findMessageCodec("ZSTD"), nullptr);
-}
-
-TEST(MessageCodecTable, ErrorsNameTheFormat) {
-  const MessageCodec* codec = findMessageCodec("zstd");
-  ASSERT_NE(codec, nullptr);
-  const std::vector<uint8_t> not_a_frame{0x00, 0x01, 0x00, 0x00};
-  try {
-    (void)decodeMessagePayload(*codec, not_a_frame, kLargeCap);
-    FAIL() << "expected a decode failure";
-  } catch (const std::runtime_error& e) {
-    EXPECT_EQ(std::string(e.what()), "per-message zstd decompression failed: not a zstd frame");
-  }
-}
-
-TEST(PayloadCompression, OnlyMessageModeDecodes) {
-  const std::optional<std::string> zstd = "zstd";
-  EXPECT_EQ(resolvePayloadCompression(std::nullopt, zstd).codec, nullptr);
-  for (const auto* mode : {"", "none", "NONE", "file", "FILE"}) {
-    const auto resolved = resolvePayloadCompression(std::string(mode), zstd);
-    EXPECT_EQ(resolved.codec, nullptr) << mode;
-    EXPECT_FALSE(resolved.unsupported_format.has_value()) << mode;
-  }
-  // rosbag2 writes the mode upper case; hand-written metadata usually lower case.
-  for (const auto* mode : {"MESSAGE", "message", "Message"}) {
-    const auto resolved = resolvePayloadCompression(std::string(mode), zstd);
-    ASSERT_NE(resolved.codec, nullptr) << mode;
-    EXPECT_EQ(resolved.codec->format, "zstd");
-    EXPECT_FALSE(resolved.unsupported_format.has_value()) << mode;
-  }
-}
-
-TEST(PayloadCompression, MessageModeWithAnUnknownOrMissingFormatIsUnsupported) {
-  const auto lz4 = resolvePayloadCompression(std::string("MESSAGE"), std::string("lz4"));
-  EXPECT_EQ(lz4.codec, nullptr);
-  EXPECT_EQ(lz4.unsupported_format, "lz4");
-
-  const auto missing = resolvePayloadCompression(std::string("MESSAGE"), std::nullopt);
-  EXPECT_EQ(missing.codec, nullptr);
-  EXPECT_EQ(missing.unsupported_format, "");
 }
 
 }  // namespace

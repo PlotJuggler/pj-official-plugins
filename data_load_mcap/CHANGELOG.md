@@ -6,7 +6,7 @@ below; for earlier releases see the git history of `data_load_mcap/`.
 ## Upcoming
 
 ### Fixed
-- ROS 2 bags recorded with per-message compression (`compression_mode: message`, zstd) load; every message used to fail with "Invalid CDR header". A bag compressed per message with another format is refused with a message that points at `ros2 bag convert`.
+- ROS 2 bags recorded with per-message compression (`compression_mode: message`, zstd) load, also after `mcap filter`; every message used to fail with "Invalid CDR header".
 
 ## [1.3.6] - 2026-11-26
 

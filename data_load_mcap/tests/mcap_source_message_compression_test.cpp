@@ -1,5 +1,6 @@
-// Drives the BUILT mcap_source_plugin through ROS 2 bags recorded with `compression_mode: message`: every payload is a
-// compressed frame, and only the file's own `rosbag2` Metadata record says so.
+// Drives the BUILT mcap_source_plugin through ROS 2 bags recorded with `compression_mode: message`: every CDR payload
+// is a zstd frame, recognised by its magic number. The synthetic files carry no `rosbag2` Metadata record, as after
+// `mcap filter`, so nothing but the payload bytes can tell them apart.
 #define MCAP_IMPLEMENTATION
 #include <gtest/gtest.h>
 #include <zstd.h>
@@ -17,7 +18,6 @@
 #include <pj_plugins/testing/delegated_ingest_fixture.hpp>
 #include <pj_utf8_path/utf8_path.hpp>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace {
@@ -25,21 +25,6 @@ namespace {
 namespace fs = std::filesystem;
 
 const std::vector<uint8_t> kCdrInt32{0x00, 0x01, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00};
-
-std::string bareRosbag2Body(const std::string& format, const std::string& mode) {
-  return "version: 9\n"
-         "storage_identifier: mcap\n"
-         "duration:\n"
-         "  nanoseconds: 0\n"
-         "compression_format: " +
-         format +
-         "\n"
-         "compression_mode: " +
-         mode +
-         "\n"
-         "relative_file_paths:\n"
-         "  - rec_0.mcap\n";
-}
 
 std::vector<uint8_t> zstdFrame(const std::vector<uint8_t>& in) {
   std::vector<uint8_t> out(ZSTD_compressBound(in.size()));
@@ -50,59 +35,36 @@ std::vector<uint8_t> zstdFrame(const std::vector<uint8_t>& in) {
 }
 
 struct FileSpec {
-  std::vector<std::string> topics{"/a"};
   int count = 3;
   mcap::Timestamp t0 = 1000;
-  std::optional<std::string> rosbag2_body;  ///< written as the `rosbag2` record, at open and again at close
-  bool zstd_payloads = false;
+  bool zstd_payloads = true;
   std::optional<int> corrupt_index;  ///< this message's frame is truncated
+  std::string encoding = "cdr";
+  bool chunked = true;  ///< unchunked files take the serial file-order path
 };
 
-FileSpec specWith(std::optional<std::string> rosbag2_body, bool zstd_payloads, mcap::Timestamp t0 = 1000) {
-  FileSpec spec;
-  spec.rosbag2_body = std::move(rosbag2_body);
-  spec.zstd_payloads = zstd_payloads;
-  spec.t0 = t0;
-  return spec;
-}
-
-// Chunked and indexed, so the import takes the parallel indexed path.
 void writeFile(const fs::path& path, const FileSpec& spec) {
+  mcap::McapWriterOptions options("ros2");
+  options.noChunking = !spec.chunked;
   mcap::McapWriter writer;
-  ASSERT_TRUE(writer.open(PJ::utf8_path::pathToUtf8(path), mcap::McapWriterOptions("ros2")).ok());
-  const auto write_record = [&] {
-    if (spec.rosbag2_body) {
-      mcap::Metadata record;
-      record.name = "rosbag2";
-      record.metadata["serialized_metadata"] = *spec.rosbag2_body;
-      ASSERT_TRUE(writer.write(record).ok());
-    }
-  };
-  write_record();
+  ASSERT_TRUE(writer.open(PJ::utf8_path::pathToUtf8(path), options).ok());
   mcap::Schema schema("std_msgs/msg/Int32", "ros2msg", "int32 data");
   writer.addSchema(schema);
-  std::vector<mcap::ChannelId> ids;
-  for (const std::string& topic : spec.topics) {
-    mcap::Channel channel(topic, "cdr", schema.id);
-    writer.addChannel(channel);
-    ids.push_back(channel.id);
-  }
+  mcap::Channel channel("/a", spec.encoding, schema.id);
+  writer.addChannel(channel);
   const std::vector<uint8_t> frame = zstdFrame(kCdrInt32);
   std::vector<uint8_t> truncated = frame;
   truncated.resize(truncated.size() - 2);
   for (int i = 0; i < spec.count; ++i) {
     const std::vector<uint8_t>& payload =
         !spec.zstd_payloads ? kCdrInt32 : (spec.corrupt_index == i ? truncated : frame);
-    for (mcap::ChannelId id : ids) {
-      mcap::Message msg;
-      msg.channelId = id;
-      msg.logTime = msg.publishTime = spec.t0 + static_cast<mcap::Timestamp>(i);
-      msg.data = reinterpret_cast<const std::byte*>(payload.data());
-      msg.dataSize = payload.size();
-      ASSERT_TRUE(writer.write(msg).ok());
-    }
+    mcap::Message msg;
+    msg.channelId = channel.id;
+    msg.logTime = msg.publishTime = spec.t0 + static_cast<mcap::Timestamp>(i);
+    msg.data = reinterpret_cast<const std::byte*>(payload.data());
+    msg.dataSize = payload.size();
+    ASSERT_TRUE(writer.write(msg).ok());
   }
-  write_record();
   writer.close();
 }
 
@@ -232,11 +194,14 @@ class MessageCompressionImport : public ::testing::Test {
     std::error_code ignored;
     fs::remove_all(dir_, ignored);
   }
-  void writeSplitYaml(const std::vector<std::string>& files) {
-    std::ofstream yaml(dir_ / "metadata.yaml", std::ios::binary);
-    yaml << "rosbag2_bagfile_information:\n  storage_identifier: mcap\n  relative_file_paths:\n";
-    for (const std::string& file : files) {
-      yaml << "    - " << file << "\n";
+  void expectAllPayloadsAreCdr(const FileSpec& spec) {
+    writeFile(dir_ / "rec.mcap", spec);
+    const ImportResult result = importPath(dir_ / "rec.mcap");
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_TRUE(result.fetch_errors.empty()) << ::testing::PrintToString(result.fetch_errors);
+    ASSERT_EQ(result.recording.pushes.size(), static_cast<size_t>(spec.count));
+    for (const auto& push : result.recording.pushes) {
+      EXPECT_EQ(push.bytes, kCdrInt32);
     }
   }
   fs::path dir_;
@@ -270,6 +235,28 @@ TEST_F(MessageCompressionImport, RealRosbag2BagLoadsWithCdrPayloads) {
   EXPECT_NE(odom.find("odom"), std::string::npos);
 }
 
+TEST_F(MessageCompressionImport, IndexedFileWithoutMetadataLoads) {
+  expectAllPayloadsAreCdr(FileSpec{});
+}
+
+TEST_F(MessageCompressionImport, UnchunkedFileLoads) {
+  FileSpec spec;
+  spec.chunked = false;
+  expectAllPayloadsAreCdr(spec);
+}
+
+// Only CDR is recognised: no CDR encapsulation header starts with the zstd magic, while other encodings could.
+TEST_F(MessageCompressionImport, NonCdrPayloadIsPassedThroughUnchanged) {
+  FileSpec spec;
+  spec.count = 1;
+  spec.encoding = "json";
+  writeFile(dir_ / "rec.mcap", spec);
+  const ImportResult result = importPath(dir_ / "rec.mcap");
+  ASSERT_TRUE(result.ok) << result.error;
+  ASSERT_EQ(result.recording.pushes.size(), 1u);
+  EXPECT_EQ(result.recording.pushes.front().bytes, zstdFrame(kCdrInt32));
+}
+
 // The host keeps fetchers for deferred pulls and invokes them after the source is destroyed: the decoding fetcher
 // must not depend on anything of the import.
 TEST_F(MessageCompressionImport, DeferredFetchDecodesAfterTheSourceIsGone) {
@@ -299,7 +286,7 @@ TEST_F(MessageCompressionImport, DeferredFetchDecodesAfterTheSourceIsGone) {
 }
 
 TEST_F(MessageCompressionImport, CorruptFrameFailsOnlyItsMessage) {
-  FileSpec spec = specWith(bareRosbag2Body("zstd", "MESSAGE"), true);
+  FileSpec spec;
   spec.count = 5;
   spec.corrupt_index = 2;
   writeFile(dir_ / "rec.mcap", spec);
@@ -307,7 +294,7 @@ TEST_F(MessageCompressionImport, CorruptFrameFailsOnlyItsMessage) {
   const ImportResult result = importPath(dir_ / "rec.mcap");
   ASSERT_TRUE(result.ok) << result.error;
   ASSERT_EQ(result.fetch_errors.size(), 1u) << ::testing::PrintToString(result.fetch_errors);
-  EXPECT_NE(result.fetch_errors.front().find("per-message zstd decompression failed: "), std::string::npos)
+  EXPECT_NE(result.fetch_errors.front().find("zstd decompression failed: "), std::string::npos)
       << result.fetch_errors.front();
 
   ASSERT_EQ(result.recording.pushes.size(), 4u);
@@ -317,51 +304,25 @@ TEST_F(MessageCompressionImport, CorruptFrameFailsOnlyItsMessage) {
   bool reported = false;
   for (const auto& note : result.recording.notifications) {
     reported = reported || (note.find("'/a': 1 message(s) could not be loaded") != std::string::npos &&
-                            note.find("per-message zstd decompression failed") != std::string::npos);
+                            note.find("zstd decompression failed") != std::string::npos);
   }
   EXPECT_TRUE(reported) << ::testing::PrintToString(result.recording.notifications);
 }
 
-TEST_F(MessageCompressionImport, UnsupportedFormatFailsBeforePushingAnything) {
-  writeFile(dir_ / "rec.mcap", specWith(bareRosbag2Body("lz4", "MESSAGE"), true));
-
-  const ImportResult result = importPath(dir_ / "rec.mcap");
-  EXPECT_FALSE(result.ok);
-  EXPECT_NE(
-      result.error.find(
-          "rec.mcap: this ROS 2 bag uses per-message compression 'lz4', which is not supported. Convert it with "
-          "'ros2 bag convert' (compression_mode: none)."),
-      std::string::npos)
-      << result.error;
-  EXPECT_TRUE(result.recording.bindings.empty());
-  EXPECT_TRUE(result.recording.pushes.empty());
-}
-
-// A later split with an unsupported format must not leave the earlier, readable splits half-imported.
-TEST_F(MessageCompressionImport, UnsupportedFormatInALaterSplitFailsTheWholeBag) {
-  writeFile(dir_ / "bag_0.mcap", specWith(bareRosbag2Body("", ""), false));
-  writeFile(dir_ / "bag_1.mcap", specWith(bareRosbag2Body("lz4", "message"), true, 2000));
-  writeSplitYaml({"bag_0.mcap", "bag_1.mcap"});
-
-  const ImportResult result = importPath(dir_ / "metadata.yaml");
-  EXPECT_FALSE(result.ok);
-  EXPECT_NE(result.error.find("bag_1.mcap: this ROS 2 bag uses per-message compression 'lz4'"), std::string::npos)
-      << result.error;
-  EXPECT_TRUE(result.recording.pushes.empty());
-}
-
-// Each split is read according to its own record, in either order.
-TEST_F(MessageCompressionImport, SplitsDecideCompressionIndependently) {
-  const FileSpec plain = specWith(bareRosbag2Body("", ""), false);
-  const FileSpec compressed = specWith(bareRosbag2Body("zstd", "MESSAGE"), true);
+// Each split is decided by its own payloads, in either order.
+TEST_F(MessageCompressionImport, PlainAndCompressedSplitsLoadTogether) {
   for (const bool compressed_first : {false, true}) {
     SCOPED_TRACE(compressed_first ? "compressed split first" : "plain split first");
-    FileSpec first = compressed_first ? compressed : plain;
-    FileSpec second = compressed_first ? plain : compressed;
+    FileSpec first;
+    first.zstd_payloads = compressed_first;
+    FileSpec second;
     second.t0 = 2000;
+    second.zstd_payloads = !compressed_first;
     writeFile(dir_ / "bag_0.mcap", first);
     writeFile(dir_ / "bag_1.mcap", second);
-    writeSplitYaml({"bag_0.mcap", "bag_1.mcap"});
+    std::ofstream(dir_ / "metadata.yaml", std::ios::binary)
+        << "rosbag2_bagfile_information:\n  storage_identifier: mcap\n  relative_file_paths:\n"
+           "    - bag_0.mcap\n    - bag_1.mcap\n";
 
     const ImportResult result = importPath(dir_ / "metadata.yaml");
     ASSERT_TRUE(result.ok) << result.error;

@@ -62,10 +62,9 @@ Only MCAP-storage bags are accepted. A `sqlite3` bag (`.db3` files) or a bag spl
 (`.mcap.zstd`) is rejected with a message pointing at `ros2 bag convert`; nothing is half-loaded. A damaged split (e.g.
 the last one cut short by a killed recorder) is reported as a partial recovery while the other splits still load.
 
-Bags recorded with per-message compression (`compression_mode: message`) load directly when the format is `zstd`,
-whether opened through `metadata.yaml` or as a single `.mcap`. Each file is read according to the `rosbag2` metadata
-record it carries. Other per-message formats are rejected before anything loads, with a message pointing at
-`ros2 bag convert`.
+Bags recorded with per-message compression (`compression_mode: message`, zstd) load directly. A CDR payload that starts
+with the zstd magic number is decompressed, so the bag's metadata is not needed (`mcap filter` drops it). rosbag2 has no
+other per-message format.
 
 ## Always-included channels
 

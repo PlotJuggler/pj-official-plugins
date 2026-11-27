@@ -43,7 +43,7 @@ add_test(NAME mcap_helpers_test COMMAND mcap_helpers_test)
 add_executable(mcap_message_decompression_test tests/mcap_message_decompression_test.cpp)
 target_compile_features(mcap_message_decompression_test PRIVATE cxx_std_20)
 target_compile_options(mcap_message_decompression_test PRIVATE ${PJ_WARNING_FLAGS})
-target_link_libraries(mcap_message_decompression_test PRIVATE zstd::libzstd_static GTest::gtest_main)
+target_link_libraries(mcap_message_decompression_test PRIVATE plotjuggler_sdk::base zstd::libzstd_static GTest::gtest_main)
 add_test(NAME mcap_message_decompression_test COMMAND mcap_message_decompression_test)
 
 add_executable(mcap_dialog_test tests/mcap_dialog_test.cpp)

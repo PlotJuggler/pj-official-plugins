@@ -280,14 +280,11 @@ struct Rosbag2Metadata {
   bool is_rosbag2 = false;         ///< top-level rosbag2_bagfile_information key present
   std::string storage_identifier;  ///< "mcap", "sqlite3", ... ("" when absent)
   std::vector<std::string> relative_file_paths;
-  std::optional<std::string> compression_format;  ///< "zstd", ... (nullopt when absent)
-  std::optional<std::string> compression_mode;    ///< as written: "MESSAGE", "FILE", "none", "" (nullopt when absent)
 };
 
-/// Line scan of the rosbag2 metadata keys this plugin needs, in either form rosbag2 writes them: metadata.yaml, under
-/// a top-level `rosbag2_bagfile_information:` key, or the bare body it embeds in each MCAP file's `rosbag2` Metadata
-/// record. Not a YAML parser: it relies on the block style rosbag2's yaml-cpp emitter always writes (one `- item` per
-/// line under `relative_file_paths:`).
+/// Line scan of the three rosbag2 metadata.yaml keys this plugin needs. Not a
+/// YAML parser: it relies on the block style rosbag2's yaml-cpp emitter always
+/// writes (one `- item` per line under `relative_file_paths:`).
 inline Rosbag2Metadata parseRosbag2Metadata(std::string_view yaml) {
   const auto trim = [](std::string_view s) {
     const auto first = s.find_first_not_of(" \t\r");
@@ -305,20 +302,9 @@ inline Rosbag2Metadata parseRosbag2Metadata(std::string_view yaml) {
 
   Rosbag2Metadata out;
   bool in_file_list = false;
-  // The compression keys count only at the top level of the bag information (column 0 in the bare body, one level
-  // under the wrapper key), so a same-named key nested under `files:` or a topic cannot decide how payloads are read.
-  size_t top_level_indent = 0;
-  bool top_level_indent_pending = false;
   std::istringstream lines{std::string(yaml)};
   for (std::string raw; std::getline(lines, raw);) {
     const std::string_view line = trim(raw);
-    const size_t indent = raw.find_first_not_of(' ');
-    if (top_level_indent_pending && !line.empty()) {
-      top_level_indent = indent;
-      top_level_indent_pending = false;
-    }
-    const bool top_level = indent == top_level_indent;
-    const auto value_of = [&](std::string_view key) { return unquote(trim(line.substr(key.size()))); };
     if (in_file_list) {
       if (line.starts_with("- ")) {
         out.relative_file_paths.push_back(unquote(trim(line.substr(2))));
@@ -328,15 +314,10 @@ inline Rosbag2Metadata parseRosbag2Metadata(std::string_view yaml) {
     }
     if (line == "rosbag2_bagfile_information:") {
       out.is_rosbag2 = true;
-      top_level_indent_pending = true;
     } else if (line.starts_with("storage_identifier:")) {
-      out.storage_identifier = value_of("storage_identifier:");
+      out.storage_identifier = unquote(trim(line.substr(std::string_view("storage_identifier:").size())));
     } else if (line == "relative_file_paths:") {
       in_file_list = true;
-    } else if (top_level && line.starts_with("compression_format:")) {
-      out.compression_format = value_of("compression_format:");
-    } else if (top_level && line.starts_with("compression_mode:")) {
-      out.compression_mode = value_of("compression_mode:");
     }
   }
   return out;
