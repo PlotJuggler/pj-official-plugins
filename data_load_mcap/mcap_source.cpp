@@ -21,6 +21,7 @@
 #include "mcap_dialog.hpp"
 #include "mcap_helpers.hpp"
 #include "mcap_manifest.hpp"
+#include "mcap_message_decompression.hpp"
 
 // Vendored parallel-reader fork (contrib/mcap/). Must come after reader.hpp with MCAP_IMPLEMENTATION defined: the
 // trailing #include "parallel_reader.inl" of parallel_reader.hpp compiles the parallel-reader bodies in this unit.
@@ -57,12 +58,26 @@ inline unsigned parallelImportThreadCount() {
 #endif
 }
 
+// The fetcher of a per-message compressed payload. It outlives importData() and the source (the host keeps deferred
+// fetchers after destroying the source), so it captures only values; `codec` points into a static table. A decode
+// failure throws: the SDK turns it into a failed fetch carrying the message, where an empty payload would read as a
+// valid empty message.
+template <typename Fetch>
+auto decodingFetcher(Fetch fetch, const PJ::McapHelpers::MessageCodec* codec, uint64_t max_decoded_bytes) {
+  return [fetch = std::move(fetch), codec, max_decoded_bytes]() {
+    const PJ::sdk::PayloadView compressed = fetch();
+    std::vector<uint8_t> decoded = PJ::McapHelpers::decodeMessagePayload(*codec, compressed.bytes, max_decoded_bytes);
+    return PJ::sdk::PayloadView{std::make_shared<const std::vector<uint8_t>>(std::move(decoded))};
+  };
+}
+
 class McapSource : public PJ::FileSourceBase {
 #ifdef PJ_TARGET_WASM
   static constexpr size_t kChunkCacheCapacityBytes = 32ULL * 1024 * 1024;
   static constexpr uint64_t kParallelImportBudgetBytes = 128ULL * 1024 * 1024;
   static constexpr uint64_t kParallelLookaheadBytes = 64ULL * 1024 * 1024;
   static constexpr uint64_t kMaxChunkUncompressedBytes = 128ULL * 1024 * 1024;
+  static constexpr uint64_t kMaxMessageDecodedBytes = kMaxChunkUncompressedBytes;
 #else
   // Cold-path chunk cache budget of the MessageByteStore: 128 MiB holds tens of typical 4 MiB chunks, so a scrubbing
   // consumer rarely re-decompresses. Only post-import lazy pulls populate it; eager import-time fetches come straight
@@ -70,6 +85,7 @@ class McapSource : public PJ::FileSourceBase {
   static constexpr size_t kChunkCacheCapacityBytes = 128ULL * 1024 * 1024;
   // In-flight decompression budget of the parallel import.
   static constexpr uint64_t kParallelImportBudgetBytes = 256ULL * 1024 * 1024;
+  static constexpr uint64_t kMaxMessageDecodedBytes = mcap::McapReader::MaxChunkUncompressedSize;
 #endif
   static constexpr uint64_t kProgressUpdateInterval = 1000;
   // Push failures in a row after which a topic is skipped for the rest of the import (typically its messages do not
@@ -147,6 +163,31 @@ class McapSource : public PJ::FileSourceBase {
       }
       readers.push_back(std::move(reader));
     }
+
+    // rosbag2 `compression_mode: message` compresses every payload, and only the file's own `rosbag2` Metadata record
+    // says so: each split is decided on its own. Resolved for every file before anything is pushed, so an unsupported
+    // format in a later split fails the import instead of leaving a partial one.
+    std::vector<const PJ::McapHelpers::MessageCodec*> codec_per_file;
+    for (size_t file_index = 0; file_index < readers.size(); ++file_index) {
+      PJ::McapHelpers::PayloadCompression compression;
+      if (const auto record = PJ::McapMetadata::lastMetadataRecord(readers[file_index]->reader(), "rosbag2")) {
+        if (const auto body = record->metadata.find("serialized_metadata"); body != record->metadata.end()) {
+          const auto bag = PJ::McapHelpers::parseRosbag2Metadata(body->second);
+          compression = PJ::McapHelpers::resolvePayloadCompression(bag.compression_mode, bag.compression_format);
+        }
+      }
+      if (compression.unsupported_format) {
+        const std::string& path = recording.paths[file_index];
+        const std::string msg =
+            path.substr(path.find_last_of("/\\") + 1) + ": this ROS 2 bag uses per-message compression '" +
+            *compression.unsupported_format +
+            "', which is not supported. Convert it with 'ros2 bag convert' (compression_mode: none).";
+        runtimeHost().showError("MCAP import failed", msg);
+        return PJ::unexpected(msg);
+      }
+      codec_per_file.push_back(compression.codec);
+    }
+
     // channels() returns the table BY VALUE: take one copy per file, shared by the progress total and the binding loop.
     std::vector<std::unordered_map<mcap::ChannelId, mcap::ChannelPtr>> channels_per_file;
     for (const auto& reader : readers) {
@@ -395,8 +436,9 @@ class McapSource : public PJ::FileSourceBase {
     // PJ::McapHelpers::classifyImportOutcome.
     mcap::Status view_status;
 
-    // Bindings of the file currently being read (channel ids are per file).
+    // Bindings and payload codec of the file currently being read (channel ids are per file).
     const BindingMap* bindings = nullptr;
+    const PJ::McapHelpers::MessageCodec* codec = nullptr;
     // Set when a push returns false (cancel, or every topic skipped): stops the whole recording, not just this file.
     bool stopped = false;
 
@@ -420,7 +462,11 @@ class McapSource : public PJ::FileSourceBase {
       const uint32_t binding_id = binding_it->second.id;
       auto failures_it = push_failures.find(binding_id);
       if (failures_it == push_failures.end() || !failures_it->second.skipped) {
-        auto push_status = runtimeHost().pushMessage(binding_it->second, timestamp_ns, std::move(fetch_payload));
+        auto push_status = codec != nullptr
+                               ? runtimeHost().pushMessage(
+                                     binding_it->second, timestamp_ns,
+                                     decodingFetcher(std::move(fetch_payload), codec, kMaxMessageDecodedBytes))
+                               : runtimeHost().pushMessage(binding_it->second, timestamp_ns, std::move(fetch_payload));
         if (!push_status) {
           auto& failures = push_failures[binding_id];
           if (failures.failed++ == 0) {
@@ -495,6 +541,7 @@ class McapSource : public PJ::FileSourceBase {
         mcap::ParallelReader& parallel_reader = *readers[file_index];
         const std::string& path = recording.paths[file_index];
         bindings = &bindings_per_file[file_index];
+        codec = codec_per_file[file_index];
         if (bindings->empty()) {
           continue;  // none of the selected topics in this split
         }

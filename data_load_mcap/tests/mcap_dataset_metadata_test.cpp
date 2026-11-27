@@ -150,6 +150,24 @@ TEST(McapDatasetMetadata, CaptureAndRecordingParsed) {
   EXPECT_EQ(document["capture"]["descriptor"]["request"]["origin"], "demo.example.org:6726");
 }
 
+TEST(McapDatasetMetadata, LastMetadataRecordIsTheLatestInFileOrder) {
+  TempMcap fixture;
+  writeFixture(
+      fixture.path, {
+                        makeRecord("rosbag2", {{"serialized_metadata", "open"}}),
+                        makeRecord("note", {{"author", "alice"}}),
+                        makeRecord("rosbag2", {{"serialized_metadata", "close"}}),
+                    });
+  mcap::McapReader reader;
+  ASSERT_TRUE(reader.open(fixture.path).ok());
+  ASSERT_TRUE(reader.readSummary(mcap::ReadSummaryMethod::AllowFallbackScan).ok());
+
+  const auto last = PJ::McapMetadata::lastMetadataRecord(reader, "rosbag2");
+  ASSERT_TRUE(last.has_value());
+  EXPECT_EQ(last->metadata.at("serialized_metadata"), "close");
+  EXPECT_FALSE(PJ::McapMetadata::lastMetadataRecord(reader, "absent").has_value());
+}
+
 TEST(McapDatasetMetadata, FileWithoutMetadataRecords) {
   TempMcap fixture;
   writeFixture(fixture.path, {});
