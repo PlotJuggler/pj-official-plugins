@@ -551,6 +551,9 @@ class RosParser : public PJ::MessageParserPluginBase {
   // percent with nav2's own costmap publisher table, so the cells are newly generated and owned.
   PJ::Expected<PJ::sdk::ObjectRecord> parseNav2Costmap(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 
+  // nav2_msgs/CostmapUpdate -> sdk::OccupancyGridUpdate, costs translated like parseNav2Costmap.
+  PJ::Expected<PJ::sdk::ObjectRecord> parseNav2CostmapUpdate(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
+
   // nav_msgs/OccupancyGrid -> sdk::OccupancyGrid (byte-backed, zero-copy cells)
   PJ::Expected<PJ::sdk::ObjectRecord> parseOccupancyGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload);
 

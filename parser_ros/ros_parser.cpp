@@ -340,6 +340,10 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kOccupancyGrid,
         .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
         .parse_object = &RosParser::parseNav2Costmap}},
+      {"nav2_msgs/CostmapUpdate",
+       {.object_type = ObjectType::kOccupancyGridUpdate,
+        .parse_scalars = &RosParser::parseScalarsDiscardingLargeArrays,
+        .parse_object = &RosParser::parseNav2CostmapUpdate}},
 
       {"std_msgs/Empty", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handleEmpty>}},
       {"geometry_msgs/Pose", {.parse_scalars = &RosParser::wrapVoidHandler<&RosParser::handlePose>}},

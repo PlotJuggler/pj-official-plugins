@@ -16,6 +16,7 @@
  */
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <pj_grid_map/grid_map_transcoder.hpp>
@@ -1158,6 +1159,12 @@ uint8_t nav2CostToOccupancy(uint8_t cost) {
   }
 }
 
+std::shared_ptr<std::vector<uint8_t>> nav2CostsToOccupancy(PJ::Span<const uint8_t> costs) {
+  auto cells = std::make_shared<std::vector<uint8_t>>(costs.size());
+  std::transform(costs.begin(), costs.end(), cells->begin(), nav2CostToOccupancy);
+  return cells;
+}
+
 }  // namespace
 
 PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseNav2Costmap(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
@@ -1185,10 +1192,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseNav2Costmap(PJ::Timestamp ts
       return PJ::unexpected(std::string("Costmap: size_x * size_y does not match data length"));
     }
 
-    auto cells = std::make_shared<std::vector<uint8_t>>(costs.size());
-    for (size_t i = 0; i < costs.size(); ++i) {
-      (*cells)[i] = nav2CostToOccupancy(costs[i]);
-    }
+    auto cells = nav2CostsToOccupancy(PJ::Span<const uint8_t>(costs.data(), costs.size()));
 
     PJ::sdk::OccupancyGrid grid;
     grid.timestamp_ns = current_timestamp_;
@@ -1204,6 +1208,47 @@ PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseNav2Costmap(PJ::Timestamp ts
         .object = PJ::sdk::BuiltinObject{std::move(grid)}};
   } catch (const std::exception& e) {
     return PJ::unexpected(std::string("Costmap: CDR read error: ") + e.what());
+  }
+}
+
+// The window of a nav2 costmap that changed, placed like a map_msgs/OccupancyGridUpdate: x and y
+// are the cell offset of its first cell into the costmap of the "<topic>" this "<topic>_updates"
+// belongs to. Costs go through the same table as the full costmap.
+PJ::Expected<PJ::sdk::ObjectRecord> RosParser::parseNav2CostmapUpdate(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
+  try {
+    ensureDeserializer();
+    current_timestamp_ = ts;
+    deserializer_->init(RosMsgParser::Span<const uint8_t>(payload.bytes.data(), payload.bytes.size()));
+    auto header = readHeader();
+
+    const uint32_t x = deserializer_->deserializeUInt32();
+    const uint32_t y = deserializer_->deserializeUInt32();
+    const uint32_t size_x = deserializer_->deserializeUInt32();
+    const uint32_t size_y = deserializer_->deserializeUInt32();
+    const auto costs = readByteSequence();
+    if (static_cast<uint64_t>(size_x) * size_y != costs.size()) {
+      return PJ::unexpected(std::string("CostmapUpdate: size_x * size_y does not match data length"));
+    }
+    if (x > static_cast<uint32_t>(INT32_MAX) || y > static_cast<uint32_t>(INT32_MAX)) {
+      return PJ::unexpected(std::string("CostmapUpdate: offset out of range"));
+    }
+
+    auto cells = nav2CostsToOccupancy(PJ::Span<const uint8_t>(costs.data(), costs.size()));
+
+    PJ::sdk::OccupancyGridUpdate update;
+    update.timestamp_ns = current_timestamp_;
+    update.frame_id = std::move(header.frame_id);
+    update.x = static_cast<int32_t>(x);
+    update.y = static_cast<int32_t>(y);
+    update.width = size_x;
+    update.height = size_y;
+    update.data = PJ::Span<const uint8_t>(cells->data(), cells->size());
+    update.anchor = std::move(cells);
+    return PJ::sdk::ObjectRecord{
+        .ts = use_embedded_timestamp_ ? std::optional<PJ::Timestamp>{current_timestamp_} : std::nullopt,
+        .object = PJ::sdk::BuiltinObject{std::move(update)}};
+  } catch (const std::exception& e) {
+    return PJ::unexpected(std::string("CostmapUpdate: CDR read error: ") + e.what());
   }
 }
 

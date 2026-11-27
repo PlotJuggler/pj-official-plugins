@@ -8,8 +8,9 @@ below; for earlier releases see the git history of `parser_ros/`.
 ### Added
 - Navigation messages show in the 3D view: `geometry_msgs/PoseWithCovarianceStamped` (AMCL's pose) and
   `nav2_msgs/ParticleCloud` (its particles) as poses, `geometry_msgs/PolygonStamped` (robot footprints) as a
-  closed outline that moves with its frame, and `nav2_msgs/Costmap` as an occupancy grid coloured like the
-  costmap nav2 publishes.
+  closed outline that moves with its frame, and `nav2_msgs/Costmap` with its `nav2_msgs/CostmapUpdate` patches
+  (`costmap_raw`, `costmap_raw_updates`) as an occupancy grid holding the same values as nav2's `costmap` topic;
+  pick "Costmap" in the layer's Colors for its palette.
 
 ## [1.4.3] - 2026-11-19
 

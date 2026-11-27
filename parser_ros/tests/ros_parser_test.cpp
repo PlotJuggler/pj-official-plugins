@@ -4410,6 +4410,73 @@ TEST(RosParserTest, Nav2CostmapRejectsASizeThatDoesNotMatchTheData) {
   EXPECT_FALSE(rec.has_value());
 }
 
+namespace {
+
+const std::string kCostmapUpdateDef =
+    std::string("std_msgs/Header header\nuint32 x\nuint32 y\nuint32 size_x\nuint32 size_y\nuint8[] data\n") +
+    kHeaderDef;
+
+std::vector<uint8_t> serializeCostmapUpdate(
+    uint32_t x, uint32_t y, uint32_t size_x, uint32_t size_y, const std::vector<uint8_t>& costs) {
+  return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    serializeHeader(enc, 4, 0, "odom");
+    enc.serializeUInt32(x);
+    enc.serializeUInt32(y);
+    enc.serializeUInt32(size_x);
+    enc.serializeUInt32(size_y);
+    enc.serializeUInt32(static_cast<uint32_t>(costs.size()));
+    for (uint8_t c : costs) {
+      enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(c));
+    }
+  });
+}
+
+}  // namespace
+
+// From Jazzy on nav2 sends the full costmap_raw only when its size or origin changes; in between,
+// costmap_raw_updates carries the changed window, in the same 0..255 costs.
+TEST(RosParserTest, Nav2CostmapUpdateTranslatesCostsIntoAnOccupancyGridUpdate) {
+  RosParserFixture f;
+  f.setUp();
+  const std::vector<uint8_t> costs = {0, 128, 253, 254, 255, 252};
+  auto rec = parseNavObject(
+      f, "nav2_msgs/CostmapUpdate", kCostmapUpdateDef, PJ::sdk::BuiltinObjectType::kOccupancyGridUpdate,
+      serializeCostmapUpdate(7, 9, 3, 2, costs));
+  ASSERT_TRUE(rec.has_value());
+  const auto* update = pj_compat::getBuiltinObject<PJ::sdk::OccupancyGridUpdate>(rec->object);
+  ASSERT_NE(update, nullptr);
+  EXPECT_EQ(update->frame_id, "odom");
+  EXPECT_EQ(update->x, 7);
+  EXPECT_EQ(update->y, 9);
+  EXPECT_EQ(update->width, 3u);
+  EXPECT_EQ(update->height, 2u);
+  ASSERT_EQ(update->data.size(), costs.size());
+  ASSERT_NE(update->anchor, nullptr);
+  const std::vector<int8_t> expected = {0, 1 + (97 * 127) / 251, 99, 100, -1, 98};
+  for (size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_EQ(static_cast<int8_t>(update->data.data()[i]), expected[i]) << "cost " << int(costs[i]);
+  }
+}
+
+TEST(RosParserTest, Nav2CostmapUpdateRejectsASizeThatDoesNotMatchTheData) {
+  RosParserFixture f;
+  f.setUp();
+  auto rec = parseNavObject(
+      f, "nav2_msgs/CostmapUpdate", kCostmapUpdateDef, PJ::sdk::BuiltinObjectType::kOccupancyGridUpdate,
+      serializeCostmapUpdate(0, 0, 3, 3, {0, 0, 0, 0}));
+  EXPECT_FALSE(rec.has_value());
+}
+
+// An offset past INT32_MAX cannot be placed: OccupancyGridUpdate offsets are int32.
+TEST(RosParserTest, Nav2CostmapUpdateRejectsAnOffsetBeyondInt32) {
+  RosParserFixture f;
+  f.setUp();
+  auto rec = parseNavObject(
+      f, "nav2_msgs/CostmapUpdate", kCostmapUpdateDef, PJ::sdk::BuiltinObjectType::kOccupancyGridUpdate,
+      serializeCostmapUpdate(0x80000000U, 0, 1, 1, {0}));
+  EXPECT_FALSE(rec.has_value());
+}
+
 TEST(RosParserTest, OdometryProducesSinglePosePosesInFrameObject) {
   // nav_msgs/Odometry: the pose of child_frame_id in the header frame. Dual route: a one-element
   // PosesInFrame object alongside the per-axis scalar flatten (handleOdometry), as for PoseStamped.
