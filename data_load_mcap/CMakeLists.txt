@@ -40,6 +40,12 @@ target_include_directories(mcap_helpers_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOUR
 target_link_libraries(mcap_helpers_test PRIVATE LZ4::lz4_static zstd::libzstd_static pj_utf8_path GTest::gtest_main)
 add_test(NAME mcap_helpers_test COMMAND mcap_helpers_test)
 
+add_executable(mcap_message_decompression_test tests/mcap_message_decompression_test.cpp)
+target_compile_features(mcap_message_decompression_test PRIVATE cxx_std_20)
+target_compile_options(mcap_message_decompression_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(mcap_message_decompression_test PRIVATE plotjuggler_sdk::base zstd::libzstd_static GTest::gtest_main)
+add_test(NAME mcap_message_decompression_test COMMAND mcap_message_decompression_test)
+
 add_executable(mcap_dialog_test tests/mcap_dialog_test.cpp)
 target_compile_features(mcap_dialog_test PRIVATE cxx_std_20)
 target_compile_options(mcap_dialog_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -94,3 +100,17 @@ target_link_libraries(mcap_source_split_bag_test PRIVATE
 )
 add_dependencies(mcap_source_split_bag_test mcap_source_plugin)
 add_test(NAME mcap_source_split_bag_test COMMAND mcap_source_split_bag_test)
+
+add_executable(mcap_source_message_compression_test tests/mcap_source_message_compression_test.cpp)
+target_compile_features(mcap_source_message_compression_test PRIVATE cxx_std_20)
+target_compile_options(mcap_source_message_compression_test PRIVATE ${PJ_WARNING_FLAGS})
+target_compile_definitions(mcap_source_message_compression_test PRIVATE
+  MCAP_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mcap_source_plugin>"
+  MCAP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test_data"
+)
+target_include_directories(mcap_source_message_compression_test SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/contrib)
+target_link_libraries(mcap_source_message_compression_test PRIVATE
+  plotjuggler_sdk::plugin_host LZ4::lz4_static zstd::libzstd_static pj_utf8_path GTest::gtest_main
+)
+add_dependencies(mcap_source_message_compression_test mcap_source_plugin)
+add_test(NAME mcap_source_message_compression_test COMMAND mcap_source_message_compression_test)

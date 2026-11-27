@@ -21,6 +21,7 @@
 #include "mcap_dialog.hpp"
 #include "mcap_helpers.hpp"
 #include "mcap_manifest.hpp"
+#include "mcap_message_decompression.hpp"
 
 // Vendored parallel-reader fork (contrib/mcap/). Must come after reader.hpp with MCAP_IMPLEMENTATION defined: the
 // trailing #include "parallel_reader.inl" of parallel_reader.hpp compiles the parallel-reader bodies in this unit.
@@ -57,12 +58,28 @@ inline unsigned parallelImportThreadCount() {
 #endif
 }
 
+// The fetcher of a per-message compressed payload. It outlives importData() and the source (the host keeps deferred
+// fetchers after destroying the source), so it captures only values. A decode failure throws: the SDK turns it into a
+// failed fetch carrying the reason, where an empty payload would read as a valid empty message. An empty payload from
+// `fetch` is the byte store's own read failure and passes through as before.
+template <typename Fetch>
+auto decodingFetcher(Fetch fetch, uint64_t max_decoded_bytes) {
+  return [fetch = std::move(fetch), max_decoded_bytes]() {
+    PJ::sdk::PayloadView compressed = fetch();
+    if (compressed.bytes.empty()) {
+      return compressed;
+    }
+    return PJ::McapHelpers::decodeZstdMessage(compressed.bytes, max_decoded_bytes);
+  };
+}
+
 class McapSource : public PJ::FileSourceBase {
 #ifdef PJ_TARGET_WASM
   static constexpr size_t kChunkCacheCapacityBytes = 32ULL * 1024 * 1024;
   static constexpr uint64_t kParallelImportBudgetBytes = 128ULL * 1024 * 1024;
   static constexpr uint64_t kParallelLookaheadBytes = 64ULL * 1024 * 1024;
   static constexpr uint64_t kMaxChunkUncompressedBytes = 128ULL * 1024 * 1024;
+  static constexpr uint64_t kMaxMessageDecodedBytes = kMaxChunkUncompressedBytes;
 #else
   // Cold-path chunk cache budget of the MessageByteStore: 128 MiB holds tens of typical 4 MiB chunks, so a scrubbing
   // consumer rarely re-decompresses. Only post-import lazy pulls populate it; eager import-time fetches come straight
@@ -70,6 +87,7 @@ class McapSource : public PJ::FileSourceBase {
   static constexpr size_t kChunkCacheCapacityBytes = 128ULL * 1024 * 1024;
   // In-flight decompression budget of the parallel import.
   static constexpr uint64_t kParallelImportBudgetBytes = 256ULL * 1024 * 1024;
+  static constexpr uint64_t kMaxMessageDecodedBytes = mcap::McapReader::MaxChunkUncompressedSize;
 #endif
   static constexpr uint64_t kProgressUpdateInterval = 1000;
   // Push failures in a row after which a topic is skipped for the rest of the import (typically its messages do not
@@ -420,7 +438,14 @@ class McapSource : public PJ::FileSourceBase {
       const uint32_t binding_id = binding_it->second.id;
       auto failures_it = push_failures.find(binding_id);
       if (failures_it == push_failures.end() || !failures_it->second.skipped) {
-        auto push_status = runtimeHost().pushMessage(binding_it->second, timestamp_ns, std::move(fetch_payload));
+        // rosbag2 per-message compression, decided per payload (see mcap_message_decompression.hpp).
+        const bool compressed =
+            mv.channel->messageEncoding == "cdr" && PJ::McapHelpers::isZstdFrame(mv.message.data, mv.message.dataSize);
+        auto push_status = compressed
+                               ? runtimeHost().pushMessage(
+                                     binding_it->second, timestamp_ns,
+                                     decodingFetcher(std::move(fetch_payload), kMaxMessageDecodedBytes))
+                               : runtimeHost().pushMessage(binding_it->second, timestamp_ns, std::move(fetch_payload));
         if (!push_status) {
           auto& failures = push_failures[binding_id];
           if (failures.failed++ == 0) {
